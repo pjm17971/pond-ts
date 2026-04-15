@@ -1,0 +1,171 @@
+import { describe, expect, it } from "vitest";
+import { BoundedSequence, Interval, Sequence, TimeRange } from "../src/index.js";
+
+describe("Sequence", () => {
+  it("uses bounded sequences for explicit interval lists", () => {
+    const sequence = new BoundedSequence([
+      new Interval({ value: "a", start: 0, end: 10 }),
+      new Interval({ value: "b", start: 10, end: 20 }),
+    ]);
+
+    expect(sequence.length).toBe(2);
+    expect(sequence.first()).toEqual(new Interval({ value: "a", start: 0, end: 10 }));
+    expect(sequence.last()).toEqual(new Interval({ value: "b", start: 10, end: 20 }));
+    expect(sequence.timeRange()).toEqual(new TimeRange({ start: 0, end: 20 }));
+  });
+
+  it("allows gaps in explicit bounded sequences", () => {
+    const sequence = new BoundedSequence([
+      new Interval({ value: "a", start: 0, end: 10 }),
+      new Interval({ value: "b", start: 20, end: 30 }),
+    ]);
+
+    expect(sequence.length).toBe(2);
+    expect(sequence.first()).toEqual(new Interval({ value: "a", start: 0, end: 10 }));
+    expect(sequence.last()).toEqual(new Interval({ value: "b", start: 20, end: 30 }));
+    expect(sequence.timeRange()).toEqual(new TimeRange({ start: 0, end: 30 }));
+  });
+
+  it("rejects unsorted explicit intervals", () => {
+    expect(() => new BoundedSequence([
+      new Interval({ value: "b", start: 10, end: 20 }),
+      new Interval({ value: "a", start: 0, end: 10 }),
+    ])).toThrowError("sorted by start time");
+  });
+
+  it("rejects overlapping explicit intervals", () => {
+    expect(() => new BoundedSequence([
+      new Interval({ value: "a", start: 0, end: 10 }),
+      new Interval({ value: "b", start: 5, end: 15 }),
+    ])).toThrowError("must not overlap");
+  });
+
+  it("rejects zero-duration explicit intervals", () => {
+    expect(() => new BoundedSequence([
+      new Interval({ value: "a", start: 0, end: 0 }),
+    ])).toThrowError("positive duration");
+  });
+
+  it("bounds fixed-step sequences using begin and center sampling", () => {
+    const sequence = Sequence.every(10, { anchor: 0 });
+
+    const begin = sequence.bounded(new TimeRange({ start: 10, end: 30 }));
+    const center = sequence.bounded(new TimeRange({ start: 10, end: 30 }), { sample: "center" });
+
+    expect(begin.length).toBe(3);
+    expect(begin.at(0)).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(begin.at(2)).toEqual(new Interval({ value: 30, start: 30, end: 40 }));
+    expect(center.length).toBe(2);
+    expect(center.at(0)).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(center.at(1)).toEqual(new Interval({ value: 20, start: 20, end: 30 }));
+  });
+
+  it("exposes anchor and step metadata for procedural sequences", () => {
+    const sequence = Sequence.hourly({ anchor: 1_000 });
+
+    expect(sequence.anchor()).toBe(1_000);
+    expect(sequence.stepMs()).toBe(3_600_000);
+  });
+
+  it("builds timezone-aware daily calendar buckets across DST changes", () => {
+    const sequence = Sequence.calendar("day", { timeZone: "America/New_York" });
+    const bounded = sequence.bounded(
+      new TimeRange({
+        start: Date.parse("2025-03-08T05:00:00.000Z"),
+        end: Date.parse("2025-03-10T04:00:00.000Z"),
+      }),
+    );
+
+    expect(sequence.kind()).toBe("calendar");
+    expect(sequence.timeZone()).toBe("America/New_York");
+    expect(bounded.length).toBe(3);
+    expect(bounded.at(0)).toEqual(
+      new Interval({
+        value: Date.parse("2025-03-08T05:00:00.000Z"),
+        start: Date.parse("2025-03-08T05:00:00.000Z"),
+        end: Date.parse("2025-03-09T05:00:00.000Z"),
+      }),
+    );
+    expect(bounded.at(1)?.duration()).toBe(23 * 60 * 60 * 1_000);
+    expect(bounded.at(2)).toEqual(
+      new Interval({
+        value: Date.parse("2025-03-10T04:00:00.000Z"),
+        start: Date.parse("2025-03-10T04:00:00.000Z"),
+        end: Date.parse("2025-03-11T04:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("builds timezone-aware weekly calendar buckets with configurable week start", () => {
+    const sequence = Sequence.calendar("week", { timeZone: "UTC", weekStartsOn: 1 });
+    const bounded = sequence.bounded(
+      new TimeRange({
+        start: Date.parse("2025-01-01T00:00:00.000Z"),
+        end: Date.parse("2025-01-15T00:00:00.000Z"),
+      }),
+    );
+
+    expect(bounded.length).toBe(2);
+    expect(bounded.at(0)).toEqual(
+      new Interval({
+        value: Date.parse("2025-01-06T00:00:00.000Z"),
+        start: Date.parse("2025-01-06T00:00:00.000Z"),
+        end: Date.parse("2025-01-13T00:00:00.000Z"),
+      }),
+    );
+    expect(bounded.at(1)?.duration()).toBe(7 * 24 * 60 * 60 * 1_000);
+  });
+
+  it("builds timezone-aware monthly calendar buckets", () => {
+    const sequence = Sequence.calendar("month", { timeZone: "UTC" });
+    const bounded = sequence.bounded(
+      new TimeRange({
+        start: Date.parse("2025-01-15T00:00:00.000Z"),
+        end: Date.parse("2025-03-01T00:00:00.000Z"),
+      }),
+    );
+
+    expect(bounded.length).toBe(2);
+    expect(bounded.at(0)).toEqual(
+      new Interval({
+        value: Date.parse("2025-02-01T00:00:00.000Z"),
+        start: Date.parse("2025-02-01T00:00:00.000Z"),
+        end: Date.parse("2025-03-01T00:00:00.000Z"),
+      }),
+    );
+    expect(bounded.at(1)).toEqual(
+      new Interval({
+        value: Date.parse("2025-03-01T00:00:00.000Z"),
+        start: Date.parse("2025-03-01T00:00:00.000Z"),
+        end: Date.parse("2025-04-01T00:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("defaults calendar sequences to UTC", () => {
+    const sequence = Sequence.calendar("day");
+    const bounded = sequence.bounded(
+      new TimeRange({
+        start: Date.parse("2025-01-01T00:00:00.000Z"),
+        end: Date.parse("2025-01-02T00:00:00.000Z"),
+      }),
+    );
+
+    expect(sequence.timeZone()).toBe("UTC");
+    expect(bounded.length).toBe(2);
+    expect(bounded.at(0)).toEqual(
+      new Interval({
+        value: Date.parse("2025-01-01T00:00:00.000Z"),
+        start: Date.parse("2025-01-01T00:00:00.000Z"),
+        end: Date.parse("2025-01-02T00:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("rejects fixed-step metadata access on calendar sequences", () => {
+    const sequence = Sequence.calendar("day", { timeZone: "UTC" });
+
+    expect(() => sequence.anchor()).toThrowError("fixed millisecond anchor");
+    expect(() => sequence.stepMs()).toThrowError("fixed millisecond step size");
+  });
+});

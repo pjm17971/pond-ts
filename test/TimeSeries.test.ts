@@ -1,0 +1,1462 @@
+import { describe, expect, it } from "vitest";
+import {
+  BoundedSequence,
+  Interval,
+  Sequence,
+  Time,
+  TimeRange,
+  TimeSeries,
+  ValidationError,
+  type RowForSchema,
+} from "../src/index.js";
+
+describe("TimeSeries", () => {
+  it("constructs and normalizes time rows into events", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string", required: false },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [[new Date("2025-01-01T00:00:00.000Z"), 0.42, undefined]],
+    });
+
+    expect(ts.firstColumnKind).toBe("time");
+    expect(ts.length).toBe(1);
+    expect(ts.at(0)?.key()).toBeInstanceOf(Time);
+    expect(ts.at(0)?.key().type()).toBe("time");
+    expect(ts.at(0)?.begin()).toBe(1735689600000);
+    expect(ts.at(0)?.end()).toBe(1735689600000);
+    expect(ts.at(0)?.timeRange()).toBeInstanceOf(TimeRange);
+    expect(ts.at(0)?.data().value).toBe(0.42);
+    expect(ts.at(0)?.data().status).toBeUndefined();
+    expect(ts.rows[0]?.[0]).toBeInstanceOf(Time);
+  });
+
+  it("supports interval based series", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "temperature", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "samples",
+      schema,
+      rows: [
+        [{ value: "row-1", start: 1000, end: 2000 }, 23.4],
+        [{ value: 2, start: 2000, end: 3000 }, 24.0],
+      ],
+    });
+
+    expect(ts.firstColumnKind).toBe("interval");
+    expect(ts.length).toBe(2);
+    expect(ts.at(0)?.key()).toBeInstanceOf(Interval);
+    expect(ts.at(0)?.key()).toMatchObject({ value: "row-1" });
+    expect(ts.at(0)?.key().type()).toBe("interval");
+    expect(ts.at(0)?.key().asString()).toBe("row-1");
+    expect(ts.at(0)?.key().duration()).toBe(1000);
+    expect(ts.at(1)?.begin()).toBe(2000);
+  });
+
+  it("supports timeRange based series", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "active", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "window",
+      schema,
+      rows: [[{ start: 1000, end: 2000 }, true]],
+    });
+
+    expect(ts.firstColumnKind).toBe("timeRange");
+    expect(ts.at(0)?.key()).toBeInstanceOf(TimeRange);
+    expect(ts.at(0)?.key().type()).toBe("timeRange");
+    expect(ts.at(0)?.begin()).toBe(1000);
+    expect(ts.at(0)?.end()).toBe(2000);
+    expect(ts.at(0)?.timeRange()).toBeInstanceOf(TimeRange);
+    expect(ts.at(0)?.data().active).toBe(true);
+  });
+
+  it("returns the nth event with types derived from the schema", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "cpu", kind: "number" },
+      { name: "host", kind: "string" },
+      { name: "healthy", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu-usage",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 0.42, "api-1", true],
+        [new Date("2025-01-01T00:01:00.000Z"), 0.51, "api-2", true],
+      ],
+    });
+
+    const second = ts.at(1);
+
+    expect(second).toBeDefined();
+    expect(second?.type()).toBe("time");
+    expect(second?.key()).toBeInstanceOf(Time);
+    expect(second?.begin()).toBe(1735689660000);
+    expect(second?.timeRange()).toEqual(new TimeRange({ start: 1735689660000, end: 1735689660000 }));
+    expect(second?.data().cpu).toBe(0.51);
+    expect(second?.get("cpu")).toBe(0.51);
+    expect(second?.data().host).toBe("api-2");
+    expect(second?.data().healthy).toBe(true);
+  });
+
+  it("converts series key types while preserving payload data", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "window",
+      schema,
+      rows: [
+        [{ start: 1000, end: 2000 }, 1],
+        [{ start: 2000, end: 3000 }, 2],
+      ],
+    });
+
+    const asTime = ts.asTime({ at: "center" });
+    const asInterval = ts.asInterval((event, index) => `bucket-${index}`);
+
+    expect(asTime.firstColumnKind).toBe("time");
+    expect(asTime.at(0)?.key()).toEqual(new Time(1500));
+    expect(asTime.at(0)?.get("value")).toBe(1);
+
+    expect(asInterval.firstColumnKind).toBe("interval");
+    expect(asInterval.at(0)?.key()).toEqual(new Interval({ value: "bucket-0", start: 1000, end: 2000 }));
+    expect(asInterval.at(1)?.key()).toEqual(new Interval({ value: "bucket-1", start: 2000, end: 3000 }));
+    expect(asInterval.at(1)?.get("value")).toBe(2);
+  });
+
+  it("constructs from JSON-style row arrays with timezone-aware parsing", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string", required: false },
+    ] as const;
+
+    const ts = TimeSeries.fromJSON({
+      name: "cpu",
+      schema,
+      rows: [
+        ["2025-01-01T09:00", 0.42, "ok"],
+        ["2025-01-01T10:00", 0.51, null],
+      ],
+      parse: { timeZone: "Europe/Madrid" },
+    });
+
+    expect(ts.length).toBe(2);
+    expect(ts.at(0)?.begin()).toBe(Date.parse("2025-01-01T08:00:00.000Z"));
+    expect(ts.at(0)?.get("value")).toBe(0.42);
+    expect(ts.at(0)?.get("status")).toBe("ok");
+    expect(ts.at(1)?.get("status")).toBeUndefined();
+  });
+
+  it("constructs from JSON object rows keyed by schema names", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+      { name: "active", kind: "boolean" },
+    ] as const;
+
+    const ts = TimeSeries.fromJSON({
+      name: "windows",
+      schema,
+      rows: [
+        {
+          interval: { value: "a", start: "2025-01-01", end: "2025-01-02" },
+          value: 1,
+          active: true,
+        },
+      ],
+      parse: { timeZone: "UTC" },
+    });
+
+    expect(ts.length).toBe(1);
+    expect(ts.at(0)?.key()).toEqual(
+      new Interval({
+        value: "a",
+        start: Date.parse("2025-01-01T00:00:00.000Z"),
+        end: Date.parse("2025-01-02T00:00:00.000Z"),
+      }),
+    );
+    expect(ts.at(0)?.get("value")).toBe(1);
+    expect(ts.at(0)?.get("active")).toBe(true);
+  });
+
+
+  it("collapses a timeseries across selected columns", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "in", kind: "number" },
+      { name: "out", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "traffic",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 10, 20],
+        [new Date("2025-01-01T00:01:00.000Z"), 20, 40],
+      ],
+    });
+
+    const collapsed = ts.collapse(["in", "out"], "avg", ({ in: inValue, out }) => {
+      return (inValue + out) / 2;
+    });
+
+    expect(collapsed.length).toBe(2);
+    expect(collapsed.at(0)?.get("avg")).toBe(15);
+    expect(collapsed.at(1)?.get("avg")).toBe(30);
+    expect(collapsed.at(0)?.data()).toEqual({ avg: 15 });
+  });
+
+  it("can append a collapsed field while keeping the originals", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "in", kind: "number" },
+      { name: "out", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "traffic",
+      schema,
+      rows: [[new Date("2025-01-01T00:00:00.000Z"), 10, 20]],
+    });
+
+    const collapsed = ts.collapse(
+      ["in", "out"],
+      "avg",
+      ({ in: inValue, out }) => (inValue + out) / 2,
+      { append: true },
+    );
+
+    expect(collapsed.at(0)?.get("in")).toBe(10);
+    expect(collapsed.at(0)?.get("out")).toBe(20);
+    expect(collapsed.at(0)?.get("avg")).toBe(15);
+  });
+
+  it("selects timeseries columns while preserving event keys", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "cpu", kind: "number" },
+      { name: "host", kind: "string" },
+      { name: "healthy", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu-usage",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 0.42, "api-1", true],
+        [new Date("2025-01-01T00:01:00.000Z"), 0.51, "api-2", true],
+      ],
+    });
+
+    const selected = ts.select("host", "healthy");
+
+    expect(selected.length).toBe(2);
+    expect(selected.at(1)?.type()).toBe("time");
+    expect(selected.at(1)?.data()).toEqual({ host: "api-2", healthy: true });
+    expect(selected.at(1)?.get("host")).toBe("api-2");
+    expect(selected.at(1)?.get("healthy")).toBe(true);
+  });
+
+  it("maps a timeseries into a new typed schema", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "in", kind: "number" },
+      { name: "out", kind: "number" },
+    ] as const;
+    const nextSchema = [
+      { name: "time", kind: "time" },
+      { name: "avg", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "traffic",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 10, 20],
+        [new Date("2025-01-01T00:01:00.000Z"), 20, 40],
+      ],
+    });
+
+    const mapped = ts.map(nextSchema, event =>
+      event.collapse(["in", "out"], "avg", ({ in: inValue, out }) => (inValue + out) / 2),
+    );
+
+    expect(mapped.length).toBe(2);
+    expect(mapped.firstColumnKind).toBe("time");
+    expect(mapped.at(0)?.type()).toBe("time");
+    expect(mapped.at(0)?.get("avg")).toBe(15);
+    expect(mapped.at(1)?.get("avg")).toBe(30);
+    expect(mapped.rows[0]?.[0]).toBeInstanceOf(Time);
+  });
+
+  it("renames timeseries columns while preserving keys", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "cpu", kind: "number" },
+      { name: "host", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu-usage",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 0.42, "api-1"],
+        [new Date("2025-01-01T00:01:00.000Z"), 0.51, "api-2"],
+      ],
+    });
+
+    const renamed = ts.rename({ cpu: "usage", host: "server" });
+
+    expect(renamed.length).toBe(2);
+    expect(renamed.at(0)?.type()).toBe("time");
+    expect(renamed.at(0)?.data()).toEqual({ usage: 0.42, server: "api-1" });
+    expect(renamed.at(1)?.get("usage")).toBe(0.51);
+    expect(renamed.at(1)?.get("server")).toBe("api-2");
+  });
+
+  it("supports merging payload fields through series.map", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "cpu", kind: "number" },
+      { name: "host", kind: "string" },
+    ] as const;
+    const nextSchema = [
+      { name: "time", kind: "time" },
+      { name: "cpu", kind: "number" },
+      { name: "host", kind: "string" },
+      { name: "healthy", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu-usage",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 0.42, "api-1"],
+        [new Date("2025-01-01T00:01:00.000Z"), 0.51, "api-2"],
+      ],
+    });
+
+    const mapped = ts.map(nextSchema, event => event.merge({ healthy: event.get("cpu") < 0.9 }));
+
+    expect(mapped.length).toBe(2);
+    expect(mapped.at(0)?.get("cpu")).toBe(0.42);
+    expect(mapped.at(0)?.get("host")).toBe("api-1");
+    expect(mapped.at(0)?.get("healthy")).toBe(true);
+    expect(mapped.at(1)?.get("healthy")).toBe(true);
+  });
+
+  it("supports first, last and slice as positional operations", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 1],
+        [new Date("2025-01-01T00:01:00.000Z"), 2],
+        [new Date("2025-01-01T00:02:00.000Z"), 3],
+      ],
+    });
+
+    const sliced = ts.slice(1, 3);
+
+    expect(ts.first()?.get("value")).toBe(1);
+    expect(ts.last()?.get("value")).toBe(3);
+    expect(sliced.length).toBe(2);
+    expect(sliced.at(0)?.get("value")).toBe(2);
+    expect(sliced.at(1)?.get("value")).toBe(3);
+  });
+
+  it("filters events while preserving schema and order", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "active", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 1, false],
+        [new Date("2025-01-01T00:01:00.000Z"), 2, true],
+        [new Date("2025-01-01T00:02:00.000Z"), 3, true],
+      ],
+    });
+
+    const filtered = ts.filter(event => event.get("active"));
+
+    expect(filtered.length).toBe(2);
+    expect(filtered.first()?.get("value")).toBe(2);
+    expect(filtered.last()?.get("value")).toBe(3);
+    expect(filtered.first()?.key()).toBeInstanceOf(Time);
+  });
+
+  it("supports find, some and every over typed events", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "active", kind: "boolean" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 1, false],
+        [new Date("2025-01-01T00:01:00.000Z"), 2, true],
+        [new Date("2025-01-01T00:02:00.000Z"), 3, true],
+      ],
+    });
+
+    const found = ts.find(event => event.get("active"));
+
+    expect(found?.get("value")).toBe(2);
+    expect(found?.key()).toBeInstanceOf(Time);
+    expect(ts.some(event => event.get("value") === 3)).toBe(true);
+    expect(ts.some(event => event.get("value") === 4)).toBe(false);
+    expect(ts.every(event => event.get("value") > 0)).toBe(true);
+    expect(ts.every(event => event.get("active"))).toBe(false);
+  });
+
+  it("selects events within timestamps inclusively", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [new Date("2025-01-01T00:00:00.000Z"), 1],
+        [new Date("2025-01-01T00:01:00.000Z"), 2],
+        [new Date("2025-01-01T00:02:00.000Z"), 3],
+      ],
+    });
+
+    const selected = ts.within(
+      new Date("2025-01-01T00:01:00.000Z"),
+      new Date("2025-01-01T00:02:00.000Z"),
+    );
+
+    expect(selected.length).toBe(2);
+    expect(selected.at(0)?.get("value")).toBe(2);
+    expect(selected.at(1)?.get("value")).toBe(3);
+  });
+
+  it("selects interval keyed events contained by a range-like value", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windowed",
+      schema,
+      rows: [
+        [new Interval({ value: "a", start: 0, end: 10 }), 1],
+        [new Interval({ value: "b", start: 10, end: 20 }), 2],
+        [new Interval({ value: "c", start: 20, end: 30 }), 3],
+      ],
+    });
+
+    const byRange = ts.within(new TimeRange({ start: 10, end: 30 }));
+    const byInterval = ts.within(new Interval({ value: "window", start: 0, end: 20 }));
+
+    expect(byRange.length).toBe(2);
+    expect(byRange.at(0)?.key().valueOf()).toBe("b");
+    expect(byRange.at(1)?.key().valueOf()).toBe("c");
+    expect(byInterval.length).toBe(2);
+    expect(byInterval.at(0)?.key().valueOf()).toBe("a");
+    expect(byInterval.at(1)?.key().valueOf()).toBe("b");
+  });
+
+  it("supports before and after with exclusive boundaries", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "ranges",
+      schema,
+      rows: [
+        [new TimeRange({ start: 0, end: 10 }), 1],
+        [new TimeRange({ start: 10, end: 20 }), 2],
+        [new TimeRange({ start: 20, end: 30 }), 3],
+      ],
+    });
+
+    const before = ts.before(20);
+    const after = ts.after(10);
+
+    expect(before.length).toBe(1);
+    expect(before.first()?.get("value")).toBe(1);
+    expect(after.length).toBe(1);
+    expect(after.first()?.get("value")).toBe(3);
+  });
+
+  it("supports exact key membership and key-position lookup", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windowed",
+      schema,
+      rows: [
+        [new Interval({ value: "a", start: 0, end: 10 }), 1],
+        [new Interval({ value: "b", start: 10, end: 20 }), 2],
+        [new Interval({ value: "c", start: 20, end: 30 }), 3],
+      ],
+    });
+
+    expect(ts.includesKey(new Interval({ value: "b", start: 10, end: 20 }))).toBe(true);
+    expect(ts.includesKey(new Interval({ value: "missing", start: 10, end: 20 }))).toBe(false);
+    expect(ts.bisect(new Interval({ value: "bb", start: 15, end: 18 }))).toBe(2);
+    expect(ts.atOrBefore(new Interval({ value: "bb", start: 15, end: 18 }))?.get("value")).toBe(2);
+    expect(ts.atOrAfter(new Interval({ value: "bb", start: 15, end: 18 }))?.get("value")).toBe(3);
+    expect(ts.atOrBefore(new Interval({ value: "b", start: 10, end: 20 }))?.get("value")).toBe(2);
+    expect(ts.atOrAfter(new Interval({ value: "b", start: 10, end: 20 }))?.get("value")).toBe(2);
+  });
+
+  it("aligns a point series onto a sequence using hold sampling", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [10, 1, "a"],
+        [20, 3, "b"],
+        [30, 5, "c"],
+      ],
+    });
+
+    const aligned = ts.align(Sequence.every(10), {
+      method: "hold",
+      range: new TimeRange({ start: 10, end: 30 }),
+    });
+
+    expect(aligned.firstColumnKind).toBe("interval");
+    expect(aligned.length).toBe(3);
+    expect(aligned.at(0)?.key()).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(aligned.at(0)?.get("value")).toBe(1);
+    expect(aligned.at(1)?.get("value")).toBe(3);
+    expect(aligned.at(2)?.get("value")).toBe(5);
+    expect(aligned.at(2)?.get("status")).toBe("c");
+  });
+
+  it("aligns a point series onto a bounded sequence directly", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [10, 1],
+        [20, 3],
+        [30, 5],
+      ],
+    });
+
+    const bounded = new BoundedSequence([
+      new Interval({ value: 10, start: 10, end: 20 }),
+      new Interval({ value: 20, start: 20, end: 30 }),
+      new Interval({ value: 30, start: 30, end: 40 }),
+    ]);
+
+    const aligned = ts.align(bounded, { method: "hold" });
+
+    expect(aligned.length).toBe(3);
+    expect(aligned.at(0)?.get("value")).toBe(1);
+    expect(aligned.at(1)?.get("value")).toBe(3);
+    expect(aligned.at(2)?.get("value")).toBe(5);
+  });
+
+  it("aligns a point series onto a sequence using linear interpolation", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [10, 0, "a"],
+        [20, 10, "b"],
+        [30, 20, "c"],
+      ],
+    });
+
+    const aligned = ts.align(Sequence.every(5), {
+      method: "linear",
+      range: new TimeRange({ start: 10, end: 30 }),
+    });
+
+    expect(aligned.length).toBe(5);
+    expect(aligned.at(0)?.get("value")).toBe(0);
+    expect(aligned.at(1)?.get("value")).toBe(5);
+    expect(aligned.at(2)?.get("value")).toBe(10);
+    expect(aligned.at(3)?.get("value")).toBe(15);
+    expect(aligned.at(4)?.get("value")).toBe(20);
+    expect(aligned.at(1)?.get("status")).toBe("a");
+    expect(aligned.at(3)?.get("status")).toBe("b");
+  });
+
+  it("supports center-sampled alignment", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [10, 1],
+        [20, 3],
+        [30, 5],
+      ],
+    });
+
+    const aligned = ts.align(Sequence.every(10), {
+      method: "hold",
+      sample: "center",
+      range: new TimeRange({ start: 10, end: 30 }),
+    });
+
+    expect(aligned.length).toBe(2);
+    expect(aligned.at(0)?.key()).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(aligned.at(0)?.get("value")).toBe(1);
+    expect(aligned.at(1)?.get("value")).toBe(3);
+  });
+
+  it("merges aligned series on exact interval keys", () => {
+    const leftSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "cpu", kind: "number" },
+    ] as const;
+    const rightSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "host", kind: "string" },
+    ] as const;
+
+    const left = new TimeSeries({
+      name: "left",
+      schema: leftSchema,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), 1],
+        [new Interval({ value: 10, start: 10, end: 20 }), 2],
+      ],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: rightSchema,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), "a"],
+        [new Interval({ value: 10, start: 10, end: 20 }), "b"],
+      ],
+    });
+
+    const joined = left.join(right);
+
+    expect(joined.firstColumnKind).toBe("interval");
+    expect(joined.length).toBe(2);
+    expect(joined.at(0)?.key()).toEqual(new Interval({ value: 0, start: 0, end: 10 }));
+    expect(joined.at(0)?.get("cpu")).toBe(1);
+    expect(joined.at(0)?.get("host")).toBe("a");
+    expect(joined.at(1)?.get("cpu")).toBe(2);
+    expect(joined.at(1)?.get("host")).toBe("b");
+  });
+
+  it("performs a full outer join when keys appear on only one side", () => {
+    const leftSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "cpu", kind: "number" },
+    ] as const;
+    const rightSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "host", kind: "string" },
+    ] as const;
+
+    const left = new TimeSeries({
+      name: "left",
+      schema: leftSchema,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 1]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: rightSchema,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), "a"],
+        [new Interval({ value: 10, start: 10, end: 20 }), "b"],
+      ],
+    });
+
+    const joined = left.join(right);
+
+    expect(joined.length).toBe(2);
+    expect(joined.at(0)?.get("cpu")).toBe(1);
+    expect(joined.at(0)?.get("host")).toBe("a");
+    expect(joined.at(1)?.get("cpu")).toBeUndefined();
+    expect(joined.at(1)?.get("host")).toBe("b");
+  });
+
+  it("supports left, right and inner join variants", () => {
+    const leftSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "cpu", kind: "number" },
+    ] as const;
+    const rightSchema = [
+      { name: "interval", kind: "interval" },
+      { name: "host", kind: "string" },
+    ] as const;
+
+    const left = new TimeSeries({
+      name: "left",
+      schema: leftSchema,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), 1],
+        [new Interval({ value: 10, start: 10, end: 20 }), 2],
+      ],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: rightSchema,
+      rows: [
+        [new Interval({ value: 10, start: 10, end: 20 }), "b"],
+        [new Interval({ value: 20, start: 20, end: 30 }), "c"],
+      ],
+    });
+
+    const leftJoined = left.join(right, { type: "left" });
+    const rightJoined = left.join(right, { type: "right" });
+    const innerJoined = left.join(right, { type: "inner" });
+
+    expect(leftJoined.length).toBe(2);
+    expect(leftJoined.at(0)?.get("cpu")).toBe(1);
+    expect(leftJoined.at(0)?.get("host")).toBeUndefined();
+    expect(leftJoined.at(1)?.get("cpu")).toBe(2);
+    expect(leftJoined.at(1)?.get("host")).toBe("b");
+
+    expect(rightJoined.length).toBe(2);
+    expect(rightJoined.at(0)?.get("cpu")).toBe(2);
+    expect(rightJoined.at(0)?.get("host")).toBe("b");
+    expect(rightJoined.at(1)?.get("cpu")).toBeUndefined();
+    expect(rightJoined.at(1)?.get("host")).toBe("c");
+
+    expect(innerJoined.length).toBe(1);
+    expect(innerJoined.at(0)?.key()).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(innerJoined.at(0)?.get("cpu")).toBe(2);
+    expect(innerJoined.at(0)?.get("host")).toBe("b");
+  });
+
+  it("supports prefix-based conflict handling for join", () => {
+    const left = new TimeSeries({
+      name: "left",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 1]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 2]],
+    });
+
+    const joined = left.join(right, {
+      onConflict: "prefix",
+      prefixes: ["left", "right"] as const,
+    });
+
+    expect(joined.at(0)?.data()).toEqual({ left_value: 1, right_value: 2 });
+  });
+
+  it("joins many series into one wide series", () => {
+    const cpu = new TimeSeries({
+      name: "cpu",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "cpu", kind: "number" },
+      ] as const,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), 1],
+        [new Interval({ value: 10, start: 10, end: 20 }), 2],
+      ],
+    });
+    const host = new TimeSeries({
+      name: "host",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "host", kind: "string" },
+      ] as const,
+      rows: [[new Interval({ value: 10, start: 10, end: 20 }), "api-1"]],
+    });
+    const healthy = new TimeSeries({
+      name: "healthy",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "healthy", kind: "boolean" },
+      ] as const,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), true],
+        [new Interval({ value: 20, start: 20, end: 30 }), false],
+      ],
+    });
+
+    const joined = TimeSeries.joinMany([cpu, host, healthy]);
+
+    expect(joined.length).toBe(3);
+    expect(joined.at(0)?.get("cpu")).toBe(1);
+    expect(joined.at(0)?.get("host")).toBeUndefined();
+    expect(joined.at(0)?.get("healthy")).toBe(true);
+    expect(joined.at(1)?.get("cpu")).toBe(2);
+    expect(joined.at(1)?.get("host")).toBe("api-1");
+    expect(joined.at(1)?.get("healthy")).toBeUndefined();
+    expect(joined.at(2)?.get("cpu")).toBeUndefined();
+    expect(joined.at(2)?.get("host")).toBeUndefined();
+    expect(joined.at(2)?.get("healthy")).toBe(false);
+  });
+
+  it("supports prefix-based conflict handling for joinMany", () => {
+    const left = new TimeSeries({
+      name: "left",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 1]],
+    });
+    const middle = new TimeSeries({
+      name: "middle",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 2]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 3]],
+    });
+
+    const joined = TimeSeries.joinMany([left, middle, right], {
+      onConflict: "prefix",
+      prefixes: ["left", "middle", "right"] as const,
+    });
+
+    expect(joined.at(0)?.data()).toEqual({
+      left_value: 1,
+      middle_value: 2,
+      right_value: 3,
+    });
+  });
+
+  it("supports joinMany with inner join semantics", () => {
+    const left = new TimeSeries({
+      name: "left",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "cpu", kind: "number" },
+      ] as const,
+      rows: [
+        [new Interval({ value: 0, start: 0, end: 10 }), 1],
+        [new Interval({ value: 10, start: 10, end: 20 }), 2],
+      ],
+    });
+    const middle = new TimeSeries({
+      name: "middle",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "host", kind: "string" },
+      ] as const,
+      rows: [[new Interval({ value: 10, start: 10, end: 20 }), "api-1"]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "healthy", kind: "boolean" },
+      ] as const,
+      rows: [
+        [new Interval({ value: 10, start: 10, end: 20 }), true],
+        [new Interval({ value: 20, start: 20, end: 30 }), false],
+      ],
+    });
+
+    const joined = TimeSeries.joinMany([left, middle, right], { type: "inner" });
+
+    expect(joined.length).toBe(1);
+    expect(joined.at(0)?.key()).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(joined.at(0)?.get("cpu")).toBe(2);
+    expect(joined.at(0)?.get("host")).toBe("api-1");
+    expect(joined.at(0)?.get("healthy")).toBe(true);
+  });
+
+  it("rejects join when payload column names overlap", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const left = new TimeSeries({
+      name: "left",
+      schema,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 1]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 2]],
+    });
+
+    expect(() => left.join(right)).toThrowError("duplicate column names");
+  });
+
+  it("rejects prefix conflict handling when prefixed names still collide", () => {
+    const left = new TimeSeries({
+      name: "left",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 1]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "value", kind: "number" },
+        { name: "left_value", kind: "number" },
+      ] as const,
+      rows: [[new Interval({ value: 0, start: 0, end: 10 }), 2, 3]],
+    });
+
+    expect(() => left.join(right, {
+      onConflict: "prefix",
+      prefixes: ["left", "right"] as const,
+    })).toThrowError("still produced duplicate column names");
+  });
+
+  it("rejects join when key kinds differ", () => {
+    const left = new TimeSeries({
+      name: "left",
+      schema: [
+        { name: "time", kind: "time" },
+        { name: "cpu", kind: "number" },
+      ] as const,
+      rows: [[10, 1]],
+    });
+    const right = new TimeSeries({
+      name: "right",
+      schema: [
+        { name: "interval", kind: "interval" },
+        { name: "host", kind: "string" },
+      ] as const,
+      rows: [[new Interval({ value: 10, start: 10, end: 20 }), "api-1"]],
+    });
+
+    expect(() => left.join(right)).toThrowError("different key kinds");
+  });
+
+  it("aggregates point series into sequence buckets with built-in reducers", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 2, "b"],
+        [10, 3, "c"],
+        [15, 4, "d"],
+        [20, 5, "e"],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      { value: "avg", status: "first" },
+      { range: new TimeRange({ start: 0, end: 20 }) },
+    );
+
+    expect(aggregated.firstColumnKind).toBe("interval");
+    expect(aggregated.length).toBe(3);
+    expect(aggregated.at(0)?.key()).toEqual(new Interval({ value: 0, start: 0, end: 10 }));
+    expect(aggregated.at(0)?.get("value")).toBe(1.5);
+    expect(aggregated.at(0)?.get("status")).toBe("a");
+    expect(aggregated.at(1)?.get("value")).toBe(3.5);
+    expect(aggregated.at(1)?.get("status")).toBe("c");
+    expect(aggregated.at(2)?.get("value")).toBe(5);
+    expect(aggregated.at(2)?.get("status")).toBe("e");
+  });
+
+  it("computes trailing rolling aggregations while preserving the original key type", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 2, "b"],
+        [10, 3, "c"],
+        [15, 4, "d"],
+      ],
+    });
+
+    const rolled = ts.rolling(10, { value: "avg", status: "last" });
+
+    expect(rolled.firstColumnKind).toBe("time");
+    expect(rolled.at(0)?.key()).toEqual(new Time(0));
+    expect(rolled.at(0)?.get("value")).toBe(1);
+    expect(rolled.at(0)?.get("status")).toBe("a");
+    expect(rolled.at(1)?.get("value")).toBe(1.5);
+    expect(rolled.at(1)?.get("status")).toBe("b");
+    expect(rolled.at(2)?.get("value")).toBe(2.5);
+    expect(rolled.at(2)?.get("status")).toBe("c");
+    expect(rolled.at(3)?.get("value")).toBe(3.5);
+    expect(rolled.at(3)?.get("status")).toBe("d");
+  });
+
+  it("supports centered rolling windows", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1],
+        [5, 2],
+        [10, 3],
+      ],
+    });
+
+    const rolled = ts.rolling(10, { value: "count" }, { alignment: "centered" });
+
+    expect(rolled.at(0)?.get("value")).toBe(1);
+    expect(rolled.at(1)?.get("value")).toBe(2);
+    expect(rolled.at(2)?.get("value")).toBe(2);
+  });
+
+  it("supports sequence-driven rolling windows on a fixed grid", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 2, "b"],
+        [10, 3, "c"],
+        [15, 4, "d"],
+      ],
+    });
+
+    const rolled = ts.rolling(
+      Sequence.every(10),
+      10,
+      { value: "avg", status: "last" },
+      { range: new TimeRange({ start: 0, end: 20 }) },
+    );
+
+    expect(rolled.firstColumnKind).toBe("interval");
+    expect(rolled.at(0)?.key()).toEqual(new Interval({ value: 0, start: 0, end: 10 }));
+    expect(rolled.at(0)?.get("value")).toBe(1);
+    expect(rolled.at(0)?.get("status")).toBe("a");
+    expect(rolled.at(1)?.key()).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(rolled.at(1)?.get("value")).toBe(2.5);
+    expect(rolled.at(1)?.get("status")).toBe("c");
+    expect(rolled.at(2)?.key()).toEqual(new Interval({ value: 20, start: 20, end: 30 }));
+    expect(rolled.at(2)?.get("value")).toBe(4);
+    expect(rolled.at(2)?.get("status")).toBe("d");
+  });
+
+  it("supports centered fixed-window rolling with centered bucket sampling", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1],
+        [5, 2],
+        [10, 3],
+        [15, 4],
+      ],
+    });
+
+    const rolled = ts.rolling(
+      Sequence.every(10),
+      10,
+      { value: "count" },
+      { alignment: "centered", sample: "center", range: new TimeRange({ start: 0, end: 15 }) },
+    );
+
+    expect(rolled.length).toBe(2);
+    expect(rolled.at(0)?.get("value")).toBe(2);
+    expect(rolled.at(1)?.get("value")).toBe(2);
+  });
+
+  it("supports ema smoothing on one numeric column while preserving keys and other fields", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 3, "b"],
+        [10, 5, "c"],
+      ],
+    });
+
+    const smoothed = ts.smooth("value", "ema", { alpha: 0.5 });
+
+    expect(smoothed.firstColumnKind).toBe("time");
+    expect(smoothed.at(0)?.key()).toEqual(new Time(0));
+    expect(smoothed.at(0)?.get("value")).toBe(1);
+    expect(smoothed.at(0)?.get("status")).toBe("a");
+    expect(smoothed.at(1)?.get("value")).toBe(2);
+    expect(smoothed.at(2)?.get("value")).toBe(3.5);
+    expect(smoothed.at(0)?.data()).toEqual({ value: 1, status: "a" });
+  });
+
+  it("can append a smoothed column instead of replacing the source column", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 3, "b"],
+        [10, 5, "c"],
+      ],
+    });
+
+    const smoothed = ts.smooth("value", "ema", { alpha: 0.5, output: "valueEma" });
+
+    expect(smoothed.at(0)?.get("value")).toBe(1);
+    expect(smoothed.at(0)?.get("valueEma")).toBe(1);
+    expect(smoothed.at(1)?.get("value")).toBe(3);
+    expect(smoothed.at(1)?.get("valueEma")).toBe(2);
+    expect(smoothed.at(2)?.get("status")).toBe("c");
+  });
+
+  it("uses interval centers when smoothing moving averages", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windows",
+      schema,
+      rows: [
+        [{ value: "a", start: 0, end: 10 }, 1],
+        [{ value: "b", start: 20, end: 30 }, 3],
+        [{ value: "c", start: 40, end: 50 }, 5],
+      ],
+    });
+
+    const smoothed = ts.smooth("value", "movingAverage", { window: 50, alignment: "centered" });
+
+    expect(smoothed.firstColumnKind).toBe("interval");
+    expect(smoothed.at(0)?.key()).toEqual(new Interval({ value: "a", start: 0, end: 10 }));
+    expect(smoothed.at(0)?.get("value")).toBe(2);
+    expect(smoothed.at(1)?.get("value")).toBe(3);
+    expect(smoothed.at(2)?.get("value")).toBe(4);
+  });
+
+  it("supports loess smoothing on a numeric column", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 0, "a"],
+        [10, 11, "b"],
+        [20, 19, "c"],
+        [30, 31, "d"],
+        [40, 39, "e"],
+      ],
+    });
+
+    const smoothed = ts.smooth("value", "loess", { span: 0.8, output: "valueLoess" });
+
+    expect(smoothed.firstColumnKind).toBe("time");
+    expect(smoothed.at(0)?.get("value")).toBe(0);
+    expect(smoothed.at(0)?.get("status")).toBe("a");
+    expect(smoothed.at(0)?.get("valueLoess")).toBeGreaterThan(-1);
+    expect(smoothed.at(0)?.get("valueLoess")).toBeLessThan(1);
+    expect(smoothed.at(2)?.get("valueLoess")).toBeGreaterThan(18);
+    expect(smoothed.at(2)?.get("valueLoess")).toBeLessThan(22);
+    expect(smoothed.at(4)?.get("valueLoess")).toBeGreaterThan(38);
+    expect(smoothed.at(4)?.get("valueLoess")).toBeLessThan(42);
+  });
+
+  it("supports sum, count and last aggregations", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+      { name: "status", kind: "string" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "cpu",
+      schema,
+      rows: [
+        [0, 1, "a"],
+        [5, 2, "b"],
+        [10, 3, "c"],
+        [15, 4, "d"],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      { value: "sum", status: "last" },
+      { range: new TimeRange({ start: 0, end: 10 }) },
+    );
+    const counted = ts.aggregate(
+      Sequence.every(10),
+      { value: "count" },
+      { range: new TimeRange({ start: 0, end: 10 }) },
+    );
+
+    expect(aggregated.length).toBe(2);
+    expect(aggregated.at(0)?.get("value")).toBe(3);
+    expect(aggregated.at(0)?.get("status")).toBe("b");
+    expect(aggregated.at(1)?.get("value")).toBe(7);
+    expect(aggregated.at(1)?.get("status")).toBe("d");
+    expect(counted.at(0)?.get("value")).toBe(2);
+    expect(counted.at(1)?.get("value")).toBe(2);
+  });
+
+  it("aggregates interval-like events into every overlapping bucket", () => {
+    const schema = [
+      { name: "interval", kind: "interval" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windowed",
+      schema,
+      rows: [
+        [new Interval({ value: "a", start: 0, end: 10 }), 1],
+        [new Interval({ value: "b", start: 10, end: 20 }), 2],
+        [new Interval({ value: "c", start: 18, end: 22 }), 3],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      { value: "count" },
+      { range: new TimeRange({ start: 0, end: 20 }) },
+    );
+
+    expect(aggregated.length).toBe(3);
+    expect(aggregated.at(0)?.get("value")).toBe(1);
+    expect(aggregated.at(1)?.get("value")).toBe(2);
+    expect(aggregated.at(2)?.get("value")).toBe(1);
+  });
+
+  it("computes temporal extent and relations for a timeseries", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windowed",
+      schema,
+      rows: [
+        [new TimeRange({ start: 0, end: 10 }), 1],
+        [new TimeRange({ start: 10, end: 20 }), 2],
+        [new TimeRange({ start: 30, end: 40 }), 3],
+      ],
+    });
+
+    expect(ts.timeRange()).toEqual(new TimeRange({ start: 0, end: 40 }));
+    expect(ts.overlaps(new TimeRange({ start: 35, end: 50 }))).toBe(true);
+    expect(ts.contains(new TimeRange({ start: 5, end: 15 }))).toBe(true);
+    expect(ts.contains(new TimeRange({ start: 5, end: 45 }))).toBe(false);
+    expect(ts.intersection(new TimeRange({ start: 5, end: 35 }))).toEqual(
+      new TimeRange({ start: 5, end: 35 }),
+    );
+  });
+
+  it("filters and trims events by range", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: "windowed",
+      schema,
+      rows: [
+        [new TimeRange({ start: 0, end: 10 }), 1],
+        [new TimeRange({ start: 10, end: 20 }), 2],
+        [new TimeRange({ start: 20, end: 30 }), 3],
+      ],
+    });
+
+    const overlapping = ts.overlapping(new TimeRange({ start: 5, end: 15 }));
+    const contained = ts.containedBy(new TimeRange({ start: 5, end: 25 }));
+    const trimmed = ts.trim(new TimeRange({ start: 18, end: 22 }));
+
+    expect(overlapping.length).toBe(2);
+    expect(overlapping.at(0)?.get("value")).toBe(1);
+    expect(overlapping.at(1)?.get("value")).toBe(2);
+    expect(contained.length).toBe(1);
+    expect(contained.at(0)?.get("value")).toBe(2);
+    expect(trimmed.length).toBe(2);
+    expect(trimmed.at(0)?.get("value")).toBe(2);
+    expect(trimmed.at(0)?.key()).toEqual(new TimeRange({ start: 18, end: 20 }));
+    expect(trimmed.at(1)?.get("value")).toBe(3);
+    expect(trimmed.at(1)?.key()).toEqual(new TimeRange({ start: 20, end: 22 }));
+  });
+
+  it("rejects rows with invalid shape", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const badRows = [[Date.now()]] as unknown as RowForSchema<typeof schema>[];
+
+    expect(() =>
+      new TimeSeries({
+        name: "cpu",
+        schema,
+        rows: badRows,
+      }),
+    ).toThrowError(ValidationError);
+  });
+
+  it("rejects invalid first column values", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const badRows = [["not-a-time", 1]] as unknown as RowForSchema<typeof schema>[];
+
+    expect(() =>
+      new TimeSeries({
+        name: "cpu",
+        schema,
+        rows: badRows,
+      }),
+    ).toThrowError("time must be a finite timestamp");
+  });
+
+  it("rejects invalid timeRange", () => {
+    const schema = [
+      { name: "timeRange", kind: "timeRange" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    const badRows = [[{ start: 2, end: 1 }, 1]] as unknown as RowForSchema<typeof schema>[];
+
+    expect(() =>
+      new TimeSeries({
+        name: "range",
+        schema,
+        rows: badRows,
+      }),
+    ).toThrowError("start must be <=");
+  });
+
+  it("rejects out of order events", () => {
+    const schema = [
+      { name: "time", kind: "time" },
+      { name: "value", kind: "number" },
+    ] as const;
+
+    expect(() =>
+      new TimeSeries({
+        name: "cpu",
+        schema,
+        rows: [
+          [new Date("2025-01-02T00:00:00.000Z"), 1],
+          [new Date("2025-01-01T00:00:00.000Z"), 2],
+        ],
+      }),
+    ).toThrowError("out of order");
+  });
+});
