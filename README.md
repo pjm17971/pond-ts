@@ -1,4 +1,4 @@
-# pond-modern
+# pond - A modern typescript timeseries library
 
 TypeScript-first time series primitives built around typed events, typed schemas, and explicit temporal keys.
 
