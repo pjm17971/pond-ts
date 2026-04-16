@@ -1,9 +1,9 @@
-import { Interval } from "./Interval.js";
-import { Event } from "./Event.js";
-import { Time } from "./Time.js";
-import { TimeRange } from "./TimeRange.js";
-import type { EventKey, IntervalInput, TimeRangeInput } from "./temporal.js";
-import { ValidationError } from "./errors.js";
+import { Interval } from './Interval.js';
+import { Event } from './Event.js';
+import { Time } from './Time.js';
+import { TimeRange } from './TimeRange.js';
+import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
+import { ValidationError } from './errors.js';
 import type {
   EventForSchema,
   EventKeyForSchema,
@@ -11,21 +11,30 @@ import type {
   SeriesSchema,
   TimeSeriesInput,
   ValueForKind,
-} from "./types.js";
+} from './types.js';
 
-const FIRST_COLUMN_KINDS: ReadonlySet<FirstColKind> = new Set(["time", "interval", "timeRange"]);
+const FIRST_COLUMN_KINDS: ReadonlySet<FirstColKind> = new Set([
+  'time',
+  'interval',
+  'timeRange',
+]);
 
-function assertCellKind(kind: string, value: unknown, row: number, col: number): void {
+function assertCellKind(
+  kind: string,
+  value: unknown,
+  row: number,
+  col: number,
+): void {
   if (value === undefined) {
     return;
   }
 
   switch (kind) {
-    case "time": {
+    case 'time': {
       const ok =
         value instanceof Time ||
         (value instanceof Date && Number.isFinite(value.getTime())) ||
-        (typeof value === "number" && Number.isFinite(value));
+        (typeof value === 'number' && Number.isFinite(value));
       if (!ok) {
         throw new ValidationError(
           `row ${row} col ${col}: expected time as Time, Date or finite number`,
@@ -33,18 +42,18 @@ function assertCellKind(kind: string, value: unknown, row: number, col: number):
       }
       return;
     }
-    case "interval": {
+    case 'interval': {
       const ok =
         value instanceof Interval ||
         (Array.isArray(value) &&
           value.length === 3 &&
-          (typeof value[0] === "string" || typeof value[0] === "number")) ||
+          (typeof value[0] === 'string' || typeof value[0] === 'number')) ||
         (!Array.isArray(value) &&
-          typeof value === "object" &&
+          typeof value === 'object' &&
           value !== null &&
-          "value" in value &&
-          "start" in value &&
-          "end" in value);
+          'value' in value &&
+          'start' in value &&
+          'end' in value);
       if (!ok) {
         throw new ValidationError(
           `row ${row} col ${col}: expected interval as Interval or { value, start, end }`,
@@ -52,15 +61,15 @@ function assertCellKind(kind: string, value: unknown, row: number, col: number):
       }
       return;
     }
-    case "timeRange": {
+    case 'timeRange': {
       const ok =
         value instanceof TimeRange ||
         (Array.isArray(value) && value.length === 2) ||
         (!Array.isArray(value) &&
-          typeof value === "object" &&
+          typeof value === 'object' &&
           value !== null &&
-          "start" in value &&
-          "end" in value);
+          'start' in value &&
+          'end' in value);
       if (!ok) {
         throw new ValidationError(
           `row ${row} col ${col}: expected timeRange as TimeRange or { start, end }`,
@@ -68,26 +77,30 @@ function assertCellKind(kind: string, value: unknown, row: number, col: number):
       }
       return;
     }
-    case "number": {
-      if (typeof value !== "number" || !Number.isFinite(value)) {
-        throw new ValidationError(`row ${row} col ${col}: expected finite number`);
+    case 'number': {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new ValidationError(
+          `row ${row} col ${col}: expected finite number`,
+        );
       }
       return;
     }
-    case "string": {
-      if (typeof value !== "string") {
+    case 'string': {
+      if (typeof value !== 'string') {
         throw new ValidationError(`row ${row} col ${col}: expected string`);
       }
       return;
     }
-    case "boolean": {
-      if (typeof value !== "boolean") {
+    case 'boolean': {
+      if (typeof value !== 'boolean') {
         throw new ValidationError(`row ${row} col ${col}: expected boolean`);
       }
       return;
     }
     default:
-      throw new ValidationError(`row ${row} col ${col}: unknown kind '${kind}'`);
+      throw new ValidationError(
+        `row ${row} col ${col}: unknown kind '${kind}'`,
+      );
   }
 }
 
@@ -99,17 +112,19 @@ function normalizeKey(
 ): Time | TimeRange | Interval {
   try {
     switch (kind) {
-      case "time":
+      case 'time':
         return value instanceof Time ? value : new Time(value as number | Date);
-      case "timeRange":
-        return value instanceof TimeRange ? value : new TimeRange(value as TimeRangeInput);
-      case "interval":
+      case 'timeRange':
+        return value instanceof TimeRange
+          ? value
+          : new TimeRange(value as TimeRangeInput);
+      case 'interval':
         return value instanceof Interval
           ? value
           : new Interval(value as IntervalInput);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "invalid key";
+    const message = error instanceof Error ? error.message : 'invalid key';
     throw new ValidationError(`row ${row} col ${col}: ${message}`);
   }
 }
@@ -127,28 +142,39 @@ export function validateAndNormalize<S extends SeriesSchema>(
   const { schema, rows } = input;
 
   if (!schema.length) {
-    throw new ValidationError("schema must have at least one column");
+    throw new ValidationError('schema must have at least one column');
   }
 
   if (!FIRST_COLUMN_KINDS.has(schema[0]!.kind)) {
-    throw new ValidationError("first column must be one of: time, interval, timeRange");
+    throw new ValidationError(
+      'first column must be one of: time, interval, timeRange',
+    );
   }
 
   for (let col = 1; col < schema.length; col += 1) {
     const kind = schema[col]!.kind;
-    if (kind !== "number" && kind !== "string" && kind !== "boolean") {
-      throw new ValidationError(`column ${col} has unsupported value kind '${kind}'`);
+    if (kind !== 'number' && kind !== 'string' && kind !== 'boolean') {
+      throw new ValidationError(
+        `column ${col} has unsupported value kind '${kind}'`,
+      );
     }
   }
 
   const normalized = rows.map((row, rowIndex) => {
     if (row.length !== schema.length) {
-      throw new ValidationError(`row ${rowIndex} expected ${schema.length} values, got ${row.length}`);
+      throw new ValidationError(
+        `row ${rowIndex} expected ${schema.length} values, got ${row.length}`,
+      );
     }
 
     const keyDef = schema[0]!;
     const rawKey = row[0] as ValueForKind<typeof keyDef.kind>;
-    const normalizedKey = normalizeKey(keyDef.kind, rawKey, rowIndex, 0) as unknown as EventKeyForSchema<S>;
+    const normalizedKey = normalizeKey(
+      keyDef.kind,
+      rawKey,
+      rowIndex,
+      0,
+    ) as unknown as EventKeyForSchema<S>;
     const data: Record<string, unknown> = {};
 
     for (let col = 1; col < schema.length; col += 1) {
@@ -157,7 +183,9 @@ export function validateAndNormalize<S extends SeriesSchema>(
       const required = def.required !== false;
 
       if (value === undefined && required) {
-        throw new ValidationError(`row ${rowIndex} col ${col} (${def.name}) is required`);
+        throw new ValidationError(
+          `row ${rowIndex} col ${col} (${def.name}) is required`,
+        );
       }
 
       assertCellKind(def.kind, value, rowIndex, col);

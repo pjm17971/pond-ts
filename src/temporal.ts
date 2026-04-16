@@ -11,14 +11,14 @@ export type TemporalLike =
   | TimeRangeInput
   | IntervalInput
   | { begin(): number; end(): number }
-  | { timeRange(): import("./TimeRange.js").TimeRange };
+  | { timeRange(): import('./TimeRange.js').TimeRange };
 
 export interface EventKey {
-  readonly kind: "time" | "interval" | "timeRange";
-  type(): "time" | "interval" | "timeRange";
+  readonly kind: 'time' | 'interval' | 'timeRange';
+  type(): 'time' | 'interval' | 'timeRange';
   begin(): number;
   end(): number;
-  timeRange(): import("./TimeRange.js").TimeRange;
+  timeRange(): import('./TimeRange.js').TimeRange;
   duration(): number;
   equals(other: EventKey): boolean;
   compare(other: EventKey): number;
@@ -26,11 +26,16 @@ export interface EventKey {
   contains(other: TemporalLike): boolean;
   isBefore(other: TemporalLike): boolean;
   isAfter(other: TemporalLike): boolean;
-  intersection(other: TemporalLike): import("./TimeRange.js").TimeRange | undefined;
+  intersection(
+    other: TemporalLike,
+  ): import('./TimeRange.js').TimeRange | undefined;
   trim(other: TemporalLike): EventKey | undefined;
 }
 
-export function normalizeTimestamp(value: TimestampInput, label: string): number {
+export function normalizeTimestamp(
+  value: TimestampInput,
+  label: string,
+): number {
   const timestamp = value instanceof Date ? value.getTime() : value;
   if (!Number.isFinite(timestamp)) {
     throw new TypeError(`${label} must be a finite timestamp`);
@@ -48,15 +53,18 @@ export function compareEventKeys(left: EventKey, right: EventKey): number {
   return left.type().localeCompare(right.type());
 }
 
-export function compareIntervalValues(left: IntervalValue, right: IntervalValue): number {
+export function compareIntervalValues(
+  left: IntervalValue,
+  right: IntervalValue,
+): number {
   if (left === right) {
     return 0;
   }
-  if (typeof left === "number" && typeof right === "number") {
+  if (typeof left === 'number' && typeof right === 'number') {
     return left - right;
   }
   if (typeof left !== typeof right) {
-    return typeof left === "number" ? -1 : 1;
+    return typeof left === 'number' ? -1 : 1;
   }
   return String(left).localeCompare(String(right));
 }

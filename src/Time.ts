@@ -1,11 +1,11 @@
-import { parseTimestampString, type TimeZoneOptions } from "./calendar.js";
-import { TimeRange } from "./TimeRange.js";
-import type { EventKey, TemporalLike, TimestampInput } from "./temporal.js";
-import { compareEventKeys, normalizeTimestamp } from "./temporal.js";
+import { parseTimestampString, type TimeZoneOptions } from './calendar.js';
+import { TimeRange } from './TimeRange.js';
+import type { EventKey, TemporalLike, TimestampInput } from './temporal.js';
+import { compareEventKeys, normalizeTimestamp } from './temporal.js';
 
 /** A point-in-time event key represented as a single millisecond timestamp. Example: `new Time(Date.now())`. */
 export class Time implements EventKey {
-  readonly kind = "time";
+  readonly kind = 'time';
   readonly timestamp: number;
 
   /** Example: `Time.parse("2025-01-01T09:00", { timeZone: "Europe/Madrid" })`. Parses a strict ISO-like timestamp string into an absolute `Time`. */
@@ -15,12 +15,12 @@ export class Time implements EventKey {
 
   /** Example: `new Time(new Date())`. Creates a point-in-time key from a `Date` or millisecond timestamp. */
   constructor(value: TimestampInput) {
-    this.timestamp = normalizeTimestamp(value, "time");
+    this.timestamp = normalizeTimestamp(value, 'time');
     Object.freeze(this);
   }
 
   /** Example: `time.type() // "time"`. Returns the key kind. */
-  type(): "time" {
+  type(): 'time' {
     return this.kind;
   }
 
