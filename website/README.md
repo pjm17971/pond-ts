@@ -1,6 +1,6 @@
-# pond-ts docs site
+# Pond docs site
 
-This folder contains the Docusaurus documentation site for `pond-ts`.
+This folder contains the Docusaurus documentation site for Pond.
 
 ## Local development
 

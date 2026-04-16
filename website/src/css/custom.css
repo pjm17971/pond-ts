@@ -49,19 +49,42 @@
   border-color: rgba(75, 129, 224, 0.35);
 }
 
-.button.button--secondary {
+.button.button--primary {
   background: #4b81e0;
   border-color: #4b81e0;
   color: #fff;
 }
 
-.button.button--secondary:hover {
+.button.button--primary:hover {
   background: #3d76df;
   border-color: #3d76df;
 }
 
+.button.button--outline.button--primary {
+  background: rgba(255, 255, 255, 0.85);
+  color: #254d9d;
+}
+
+.button.button--outline.button--primary:hover {
+  background: rgba(255, 255, 255, 1);
+  color: #20458f;
+}
+
+.hero__title {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .navbar__logo img {
-  border-radius: 0.45rem;
+  border-radius: 50%;
+  display: block;
+  transform: scale(1.14);
+  transform-origin: center;
+}
+
+.navbar__logo {
+  border-radius: 50%;
+  overflow: hidden;
 }
 
 html[data-theme='dark'] {
