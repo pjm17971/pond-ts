@@ -14,20 +14,22 @@ function HomepageHeader(): ReactNode {
 
   return (
     <header className={clsx('hero hero--primary', styles.heroBanner)}>
-      <div className="container">
+      <div className={clsx('container', styles.heroContent)}>
         <div className={styles.heroLogoWrap}>
-          <img className={styles.heroLogo} src={logoUrl} alt="pond-ts logo" />
+          <div className={styles.heroLogoFrame}>
+            <img className={styles.heroLogo} src={logoUrl} alt="Pond logo" />
+          </div>
         </div>
         <Heading as="h1" className="hero__title">
           {siteConfig.title}
         </Heading>
         <p className={styles.heroSubtitle}>{siteConfig.tagline}</p>
         <div className={styles.buttons}>
-          <Link className="button button--secondary button--lg" to="/docs/getting-started">
+          <Link className="button button--primary button--lg" to="/docs/getting-started">
             Get started
           </Link>
           <Link
-            className="button button--outline button--lg"
+            className="button button--outline button--primary button--lg"
             to="/docs/examples/cpu-metrics">
             Explore an example
           </Link>

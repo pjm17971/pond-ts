@@ -87,6 +87,25 @@ body {
   box-shadow: 0 14px 34px rgba(56, 90, 163, 0.08);
 }
 
+#tsd-toolbar-links {
+  align-items: center;
+  display: flex;
+  gap: 0.9rem;
+  margin-left: 1.25rem;
+}
+
+.pond-toolbar-link {
+  color: #385a9f;
+  font-size: 0.94rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.pond-toolbar-link:hover {
+  color: #254d9d;
+  text-decoration: underline;
+}
+
 .tsd-toolbar-contents.container,
 .container-main {
   max-width: min(1720px, calc(100vw - 24px));
@@ -153,6 +172,10 @@ footer {
   .tsd-toolbar-contents.container,
   .container-main {
     max-width: calc(100vw - 16px);
+  }
+
+  #tsd-toolbar-links {
+    display: none;
   }
 
   .col-content,

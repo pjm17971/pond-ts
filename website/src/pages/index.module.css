@@ -4,17 +4,33 @@
   overflow: hidden;
 }
 
+.heroContent {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+}
+
 .heroLogoWrap {
   display: flex;
   justify-content: center;
   margin-bottom: 1.5rem;
 }
 
+.heroLogoFrame {
+  width: 5rem;
+  height: 5rem;
+  overflow: hidden;
+  border-radius: 50%;
+  box-shadow: 0 18px 44px rgba(63, 105, 194, 0.18);
+}
+
 .heroLogo {
   width: 5rem;
   height: 5rem;
-  border-radius: 1.25rem;
-  box-shadow: 0 18px 44px rgba(63, 105, 194, 0.18);
+  display: block;
+  transform: scale(1.12);
+  transform-origin: center;
 }
 
 .heroSubtitle {

@@ -3,7 +3,7 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'pond-ts',
+  title: 'Pond',
   tagline: 'Typed time series primitives for modern TypeScript projects',
   favicon: 'img/favicon.ico',
   future: {
@@ -47,9 +47,9 @@ const config: Config = {
       respectPrefersColorScheme: false,
     },
     navbar: {
-      title: 'pond-ts',
+      title: 'Pond',
       logo: {
-        alt: 'pond-ts logo',
+        alt: 'Pond logo',
         src: 'img/logo.png',
       },
       items: [

@@ -3,7 +3,7 @@
   "entryPoints": ["../src/index.ts"],
   "tsconfig": "../tsconfig.json",
   "out": "static/generated-api",
-  "name": "pond-ts API Reference",
+  "name": "Pond API Reference",
   "readme": "none",
   "cleanOutputDir": true,
   "excludePrivate": true,
