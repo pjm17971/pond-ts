@@ -8,66 +8,61 @@ and making the library useful inside React applications.
 
 ## 1. Performance — fix before building on top
 
-The existing batch implementation has algorithmic issues that should be resolved
+The existing batch implementation had algorithmic issues that needed resolution
 before adding new surface area. These are documented in full in
-[AUDIT.md](AUDIT.md). The highest-priority items are summarized here.
+[AUDIT.md](AUDIT.md), with benchmark results in the `PERF_*.md` files. Work is
+tracked in [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
-### 1.1 O(N²) hot paths → O(N) or O(N + B)
+### 1.1 O(N²) hot paths → O(N) or O(N + B) — DONE
 
-Five methods scan the entire event array inside an inner loop:
+All five critical hot paths have been optimized:
 
-| Method | Current | Target |
-|--------|---------|--------|
-| `aggregate()` | O(N × B) per bucket | O(N + B) single pass or bisect |
-| `rolling()` (event-driven) | O(N²) per event | O(N) sliding two-pointer |
-| `rolling()` (sequence-driven) | O(N × B) per bucket | O(N + B) |
-| `smooth('movingAverage')` | O(N²) per event | O(N) sliding deque |
-| `smooth('loess')` | O(N² log N) sort per event | O(N²) incremental neighbor set |
+| Method | Was | Now | Speedup (largest test) |
+|--------|-----|-----|------------------------|
+| `aggregate()` | O(N × B) | O(N + B) | **172x** at 16k events |
+| `rolling()` (event-driven) | O(N²) | O(N) sliding window | **182x** at 4k events |
+| `smooth('movingAverage')` | O(N²) | O(N) sliding deque | **15x** at 4k events |
+| `smooth('loess')` | O(N² log N) | precomputed neighbors | **7.5x** at 1.6k events |
+| `includesKey()` | O(N) | O(log N) bisect | **819x** at 8k events |
+| `#alignLinearAt()` | O(N) + O(log N) | forward cursor | **134x** at 4k events |
 
-Events are sorted by time. Every one of these can exploit that invariant with
-either a two-pointer sweep or a bisect-per-bucket approach.
+Landed in commits `05a7af3` and `60b2f07`. Each change has dedicated regression
+tests and a benchmark script. See: [PERF_AGGREGATE.md](PERF_AGGREGATE.md),
+[PERF_ROLLING.md](PERF_ROLLING.md), [PERF_SMOOTH.md](PERF_SMOOTH.md),
+[PERF_INCLUDES_KEY.md](PERF_INCLUDES_KEY.md),
+[PERF_ALIGN_LINEAR.md](PERF_ALIGN_LINEAR.md), [PERF_LOESS.md](PERF_LOESS.md).
 
-### 1.2 Eliminate re-validation on derived series
+### 1.2 Eliminate re-validation on derived series — DONE
 
-Every transform (`filter`, `select`, `rename`, `map`, `collapse`, `slice`,
-`within`, `before`, `after`, `trim`, `overlapping`, `containedBy`, `asTime`,
-`asTimeRange`, `asInterval`) creates a `new TimeSeries(...)` which re-validates
-every cell and re-checks sorted order.
+An internal pre-validated constructor path now skips the
+`events → toRows() → validateAndNormalize() → events` round-trip for
+order-preserving derived transforms (`filter`, `select`, `rename`, `collapse`,
+`map`, etc.). Landed in commit `2ef6265`. A chained `filter → select → rename →
+collapse → map` derivation is **2.5x** faster at 8k events. See:
+[PERF_DERIVED_CONSTRUCTION.md](PERF_DERIVED_CONSTRUCTION.md).
 
-Fix: add an internal constructor path that accepts pre-validated events directly.
-This also eliminates the `events → toRows() → validateAndNormalize() → events`
-round-trip that decomposes and recomposes the same data.
+### 1.3 Remaining work
 
-### 1.3 Use bisect where linear scans exist
+The following items from the original audit are not yet addressed:
 
-- `includesKey()` does O(N) linear scan — should use the existing `bisect()`
-  for O(log N).
-- `#alignLinearAt()` does a `find()` (O(N)) before falling back to
-  `atOrBefore`/`atOrAfter` (O(log N)) — should bisect once and check for exact
-  match at that index.
-
-### 1.4 Reduce allocation in tight loops
-
-- `Time.overlaps/contains/isBefore/isAfter` each allocate a throwaway
-  `TimeRange`. For a point, these are direct arithmetic comparisons. Same issue
-  on `Interval` — it has `start`/`endMs` fields and doesn't need the
-  intermediate `TimeRange`.
-- `Event` constructor does `Object.freeze({ ...data })` + `Object.freeze(this)`.
-  With private fields, the instance is already effectively immutable. The freeze
-  adds overhead when constructing thousands of events on every derived series.
-- The `rows` getter materializes N frozen arrays on every access. Should cache
-  lazily or become a method.
-
-### 1.5 Minor fixes
-
-- `aggregateValues` filters the values array twice (once for defined, once for
-  numeric) — one pass suffices.
-- `compareEventKeys` uses `localeCompare` for tiebreaking on fixed strings —
-  plain `<` is ~10× faster.
-- `joinMany` does repeated pairwise joins, each creating a new `TimeSeries`.
-  An N-way sorted merge would be one pass.
-- `parseDurationInput` is duplicated in `TimeSeries.ts` and `Sequence.ts` —
-  should be a shared utility.
+- **`Time`/`Interval` temporal comparisons** still allocate a throwaway
+  `TimeRange` per call. For a point, these are direct arithmetic. Same issue on
+  `Interval` — it has `start`/`endMs` fields and doesn't need the intermediate
+  object. This matters in inner loops of `filter`, `within`, `overlapping`, etc.
+- **`Event` constructor** still does `Object.freeze({ ...data })` +
+  `Object.freeze(this)`. With private fields the instance is already effectively
+  immutable; the freeze is measurable overhead when constructing thousands of
+  events.
+- **`rows` getter** still materializes N frozen arrays on every access. Should
+  cache lazily or become a method.
+- **`aggregateValues`** still filters the values array twice (once for defined,
+  once for numeric) — one pass suffices.
+- **`compareEventKeys`** still uses `localeCompare` for tiebreaking on fixed
+  strings — plain `<` is ~10x faster.
+- **`joinMany`** still does repeated pairwise joins, each creating a new
+  `TimeSeries`. An N-way sorted merge would be one pass.
+- **`parseDurationInput`** is still duplicated in `TimeSeries.ts` and
+  `Sequence.ts` — should be a shared utility.
 
 ---
 
@@ -915,7 +910,7 @@ The `exports` map in `pond-ts`'s `package.json`:
 
 | Phase | Scope | Depends on |
 |-------|-------|------------|
-| **0** | **Performance**: O(N²) → O(N) for aggregate/rolling/smooth, internal constructor path, bisect fixes, allocation reduction (see [AUDIT.md](AUDIT.md)) | — |
+| **0** | ~~**Performance**: O(N²) → O(N) for aggregate/rolling/smooth, internal constructor path, bisect fixes~~ — **DONE** (remaining: allocation reduction, minor fixes; see [AUDIT.md](AUDIT.md)) | — |
 | **1** | Edge-case hardening, `toJSON`, custom reducers | Phase 0 |
 | **2** | `LiveSeries` basics: push, retention, `toTimeSeries` | Phase 1 |
 | **3** | `groupBy`, `resample`, `diff`/`rate`, `fill` | Phase 0 (parallel with 2) |
@@ -928,10 +923,10 @@ The `exports` map in `pond-ts`'s `package.json`:
 | **10** | Bridge adapters (`toRecharts`, etc.), `pivot`/`unpivot`, per-column alignment | Phase 3 |
 | **11** | `@pond-ts/charts` — first-party chart components | Phase 8 |
 
-**Phase 0 is the priority.** The O(N²) methods are the operations users call on
-their largest series, and the re-validation overhead is a multiplier on every
-transform. Fixing these before adding new surface area means all new features
-benefit from the faster core.
+**Phase 0 is substantially complete.** The O(N²) hot paths, bisect fixes, and
+derived-construction round-trips are all resolved (see `PERF_*.md` for
+benchmarks). The remaining Phase 0 items (allocation reduction, minor fixes) are
+lower-priority and can be addressed incrementally alongside Phase 1.
 
 Phases 1 and 3 can run in parallel with the live layer work. Stateless views
 (phase 5) are simple and unblock everything else — they should land before
