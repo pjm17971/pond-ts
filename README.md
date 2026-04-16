@@ -2,8 +2,6 @@
 
 TypeScript-first time series primitives built around typed events, typed schemas, and explicit temporal keys.
 
-The package is intended to work in modern Node and frontend projects. The repo toolchain should work on Node 18, and we can use `nvm` to verify against newer stable Node releases when needed.
-
 The library is currently focused on non-streaming analytics:
 
 - typed `TimeSeries` construction
@@ -12,6 +10,8 @@ The library is currently focused on non-streaming analytics:
 - alignment, aggregation, joins, rolling windows, and smoothing
 - timezone-aware calendar sequences and ingest helpers
 
+The package is intended to work in modern Node and frontend projects.
+
 ## Install
 
 ```sh
@@ -19,6 +19,8 @@ npm install pond-ts
 ```
 
 ## Build
+
+The repo toolchain should work on Node 18, but use `nvm` to verify against newer stable Node releases when needed.
 
 ```sh
 npm run build
@@ -89,6 +91,67 @@ event.timeRange();
 event.get('cpu');
 event.data().host;
 ```
+
+## Worked example
+
+This is the kind of flow `pond-ts` is built for: start with typed events, then derive aligned, aggregated, and smoothed analytical views without mutating the original series.
+
+```ts
+import { Sequence, TimeSeries } from 'pond-ts';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'requests', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+const cpu = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T00:00:00Z', 0.31, 120, 'api-1'],
+    ['2025-01-01T00:01:00Z', 0.44, 135, 'api-1'],
+    ['2025-01-01T00:02:00Z', 0.52, 141, 'api-1'],
+    ['2025-01-01T00:03:00Z', 0.48, 128, 'api-1'],
+    ['2025-01-01T00:04:00Z', 0.63, 166, 'api-1'],
+  ],
+});
+
+const perMinute = cpu.align(Sequence.every('1m'), {
+  method: 'hold',
+});
+
+const fiveMinute = cpu.aggregate(Sequence.every('5m'), {
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
+});
+
+const rolling = cpu.rolling('3m', {
+  cpu: 'avg',
+  requests: 'sum',
+});
+
+const smoothed = cpu.smooth('cpu', 'ema', {
+  alpha: 0.35,
+  output: 'cpuTrend',
+});
+
+console.log(perMinute.first()?.key().asString());
+console.log(fiveMinute.first()?.data());
+console.log(rolling.last()?.data());
+console.log(smoothed.last()?.get('cpuTrend'));
+```
+
+From one typed source series, you can derive:
+
+- aligned interval views for dashboards and joins
+- bucketed aggregates for reporting
+- rolling metrics for short-term behavior
+- smoothed trends for visualization or alerting
+
+All of those remain fully typed and immutable.
 
 ## JSON ingest
 

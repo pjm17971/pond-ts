@@ -202,6 +202,74 @@ describe('TimeSeries', () => {
     expect(ts.at(0)?.get('active')).toBe(true);
   });
 
+  it('supports the README worked example flow end to end', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'cpu', kind: 'number' },
+      { name: 'requests', kind: 'number' },
+      { name: 'host', kind: 'string' },
+    ] as const;
+
+    const cpu = TimeSeries.fromJSON({
+      name: 'cpu',
+      schema,
+      rows: [
+        ['2025-01-01T00:00:00Z', 0.31, '120', 'api-1'],
+        ['2025-01-01T00:01:00Z', 0.44, '135', 'api-1'],
+        ['2025-01-01T00:02:00Z', 0.52, '141', 'api-1'],
+        ['2025-01-01T00:03:00Z', 0.48, '128', 'api-1'],
+        ['2025-01-01T00:04:00Z', 0.63, '166', 'api-1'],
+      ].map(([time, cpuValue, requests, host]) => [
+        time,
+        cpuValue,
+        Number(requests),
+        host,
+      ]),
+    });
+
+    const perMinute = cpu.align(Sequence.every('1m'), {
+      method: 'hold',
+    });
+    const fiveMinute = cpu.aggregate(Sequence.every('5m'), {
+      cpu: 'avg',
+      requests: 'sum',
+      host: 'last',
+    });
+    const rolling = cpu.rolling('3m', {
+      cpu: 'avg',
+      requests: 'sum',
+    });
+    const smoothed = cpu.smooth('cpu', 'ema', {
+      alpha: 0.35,
+      output: 'cpuTrend',
+    });
+
+    expect(perMinute.firstColumnKind).toBe('interval');
+    expect(perMinute.length).toBe(5);
+    expect(perMinute.first()?.key()).toEqual(
+      new Interval({
+        value: Date.parse('2025-01-01T00:00:00.000Z'),
+        start: Date.parse('2025-01-01T00:00:00.000Z'),
+        end: Date.parse('2025-01-01T00:01:00.000Z'),
+      }),
+    );
+    expect(perMinute.last()?.get('cpu')).toBe(0.63);
+
+    expect(fiveMinute.firstColumnKind).toBe('interval');
+    expect(fiveMinute.length).toBe(1);
+    expect(fiveMinute.first()?.get('cpu')).toBeCloseTo(0.476, 6);
+    expect(fiveMinute.first()?.get('requests')).toBe(690);
+    expect(fiveMinute.first()?.get('host')).toBe('api-1');
+
+    expect(rolling.firstColumnKind).toBe('time');
+    expect(rolling.last()?.get('cpu')).toBeCloseTo((0.52 + 0.48 + 0.63) / 3, 6);
+    expect(rolling.last()?.get('requests')).toBe(141 + 128 + 166);
+
+    expect(smoothed.firstColumnKind).toBe('time');
+    expect(smoothed.last()?.get('cpu')).toBe(0.63);
+    expect(smoothed.last()?.get('cpuTrend')).toBeCloseTo(0.5042241875, 9);
+  });
+
   it('collapses a timeseries across selected columns', () => {
     const schema = [
       { name: 'time', kind: 'time' },
