@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { BoundedSequence, Interval, Sequence, TimeRange, TimeSeries } from '../src/index.js';
+import {
+  BoundedSequence,
+  Interval,
+  Sequence,
+  TimeRange,
+  TimeSeries,
+} from '../src/index.js';
 
 describe('TimeSeries linear align performance regression coverage', () => {
   it('preserves exact samples, interpolates between points, and falls back to the previous event past the right edge', () => {
@@ -36,9 +42,7 @@ describe('TimeSeries linear align performance regression coverage', () => {
     expect(aligned.at(4)?.get('status')).toBe('hot');
 
     const beyondEnd = series.align(
-      new BoundedSequence([
-        new Interval({ value: 35, start: 35, end: 40 }),
-      ]),
+      new BoundedSequence([new Interval({ value: 35, start: 35, end: 40 })]),
       { method: 'linear' },
     );
 

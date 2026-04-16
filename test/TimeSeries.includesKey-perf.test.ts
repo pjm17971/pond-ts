@@ -37,7 +37,9 @@ describe('TimeSeries includesKey performance regression coverage', () => {
     });
 
     expect(
-      intervalSeries.includesKey(new Interval({ value: 'b', start: 10, end: 20 })),
+      intervalSeries.includesKey(
+        new Interval({ value: 'b', start: 10, end: 20 }),
+      ),
     ).toBe(true);
     expect(
       intervalSeries.includesKey(

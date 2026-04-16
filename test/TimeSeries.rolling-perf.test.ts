@@ -108,8 +108,12 @@ describe('TimeSeries rolling performance regression coverage', () => {
         const anchor = times[index]!;
         const members = naiveWindowMembers(times, anchor, windowMs, alignment);
         const memberIndexes = members.map((time) => times.indexOf(time));
-        const valueInputs = memberIndexes.map((memberIndex) => rows[memberIndex]![1]);
-        const loadInputs = memberIndexes.map((memberIndex) => rows[memberIndex]![2]);
+        const valueInputs = memberIndexes.map(
+          (memberIndex) => rows[memberIndex]![1],
+        );
+        const loadInputs = memberIndexes.map(
+          (memberIndex) => rows[memberIndex]![2],
+        );
 
         const event = rolled.at(index);
         expect(event?.key()).toEqual(new Time(anchor));
