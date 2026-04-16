@@ -1,148 +1,71 @@
 # Performance & weakness audit
 
-## Critical: O(N²) in hot paths
+## Critical: O(N²) in hot paths — FIXED
 
-### 1. `aggregate()` — O(N × B) full scan per bucket
+All five critical hot paths have been optimized. See the `PERF_*.md` files for
+detailed before/after benchmarks.
 
-`TimeSeries.ts:1092`
+### 1. `aggregate()` — was O(N × B), now O(N + B) ✅
 
-```ts
-const resultRows = buckets.map((bucket) => {
-  const contributors = this.events.filter((event) =>
-    bucketOverlapsHalfOpen(bucket, event.key()),
-  );
-```
+Fixed via single-pass bucketing for time-keyed point series. 16k events:
+91.15 ms → 0.53 ms (**172x**). See [PERF_AGGREGATE.md](PERF_AGGREGATE.md).
 
-For every bucket, this scans the entire events array. With N events and B
-buckets, that's O(N × B). Since events are sorted by time, a single pass or a
-bisect-per-bucket would bring this to O(N + B) or O(B log N).
+### 2. `rolling()` (event-driven) — was O(N²), now O(N) ✅
 
-For 10k events across 100 buckets, this does 1M comparisons instead of ~10k.
+Fixed via incremental sliding-window reducers. 4k events: 366.25 ms → 2.01 ms
+(**182x**). See [PERF_ROLLING.md](PERF_ROLLING.md).
 
-### 2. `rolling()` (event-driven) — O(N²) full scan per event
+### 3. `rolling()` (sequence-driven) — fixed alongside #2 ✅
 
-`TimeSeries.ts:1277-1280`
+Same sliding-window approach applied to sequence-driven rolling.
 
-```ts
-const resultRows = this.events.map((event) => {
-  const anchor = event.begin();
-  const contributors = this.events.filter((candidate) =>
-    anchorInWindow(candidate.begin(), anchor),
-  );
-```
+### 4. `smooth('movingAverage')` — was O(N²), now O(N) ✅
 
-Every event scans every other event. Since events are sorted, a sliding
-two-pointer window would be O(N). This is the biggest performance issue in the
-library — rolling windows are typically used on large series.
+Fixed via sliding deque over sorted anchors. 4k events: 47.01 ms → 3.08 ms
+(**15x**). See [PERF_SMOOTH.md](PERF_SMOOTH.md).
 
-### 3. `rolling()` (sequence-driven) — same O(N × B) pattern
+### 5. `smooth('loess')` — was O(N² log N), now ~O(N²) ✅
 
-`TimeSeries.ts:1248`
+Fixed by precomputing defined points and avoiding full distance sort per sample.
+1.6k events: 253.79 ms → 34.05 ms (**7.5x**). See
+[PERF_LOESS.md](PERF_LOESS.md).
 
-Same `events.filter(...)` inside a `buckets.map(...)`. Same fix: bisect or
-two-pointer.
-
-### 4. `smooth('movingAverage')` — O(N²)
-
-`TimeSeries.ts:1472-1478`
-
-```ts
-const values = sourceValues
-  .filter((_, candidateIndex) =>
-    anchorInWindow(anchors[candidateIndex]!, anchor),
-  )
-```
-
-Same full-scan-per-event pattern. Should use a sliding window deque over sorted
-anchors.
-
-### 5. `smooth('loess')` — O(N² log N)
-
-`TimeSeries.ts:1323-1340`
-
-`loessAt()` is called per-event, and internally sorts all N points by distance
-every time:
-
-```ts
-const sortedDistances = points
-  .map((point) => ({ point, distance: Math.abs(point.x - x) }))
-  .sort((left, right) => left.distance - right.distance);
-```
-
-N calls × (N map + N log N sort) = O(N² log N). The neighbor set shifts
-incrementally between consecutive events, so a sliding window with insertion
-sort or a KD-tree would help.
+Landed in commits `05a7af3` and `60b2f07`.
 
 ---
 
-## Significant: re-validation on every derived series
+## Significant: re-validation on every derived series — FIXED
 
-### 6. Every transform re-validates through the constructor
+### 6. Internal pre-validated constructor path ✅
 
-`TimeSeries.ts:708-712`
+### 7. `toRows()` → constructor round-trip eliminated ✅
 
-`filter()`, `slice()`, `within()`, `before()`, `after()`, `select()`,
-`rename()`, `map()`, `collapse()`, `asTime()`, `asTimeRange()`, `asInterval()`,
-`trim()`, `overlapping()`, `containedBy()` — all of these create a
-`new TimeSeries(...)` which calls `validateAndNormalize`, which:
+An internal constructor path now accepts pre-validated events directly, skipping
+cell type-checking, key normalization, and sorted-order validation for
+order-preserving derived transforms (`filter`, `select`, `rename`, `collapse`,
+`map`, `slice`, `within`, `before`, `after`, `trim`, `overlapping`,
+`containedBy`, `asTime`, `asTimeRange`, `asInterval`).
 
-- Type-checks every cell in every row
-- Normalizes every key
-- Checks sorted order
+8k events through a chained `filter → select → rename → collapse → map`
+derivation: 14.15 ms → 5.55 ms (**2.5x**). See
+[PERF_DERIVED_CONSTRUCTION.md](PERF_DERIVED_CONSTRUCTION.md).
 
-This is wasted work when the input was already validated. For a simple
-`series.filter(...)` on a 10k-event series that keeps 5k events, you're
-re-validating 5k events that were already validated on construction.
-
-Fix: an internal constructor path (e.g., `TimeSeries.fromEvents(...)`) that
-accepts pre-validated events directly and skips re-validation.
-
-### 7. The `toRows()` → constructor round-trip
-
-`TimeSeries.ts:209-222`
-
-Most methods do this:
-
-```
-events → toRows() (decompose into row arrays) → new TimeSeries() → validateAndNormalize() (recompose into events)
-```
-
-This is a full serialize/deserialize cycle for data that's already in the right
-form. The internal constructor path above would eliminate this entirely.
+Landed in commit `2ef6265`.
 
 ---
 
-## Moderate: missed binary search opportunities
+## Moderate: missed binary search opportunities — FIXED
 
-### 8. `includesKey()` — O(N) linear scan
+### 8. `includesKey()` — was O(N), now O(log N) ✅
 
-`TimeSeries.ts:1557-1559`
+Fixed to use existing `bisect()`. 8k events with repeated lookups: 1015.50 ms →
+1.24 ms (**819x**). See [PERF_INCLUDES_KEY.md](PERF_INCLUDES_KEY.md).
 
-```ts
-includesKey(key: KeyLike): boolean {
-  const normalizedKey = toKey(key);
-  return this.events.some((event) => event.key().equals(normalizedKey));
-}
-```
+### 9. `#alignLinearAt()` — was O(N) + O(log N), now forward cursor ✅
 
-`bisect` already exists and gives O(log N). This should use it:
-
-```ts
-const index = this.bisect(normalizedKey);
-return index < this.events.length && this.events[index]!.key().equals(normalizedKey);
-```
-
-### 9. `#alignLinearAt()` — O(N) find before O(log N) bisects
-
-`TimeSeries.ts:1874`
-
-```ts
-const exact = this.find((event) => event.begin() === t);
-```
-
-This scans the entire array looking for an exact match before falling back to
-`atOrBefore`/`atOrAfter` which use bisect. Should just bisect once and check for
-exact match at that index.
+Fixed by replacing repeated exact-match scan with a forward cursor. 4k events:
+491.26 ms → 3.67 ms (**134x**). See
+[PERF_ALIGN_LINEAR.md](PERF_ALIGN_LINEAR.md).
 
 ---
 
@@ -247,26 +170,25 @@ performance issue, but a maintenance risk.
 
 ## Summary
 
-| # | Method(s) | Current | Should be | Impact |
-|---|-----------|---------|-----------|--------|
-| 1 | `aggregate` | O(N × B) | O(N + B) | **High** at scale |
-| 2 | `rolling` (event) | O(N²) | O(N) | **High** at scale |
-| 3 | `rolling` (sequence) | O(N × B) | O(N + B) | **High** at scale |
-| 4 | `smooth('movingAverage')` | O(N²) | O(N) | **High** at scale |
-| 5 | `smooth('loess')` | O(N² log N) | O(N²) or better | **High** at scale |
-| 6 | All derived series | O(N) re-validation | O(1) | **Medium** cumulative |
-| 7 | All derived series | rows→events round-trip | 0 passes | **Medium** cumulative |
-| 8 | `includesKey` | O(N) | O(log N) | **Medium** |
-| 9 | `#alignLinearAt` | O(N) + O(log N) | O(log N) | **Medium** |
-| 10 | `Time`/`Interval` comparisons | 1 alloc/call | 0 | **Low–Medium** in loops |
-| 11 | `Event` constructor | freeze × 2 | skip freeze | **Low–Medium** at volume |
-| 12 | `rows` getter | O(N) per access | cached or method | **Low** (API surprise) |
-| 13 | `aggregateValues` | 2 filter passes | 1 pass | **Low** |
-| 14 | `compareEventKeys` | `localeCompare` | `<` compare | **Low** |
-| 15 | `joinMany` | K pairwise joins | 1 N-way merge | **Low** unless K is large |
-| 16 | `parseDurationInput` | duplicated | shared util | **Low** (maintenance) |
+| # | Method(s) | Was | Now | Status |
+|---|-----------|-----|-----|--------|
+| 1 | `aggregate` | O(N × B) | O(N + B) | ✅ **172x** at 16k |
+| 2 | `rolling` (event) | O(N²) | O(N) | ✅ **182x** at 4k |
+| 3 | `rolling` (sequence) | O(N × B) | O(N + B) | ✅ fixed with #2 |
+| 4 | `smooth('movingAverage')` | O(N²) | O(N) | ✅ **15x** at 4k |
+| 5 | `smooth('loess')` | O(N² log N) | ~O(N²) | ✅ **7.5x** at 1.6k |
+| 6 | All derived series | O(N) re-validation | O(1) | ✅ **2.5x** at 8k |
+| 7 | All derived series | rows→events round-trip | 0 passes | ✅ fixed with #6 |
+| 8 | `includesKey` | O(N) | O(log N) | ✅ **819x** at 8k |
+| 9 | `#alignLinearAt` | O(N) + O(log N) | forward cursor | ✅ **134x** at 4k |
+| 10 | `Time`/`Interval` comparisons | 1 alloc/call | 0 | open |
+| 11 | `Event` constructor | freeze × 2 | skip freeze | open |
+| 12 | `rows` getter | O(N) per access | cached or method | open |
+| 13 | `aggregateValues` | 2 filter passes | 1 pass | open |
+| 14 | `compareEventKeys` | `localeCompare` | `<` compare | open |
+| 15 | `joinMany` | K pairwise joins | 1 N-way merge | open |
+| 16 | `parseDurationInput` | duplicated | shared util | open |
 
-The O(N²) methods (#1–5) are by far the most important to fix — they're the
-operations users call on their largest series. The re-validation/round-trip issue
-(#6–7) is a multiplier that makes everything else slower than it needs to be. The
-allocation issues are noise for small series but compound at scale.
+All high and medium-impact items (#1–9) are resolved. The remaining open items
+(#10–16) are lower-priority constant-factor improvements that can be addressed
+incrementally.

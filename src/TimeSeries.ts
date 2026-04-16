@@ -64,6 +64,7 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
   onConflict: 'prefix';
   prefixes: Prefixes;
 };
+type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
 type SeriesTuple = readonly [
   TimeSeries<SeriesSchema>,
@@ -317,38 +318,50 @@ function eventAnchorTime(key: EventKey): number {
 function loessAt(
   x: number,
   anchors: ReadonlyArray<number>,
-  values: ReadonlyArray<number | undefined>,
+  values: ReadonlyArray<number>,
   span: number,
 ): number | undefined {
-  const points = anchors.flatMap((anchor, index) => {
-    const value = values[index];
-    return value === undefined ? [] : [{ x: anchor, y: value }];
-  });
-
-  if (points.length === 0) {
+  if (anchors.length === 0) {
     return undefined;
   }
 
-  if (points.length === 1) {
-    return points[0]!.y;
+  if (anchors.length === 1) {
+    return values[0];
   }
 
   const neighborCount = Math.max(
     2,
-    Math.min(points.length, Math.ceil(span * points.length)),
+    Math.min(anchors.length, Math.ceil(span * anchors.length)),
   );
-  const sortedDistances = points
-    .map((point) => ({ point, distance: Math.abs(point.x - x) }))
-    .sort((left, right) => left.distance - right.distance);
-  const bandwidth = sortedDistances[neighborCount - 1]!.distance;
+  let start = 0;
+  if (neighborCount < anchors.length) {
+    let low = 0;
+    let high = anchors.length - neighborCount;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (x - anchors[mid]! > anchors[mid + neighborCount]! - x) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    start = low;
+  }
+
+  const end = start + neighborCount;
+  const bandwidth = Math.max(
+    Math.abs(x - anchors[start]!),
+    Math.abs(anchors[end - 1]! - x),
+  );
 
   if (bandwidth === 0) {
-    const coincident = sortedDistances
-      .filter((entry) => entry.distance === 0)
-      .map((entry) => entry.point.y);
-    return (
-      coincident.reduce((sum, value) => sum + value, 0) / coincident.length
-    );
+    const coincidentStart = lowerBound(anchors, x);
+    const coincidentEnd = upperBound(anchors, x);
+    let coincidentSum = 0;
+    for (let index = coincidentStart; index < coincidentEnd; index++) {
+      coincidentSum += values[index]!;
+    }
+    return coincidentSum / (coincidentEnd - coincidentStart);
   }
 
   let weightedCount = 0;
@@ -358,7 +371,10 @@ function loessAt(
   let sumWXX = 0;
   let sumWXY = 0;
 
-  for (const { point, distance } of sortedDistances.slice(0, neighborCount)) {
+  for (let index = start; index < end; index++) {
+    const pointX = anchors[index]!;
+    const pointY = values[index]!;
+    const distance = Math.abs(pointX - x);
     const ratio = distance / bandwidth;
     const weight = ratio >= 1 ? 0 : (1 - ratio ** 3) ** 3;
     if (weight === 0) {
@@ -366,10 +382,10 @@ function loessAt(
     }
     weightedCount += 1;
     sumW += weight;
-    sumWX += weight * point.x;
-    sumWY += weight * point.y;
-    sumWXX += weight * point.x * point.x;
-    sumWXY += weight * point.x * point.y;
+    sumWX += weight * pointX;
+    sumWY += weight * pointY;
+    sumWXX += weight * pointX * pointX;
+    sumWXY += weight * pointX * pointY;
   }
 
   if (weightedCount === 0 || sumW === 0) {
@@ -384,6 +400,38 @@ function loessAt(
   const intercept = (sumWY * sumWXX - sumWX * sumWXY) / denominator;
   const slope = (sumW * sumWXY - sumWX * sumWY) / denominator;
   return intercept + slope * x;
+}
+
+function lowerBound(values: ReadonlyArray<number>, target: number): number {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid]! < target) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+function upperBound(values: ReadonlyArray<number>, target: number): number {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid]! <= target) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
 }
 
 function makeSmoothSchema<
@@ -487,6 +535,270 @@ function aggregateValues(
     case 'last':
       return defined[defined.length - 1];
   }
+}
+
+type AggregateBucketState = {
+  add(value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+function createAggregateBucketState(
+  operation: AggregateFunction,
+): AggregateBucketState {
+  if (operation === 'count') {
+    let definedCount = 0;
+    return {
+      add(value) {
+        if (value !== undefined) {
+          definedCount += 1;
+        }
+      },
+      snapshot() {
+        return definedCount;
+      },
+    };
+  }
+
+  if (operation === 'sum') {
+    let numericSum = 0;
+    return {
+      add(value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+        }
+      },
+      snapshot() {
+        return numericSum;
+      },
+    };
+  }
+
+  if (operation === 'avg') {
+    let numericSum = 0;
+    let numericCount = 0;
+    return {
+      add(value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+          numericCount += 1;
+        }
+      },
+      snapshot() {
+        return numericCount === 0 ? undefined : numericSum / numericCount;
+      },
+    };
+  }
+
+  if (operation === 'min') {
+    let numericValue: number | undefined;
+    return {
+      add(value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        numericValue =
+          numericValue === undefined || value < numericValue
+            ? value
+            : numericValue;
+      },
+      snapshot() {
+        return numericValue;
+      },
+    };
+  }
+
+  if (operation === 'max') {
+    let numericValue: number | undefined;
+    return {
+      add(value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        numericValue =
+          numericValue === undefined || value > numericValue
+            ? value
+            : numericValue;
+      },
+      snapshot() {
+        return numericValue;
+      },
+    };
+  }
+
+  if (operation === 'first') {
+    let firstValue: ScalarValue | undefined;
+    return {
+      add(value) {
+        if (firstValue === undefined && value !== undefined) {
+          firstValue = value;
+        }
+      },
+      snapshot() {
+        return firstValue;
+      },
+    };
+  }
+
+  if (operation === 'last') {
+    let lastValue: ScalarValue | undefined;
+    return {
+      add(value) {
+        if (value !== undefined) {
+          lastValue = value;
+        }
+      },
+      snapshot() {
+        return lastValue;
+      },
+    };
+  }
+
+  throw new TypeError(`unsupported aggregate reducer: ${operation}`);
+}
+
+type RollingReducerState = {
+  add(index: number, value: ScalarValue | undefined): void;
+  remove(index: number, value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+type RollingWindowEntry<T> = {
+  index: number;
+  value: T;
+};
+
+function createRollingReducerState(
+  operation: AggregateFunction,
+): RollingReducerState {
+  const compact = <T>(
+    entries: RollingWindowEntry<T>[],
+    head: number,
+  ): [RollingWindowEntry<T>[], number] => {
+    if (head > 0 && head * 2 >= entries.length) {
+      return [entries.slice(head), 0];
+    }
+    return [entries, head];
+  };
+
+  if (operation === 'count') {
+    let definedCount = 0;
+    return {
+      add(_index, value) {
+        if (value !== undefined) {
+          definedCount += 1;
+        }
+      },
+      remove(_index, value) {
+        if (value !== undefined) {
+          definedCount -= 1;
+        }
+      },
+      snapshot() {
+        return definedCount;
+      },
+    };
+  }
+
+  if (operation === 'sum') {
+    let numericSum = 0;
+    return {
+      add(_index, value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+        }
+      },
+      remove(_index, value) {
+        if (typeof value === 'number') {
+          numericSum -= value;
+        }
+      },
+      snapshot() {
+        return numericSum;
+      },
+    };
+  }
+
+  if (operation === 'avg') {
+    let numericSum = 0;
+    let numericCount = 0;
+    return {
+      add(_index, value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+          numericCount += 1;
+        }
+      },
+      remove(_index, value) {
+        if (typeof value === 'number') {
+          numericSum -= value;
+          numericCount -= 1;
+        }
+      },
+      snapshot() {
+        return numericCount === 0 ? undefined : numericSum / numericCount;
+      },
+    };
+  }
+
+  if (operation === 'min' || operation === 'max') {
+    let entries: RollingWindowEntry<number>[] = [];
+    let head = 0;
+    return {
+      add(index, value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        while (entries.length > head) {
+          const last = entries[entries.length - 1]!;
+          if (operation === 'min' ? last.value <= value : last.value >= value) {
+            break;
+          }
+          entries.pop();
+        }
+        entries.push({ index, value });
+      },
+      remove(index, value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        if (entries[head]?.index === index) {
+          head += 1;
+          [entries, head] = compact(entries, head);
+        }
+      },
+      snapshot() {
+        return entries[head]?.value;
+      },
+    };
+  }
+
+  if (operation === 'first' || operation === 'last') {
+    let entries: RollingWindowEntry<ScalarValue>[] = [];
+    let head = 0;
+    return {
+      add(index, value) {
+        if (value !== undefined) {
+          entries.push({ index, value });
+        }
+      },
+      remove(index, value) {
+        if (value === undefined) {
+          return;
+        }
+        if (entries[head]?.index === index) {
+          head += 1;
+          [entries, head] = compact(entries, head);
+        }
+      },
+      snapshot() {
+        return operation === 'first'
+          ? entries[head]?.value
+          : entries[entries.length - 1]?.value;
+      },
+    };
+  }
+
+  throw new TypeError(`unsupported rolling reducer: ${operation}`);
 }
 
 function parseDurationInput(value: DurationInput): number {
@@ -712,6 +1024,32 @@ export class TimeSeries<S extends SeriesSchema> {
     Object.freeze(this);
   }
 
+  /**
+   * Builds a series from event data that has already been validated and ordered by the caller.
+   *
+   * This is intentionally private and only used by transforms that preserve the existing event
+   * order and normalized key invariants.
+   */
+  static #fromTrustedEvents<NextSchema extends SeriesSchema>(
+    name: string,
+    schema: NextSchema,
+    events: ReadonlyArray<EventForSchema<NextSchema>>,
+  ): TimeSeries<NextSchema> {
+    const series = Object.create(TimeSeries.prototype) as {
+      name: string;
+      schema: NextSchema;
+      events: ReadonlyArray<EventForSchema<NextSchema>>;
+    };
+
+    series.name = name;
+    series.schema = Object.freeze(schema.slice()) as NextSchema;
+    series.events = Object.freeze(events.slice()) as ReadonlyArray<
+      EventForSchema<NextSchema>
+    >;
+
+    return Object.freeze(series) as TimeSeries<NextSchema>;
+  }
+
   /** Example: `series.firstColumnKind`. Returns the first-column kind from the series schema. */
   get firstColumnKind(): FirstColKind {
     return this.schema[0]!.kind;
@@ -769,15 +1107,20 @@ export class TimeSeries<S extends SeriesSchema> {
       ...this.schema.slice(1),
     ]) as TimeKeyedSchema<S>;
 
+    const resultEvents = this.events.map((event) => event.asTime(options));
+
+    if ((options.at ?? 'begin') === 'begin') {
+      return TimeSeries.#fromTrustedEvents(
+        this.name,
+        schema,
+        resultEvents as EventForSchema<typeof schema>[],
+      );
+    }
+
     return new TimeSeries({
       name: this.name,
       schema,
-      rows: toRows(
-        schema,
-        this.events.map((event) => event.asTime(options)) as EventForSchema<
-          typeof schema
-        >[],
-      ),
+      rows: toRows(schema, resultEvents as EventForSchema<typeof schema>[]),
     });
   }
 
@@ -788,16 +1131,13 @@ export class TimeSeries<S extends SeriesSchema> {
       ...this.schema.slice(1),
     ]) as TimeRangeKeyedSchema<S>;
 
-    return new TimeSeries({
-      name: this.name,
+    const resultEvents = this.events.map((event) => event.asTimeRange());
+
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
       schema,
-      rows: toRows(
-        schema,
-        this.events.map((event) => event.asTimeRange()) as EventForSchema<
-          typeof schema
-        >[],
-      ),
-    });
+      resultEvents as EventForSchema<typeof schema>[],
+    );
   }
 
   /** Example: `series.asInterval(event => event.begin())`. Converts the series key type to `"interval"` while preserving each event extent and supplying interval labels. */
@@ -820,11 +1160,7 @@ export class TimeSeries<S extends SeriesSchema> {
         : event.asInterval(value);
     }) as EventForSchema<typeof schema>[];
 
-    return new TimeSeries({
-      name: this.name,
-      schema,
-      rows: toRows(schema, nextEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(this.name, schema, nextEvents);
   }
 
   /**
@@ -934,11 +1270,7 @@ export class TimeSeries<S extends SeriesSchema> {
       }
     }
 
-    return new TimeSeries({
-      name: left.name,
-      schema: resultSchema,
-      rows: toRows(resultSchema, joinedEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(left.name, resultSchema, joinedEvents);
   }
 
   /**
@@ -994,21 +1326,42 @@ export class TimeSeries<S extends SeriesSchema> {
 
     const intervals = toBoundedSequence(sequence, range, sample).intervals();
     const valueColumns = this.schema.slice(1) as ValueColumnsForSchema<S>;
+    const resultColumns = resultSchema.slice(1);
 
-    const alignedRows = intervals.map((interval) => {
-      const t = sampleTime(interval, sample);
-      const data =
-        method === 'linear'
-          ? this.#alignLinearAt(t, valueColumns)
-          : this.#alignHoldAt(t);
+    const alignedRows =
+      method === 'linear'
+        ? (() => {
+            const cursor: AlignCursor = { index: 0 };
+            const rows = new Array(intervals.length);
 
-      return Object.freeze([
-        interval,
-        ...resultSchema
-          .slice(1)
-          .map((column) => data[column.name as keyof typeof data]),
-      ]);
-    });
+            for (let i = 0; i < intervals.length; i += 1) {
+              const interval = intervals[i]!;
+              const t = sampleTime(interval, sample);
+              const data = this.#alignLinearAt(t, valueColumns, cursor);
+              const row = new Array(resultColumns.length + 1);
+              row[0] = interval;
+
+              for (let j = 0; j < resultColumns.length; j += 1) {
+                const column = resultColumns[j]!;
+                row[j + 1] = data[column.name as keyof typeof data];
+              }
+
+              rows[i] = Object.freeze(row);
+            }
+
+            return rows;
+          })()
+        : intervals.map((interval) => {
+            const t = sampleTime(interval, sample);
+            const data = this.#alignHoldAt(t);
+
+            return Object.freeze([
+              interval,
+              ...resultSchema
+                .slice(1)
+                .map((column) => data[column.name as keyof typeof data]),
+            ]);
+          });
 
     return new TimeSeries({
       name: this.name,
@@ -1088,11 +1441,60 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     const buckets = toBoundedSequence(sequence, range, 'begin').intervals();
+    const resultColumns = resultSchema.slice(1);
+
+    if (isTimeKeyed(this)) {
+      const columns = resultColumns.map((column) => ({
+        name: column.name,
+        operation: mapping[column.name as keyof Mapping] as AggregateFunction,
+      }));
+      let eventIndex = 0;
+      const resultRows = buckets.map((bucket) => {
+        const states = columns.map((column) =>
+          createAggregateBucketState(column.operation),
+        );
+
+        while (
+          eventIndex < this.events.length &&
+          this.events[eventIndex]!.begin() < bucket.begin()
+        ) {
+          eventIndex += 1;
+        }
+
+        let scanIndex = eventIndex;
+        while (
+          scanIndex < this.events.length &&
+          this.events[scanIndex]!.begin() < bucket.end()
+        ) {
+          const data = this.events[scanIndex]!.data();
+          for (let index = 0; index < columns.length; index += 1) {
+            const column = columns[index]!;
+            states[index]!.add(
+              data[column.name as keyof typeof data] as ScalarValue | undefined,
+            );
+          }
+          scanIndex += 1;
+        }
+
+        eventIndex = scanIndex;
+        return Object.freeze([
+          bucket,
+          ...states.map((state) => state.snapshot()),
+        ]);
+      });
+
+      return new TimeSeries({
+        name: this.name,
+        schema: resultSchema as unknown as SeriesSchema,
+        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+      }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
+    }
+
     const resultRows = buckets.map((bucket) => {
       const contributors = this.events.filter((event) =>
         bucketOverlapsHalfOpen(bucket, event.key()),
       );
-      const aggregated = resultSchema.slice(1).map((column) => {
+      const aggregated = resultColumns.map((column) => {
         const operation = mapping[
           column.name as keyof Mapping
         ] as AggregateFunction;
@@ -1269,29 +1671,170 @@ export class TimeSeries<S extends SeriesSchema> {
       }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
     }
 
+    const resultColumns = buildResultColumns();
     const resultSchema = Object.freeze([
       this.schema[0],
-      ...buildResultColumns(),
+      ...resultColumns,
     ]) as unknown as RollingSchema<S, Mapping>;
+    const reducerStates = resultColumns.map((column) =>
+      createRollingReducerState(
+        mapping[column.name as keyof Mapping] as AggregateFunction,
+      ),
+    );
+    const beginTimes = this.events.map((event) => event.begin());
+    const resultRows: TimeSeriesInput<SeriesSchema>['rows'][number][] =
+      new Array(this.events.length);
+    let windowStart = 0;
+    let windowEnd = 0;
+    const addEvent = (index: number): void => {
+      const event = this.events[index]!;
+      const data = event.data();
+      for (
+        let reducerIndex = 0;
+        reducerIndex < reducerStates.length;
+        reducerIndex++
+      ) {
+        const column = resultColumns[reducerIndex]!;
+        reducerStates[reducerIndex]!.add(
+          index,
+          data[column.name as keyof typeof data] as ScalarValue | undefined,
+        );
+      }
+    };
+    const removeEvent = (index: number): void => {
+      const event = this.events[index]!;
+      const data = event.data();
+      for (
+        let reducerIndex = 0;
+        reducerIndex < reducerStates.length;
+        reducerIndex++
+      ) {
+        const column = resultColumns[reducerIndex]!;
+        reducerStates[reducerIndex]!.remove(
+          index,
+          data[column.name as keyof typeof data] as ScalarValue | undefined,
+        );
+      }
+    };
 
-    const resultRows = this.events.map((event) => {
-      const anchor = event.begin();
-      const contributors = this.events.filter((candidate) =>
-        anchorInWindow(candidate.begin(), anchor),
-      );
-      const aggregated = resultSchema.slice(1).map((column) => {
-        const operation = mapping[
-          column.name as keyof Mapping
-        ] as AggregateFunction;
-        const values = contributors.map((candidate) => {
-          const data = candidate.data();
-          return data[column.name as keyof typeof data];
-        }) as ReadonlyArray<ScalarValue | undefined>;
-        return aggregateValues(operation, values);
-      });
+    if (alignment === 'trailing') {
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
 
-      return Object.freeze([event.key(), ...aggregated]);
-    });
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! <= anchor
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const lowerBound = anchor - windowMs;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! <= lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    } else if (alignment === 'leading') {
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
+
+        const lowerBound = anchor;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! < lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + windowMs;
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    } else {
+      const halfWindow = windowMs / 2;
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
+
+        const lowerBound = anchor - halfWindow;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! < lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + halfWindow;
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    }
 
     return new TimeSeries({
       name: this.name,
@@ -1420,8 +1963,23 @@ export class TimeSeries<S extends SeriesSchema> {
         );
       }
 
+      const loessAnchors: number[] = [];
+      const loessValues: number[] = [];
+      for (let index = 0; index < anchors.length; index++) {
+        const value = sourceValues[index];
+        if (typeof value === 'number') {
+          loessAnchors.push(anchors[index]!);
+          loessValues.push(value);
+        }
+      }
+
       const resultRows = this.events.map((event, index) => {
-        const smoothed = loessAt(anchors[index]!, anchors, sourceValues, span);
+        const smoothed = loessAt(
+          anchors[index]!,
+          loessAnchors,
+          loessValues,
+          span,
+        );
         const nextEvent =
           output === undefined
             ? event.set(column, smoothed as EventDataForSchema<S>[Target])
@@ -1456,31 +2014,93 @@ export class TimeSeries<S extends SeriesSchema> {
     const window = options.window;
     const windowMs = parseDurationInput(window!);
     const alignment = options.alignment ?? 'trailing';
-    const anchorInWindow = (candidate: number, anchor: number): boolean => {
-      if (alignment === 'trailing') {
-        return candidate > anchor - windowMs && candidate <= anchor;
+    const resultValues = new Array<number | undefined>(this.events.length);
+    let windowStart = 0;
+    let windowEnd = 0;
+    let numericSum = 0;
+    let numericCount = 0;
+    const addEvent = (index: number): void => {
+      const value = sourceValues[index];
+      if (typeof value === 'number') {
+        numericSum += value;
+        numericCount += 1;
       }
-      if (alignment === 'leading') {
-        return candidate >= anchor && candidate < anchor + windowMs;
-      }
-      const halfWindow = windowMs / 2;
-      return (
-        candidate >= anchor - halfWindow && candidate < anchor + halfWindow
-      );
     };
+    const removeEvent = (index: number): void => {
+      const value = sourceValues[index];
+      if (typeof value === 'number') {
+        numericSum -= value;
+        numericCount -= 1;
+      }
+    };
+    const snapshot = (): number | undefined =>
+      numericCount === 0 ? undefined : numericSum / numericCount;
+
+    for (let groupStart = 0; groupStart < this.events.length; ) {
+      const anchor = anchors[groupStart]!;
+      let groupEnd = groupStart + 1;
+      while (groupEnd < this.events.length && anchors[groupEnd] === anchor) {
+        groupEnd += 1;
+      }
+
+      if (alignment === 'trailing') {
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! <= anchor
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const lowerBound = anchor - windowMs;
+        while (windowStart < windowEnd && anchors[windowStart]! <= lowerBound) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+      } else if (alignment === 'leading') {
+        while (windowStart < windowEnd && anchors[windowStart]! < anchor) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + windowMs;
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+      } else {
+        const halfWindow = windowMs / 2;
+        while (
+          windowStart < windowEnd &&
+          anchors[windowStart]! < anchor - halfWindow
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + halfWindow;
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+      }
+
+      const smoothed = snapshot();
+      for (let index = groupStart; index < groupEnd; index++) {
+        resultValues[index] = smoothed;
+      }
+
+      groupStart = groupEnd;
+    }
 
     const resultRows = this.events.map((event, index) => {
-      const anchor = anchors[index]!;
-      const values = sourceValues
-        .filter((_, candidateIndex) =>
-          anchorInWindow(anchors[candidateIndex]!, anchor),
-        )
-        .flatMap((value) => (value === undefined ? [] : [value]));
-      const smoothed =
-        values.length === 0
-          ? undefined
-          : values.reduce((sum, value) => sum + value, 0) / values.length;
-
+      const smoothed = resultValues[index];
       const nextEvent =
         output === undefined
           ? event.set(column, smoothed as EventDataForSchema<S>[Target])
@@ -1511,25 +2131,22 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.slice(0, 10)`. Returns a positional half-open slice of the series. */
   slice(beginIndex?: number, endIndex?: number): TimeSeries<S> {
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(this.schema, this.events.slice(beginIndex, endIndex)),
-    });
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.slice(beginIndex, endIndex),
+    );
   }
 
   /** Example: `series.filter(event => event.get("active"))`. Returns a new series containing only events that match the predicate. */
   filter(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): TimeSeries<S> {
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(
-        this.schema,
-        this.events.filter((event, index) => predicate(event, index)),
-      ),
-    });
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.filter((event, index) => predicate(event, index)),
+    );
   }
 
   /** Example: `series.find(event => event.get("value") > 0)`. Returns the first event that matches the predicate, if any. */
@@ -1556,7 +2173,11 @@ export class TimeSeries<S extends SeriesSchema> {
   /** Example: `series.includesKey(new Time(Date.now()))`. Returns `true` when the series contains an event with an exactly matching key. */
   includesKey(key: KeyLike): boolean {
     const normalizedKey = toKey(key);
-    return this.events.some((event) => event.key().equals(normalizedKey));
+    const index = this.bisect(normalizedKey);
+    return (
+      index < this.events.length &&
+      this.events[index]!.key().equals(normalizedKey)
+    );
   }
 
   /** Example: `series.bisect(new Time(Date.now()))`. Returns the insertion index for the supplied key in the ordered event sequence. */
@@ -1678,11 +2299,7 @@ export class TimeSeries<S extends SeriesSchema> {
       .map((event) => event.trim(range))
       .filter((event): event is EventForSchema<S> => event !== undefined);
 
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(this.schema, trimmedEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(this.name, this.schema, trimmedEvents);
   }
 
   /** Example: `series.before(Date.now())`. Returns the events ending strictly before the supplied temporal boundary. */
@@ -1743,14 +2360,11 @@ export class TimeSeries<S extends SeriesSchema> {
       return selectedEvent;
     });
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        resultEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<SelectSchema<S, Keys[number] & string>>;
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      resultEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<SelectSchema<S, Keys[number] & string>>;
   }
 
   /** Example: `series.rename({ cpu: "usage" })`. Returns a new series with payload field names renamed according to the supplied mapping. */
@@ -1774,14 +2388,11 @@ export class TimeSeries<S extends SeriesSchema> {
       return renamedEvent;
     });
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        resultEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<RenameSchema<S, Mapping>>;
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      resultEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<RenameSchema<S, Mapping>>;
   }
 
   /** Example: `series.collapse(["in", "out"], "avg", fn)`. Collapses selected payload fields into a single derived field across each event in the series. */
@@ -1845,14 +2456,11 @@ export class TimeSeries<S extends SeriesSchema> {
       },
     ]) as unknown as CollapseSchema<S, Keys[number] & string, Name, R, boolean>;
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        nextEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      nextEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<
       CollapseSchema<S, Keys[number] & string, Name, R, boolean>
     >;
   }
@@ -1870,16 +2478,31 @@ export class TimeSeries<S extends SeriesSchema> {
   #alignLinearAt(
     t: number,
     valueColumns: ValueColumnsForSchema<S>,
+    cursor?: AlignCursor,
   ): EventDataForSchema<S> {
-    const exact = this.find((event) => event.begin() === t);
-    if (exact) {
-      return exact.data() as EventDataForSchema<S>;
+    const events = this.events;
+    const hasCursor = cursor !== undefined;
+    let index = hasCursor ? cursor.index : this.bisect(t);
+
+    if (hasCursor) {
+      while (index < events.length && events[index]!.begin() < t) {
+        index += 1;
+      }
+      cursor.index = index;
     }
 
-    const previous = this.atOrBefore(new Time(t));
-    const next = this.atOrAfter(new Time(t));
-    if (!previous || !next || previous.begin() === next.begin()) {
-      return (previous?.data() ?? {}) as EventDataForSchema<S>;
+    if (index < events.length && events[index]!.begin() === t) {
+      return events[index]!.data() as EventDataForSchema<S>;
+    }
+
+    if (index === 0) {
+      return {} as EventDataForSchema<S>;
+    }
+
+    const previous = events[index - 1]!;
+    const next = events[index];
+    if (!next || previous.begin() === next.begin()) {
+      return previous.data() as EventDataForSchema<S>;
     }
 
     const ratio = (t - previous.begin()) / (next.begin() - previous.begin());
