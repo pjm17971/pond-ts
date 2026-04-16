@@ -1,0 +1,57 @@
+---
+sidebar_position: 20
+---
+
+# CPU Metrics Example
+
+This example shows a common `pond-ts` workflow for infrastructure metrics.
+
+```ts
+import {Sequence, TimeSeries} from 'pond-ts';
+
+const schema = [
+  {name: 'time', kind: 'time'},
+  {name: 'cpu', kind: 'number'},
+  {name: 'requests', kind: 'number'},
+  {name: 'host', kind: 'string'},
+] as const;
+
+const cpu = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T00:00:00Z', 0.31, 120, 'api-1'],
+    ['2025-01-01T00:01:00Z', 0.44, 135, 'api-1'],
+    ['2025-01-01T00:02:00Z', 0.52, 141, 'api-1'],
+    ['2025-01-01T00:03:00Z', 0.48, 128, 'api-1'],
+    ['2025-01-01T00:04:00Z', 0.63, 166, 'api-1'],
+  ],
+});
+
+const perMinute = cpu.align(Sequence.every('1m'), {
+  method: 'hold',
+});
+
+const fiveMinute = cpu.aggregate(Sequence.every('5m'), {
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
+});
+
+const rolling = cpu.rolling('3m', {
+  cpu: 'avg',
+  requests: 'sum',
+});
+
+const smoothed = cpu.smooth('cpu', 'ema', {
+  alpha: 0.35,
+  output: 'cpuTrend',
+});
+```
+
+## What this gives you
+
+- `perMinute`: aligned interval data for dashboards and joins
+- `fiveMinute`: bucketed reporting metrics
+- `rolling`: short-term windowed behavior
+- `smoothed`: a derived trend line for charts or alerts

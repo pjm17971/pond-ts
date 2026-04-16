@@ -44,6 +44,10 @@ npm test
 npm run verify
 ```
 
+## Docs site
+
+The documentation website lives in [`website/`](./website) and is built with Docusaurus.
+
 ## License
 
 MIT

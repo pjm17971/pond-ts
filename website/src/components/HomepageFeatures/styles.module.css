@@ -1,0 +1,24 @@
+.features {
+  padding: 2rem 0 4rem;
+}
+
+.featureCard {
+  display: flex;
+}
+
+.featureInner {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 1rem;
+  background: linear-gradient(
+    180deg,
+    rgba(14, 116, 144, 0.08),
+    rgba(15, 118, 110, 0.02)
+  );
+  padding: 1.5rem;
+  width: 100%;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.06);
+}
+
+.featureInner h3 {
+  margin-bottom: 0.75rem;
+}

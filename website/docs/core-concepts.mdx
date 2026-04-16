@@ -1,0 +1,73 @@
+---
+sidebar_position: 3
+---
+
+# Core Concepts
+
+## Temporal keys
+
+Every `Event` in `pond-ts` has an explicit temporal key.
+
+### `Time`
+
+A point in time.
+
+Use it when each event happens at a single timestamp.
+
+### `TimeRange`
+
+An unlabeled temporal extent.
+
+Use it when each event covers a range but you do not need a bucket label.
+
+### `Interval`
+
+A labeled temporal extent.
+
+Use it for sequence buckets, reporting windows, and aligned series.
+
+## Event
+
+An `Event` is:
+
+- one temporal key
+- one typed payload object
+
+It is immutable. Methods like `set`, `merge`, `select`, and `rename` return new events.
+
+## TimeSeries
+
+A `TimeSeries` is an ordered immutable collection of events that share one schema.
+
+That schema drives:
+
+- construction
+- type inference
+- transforms
+- aggregation mapping
+
+## Sequence and BoundedSequence
+
+### `Sequence`
+
+An unbounded grid definition.
+
+Examples:
+
+- every minute
+- every hour
+- every calendar day in a time zone
+
+### `BoundedSequence`
+
+An explicit finite interval list.
+
+Use it when you already know the exact bucket boundaries you want.
+
+## Vocabulary
+
+These selection terms are intentionally distinct:
+
+- `within(...)`: fully contained
+- `overlapping(...)`: intersects without modifying keys
+- `trim(...)`: intersects and clips key extents

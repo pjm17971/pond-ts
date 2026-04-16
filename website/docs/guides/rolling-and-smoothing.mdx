@@ -1,0 +1,64 @@
+---
+sidebar_position: 11
+---
+
+# Rolling Windows and Smoothing
+
+## Rolling windows
+
+Use `rolling(...)` for windowed calculations over ordered events.
+
+```ts
+const rolling = series.rolling('5m', {
+  cpu: 'avg',
+  requests: 'sum',
+});
+```
+
+This keeps the original key type and computes derived values at each event anchor.
+
+You can also compute rolling values on a sequence grid:
+
+```ts
+const rolledOnGrid = series.rolling(Sequence.every('1m'), '5m', {
+  cpu: 'avg',
+});
+```
+
+Supported alignments:
+
+- `trailing`
+- `leading`
+- `centered`
+
+## Smoothing
+
+Use `smooth(...)` for trend extraction or visualization-friendly derived values.
+
+### EMA
+
+```ts
+const smoothed = series.smooth('cpu', 'ema', {
+  alpha: 0.2,
+  output: 'cpuTrend',
+});
+```
+
+### Moving average
+
+```ts
+const averaged = series.smooth('cpu', 'movingAverage', {
+  window: '5m',
+  alignment: 'centered',
+  output: 'cpuAvg',
+});
+```
+
+### LOESS
+
+```ts
+const loess = series.smooth('cpu', 'loess', {
+  span: 0.75,
+  output: 'cpuLoess',
+});
+```

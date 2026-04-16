@@ -1,0 +1,30 @@
+# pond-ts docs site
+
+This folder contains the Docusaurus documentation site for `pond-ts`.
+
+## Local development
+
+The docs site requires Node 20+.
+
+```sh
+source "$HOME/.nvm/nvm.sh"
+nvm use 20
+cd website
+npm ci
+npm start
+```
+
+## Production build
+
+```sh
+source "$HOME/.nvm/nvm.sh"
+nvm use 20
+cd website
+npm run build
+```
+
+`npm run build` and `npm start` generate the TypeDoc API reference into `static/generated-api` before running Docusaurus.
+
+## Deployment
+
+The repo deploys the docs site to GitHub Pages from `.github/workflows/docs.yml`.
