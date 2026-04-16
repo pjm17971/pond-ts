@@ -44,6 +44,10 @@ npm test
 npm run verify
 ```
 
+## Releasing
+
+See [RELEASING.md](./RELEASING.md) for the tag-based npm release flow.
+
 ## License
 
 MIT
