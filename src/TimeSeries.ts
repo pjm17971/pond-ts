@@ -489,6 +489,270 @@ function aggregateValues(
   }
 }
 
+type AggregateBucketState = {
+  add(value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+function createAggregateBucketState(
+  operation: AggregateFunction,
+): AggregateBucketState {
+  if (operation === 'count') {
+    let definedCount = 0;
+    return {
+      add(value) {
+        if (value !== undefined) {
+          definedCount += 1;
+        }
+      },
+      snapshot() {
+        return definedCount;
+      },
+    };
+  }
+
+  if (operation === 'sum') {
+    let numericSum = 0;
+    return {
+      add(value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+        }
+      },
+      snapshot() {
+        return numericSum;
+      },
+    };
+  }
+
+  if (operation === 'avg') {
+    let numericSum = 0;
+    let numericCount = 0;
+    return {
+      add(value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+          numericCount += 1;
+        }
+      },
+      snapshot() {
+        return numericCount === 0 ? undefined : numericSum / numericCount;
+      },
+    };
+  }
+
+  if (operation === 'min') {
+    let numericValue: number | undefined;
+    return {
+      add(value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        numericValue =
+          numericValue === undefined || value < numericValue
+            ? value
+            : numericValue;
+      },
+      snapshot() {
+        return numericValue;
+      },
+    };
+  }
+
+  if (operation === 'max') {
+    let numericValue: number | undefined;
+    return {
+      add(value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        numericValue =
+          numericValue === undefined || value > numericValue
+            ? value
+            : numericValue;
+      },
+      snapshot() {
+        return numericValue;
+      },
+    };
+  }
+
+  if (operation === 'first') {
+    let firstValue: ScalarValue | undefined;
+    return {
+      add(value) {
+        if (firstValue === undefined && value !== undefined) {
+          firstValue = value;
+        }
+      },
+      snapshot() {
+        return firstValue;
+      },
+    };
+  }
+
+  if (operation === 'last') {
+    let lastValue: ScalarValue | undefined;
+    return {
+      add(value) {
+        if (value !== undefined) {
+          lastValue = value;
+        }
+      },
+      snapshot() {
+        return lastValue;
+      },
+    };
+  }
+
+  throw new TypeError(`unsupported aggregate reducer: ${operation}`);
+}
+
+type RollingReducerState = {
+  add(index: number, value: ScalarValue | undefined): void;
+  remove(index: number, value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+type RollingWindowEntry<T> = {
+  index: number;
+  value: T;
+};
+
+function createRollingReducerState(
+  operation: AggregateFunction,
+): RollingReducerState {
+  const compact = <T>(
+    entries: RollingWindowEntry<T>[],
+    head: number,
+  ): [RollingWindowEntry<T>[], number] => {
+    if (head > 0 && head * 2 >= entries.length) {
+      return [entries.slice(head), 0];
+    }
+    return [entries, head];
+  };
+
+  if (operation === 'count') {
+    let definedCount = 0;
+    return {
+      add(_index, value) {
+        if (value !== undefined) {
+          definedCount += 1;
+        }
+      },
+      remove(_index, value) {
+        if (value !== undefined) {
+          definedCount -= 1;
+        }
+      },
+      snapshot() {
+        return definedCount;
+      },
+    };
+  }
+
+  if (operation === 'sum') {
+    let numericSum = 0;
+    return {
+      add(_index, value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+        }
+      },
+      remove(_index, value) {
+        if (typeof value === 'number') {
+          numericSum -= value;
+        }
+      },
+      snapshot() {
+        return numericSum;
+      },
+    };
+  }
+
+  if (operation === 'avg') {
+    let numericSum = 0;
+    let numericCount = 0;
+    return {
+      add(_index, value) {
+        if (typeof value === 'number') {
+          numericSum += value;
+          numericCount += 1;
+        }
+      },
+      remove(_index, value) {
+        if (typeof value === 'number') {
+          numericSum -= value;
+          numericCount -= 1;
+        }
+      },
+      snapshot() {
+        return numericCount === 0 ? undefined : numericSum / numericCount;
+      },
+    };
+  }
+
+  if (operation === 'min' || operation === 'max') {
+    let entries: RollingWindowEntry<number>[] = [];
+    let head = 0;
+    return {
+      add(index, value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        while (entries.length > head) {
+          const last = entries[entries.length - 1]!;
+          if (operation === 'min' ? last.value <= value : last.value >= value) {
+            break;
+          }
+          entries.pop();
+        }
+        entries.push({ index, value });
+      },
+      remove(index, value) {
+        if (typeof value !== 'number') {
+          return;
+        }
+        if (entries[head]?.index === index) {
+          head += 1;
+          [entries, head] = compact(entries, head);
+        }
+      },
+      snapshot() {
+        return entries[head]?.value;
+      },
+    };
+  }
+
+  if (operation === 'first' || operation === 'last') {
+    let entries: RollingWindowEntry<ScalarValue>[] = [];
+    let head = 0;
+    return {
+      add(index, value) {
+        if (value !== undefined) {
+          entries.push({ index, value });
+        }
+      },
+      remove(index, value) {
+        if (value === undefined) {
+          return;
+        }
+        if (entries[head]?.index === index) {
+          head += 1;
+          [entries, head] = compact(entries, head);
+        }
+      },
+      snapshot() {
+        return operation === 'first'
+          ? entries[head]?.value
+          : entries[entries.length - 1]?.value;
+      },
+    };
+  }
+
+  throw new TypeError(`unsupported rolling reducer: ${operation}`);
+}
+
 function parseDurationInput(value: DurationInput): number {
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value <= 0) {
@@ -1088,11 +1352,60 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     const buckets = toBoundedSequence(sequence, range, 'begin').intervals();
+    const resultColumns = resultSchema.slice(1);
+
+    if (isTimeKeyed(this)) {
+      const columns = resultColumns.map((column) => ({
+        name: column.name,
+        operation: mapping[column.name as keyof Mapping] as AggregateFunction,
+      }));
+      let eventIndex = 0;
+      const resultRows = buckets.map((bucket) => {
+        const states = columns.map((column) =>
+          createAggregateBucketState(column.operation),
+        );
+
+        while (
+          eventIndex < this.events.length &&
+          this.events[eventIndex]!.begin() < bucket.begin()
+        ) {
+          eventIndex += 1;
+        }
+
+        let scanIndex = eventIndex;
+        while (
+          scanIndex < this.events.length &&
+          this.events[scanIndex]!.begin() < bucket.end()
+        ) {
+          const data = this.events[scanIndex]!.data();
+          for (let index = 0; index < columns.length; index += 1) {
+            const column = columns[index]!;
+            states[index]!.add(
+              data[column.name as keyof typeof data] as ScalarValue | undefined,
+            );
+          }
+          scanIndex += 1;
+        }
+
+        eventIndex = scanIndex;
+        return Object.freeze([
+          bucket,
+          ...states.map((state) => state.snapshot()),
+        ]);
+      });
+
+      return new TimeSeries({
+        name: this.name,
+        schema: resultSchema as unknown as SeriesSchema,
+        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+      }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
+    }
+
     const resultRows = buckets.map((bucket) => {
       const contributors = this.events.filter((event) =>
         bucketOverlapsHalfOpen(bucket, event.key()),
       );
-      const aggregated = resultSchema.slice(1).map((column) => {
+      const aggregated = resultColumns.map((column) => {
         const operation = mapping[
           column.name as keyof Mapping
         ] as AggregateFunction;
@@ -1269,29 +1582,170 @@ export class TimeSeries<S extends SeriesSchema> {
       }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
     }
 
+    const resultColumns = buildResultColumns();
     const resultSchema = Object.freeze([
       this.schema[0],
-      ...buildResultColumns(),
+      ...resultColumns,
     ]) as unknown as RollingSchema<S, Mapping>;
+    const reducerStates = resultColumns.map((column) =>
+      createRollingReducerState(
+        mapping[column.name as keyof Mapping] as AggregateFunction,
+      ),
+    );
+    const beginTimes = this.events.map((event) => event.begin());
+    const resultRows: TimeSeriesInput<SeriesSchema>['rows'][number][] =
+      new Array(this.events.length);
+    let windowStart = 0;
+    let windowEnd = 0;
+    const addEvent = (index: number): void => {
+      const event = this.events[index]!;
+      const data = event.data();
+      for (
+        let reducerIndex = 0;
+        reducerIndex < reducerStates.length;
+        reducerIndex++
+      ) {
+        const column = resultColumns[reducerIndex]!;
+        reducerStates[reducerIndex]!.add(
+          index,
+          data[column.name as keyof typeof data] as ScalarValue | undefined,
+        );
+      }
+    };
+    const removeEvent = (index: number): void => {
+      const event = this.events[index]!;
+      const data = event.data();
+      for (
+        let reducerIndex = 0;
+        reducerIndex < reducerStates.length;
+        reducerIndex++
+      ) {
+        const column = resultColumns[reducerIndex]!;
+        reducerStates[reducerIndex]!.remove(
+          index,
+          data[column.name as keyof typeof data] as ScalarValue | undefined,
+        );
+      }
+    };
 
-    const resultRows = this.events.map((event) => {
-      const anchor = event.begin();
-      const contributors = this.events.filter((candidate) =>
-        anchorInWindow(candidate.begin(), anchor),
-      );
-      const aggregated = resultSchema.slice(1).map((column) => {
-        const operation = mapping[
-          column.name as keyof Mapping
-        ] as AggregateFunction;
-        const values = contributors.map((candidate) => {
-          const data = candidate.data();
-          return data[column.name as keyof typeof data];
-        }) as ReadonlyArray<ScalarValue | undefined>;
-        return aggregateValues(operation, values);
-      });
+    if (alignment === 'trailing') {
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
 
-      return Object.freeze([event.key(), ...aggregated]);
-    });
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! <= anchor
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const lowerBound = anchor - windowMs;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! <= lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    } else if (alignment === 'leading') {
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
+
+        const lowerBound = anchor;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! < lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + windowMs;
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    } else {
+      const halfWindow = windowMs / 2;
+      for (let groupStart = 0; groupStart < this.events.length; ) {
+        const anchor = beginTimes[groupStart]!;
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < this.events.length &&
+          beginTimes[groupEnd] === anchor
+        ) {
+          groupEnd += 1;
+        }
+
+        const lowerBound = anchor - halfWindow;
+        while (
+          windowStart < windowEnd &&
+          beginTimes[windowStart]! < lowerBound
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + halfWindow;
+        while (
+          windowEnd < this.events.length &&
+          beginTimes[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const aggregated = reducerStates.map((state) => state.snapshot());
+        for (let index = groupStart; index < groupEnd; index++) {
+          resultRows[index] = Object.freeze([
+            this.events[index]!.key(),
+            ...aggregated,
+          ]) as unknown as TimeSeriesInput<SeriesSchema>['rows'][number];
+        }
+
+        groupStart = groupEnd;
+      }
+    }
 
     return new TimeSeries({
       name: this.name,
@@ -1456,31 +1910,93 @@ export class TimeSeries<S extends SeriesSchema> {
     const window = options.window;
     const windowMs = parseDurationInput(window!);
     const alignment = options.alignment ?? 'trailing';
-    const anchorInWindow = (candidate: number, anchor: number): boolean => {
-      if (alignment === 'trailing') {
-        return candidate > anchor - windowMs && candidate <= anchor;
+    const resultValues = new Array<number | undefined>(this.events.length);
+    let windowStart = 0;
+    let windowEnd = 0;
+    let numericSum = 0;
+    let numericCount = 0;
+    const addEvent = (index: number): void => {
+      const value = sourceValues[index];
+      if (typeof value === 'number') {
+        numericSum += value;
+        numericCount += 1;
       }
-      if (alignment === 'leading') {
-        return candidate >= anchor && candidate < anchor + windowMs;
-      }
-      const halfWindow = windowMs / 2;
-      return (
-        candidate >= anchor - halfWindow && candidate < anchor + halfWindow
-      );
     };
+    const removeEvent = (index: number): void => {
+      const value = sourceValues[index];
+      if (typeof value === 'number') {
+        numericSum -= value;
+        numericCount -= 1;
+      }
+    };
+    const snapshot = (): number | undefined =>
+      numericCount === 0 ? undefined : numericSum / numericCount;
+
+    for (let groupStart = 0; groupStart < this.events.length; ) {
+      const anchor = anchors[groupStart]!;
+      let groupEnd = groupStart + 1;
+      while (groupEnd < this.events.length && anchors[groupEnd] === anchor) {
+        groupEnd += 1;
+      }
+
+      if (alignment === 'trailing') {
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! <= anchor
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+
+        const lowerBound = anchor - windowMs;
+        while (windowStart < windowEnd && anchors[windowStart]! <= lowerBound) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+      } else if (alignment === 'leading') {
+        while (windowStart < windowEnd && anchors[windowStart]! < anchor) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + windowMs;
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+      } else {
+        const halfWindow = windowMs / 2;
+        while (
+          windowStart < windowEnd &&
+          anchors[windowStart]! < anchor - halfWindow
+        ) {
+          removeEvent(windowStart);
+          windowStart += 1;
+        }
+
+        const upperBound = anchor + halfWindow;
+        while (
+          windowEnd < this.events.length &&
+          anchors[windowEnd]! < upperBound
+        ) {
+          addEvent(windowEnd);
+          windowEnd += 1;
+        }
+      }
+
+      const smoothed = snapshot();
+      for (let index = groupStart; index < groupEnd; index++) {
+        resultValues[index] = smoothed;
+      }
+
+      groupStart = groupEnd;
+    }
 
     const resultRows = this.events.map((event, index) => {
-      const anchor = anchors[index]!;
-      const values = sourceValues
-        .filter((_, candidateIndex) =>
-          anchorInWindow(anchors[candidateIndex]!, anchor),
-        )
-        .flatMap((value) => (value === undefined ? [] : [value]));
-      const smoothed =
-        values.length === 0
-          ? undefined
-          : values.reduce((sum, value) => sum + value, 0) / values.length;
-
+      const smoothed = resultValues[index];
       const nextEvent =
         output === undefined
           ? event.set(column, smoothed as EventDataForSchema<S>[Target])
@@ -1556,7 +2072,11 @@ export class TimeSeries<S extends SeriesSchema> {
   /** Example: `series.includesKey(new Time(Date.now()))`. Returns `true` when the series contains an event with an exactly matching key. */
   includesKey(key: KeyLike): boolean {
     const normalizedKey = toKey(key);
-    return this.events.some((event) => event.key().equals(normalizedKey));
+    const index = this.bisect(normalizedKey);
+    return (
+      index < this.events.length &&
+      this.events[index]!.key().equals(normalizedKey)
+    );
   }
 
   /** Example: `series.bisect(new Time(Date.now()))`. Returns the insertion index for the supplied key in the ordered event sequence. */
