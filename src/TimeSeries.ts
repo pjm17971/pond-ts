@@ -64,6 +64,7 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
   onConflict: 'prefix';
   prefixes: Prefixes;
 };
+type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
 type SeriesTuple = readonly [
   TimeSeries<SeriesSchema>,
@@ -317,38 +318,50 @@ function eventAnchorTime(key: EventKey): number {
 function loessAt(
   x: number,
   anchors: ReadonlyArray<number>,
-  values: ReadonlyArray<number | undefined>,
+  values: ReadonlyArray<number>,
   span: number,
 ): number | undefined {
-  const points = anchors.flatMap((anchor, index) => {
-    const value = values[index];
-    return value === undefined ? [] : [{ x: anchor, y: value }];
-  });
-
-  if (points.length === 0) {
+  if (anchors.length === 0) {
     return undefined;
   }
 
-  if (points.length === 1) {
-    return points[0]!.y;
+  if (anchors.length === 1) {
+    return values[0];
   }
 
   const neighborCount = Math.max(
     2,
-    Math.min(points.length, Math.ceil(span * points.length)),
+    Math.min(anchors.length, Math.ceil(span * anchors.length)),
   );
-  const sortedDistances = points
-    .map((point) => ({ point, distance: Math.abs(point.x - x) }))
-    .sort((left, right) => left.distance - right.distance);
-  const bandwidth = sortedDistances[neighborCount - 1]!.distance;
+  let start = 0;
+  if (neighborCount < anchors.length) {
+    let low = 0;
+    let high = anchors.length - neighborCount;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (x - anchors[mid]! > anchors[mid + neighborCount]! - x) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    start = low;
+  }
+
+  const end = start + neighborCount;
+  const bandwidth = Math.max(
+    Math.abs(x - anchors[start]!),
+    Math.abs(anchors[end - 1]! - x),
+  );
 
   if (bandwidth === 0) {
-    const coincident = sortedDistances
-      .filter((entry) => entry.distance === 0)
-      .map((entry) => entry.point.y);
-    return (
-      coincident.reduce((sum, value) => sum + value, 0) / coincident.length
-    );
+    const coincidentStart = lowerBound(anchors, x);
+    const coincidentEnd = upperBound(anchors, x);
+    let coincidentSum = 0;
+    for (let index = coincidentStart; index < coincidentEnd; index++) {
+      coincidentSum += values[index]!;
+    }
+    return coincidentSum / (coincidentEnd - coincidentStart);
   }
 
   let weightedCount = 0;
@@ -358,7 +371,10 @@ function loessAt(
   let sumWXX = 0;
   let sumWXY = 0;
 
-  for (const { point, distance } of sortedDistances.slice(0, neighborCount)) {
+  for (let index = start; index < end; index++) {
+    const pointX = anchors[index]!;
+    const pointY = values[index]!;
+    const distance = Math.abs(pointX - x);
     const ratio = distance / bandwidth;
     const weight = ratio >= 1 ? 0 : (1 - ratio ** 3) ** 3;
     if (weight === 0) {
@@ -366,10 +382,10 @@ function loessAt(
     }
     weightedCount += 1;
     sumW += weight;
-    sumWX += weight * point.x;
-    sumWY += weight * point.y;
-    sumWXX += weight * point.x * point.x;
-    sumWXY += weight * point.x * point.y;
+    sumWX += weight * pointX;
+    sumWY += weight * pointY;
+    sumWXX += weight * pointX * pointX;
+    sumWXY += weight * pointX * pointY;
   }
 
   if (weightedCount === 0 || sumW === 0) {
@@ -384,6 +400,38 @@ function loessAt(
   const intercept = (sumWY * sumWXX - sumWX * sumWXY) / denominator;
   const slope = (sumW * sumWXY - sumWX * sumWY) / denominator;
   return intercept + slope * x;
+}
+
+function lowerBound(values: ReadonlyArray<number>, target: number): number {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid]! < target) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+function upperBound(values: ReadonlyArray<number>, target: number): number {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid]! <= target) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
 }
 
 function makeSmoothSchema<
@@ -1258,21 +1306,42 @@ export class TimeSeries<S extends SeriesSchema> {
 
     const intervals = toBoundedSequence(sequence, range, sample).intervals();
     const valueColumns = this.schema.slice(1) as ValueColumnsForSchema<S>;
+    const resultColumns = resultSchema.slice(1);
 
-    const alignedRows = intervals.map((interval) => {
-      const t = sampleTime(interval, sample);
-      const data =
-        method === 'linear'
-          ? this.#alignLinearAt(t, valueColumns)
-          : this.#alignHoldAt(t);
+    const alignedRows =
+      method === 'linear'
+        ? (() => {
+            const cursor: AlignCursor = { index: 0 };
+            const rows = new Array(intervals.length);
 
-      return Object.freeze([
-        interval,
-        ...resultSchema
-          .slice(1)
-          .map((column) => data[column.name as keyof typeof data]),
-      ]);
-    });
+            for (let i = 0; i < intervals.length; i += 1) {
+              const interval = intervals[i]!;
+              const t = sampleTime(interval, sample);
+              const data = this.#alignLinearAt(t, valueColumns, cursor);
+              const row = new Array(resultColumns.length + 1);
+              row[0] = interval;
+
+              for (let j = 0; j < resultColumns.length; j += 1) {
+                const column = resultColumns[j]!;
+                row[j + 1] = data[column.name as keyof typeof data];
+              }
+
+              rows[i] = Object.freeze(row);
+            }
+
+            return rows;
+          })()
+        : intervals.map((interval) => {
+            const t = sampleTime(interval, sample);
+            const data = this.#alignHoldAt(t);
+
+            return Object.freeze([
+              interval,
+              ...resultSchema
+                .slice(1)
+                .map((column) => data[column.name as keyof typeof data]),
+            ]);
+          });
 
     return new TimeSeries({
       name: this.name,
@@ -1874,8 +1943,23 @@ export class TimeSeries<S extends SeriesSchema> {
         );
       }
 
+      const loessAnchors: number[] = [];
+      const loessValues: number[] = [];
+      for (let index = 0; index < anchors.length; index++) {
+        const value = sourceValues[index];
+        if (typeof value === 'number') {
+          loessAnchors.push(anchors[index]!);
+          loessValues.push(value);
+        }
+      }
+
       const resultRows = this.events.map((event, index) => {
-        const smoothed = loessAt(anchors[index]!, anchors, sourceValues, span);
+        const smoothed = loessAt(
+          anchors[index]!,
+          loessAnchors,
+          loessValues,
+          span,
+        );
         const nextEvent =
           output === undefined
             ? event.set(column, smoothed as EventDataForSchema<S>[Target])
@@ -2390,16 +2474,31 @@ export class TimeSeries<S extends SeriesSchema> {
   #alignLinearAt(
     t: number,
     valueColumns: ValueColumnsForSchema<S>,
+    cursor?: AlignCursor,
   ): EventDataForSchema<S> {
-    const exact = this.find((event) => event.begin() === t);
-    if (exact) {
-      return exact.data() as EventDataForSchema<S>;
+    const events = this.events;
+    const hasCursor = cursor !== undefined;
+    let index = hasCursor ? cursor.index : this.bisect(t);
+
+    if (hasCursor) {
+      while (index < events.length && events[index]!.begin() < t) {
+        index += 1;
+      }
+      cursor.index = index;
     }
 
-    const previous = this.atOrBefore(new Time(t));
-    const next = this.atOrAfter(new Time(t));
-    if (!previous || !next || previous.begin() === next.begin()) {
-      return (previous?.data() ?? {}) as EventDataForSchema<S>;
+    if (index < events.length && events[index]!.begin() === t) {
+      return events[index]!.data() as EventDataForSchema<S>;
+    }
+
+    if (index === 0) {
+      return {} as EventDataForSchema<S>;
+    }
+
+    const previous = events[index - 1]!;
+    const next = events[index];
+    if (!next || previous.begin() === next.begin()) {
+      return previous.data() as EventDataForSchema<S>;
     }
 
     const ratio = (t - previous.begin()) / (next.begin() - previous.begin());
