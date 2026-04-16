@@ -1,0 +1,74 @@
+---
+slug: /
+sidebar_position: 1
+---
+
+# pond-ts
+
+`pond-ts` is a TypeScript-first time series library built around typed events, explicit temporal keys, and immutable analytical transforms.
+
+It is designed for modern Node and frontend projects that want a strongly typed way to work with:
+
+- point-in-time events
+- interval and range keyed events
+- alignment onto fixed or calendar-aware sequences
+- aggregation and joins
+- rolling windows and smoothing
+- timezone-aware ingest
+
+## Why pond-ts?
+
+Most time series libraries treat rows as loosely typed arrays or plain objects with an implicit timestamp convention.
+
+`pond-ts` takes a different approach:
+
+- the temporal key is explicit and typed
+- payload columns are schema-driven
+- transforms preserve type information
+- event and series values are immutable
+
+## Example
+
+```ts
+import {Sequence, TimeSeries} from 'pond-ts';
+
+const schema = [
+  {name: 'time', kind: 'time'},
+  {name: 'cpu', kind: 'number'},
+  {name: 'requests', kind: 'number'},
+  {name: 'host', kind: 'string'},
+] as const;
+
+const cpu = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T00:00:00Z', 0.31, 120, 'api-1'],
+    ['2025-01-01T00:01:00Z', 0.44, 135, 'api-1'],
+    ['2025-01-01T00:02:00Z', 0.52, 141, 'api-1'],
+    ['2025-01-01T00:03:00Z', 0.48, 128, 'api-1'],
+    ['2025-01-01T00:04:00Z', 0.63, 166, 'api-1'],
+  ],
+});
+
+const fiveMinute = cpu.aggregate(Sequence.every('5m'), {
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
+});
+
+const smoothed = cpu.smooth('cpu', 'ema', {
+  alpha: 0.35,
+  output: 'cpuTrend',
+});
+
+console.log(fiveMinute.first()?.data());
+console.log(smoothed.last()?.get('cpuTrend'));
+```
+
+## In this docs site
+
+- **Getting Started** shows the installation and first analytical workflow.
+- **Core Concepts** explains the temporal model.
+- **Guides** cover alignment, aggregation, rolling windows, smoothing, and ingest.
+- **Examples** show a realistic metrics-style workflow.

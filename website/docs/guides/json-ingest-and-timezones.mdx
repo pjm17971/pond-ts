@@ -1,0 +1,55 @@
+---
+sidebar_position: 12
+---
+
+# JSON Ingest and Time Zones
+
+## JSON ingest
+
+Use `TimeSeries.fromJSON(...)` when your source data comes from APIs, JSON files, or external systems.
+
+```ts
+import {TimeSeries} from 'pond-ts';
+
+const schema = [
+  {name: 'time', kind: 'time'},
+  {name: 'value', kind: 'number'},
+  {name: 'status', kind: 'string', required: false},
+] as const;
+
+const series = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T09:00', 0.42, 'ok'],
+    ['2025-01-01T10:00', 0.51, null],
+  ],
+  parse: {timeZone: 'Europe/Madrid'},
+});
+```
+
+## Why `parse.timeZone` matters
+
+Ambiguous local timestamps like `2025-01-01T09:00` need a time zone context.
+
+Without one, the data is harder to interpret consistently across environments.
+
+## Calendar-aware sequences
+
+Use `Sequence.calendar(...)` when reporting periods should follow local calendar boundaries instead of fixed millisecond steps.
+
+```ts
+import {Sequence} from 'pond-ts';
+
+const localDays = Sequence.calendar('day', {
+  timeZone: 'America/New_York',
+});
+```
+
+Supported calendar units:
+
+- `day`
+- `week`
+- `month`
+
+This is especially useful around DST boundaries and local reporting windows.
