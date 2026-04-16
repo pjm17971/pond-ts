@@ -1,0 +1,162 @@
+:root,
+html[data-theme='light'],
+html[data-theme='dark'],
+html[data-theme='os'] {
+  color-scheme: light !important;
+  --light-color-background: #fbfcff;
+  --light-color-background-secondary: #ffffff;
+  --light-color-background-active: #edf3ff;
+  --light-color-background-warning: #fff6df;
+  --light-color-warning-text: #6f5313;
+  --light-color-accent: #d7e4ff;
+  --light-color-active-menu-item: rgba(75, 129, 224, 0.12);
+  --light-color-text: #21314f;
+  --light-color-contrast-text: #13203d;
+  --light-color-text-aside: #6b7ea0;
+  --light-color-icon-background: #eff4ff;
+  --light-color-icon-text: #4b81e0;
+  --light-color-link: #3c74d8;
+  --light-color-focus-outline: #4b81e0;
+  --light-color-ts-keyword: #a83e82;
+  --light-color-ts-project: #3c74d8;
+  --light-color-ts-module: #3c74d8;
+  --light-color-ts-namespace: #4770c7;
+  --light-color-ts-enum: #2f63c6;
+  --light-color-ts-enum-member: #587ed0;
+  --light-color-ts-variable: #a24a43;
+  --light-color-ts-function: #2f63c6;
+  --light-color-ts-class: #2f63c6;
+  --light-color-ts-interface: #6b55c4;
+  --light-color-ts-constructor: #2f63c6;
+  --light-color-ts-property: #4d668f;
+  --light-color-ts-method: #2f63c6;
+  --light-color-ts-reference: #3c74d8;
+  --light-color-ts-call-signature: #2f63c6;
+  --light-color-ts-index-signature: #4665b9;
+  --light-color-ts-constructor-signature: #4665b9;
+  --light-color-ts-parameter: #8d4f25;
+  --light-color-ts-type-parameter: #9454ab;
+  --light-color-ts-accessor: #587ed0;
+  --light-color-ts-get-signature: #587ed0;
+  --light-color-ts-set-signature: #587ed0;
+  --light-color-ts-type-alias: #7b4fc7;
+  --light-color-document: #ffffff;
+  --light-color-note: #3c74d8;
+  --light-color-tip: #3aa07d;
+  --light-color-important: #7b4fc7;
+  --light-color-warning: #c88717;
+  --light-color-caution: #c65454;
+  --light-color-scheme: light;
+}
+
+html[data-theme='dark'],
+html[data-theme='os'] {
+  --color-background: var(--light-color-background) !important;
+  --color-background-secondary: var(--light-color-background-secondary) !important;
+  --color-background-active: var(--light-color-background-active) !important;
+  --color-background-warning: var(--light-color-background-warning) !important;
+  --color-warning-text: var(--light-color-warning-text) !important;
+  --color-accent: var(--light-color-accent) !important;
+  --color-active-menu-item: var(--light-color-active-menu-item) !important;
+  --color-text: var(--light-color-text) !important;
+  --color-contrast-text: var(--light-color-contrast-text) !important;
+  --color-text-aside: var(--light-color-text-aside) !important;
+  --color-icon-background: var(--light-color-icon-background) !important;
+  --color-icon-text: var(--light-color-icon-text) !important;
+  --color-link: var(--light-color-link) !important;
+  --color-focus-outline: var(--light-color-focus-outline) !important;
+  --color-document: var(--light-color-document) !important;
+  --color-scheme: light !important;
+}
+
+body {
+  background:
+    radial-gradient(circle at top, rgba(75, 129, 224, 0.12), transparent 28%),
+    linear-gradient(180deg, #f6f9ff 0%, #fbfcff 100%);
+  color: var(--light-color-text);
+}
+
+.container {
+  max-width: min(1720px, calc(100vw - 24px));
+}
+
+.tsd-page-toolbar {
+  backdrop-filter: blur(12px);
+  background: rgba(249, 251, 255, 0.9);
+  border-bottom: 1px solid rgba(75, 129, 224, 0.14);
+  box-shadow: 0 14px 34px rgba(56, 90, 163, 0.08);
+}
+
+.tsd-toolbar-contents.container,
+.container-main {
+  max-width: min(1720px, calc(100vw - 24px));
+}
+
+.container-main {
+  gap: 1.5rem;
+  padding-top: 1.25rem;
+}
+
+.col-content,
+.site-menu {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(75, 129, 224, 0.12);
+  border-radius: 1.25rem;
+  box-shadow: 0 24px 56px rgba(56, 90, 163, 0.09);
+}
+
+.col-content {
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.site-menu {
+  padding: 0.5rem;
+}
+
+.tsd-panel,
+.tsd-panel-group,
+.tsd-accordion-summary,
+.tsd-member-summaries,
+pre,
+code {
+  border-radius: 0.9rem;
+}
+
+.tsd-page-title h1,
+.tsd-accordion-summary h2,
+.title {
+  color: #172749;
+}
+
+.tsd-member-summary,
+.tsd-accordion-summary,
+pre,
+blockquote {
+  border-color: rgba(75, 129, 224, 0.12);
+}
+
+pre {
+  box-shadow: inset 0 0 0 1px rgba(75, 129, 224, 0.08);
+}
+
+a {
+  text-decoration-thickness: 0.08em;
+}
+
+footer {
+  background: transparent;
+  color: #6b7ea0;
+}
+
+@media (max-width: 1024px) {
+  .container,
+  .tsd-toolbar-contents.container,
+  .container-main {
+    max-width: calc(100vw - 16px);
+  }
+
+  .col-content,
+  .site-menu {
+    border-radius: 1rem;
+  }
+}

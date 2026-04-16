@@ -12,16 +12,20 @@ export default function ApiPage(): JSX.Element {
       description="Generated TypeScript API reference for pond-ts"
     >
       <main className={styles.page}>
-        <h1>API Reference</h1>
-        <p className={styles.lede}>
-          This is the generated reference layer for <code>pond-ts</code>. Use
-          it alongside the hand-written guides when you want exact method
-          signatures, type parameters, and return shapes.
-        </p>
-        <div className={styles.actions}>
-          <a className={styles.button} href={referenceHref}>
-            Open in a dedicated tab
-          </a>
+        <div className={styles.hero}>
+          <div className={styles.copy}>
+            <h1>API Reference</h1>
+            <p className={styles.lede}>
+              This is the generated reference layer for <code>pond-ts</code>.
+              Use it alongside the hand-written guides when you want exact
+              method signatures, type parameters, and return shapes.
+            </p>
+          </div>
+          <div className={styles.actions}>
+            <a className={styles.button} href={referenceHref}>
+              Open in a dedicated tab
+            </a>
+          </div>
         </div>
         <div className={styles.frame}>
           <iframe src={referenceHref} title="pond-ts API reference" />
