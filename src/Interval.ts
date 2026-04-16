@@ -1,13 +1,33 @@
-import { calendarRangeForReference, dayRangeForDate, type CalendarOptions, type CalendarUnit, type TimeZoneOptions } from "./calendar.js";
-import { TimeRange } from "./TimeRange.js";
-import type { EventKey, IntervalInput, IntervalValue, TemporalLike, TimestampInput } from "./temporal.js";
-import { compareEventKeys, compareIntervalValues, normalizeTimestamp } from "./temporal.js";
+import {
+  calendarRangeForReference,
+  dayRangeForDate,
+  type CalendarOptions,
+  type CalendarUnit,
+  type TimeZoneOptions,
+} from './calendar.js';
+import { TimeRange } from './TimeRange.js';
+import type {
+  EventKey,
+  IntervalInput,
+  IntervalValue,
+  TemporalLike,
+  TimestampInput,
+} from './temporal.js';
+import {
+  compareEventKeys,
+  compareIntervalValues,
+  normalizeTimestamp,
+} from './temporal.js';
 
-type IntervalObjectInput = { value: IntervalValue; start: TimestampInput; end: TimestampInput };
+type IntervalObjectInput = {
+  value: IntervalValue;
+  start: TimestampInput;
+  end: TimestampInput;
+};
 
 /** A labeled time interval event key. Example: `new Interval({ value: "bucket", start, end })`. */
 export class Interval implements EventKey {
-  readonly kind = "interval";
+  readonly kind = 'interval';
   readonly value: IntervalValue;
   readonly start: number;
   readonly endMs: number;
@@ -54,10 +74,10 @@ export class Interval implements EventKey {
       rawStart = objectInput.start;
       rawEnd = objectInput.end;
     }
-    const start = normalizeTimestamp(rawStart, "interval start");
-    const end = normalizeTimestamp(rawEnd, "interval end");
+    const start = normalizeTimestamp(rawStart, 'interval start');
+    const end = normalizeTimestamp(rawEnd, 'interval end');
     if (start > end) {
-      throw new TypeError("interval start must be <= end");
+      throw new TypeError('interval start must be <= end');
     }
     this.value = value;
     this.start = start;
@@ -66,7 +86,7 @@ export class Interval implements EventKey {
   }
 
   /** Example: `interval.type() // "interval"`. Returns the key kind. */
-  type(): "interval" {
+  type(): 'interval' {
     return this.kind;
   }
 
@@ -140,10 +160,12 @@ export class Interval implements EventKey {
 
   /** Example: `interval.equals(otherInterval)`. Returns `true` when the supplied key has the same label and temporal extent. */
   equals(other: EventKey): boolean {
-    return other instanceof Interval
-      && this.start === other.start
-      && this.endMs === other.endMs
-      && this.value === other.value;
+    return (
+      other instanceof Interval &&
+      this.start === other.start &&
+      this.endMs === other.endMs &&
+      this.value === other.value
+    );
   }
 
   /** Example: `interval.compare(otherInterval)`. Compares this key to another key for ordering. */

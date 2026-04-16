@@ -1,12 +1,14 @@
-import { Interval } from "./Interval.js";
-import { TimeRange } from "./TimeRange.js";
+import { Interval } from './Interval.js';
+import { TimeRange } from './TimeRange.js';
 
 function validateIntervals(intervals: ReadonlyArray<Interval>): void {
   for (let index = 0; index < intervals.length; index += 1) {
     const current = intervals[index]!;
 
     if (current.end() <= current.begin()) {
-      throw new TypeError("bounded sequence intervals must have positive duration");
+      throw new TypeError(
+        'bounded sequence intervals must have positive duration',
+      );
     }
 
     if (index === 0) {
@@ -15,11 +17,13 @@ function validateIntervals(intervals: ReadonlyArray<Interval>): void {
 
     const previous = intervals[index - 1]!;
     if (current.begin() < previous.begin()) {
-      throw new TypeError("bounded sequence intervals must be sorted by start time");
+      throw new TypeError(
+        'bounded sequence intervals must be sorted by start time',
+      );
     }
 
     if (current.begin() < previous.end()) {
-      throw new TypeError("bounded sequence intervals must not overlap");
+      throw new TypeError('bounded sequence intervals must not overlap');
     }
   }
 }

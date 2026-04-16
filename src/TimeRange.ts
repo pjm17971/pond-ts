@@ -1,16 +1,34 @@
-import { calendarRangeForReference, dayRangeForDate, type CalendarOptions, type CalendarUnit, type TimeZoneOptions } from "./calendar.js";
-import type { IntervalInput, TemporalLike, TimeRangeInput, TimestampInput } from "./temporal.js";
-import { compareEventKeys, normalizeTimestamp } from "./temporal.js";
-import type { EventKey } from "./temporal.js";
+import {
+  calendarRangeForReference,
+  dayRangeForDate,
+  type CalendarOptions,
+  type CalendarUnit,
+  type TimeZoneOptions,
+} from './calendar.js';
+import type {
+  IntervalInput,
+  TemporalLike,
+  TimeRangeInput,
+  TimestampInput,
+} from './temporal.js';
+import { compareEventKeys, normalizeTimestamp } from './temporal.js';
+import type { EventKey } from './temporal.js';
 
 type TimeRangeObjectInput = { start: TimestampInput; end: TimestampInput };
 
-function isBoundedTemporal(value: unknown): value is { begin(): number; end(): number } {
-  return typeof value === "object" && value !== null && "begin" in value && "end" in value;
+function isBoundedTemporal(
+  value: unknown,
+): value is { begin(): number; end(): number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'begin' in value &&
+    'end' in value
+  );
 }
 
 function isRangedTemporal(value: unknown): value is { timeRange(): TimeRange } {
-  return typeof value === "object" && value !== null && "timeRange" in value;
+  return typeof value === 'object' && value !== null && 'timeRange' in value;
 }
 
 export function toTimeRange(value: TemporalLike): TimeRange {
@@ -23,18 +41,22 @@ export function toTimeRange(value: TemporalLike): TimeRange {
   if (isBoundedTemporal(value)) {
     return new TimeRange({ start: value.begin(), end: value.end() });
   }
-  if (value instanceof Date || typeof value === "number") {
-    const timestamp = normalizeTimestamp(value, "time");
+  if (value instanceof Date || typeof value === 'number') {
+    const timestamp = normalizeTimestamp(value, 'time');
     return new TimeRange({ start: timestamp, end: timestamp });
   }
   if (Array.isArray(value)) {
     if (value.length === 2) {
       return new TimeRange(value as TimeRangeInput);
     }
-    const interval = value as readonly [unknown, TimestampInput, TimestampInput];
+    const interval = value as readonly [
+      unknown,
+      TimestampInput,
+      TimestampInput,
+    ];
     return new TimeRange({ start: interval[1], end: interval[2] });
   }
-  if ("value" in value) {
+  if ('value' in value) {
     const interval = value as { start: TimestampInput; end: TimestampInput };
     return new TimeRange({ start: interval.start, end: interval.end });
   }
@@ -43,7 +65,7 @@ export function toTimeRange(value: TemporalLike): TimeRange {
 
 /** A time interval event key with inclusive start and end boundaries. Example: `new TimeRange({ start, end })`. */
 export class TimeRange implements EventKey {
-  readonly kind = "timeRange";
+  readonly kind = 'timeRange';
   readonly start: number;
   readonly endMs: number;
 
@@ -73,10 +95,10 @@ export class TimeRange implements EventKey {
       rawStart = objectInput.start;
       rawEnd = objectInput.end;
     }
-    const start = normalizeTimestamp(rawStart, "timeRange start");
-    const end = normalizeTimestamp(rawEnd, "timeRange end");
+    const start = normalizeTimestamp(rawStart, 'timeRange start');
+    const end = normalizeTimestamp(rawEnd, 'timeRange end');
     if (start > end) {
-      throw new TypeError("timeRange start must be <= end");
+      throw new TypeError('timeRange start must be <= end');
     }
     this.start = start;
     this.endMs = end;
@@ -84,7 +106,7 @@ export class TimeRange implements EventKey {
   }
 
   /** Example: `range.type() // "timeRange"`. Returns the key kind. */
-  type(): "timeRange" {
+  type(): 'timeRange' {
     return this.kind;
   }
 
@@ -156,7 +178,11 @@ export class TimeRange implements EventKey {
 
   /** Example: `range.equals(otherRange)`. Returns `true` when the supplied key is the same `TimeRange`. */
   equals(other: EventKey): boolean {
-    return other instanceof TimeRange && this.start === other.start && this.endMs === other.endMs;
+    return (
+      other instanceof TimeRange &&
+      this.start === other.start &&
+      this.endMs === other.endMs
+    );
   }
 
   /** Example: `range.compare(otherRange)`. Compares this key to another key for ordering. */

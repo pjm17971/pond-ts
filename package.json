@@ -1,21 +1,40 @@
 {
-  "name": "pond-modern",
+  "name": "pond-ts",
   "version": "0.1.0",
   "description": "TypeScript-first time series primitives",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pjm17971/pond-ts.git"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
+    "prepack": "npm run build",
     "test": "npm run test:type && npm run test:runtime",
     "test:runtime": "vitest run",
-    "test:type": "tsc -p tsconfig.types.json"
+    "test:type": "tsc -p tsconfig.types.json",
+    "verify": "npm run format:check && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
+    "prettier": "^3.8.3",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },

@@ -33,28 +33,42 @@ import type {
   TimeSeriesInput,
   TimeRangeKeyedSchema,
   ValueColumnsForSchema,
-} from "./types.js";
-import { BoundedSequence } from "./BoundedSequence.js";
-import { parseTimestampString, type TimeZoneOptions } from "./calendar.js";
-import { Interval } from "./Interval.js";
-import { Time } from "./Time.js";
-import { TimeRange } from "./TimeRange.js";
-import type { EventKey, IntervalInput, IntervalValue, TemporalLike, TimeRangeInput, TimestampInput } from "./temporal.js";
-import { Sequence } from "./Sequence.js";
-import { validateAndNormalize } from "./validate.js";
-import type { DurationInput } from "./Sequence.js";
+} from './types.js';
+import { BoundedSequence } from './BoundedSequence.js';
+import { parseTimestampString, type TimeZoneOptions } from './calendar.js';
+import { Interval } from './Interval.js';
+import { Time } from './Time.js';
+import { TimeRange } from './TimeRange.js';
+import type {
+  EventKey,
+  IntervalInput,
+  IntervalValue,
+  TemporalLike,
+  TimeRangeInput,
+  TimestampInput,
+} from './temporal.js';
+import { Sequence } from './Sequence.js';
+import { validateAndNormalize } from './validate.js';
+import type { DurationInput } from './Sequence.js';
 
 type RangeLike = EventKey | TimeRangeInput | IntervalInput;
 type BoundaryLike = EventKey | TimestampInput;
 type KeyLike = EventKey | TimestampInput | TimeRangeInput | IntervalInput;
 type SeriesRangeLike = TemporalLike | { timeRange(): TimeRange | undefined };
-type AlignMethod = "hold" | "linear";
-type AlignSample = "begin" | "center";
+type AlignMethod = 'hold' | 'linear';
+type AlignSample = 'begin' | 'center';
 type SequenceLike = Sequence | BoundedSequence;
-type ErrorJoinOptions = { type?: JoinType; onConflict?: "error" };
-type PrefixJoinOptions<Prefixes extends readonly string[]> = { type?: JoinType; onConflict: "prefix"; prefixes: Prefixes };
+type ErrorJoinOptions = { type?: JoinType; onConflict?: 'error' };
+type PrefixJoinOptions<Prefixes extends readonly string[]> = {
+  type?: JoinType;
+  onConflict: 'prefix';
+  prefixes: Prefixes;
+};
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
-type SeriesTuple = readonly [TimeSeries<SeriesSchema>, ...TimeSeries<SeriesSchema>[]];
+type SeriesTuple = readonly [
+  TimeSeries<SeriesSchema>,
+  ...TimeSeries<SeriesSchema>[],
+];
 type SchemasForSeriesTuple<T extends SeriesTuple> = {
   [I in keyof T]: T[I] extends TimeSeries<infer Schema> ? Schema : never;
 } extends infer Result
@@ -66,48 +80,70 @@ type SchemasForSeriesTuple<T extends SeriesTuple> = {
 function isObjectRow<S extends SeriesSchema>(
   value: JsonRowForSchema<S> | JsonObjectRowForSchema<S>,
 ): value is JsonObjectRowForSchema<S> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseJsonTimestamp(value: unknown, options: TimeZoneOptions = {}): number {
-  if (typeof value === "number") {
+function parseJsonTimestamp(
+  value: unknown,
+  options: TimeZoneOptions = {},
+): number {
+  if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
-      throw new TypeError("expected finite timestamp");
+      throw new TypeError('expected finite timestamp');
     }
     return value;
   }
-  if (typeof value === "string") {
+  if (typeof value === 'string') {
     return parseTimestampString(value, options);
   }
   if (value instanceof Date) {
     return value.getTime();
   }
-  throw new TypeError("expected timestamp as number or string");
+  throw new TypeError('expected timestamp as number or string');
 }
 
-function parseJsonKey(kind: FirstColKind, value: unknown, options: TimeZoneOptions = {}): EventKey {
-  if (value instanceof Time || value instanceof TimeRange || value instanceof Interval) {
+function parseJsonKey(
+  kind: FirstColKind,
+  value: unknown,
+  options: TimeZoneOptions = {},
+): EventKey {
+  if (
+    value instanceof Time ||
+    value instanceof TimeRange ||
+    value instanceof Interval
+  ) {
     return value;
   }
 
   switch (kind) {
-    case "time":
+    case 'time':
       return new Time(parseJsonTimestamp(value, options));
-    case "timeRange":
+    case 'timeRange':
       if (Array.isArray(value) && value.length === 2) {
         return new TimeRange({
           start: parseJsonTimestamp(value[0], options),
           end: parseJsonTimestamp(value[1], options),
         });
       }
-      if (typeof value === "object" && value !== null && "start" in value && "end" in value && !("value" in value)) {
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'start' in value &&
+        'end' in value &&
+        !('value' in value)
+      ) {
         return new TimeRange({
-          start: parseJsonTimestamp((value as { start: unknown }).start, options),
+          start: parseJsonTimestamp(
+            (value as { start: unknown }).start,
+            options,
+          ),
           end: parseJsonTimestamp((value as { end: unknown }).end, options),
         });
       }
-      throw new TypeError("expected timeRange as [start, end] or { start, end }");
-    case "interval":
+      throw new TypeError(
+        'expected timeRange as [start, end] or { start, end }',
+      );
+    case 'interval':
       if (Array.isArray(value) && value.length === 3) {
         return new Interval({
           value: value[0] as string | number,
@@ -115,39 +151,52 @@ function parseJsonKey(kind: FirstColKind, value: unknown, options: TimeZoneOptio
           end: parseJsonTimestamp(value[2], options),
         });
       }
-      if (typeof value === "object" && value !== null && "value" in value && "start" in value && "end" in value) {
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'value' in value &&
+        'start' in value &&
+        'end' in value
+      ) {
         return new Interval({
           value: (value as { value: string | number }).value,
-          start: parseJsonTimestamp((value as { start: unknown }).start, options),
+          start: parseJsonTimestamp(
+            (value as { start: unknown }).start,
+            options,
+          ),
           end: parseJsonTimestamp((value as { end: unknown }).end, options),
         });
       }
-      throw new TypeError("expected interval as [value, start, end] or { value, start, end }");
+      throw new TypeError(
+        'expected interval as [value, start, end] or { value, start, end }',
+      );
   }
 }
 
 function parseJsonRows<S extends SeriesSchema>(
   schema: S,
-  rows: TimeSeriesJsonInput<S>["rows"],
+  rows: TimeSeriesJsonInput<S>['rows'],
   options: TimeZoneOptions = {},
-): TimeSeriesInput<S>["rows"] {
-  return rows.map(row => {
+): TimeSeriesInput<S>['rows'] {
+  return rows.map((row) => {
     const values = isObjectRow(row)
-      ? schema.map(column => row[column.name as keyof typeof row])
+      ? schema.map((column) => row[column.name as keyof typeof row])
       : row;
 
-    return Object.freeze(values.map((value, index) => {
-      if (value === null) {
-        return undefined;
-      }
+    return Object.freeze(
+      values.map((value, index) => {
+        if (value === null) {
+          return undefined;
+        }
 
-      const column = schema[index]!;
-      if (index === 0) {
-        return parseJsonKey(column.kind as FirstColKind, value, options);
-      }
-      return value;
-    })) as TimeSeriesInput<S>["rows"][number];
-  }) as TimeSeriesInput<S>["rows"];
+        const column = schema[index]!;
+        if (index === 0) {
+          return parseJsonKey(column.kind as FirstColKind, value, options);
+        }
+        return value;
+      }),
+    ) as TimeSeriesInput<S>['rows'][number];
+  }) as TimeSeriesInput<S>['rows'];
 }
 type PrefixesForSeriesTuple<T extends SeriesTuple> = {
   [I in keyof T]: string;
@@ -160,18 +209,25 @@ type PrefixesForSeriesTuple<T extends SeriesTuple> = {
 function toRows<S extends SeriesSchema>(
   schema: S,
   events: ReadonlyArray<EventForSchema<S>>,
-): TimeSeriesInput<S>["rows"] {
-  return events.map(event => {
+): TimeSeriesInput<S>['rows'] {
+  return events.map((event) => {
     const data = event.data();
     return Object.freeze([
       event.key(),
-      ...schema.slice(1).map(column => data[column.name as keyof typeof data]),
-    ]) as TimeSeriesInput<S>["rows"][number];
-  }) as TimeSeriesInput<S>["rows"];
+      ...schema
+        .slice(1)
+        .map((column) => data[column.name as keyof typeof data]),
+    ]) as TimeSeriesInput<S>['rows'][number];
+  }) as TimeSeriesInput<S>['rows'];
 }
 
 function isEventKey(value: unknown): value is EventKey {
-  return typeof value === "object" && value !== null && "begin" in value && "end" in value;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'begin' in value &&
+    'end' in value
+  );
 }
 
 function toBoundaryTimestamp(value: BoundaryLike): number {
@@ -191,11 +247,11 @@ function toKey(value: KeyLike): EventKey {
     }
     return new Interval(value as IntervalInput);
   }
-  if (typeof value === "object" && value !== null) {
-    if ("value" in value) {
+  if (typeof value === 'object' && value !== null) {
+    if ('value' in value) {
       return new Interval(value as Extract<KeyLike, { value: unknown }>);
     }
-    if ("start" in value && "end" in value) {
+    if ('start' in value && 'end' in value) {
       return new TimeRange(value as TimeRangeInput);
     }
   }
@@ -218,14 +274,21 @@ function toSelectionRange(value: RangeLike): TimeRange {
     }
     return new Interval(value as IntervalInput).timeRange();
   }
-  if ("value" in value) {
-    return new Interval(value as Extract<RangeLike, { value: unknown }>).timeRange();
+  if ('value' in value) {
+    return new Interval(
+      value as Extract<RangeLike, { value: unknown }>,
+    ).timeRange();
   }
   return new TimeRange(value as TimeRangeInput);
 }
 
 function toOptionalSeriesRange(value: SeriesRangeLike): TimeRange | undefined {
-  if (typeof value === "object" && value !== null && "timeRange" in value && typeof value.timeRange === "function") {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'timeRange' in value &&
+    typeof value.timeRange === 'function'
+  ) {
     return value.timeRange() ?? undefined;
   }
   return toSelectionRange(value as RangeLike);
@@ -233,8 +296,8 @@ function toOptionalSeriesRange(value: SeriesRangeLike): TimeRange | undefined {
 
 function makeAlignedSchema<S extends SeriesSchema>(schema: S): AlignSchema<S> {
   return Object.freeze([
-    { name: "interval", kind: "interval" as const },
-    ...schema.slice(1).map(column => ({
+    { name: 'interval', kind: 'interval' as const },
+    ...schema.slice(1).map((column) => ({
       ...column,
       required: false as const,
     })),
@@ -242,15 +305,13 @@ function makeAlignedSchema<S extends SeriesSchema>(schema: S): AlignSchema<S> {
 }
 
 function sampleTime(interval: Interval, sample: AlignSample): number {
-  return sample === "center"
+  return sample === 'center'
     ? interval.begin() + interval.duration() / 2
     : interval.begin();
 }
 
 function eventAnchorTime(key: EventKey): number {
-  return key instanceof Time
-    ? key.begin()
-    : key.timeRange().midpoint();
+  return key instanceof Time ? key.begin() : key.timeRange().midpoint();
 }
 
 function loessAt(
@@ -272,15 +333,22 @@ function loessAt(
     return points[0]!.y;
   }
 
-  const neighborCount = Math.max(2, Math.min(points.length, Math.ceil(span * points.length)));
+  const neighborCount = Math.max(
+    2,
+    Math.min(points.length, Math.ceil(span * points.length)),
+  );
   const sortedDistances = points
-    .map(point => ({ point, distance: Math.abs(point.x - x) }))
+    .map((point) => ({ point, distance: Math.abs(point.x - x) }))
     .sort((left, right) => left.distance - right.distance);
   const bandwidth = sortedDistances[neighborCount - 1]!.distance;
 
   if (bandwidth === 0) {
-    const coincident = sortedDistances.filter(entry => entry.distance === 0).map(entry => entry.point.y);
-    return coincident.reduce((sum, value) => sum + value, 0) / coincident.length;
+    const coincident = sortedDistances
+      .filter((entry) => entry.distance === 0)
+      .map((entry) => entry.point.y);
+    return (
+      coincident.reduce((sum, value) => sum + value, 0) / coincident.length
+    );
   }
 
   let weightedCount = 0;
@@ -318,16 +386,19 @@ function loessAt(
   return intercept + slope * x;
 }
 
-function makeSmoothSchema<S extends SeriesSchema, Target extends NumericColumnNameForSchema<S>>(
-  schema: S,
-  target: Target,
-): SmoothSchema<S, Target>;
-function makeSmoothSchema<S extends SeriesSchema, Target extends NumericColumnNameForSchema<S>, Name extends string>(
-  schema: S,
-  target: Target,
-  output: Name,
-): SmoothAppendSchema<S, Name>;
-function makeSmoothSchema<S extends SeriesSchema, Target extends NumericColumnNameForSchema<S>>(
+function makeSmoothSchema<
+  S extends SeriesSchema,
+  Target extends NumericColumnNameForSchema<S>,
+>(schema: S, target: Target): SmoothSchema<S, Target>;
+function makeSmoothSchema<
+  S extends SeriesSchema,
+  Target extends NumericColumnNameForSchema<S>,
+  Name extends string,
+>(schema: S, target: Target, output: Name): SmoothAppendSchema<S, Name>;
+function makeSmoothSchema<
+  S extends SeriesSchema,
+  Target extends NumericColumnNameForSchema<S>,
+>(
   schema: S,
   target: Target,
   output?: string,
@@ -335,22 +406,26 @@ function makeSmoothSchema<S extends SeriesSchema, Target extends NumericColumnNa
   if (output === undefined || output === target) {
     return Object.freeze([
       schema[0],
-      ...schema.slice(1).map(column => (
+      ...schema.slice(1).map((column) =>
         column.name === target
-          ? { name: column.name, kind: "number" as const, required: false as const }
-          : column
-      )),
+          ? {
+              name: column.name,
+              kind: 'number' as const,
+              required: false as const,
+            }
+          : column,
+      ),
     ]) as unknown as SmoothSchema<S, Target>;
   }
 
-  if (schema.slice(1).some(column => column.name === output)) {
+  if (schema.slice(1).some((column) => column.name === output)) {
     throw new TypeError(`smooth output column '${output}' already exists`);
   }
 
   return Object.freeze([
     schema[0],
     ...schema.slice(1),
-    { name: output, kind: "number" as const, required: false as const },
+    { name: output, kind: 'number' as const, required: false as const },
   ]) as unknown as SmoothAppendSchema<S, string>;
 }
 
@@ -365,7 +440,7 @@ function toBoundedSequence(
 }
 
 function isTimeKeyed<S extends SeriesSchema>(series: TimeSeries<S>): boolean {
-  return series.firstColumnKind === "time";
+  return series.firstColumnKind === 'time';
 }
 
 function bucketContainsHalfOpen(bucket: Interval, timestamp: number): boolean {
@@ -383,33 +458,43 @@ function aggregateValues(
   operation: AggregateFunction,
   values: ReadonlyArray<ScalarValue | undefined>,
 ): ScalarValue | undefined {
-  const defined = values.filter((value): value is ScalarValue => value !== undefined);
-  const numeric = defined.filter((value): value is number => typeof value === "number");
+  const defined = values.filter(
+    (value): value is ScalarValue => value !== undefined,
+  );
+  const numeric = defined.filter(
+    (value): value is number => typeof value === 'number',
+  );
 
   switch (operation) {
-    case "count":
+    case 'count':
       return defined.length;
-    case "sum":
+    case 'sum':
       return numeric.reduce((sum, value) => sum + value, 0);
-    case "avg":
+    case 'avg':
       return numeric.length === 0
         ? undefined
         : numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
-    case "min":
-      return numeric.length === 0 ? undefined : numeric.reduce((left, right) => (left <= right ? left : right));
-    case "max":
-      return numeric.length === 0 ? undefined : numeric.reduce((left, right) => (left >= right ? left : right));
-    case "first":
+    case 'min':
+      return numeric.length === 0
+        ? undefined
+        : numeric.reduce((left, right) => (left <= right ? left : right));
+    case 'max':
+      return numeric.length === 0
+        ? undefined
+        : numeric.reduce((left, right) => (left >= right ? left : right));
+    case 'first':
       return defined[0];
-    case "last":
+    case 'last':
       return defined[defined.length - 1];
   }
 }
 
 function parseDurationInput(value: DurationInput): number {
-  if (typeof value === "number") {
+  if (typeof value === 'number') {
     if (!Number.isFinite(value) || value <= 0) {
-      throw new TypeError("rolling window must be a positive finite number of milliseconds");
+      throw new TypeError(
+        'rolling window must be a positive finite number of milliseconds',
+      );
     }
     return value;
   }
@@ -422,15 +507,21 @@ function parseDurationInput(value: DurationInput): number {
   const amount = Number(match[1]);
   const unit = match[2];
   const multiplier =
-    unit === "ms" ? 1
-    : unit === "s" ? 1_000
-    : unit === "m" ? 60_000
-    : unit === "h" ? 3_600_000
-    : 86_400_000;
+    unit === 'ms'
+      ? 1
+      : unit === 's'
+        ? 1_000
+        : unit === 'm'
+          ? 60_000
+          : unit === 'h'
+            ? 3_600_000
+            : 86_400_000;
   return amount * multiplier;
 }
 
-function duplicateValueColumnNames(schemas: ReadonlyArray<SeriesSchema>): string[] {
+function duplicateValueColumnNames(
+  schemas: ReadonlyArray<SeriesSchema>,
+): string[] {
   const counts = new Map<string, number>();
   for (const schema of schemas) {
     for (const column of schema.slice(1)) {
@@ -443,7 +534,10 @@ function duplicateValueColumnNames(schemas: ReadonlyArray<SeriesSchema>): string
     .sort();
 }
 
-function assertDistinctValueColumns(schemas: ReadonlyArray<SeriesSchema>, message: string): void {
+function assertDistinctValueColumns(
+  schemas: ReadonlyArray<SeriesSchema>,
+  message: string,
+): void {
   const seen = new Set<string>();
   const duplicates = new Set<string>();
   for (const schema of schemas) {
@@ -456,7 +550,7 @@ function assertDistinctValueColumns(schemas: ReadonlyArray<SeriesSchema>, messag
     }
   }
   if (duplicates.size > 0) {
-    throw new TypeError(`${message}: ${[...duplicates].sort().join(", ")}`);
+    throw new TypeError(`${message}: ${[...duplicates].sort().join(', ')}`);
   }
 }
 
@@ -478,32 +572,42 @@ function prepareSeriesForJoin<T extends SeriesTuple>(
   series: T,
   options: JoinOptions,
 ): T {
-  const conflictMode: JoinConflictMode = options.onConflict ?? "error";
-  const duplicates = duplicateValueColumnNames(series.map(item => item.schema));
+  const conflictMode: JoinConflictMode = options.onConflict ?? 'error';
+  const duplicates = duplicateValueColumnNames(
+    series.map((item) => item.schema),
+  );
 
   if (duplicates.length === 0) {
     return series;
   }
 
-  if (conflictMode === "error") {
-    throw new TypeError(`cannot join series with duplicate column names: ${duplicates.join(", ")}`);
+  if (conflictMode === 'error') {
+    throw new TypeError(
+      `cannot join series with duplicate column names: ${duplicates.join(', ')}`,
+    );
   }
 
   const prefixOptions = options as PrefixJoinOptions<readonly string[]>;
 
   if (prefixOptions.prefixes.length !== series.length) {
-    throw new TypeError(`prefix conflict handling requires exactly ${series.length} prefixes`);
+    throw new TypeError(
+      `prefix conflict handling requires exactly ${series.length} prefixes`,
+    );
   }
 
   const duplicateSet = new Set(duplicates);
   const renamedSeries = series.map((item, index) => {
-    const renameMap = buildConflictRenameMap(item.schema, duplicateSet, prefixOptions.prefixes[index]!);
+    const renameMap = buildConflictRenameMap(
+      item.schema,
+      duplicateSet,
+      prefixOptions.prefixes[index]!,
+    );
     return item.rename(renameMap);
   }) as unknown as T;
 
   assertDistinctValueColumns(
-    renamedSeries.map(item => item.schema),
-    "prefix conflict handling still produced duplicate column names",
+    renamedSeries.map((item) => item.schema),
+    'prefix conflict handling still produced duplicate column names',
   );
 
   return renamedSeries;
@@ -553,7 +657,10 @@ export class TimeSeries<S extends SeriesSchema> {
     series: T,
     options?: ErrorJoinOptions,
   ): TimeSeries<JoinManySchema<SchemasForSeriesTuple<T>>>;
-  static joinMany<const T extends SeriesTuple, const Prefixes extends PrefixesForSeriesTuple<T>>(
+  static joinMany<
+    const T extends SeriesTuple,
+    const Prefixes extends PrefixesForSeriesTuple<T>,
+  >(
     series: T,
     options: PrefixJoinOptions<Prefixes>,
   ): TimeSeries<PrefixedJoinManySchema<SchemasForSeriesTuple<T>, Prefixes>>;
@@ -561,14 +668,20 @@ export class TimeSeries<S extends SeriesSchema> {
     series: T,
     options: JoinOptions = {},
   ): TimeSeries<SeriesSchema> {
-    const prepared = prepareSeriesForJoin(series as unknown as SeriesTuple, options);
+    const prepared = prepareSeriesForJoin(
+      series as unknown as SeriesTuple,
+      options,
+    );
     const [first, ...rest] = prepared;
     let joined: TimeSeries<SeriesSchema> = first;
 
     for (const next of rest) {
-      joined = options.type === undefined
-        ? joined.join(next) as unknown as TimeSeries<SeriesSchema>
-        : joined.join(next, { type: options.type }) as unknown as TimeSeries<SeriesSchema>;
+      joined =
+        options.type === undefined
+          ? (joined.join(next) as unknown as TimeSeries<SeriesSchema>)
+          : (joined.join(next, {
+              type: options.type,
+            }) as unknown as TimeSeries<SeriesSchema>);
     }
 
     return joined;
@@ -606,7 +719,9 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.rows`. Returns the normalized row view of the series. */
   get rows(): ReadonlyArray<NormalizedRowForSchema<S>> {
-    return toRows(this.schema, this.events) as ReadonlyArray<NormalizedRowForSchema<S>>;
+    return toRows(this.schema, this.events) as ReadonlyArray<
+      NormalizedRowForSchema<S>
+    >;
   }
 
   /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
@@ -621,15 +736,22 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.last()`. Returns the last event in the series, if present. */
   last(): EventForSchema<S> | undefined {
-    return this.events.length === 0 ? undefined : this.events[this.events.length - 1];
+    return this.events.length === 0
+      ? undefined
+      : this.events[this.events.length - 1];
   }
 
   /** Example: `series.map(nextSchema, event => event)`. Maps each event into a new typed schema and returns a new series. */
   map<NextSchema extends SeriesSchema>(
     schema: NextSchema,
-    mapper: (event: EventForSchema<S>, index: number) => EventForSchema<NextSchema>,
+    mapper: (
+      event: EventForSchema<S>,
+      index: number,
+    ) => EventForSchema<NextSchema>,
   ): TimeSeries<NextSchema> {
-    const mappedEvents = this.events.map((event, index) => mapper(event, index));
+    const mappedEvents = this.events.map((event, index) =>
+      mapper(event, index),
+    );
 
     return new TimeSeries({
       name: this.name,
@@ -639,45 +761,61 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /** Example: `series.asTime({ at: "center" })`. Converts the series key type to `"time"` using the supplied anchor within each event extent. */
-  asTime(options: { at?: "begin" | "center" | "end" } = {}): TimeSeries<TimeKeyedSchema<S>> {
+  asTime(
+    options: { at?: 'begin' | 'center' | 'end' } = {},
+  ): TimeSeries<TimeKeyedSchema<S>> {
     const schema = Object.freeze([
-      { name: "time", kind: "time" as const },
+      { name: 'time', kind: 'time' as const },
       ...this.schema.slice(1),
     ]) as TimeKeyedSchema<S>;
 
     return new TimeSeries({
       name: this.name,
       schema,
-      rows: toRows(schema, this.events.map(event => event.asTime(options)) as EventForSchema<typeof schema>[]),
+      rows: toRows(
+        schema,
+        this.events.map((event) => event.asTime(options)) as EventForSchema<
+          typeof schema
+        >[],
+      ),
     });
   }
 
   /** Example: `series.asTimeRange()`. Converts the series key type to `"timeRange"` while preserving each event extent. */
   asTimeRange(): TimeSeries<TimeRangeKeyedSchema<S>> {
     const schema = Object.freeze([
-      { name: "timeRange", kind: "timeRange" as const },
+      { name: 'timeRange', kind: 'timeRange' as const },
       ...this.schema.slice(1),
     ]) as TimeRangeKeyedSchema<S>;
 
     return new TimeSeries({
       name: this.name,
       schema,
-      rows: toRows(schema, this.events.map(event => event.asTimeRange()) as EventForSchema<typeof schema>[]),
+      rows: toRows(
+        schema,
+        this.events.map((event) => event.asTimeRange()) as EventForSchema<
+          typeof schema
+        >[],
+      ),
     });
   }
 
   /** Example: `series.asInterval(event => event.begin())`. Converts the series key type to `"interval"` while preserving each event extent and supplying interval labels. */
   asInterval(value: IntervalValue): TimeSeries<IntervalKeyedSchema<S>>;
-  asInterval(value: (event: EventForSchema<S>, index: number) => IntervalValue): TimeSeries<IntervalKeyedSchema<S>>;
   asInterval(
-    value: IntervalValue | ((event: EventForSchema<S>, index: number) => IntervalValue),
+    value: (event: EventForSchema<S>, index: number) => IntervalValue,
+  ): TimeSeries<IntervalKeyedSchema<S>>;
+  asInterval(
+    value:
+      | IntervalValue
+      | ((event: EventForSchema<S>, index: number) => IntervalValue),
   ): TimeSeries<IntervalKeyedSchema<S>> {
     const schema = Object.freeze([
-      { name: "interval", kind: "interval" as const },
+      { name: 'interval', kind: 'interval' as const },
       ...this.schema.slice(1),
     ]) as IntervalKeyedSchema<S>;
     const nextEvents = this.events.map((event, index) => {
-      return typeof value === "function"
+      return typeof value === 'function'
         ? event.asInterval(() => value(event, index))
         : event.asInterval(value);
     }) as EventForSchema<typeof schema>[];
@@ -711,7 +849,10 @@ export class TimeSeries<S extends SeriesSchema> {
     other: TimeSeries<Other>,
     options?: ErrorJoinOptions,
   ): TimeSeries<JoinSchema<S, Other>>;
-  join<Other extends SeriesSchema, const Prefixes extends readonly [string, string]>(
+  join<
+    Other extends SeriesSchema,
+    const Prefixes extends readonly [string, string],
+  >(
     other: TimeSeries<Other>,
     options: PrefixJoinOptions<Prefixes>,
   ): TimeSeries<PrefixedJoinSchema<S, Other, Prefixes>>;
@@ -723,16 +864,20 @@ export class TimeSeries<S extends SeriesSchema> {
       TimeSeries<SeriesSchema>,
       TimeSeries<SeriesSchema>,
     ];
-    const joinType = options.type ?? "outer";
+    const joinType = options.type ?? 'outer';
 
     if (left.firstColumnKind !== right.firstColumnKind) {
-      throw new TypeError("cannot join series with different key kinds");
+      throw new TypeError('cannot join series with different key kinds');
     }
 
     const resultSchema = Object.freeze([
       left.schema[0],
-      ...left.schema.slice(1).map(column => ({ ...column, required: false as const })),
-      ...right.schema.slice(1).map(column => ({ ...column, required: false as const })),
+      ...left.schema
+        .slice(1)
+        .map((column) => ({ ...column, required: false as const })),
+      ...right.schema
+        .slice(1)
+        .map((column) => ({ ...column, required: false as const })),
     ]) as unknown as SeriesSchema;
 
     const joinedEvents: EventForSchema<SeriesSchema>[] = [];
@@ -744,16 +889,20 @@ export class TimeSeries<S extends SeriesSchema> {
       const rightEvent = right.events[rightIndex];
 
       if (leftEvent && !rightEvent) {
-        if (joinType === "left" || joinType === "outer") {
-          joinedEvents.push(leftEvent.merge({}) as unknown as EventForSchema<SeriesSchema>);
+        if (joinType === 'left' || joinType === 'outer') {
+          joinedEvents.push(
+            leftEvent.merge({}) as unknown as EventForSchema<SeriesSchema>,
+          );
         }
         leftIndex += 1;
         continue;
       }
 
       if (rightEvent && !leftEvent) {
-        if (joinType === "right" || joinType === "outer") {
-          joinedEvents.push(rightEvent.merge({}) as unknown as EventForSchema<SeriesSchema>);
+        if (joinType === 'right' || joinType === 'outer') {
+          joinedEvents.push(
+            rightEvent.merge({}) as unknown as EventForSchema<SeriesSchema>,
+          );
         }
         rightIndex += 1;
         continue;
@@ -761,17 +910,25 @@ export class TimeSeries<S extends SeriesSchema> {
 
       const comparison = leftEvent!.key().compare(rightEvent!.key());
       if (comparison === 0) {
-        joinedEvents.push(leftEvent!.merge(rightEvent!.data()) as unknown as EventForSchema<SeriesSchema>);
+        joinedEvents.push(
+          leftEvent!.merge(
+            rightEvent!.data(),
+          ) as unknown as EventForSchema<SeriesSchema>,
+        );
         leftIndex += 1;
         rightIndex += 1;
       } else if (comparison < 0) {
-        if (joinType === "left" || joinType === "outer") {
-          joinedEvents.push(leftEvent!.merge({}) as unknown as EventForSchema<SeriesSchema>);
+        if (joinType === 'left' || joinType === 'outer') {
+          joinedEvents.push(
+            leftEvent!.merge({}) as unknown as EventForSchema<SeriesSchema>,
+          );
         }
         leftIndex += 1;
       } else {
-        if (joinType === "right" || joinType === "outer") {
-          joinedEvents.push(rightEvent!.merge({}) as unknown as EventForSchema<SeriesSchema>);
+        if (joinType === 'right' || joinType === 'outer') {
+          joinedEvents.push(
+            rightEvent!.merge({}) as unknown as EventForSchema<SeriesSchema>,
+          );
         }
         rightIndex += 1;
       }
@@ -810,10 +967,14 @@ export class TimeSeries<S extends SeriesSchema> {
    */
   align(
     sequence: SequenceLike,
-    options: { method?: AlignMethod; sample?: AlignSample; range?: TemporalLike } = {},
+    options: {
+      method?: AlignMethod;
+      sample?: AlignSample;
+      range?: TemporalLike;
+    } = {},
   ): TimeSeries<AlignSchema<S>> {
-    const method = options.method ?? "hold";
-    const sample = options.sample ?? "begin";
+    const method = options.method ?? 'hold';
+    const sample = options.sample ?? 'begin';
     const range = options.range ?? this.timeRange();
     const resultSchema = makeAlignedSchema(this.schema);
 
@@ -825,29 +986,34 @@ export class TimeSeries<S extends SeriesSchema> {
       }) as unknown as TimeSeries<AlignSchema<S>>;
     }
 
-    if (method === "linear" && !isTimeKeyed(this)) {
-      throw new TypeError("linear alignment currently requires a time-keyed series");
+    if (method === 'linear' && !isTimeKeyed(this)) {
+      throw new TypeError(
+        'linear alignment currently requires a time-keyed series',
+      );
     }
 
     const intervals = toBoundedSequence(sequence, range, sample).intervals();
     const valueColumns = this.schema.slice(1) as ValueColumnsForSchema<S>;
 
-    const alignedRows = intervals.map(interval => {
+    const alignedRows = intervals.map((interval) => {
       const t = sampleTime(interval, sample);
-      const data = method === "linear"
-        ? this.#alignLinearAt(t, valueColumns)
-        : this.#alignHoldAt(t);
+      const data =
+        method === 'linear'
+          ? this.#alignLinearAt(t, valueColumns)
+          : this.#alignHoldAt(t);
 
       return Object.freeze([
         interval,
-        ...resultSchema.slice(1).map(column => data[column.name as keyof typeof data]),
+        ...resultSchema
+          .slice(1)
+          .map((column) => data[column.name as keyof typeof data]),
       ]);
     });
 
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: alignedRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
+      rows: alignedRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
     }) as unknown as TimeSeries<AlignSchema<S>>;
   }
 
@@ -892,16 +1058,22 @@ export class TimeSeries<S extends SeriesSchema> {
   ): TimeSeries<AggregateSchema<S, Mapping>> {
     const range = options.range ?? this.timeRange();
     const resultSchema = Object.freeze([
-      { name: "interval", kind: "interval" as const },
-      ...this.schema.slice(1)
-        .filter(column => column.name in (mapping as Record<string, unknown>))
-        .map(column => {
-          const operation = mapping[column.name as keyof Mapping] as AggregateFunction;
+      { name: 'interval', kind: 'interval' as const },
+      ...this.schema
+        .slice(1)
+        .filter((column) => column.name in (mapping as Record<string, unknown>))
+        .map((column) => {
+          const operation = mapping[
+            column.name as keyof Mapping
+          ] as AggregateFunction;
           return {
             name: column.name,
-            kind: operation === "sum" || operation === "avg" || operation === "count"
-              ? "number"
-              : column.kind,
+            kind:
+              operation === 'sum' ||
+              operation === 'avg' ||
+              operation === 'count'
+                ? 'number'
+                : column.kind,
             required: false as const,
           };
         }),
@@ -915,12 +1087,16 @@ export class TimeSeries<S extends SeriesSchema> {
       }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
     }
 
-    const buckets = toBoundedSequence(sequence, range, "begin").intervals();
-    const resultRows = buckets.map(bucket => {
-      const contributors = this.events.filter(event => bucketOverlapsHalfOpen(bucket, event.key()));
-      const aggregated = resultSchema.slice(1).map(column => {
-        const operation = mapping[column.name as keyof Mapping] as AggregateFunction;
-        const values = contributors.map(event => {
+    const buckets = toBoundedSequence(sequence, range, 'begin').intervals();
+    const resultRows = buckets.map((bucket) => {
+      const contributors = this.events.filter((event) =>
+        bucketOverlapsHalfOpen(bucket, event.key()),
+      );
+      const aggregated = resultSchema.slice(1).map((column) => {
+        const operation = mapping[
+          column.name as keyof Mapping
+        ] as AggregateFunction;
+        const values = contributors.map((event) => {
           const data = event.data();
           return data[column.name as keyof typeof data];
         }) as ReadonlyArray<ScalarValue | undefined>;
@@ -932,7 +1108,7 @@ export class TimeSeries<S extends SeriesSchema> {
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
     }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
   }
 
@@ -966,33 +1142,63 @@ export class TimeSeries<S extends SeriesSchema> {
     sequence: SequenceLike,
     window: DurationInput,
     mapping: Mapping,
-    options?: { alignment?: RollingAlignment; sample?: AlignSample; range?: TemporalLike },
+    options?: {
+      alignment?: RollingAlignment;
+      sample?: AlignSample;
+      range?: TemporalLike;
+    },
   ): TimeSeries<AggregateSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequenceOrWindow: SequenceLike | DurationInput,
     windowOrMapping: DurationInput | Mapping,
-    mappingOrOptions?: Mapping | { alignment?: RollingAlignment; sample?: AlignSample; range?: TemporalLike },
-    maybeOptions: { alignment?: RollingAlignment; sample?: AlignSample; range?: TemporalLike } = {},
-  ): TimeSeries<RollingSchema<S, Mapping>> | TimeSeries<AggregateSchema<S, Mapping>> {
-    const buildResultColumns = () => this.schema.slice(1)
-      .filter(column => column.name in (mapping as Record<string, unknown>))
-      .map(column => {
-        const operation = mapping[column.name as keyof Mapping] as AggregateFunction;
-        return {
-          name: column.name,
-          kind: operation === "sum" || operation === "avg" || operation === "count"
-            ? "number"
-            : column.kind,
-          required: false as const,
-        };
-      });
+    mappingOrOptions?:
+      | Mapping
+      | {
+          alignment?: RollingAlignment;
+          sample?: AlignSample;
+          range?: TemporalLike;
+        },
+    maybeOptions: {
+      alignment?: RollingAlignment;
+      sample?: AlignSample;
+      range?: TemporalLike;
+    } = {},
+  ):
+    | TimeSeries<RollingSchema<S, Mapping>>
+    | TimeSeries<AggregateSchema<S, Mapping>> {
+    const buildResultColumns = () =>
+      this.schema
+        .slice(1)
+        .filter((column) => column.name in (mapping as Record<string, unknown>))
+        .map((column) => {
+          const operation = mapping[
+            column.name as keyof Mapping
+          ] as AggregateFunction;
+          return {
+            name: column.name,
+            kind:
+              operation === 'sum' ||
+              operation === 'avg' ||
+              operation === 'count'
+                ? 'number'
+                : column.kind,
+            required: false as const,
+          };
+        });
 
     let mapping: Mapping;
-    let options: { alignment?: RollingAlignment; sample?: AlignSample; range?: TemporalLike };
+    let options: {
+      alignment?: RollingAlignment;
+      sample?: AlignSample;
+      range?: TemporalLike;
+    };
     let sequence: SequenceLike | undefined;
     let window: DurationInput;
 
-    if (sequenceOrWindow instanceof Sequence || sequenceOrWindow instanceof BoundedSequence) {
+    if (
+      sequenceOrWindow instanceof Sequence ||
+      sequenceOrWindow instanceof BoundedSequence
+    ) {
       sequence = sequenceOrWindow;
       window = windowOrMapping as DurationInput;
       mapping = mappingOrOptions as Mapping;
@@ -1000,27 +1206,31 @@ export class TimeSeries<S extends SeriesSchema> {
     } else {
       window = sequenceOrWindow;
       mapping = windowOrMapping as Mapping;
-      options = (mappingOrOptions as { alignment?: RollingAlignment } | undefined) ?? {};
+      options =
+        (mappingOrOptions as { alignment?: RollingAlignment } | undefined) ??
+        {};
     }
 
     const windowMs = parseDurationInput(window);
-    const alignment = options.alignment ?? "trailing";
+    const alignment = options.alignment ?? 'trailing';
     const anchorInWindow = (candidate: number, anchor: number): boolean => {
-      if (alignment === "trailing") {
+      if (alignment === 'trailing') {
         return candidate > anchor - windowMs && candidate <= anchor;
       }
-      if (alignment === "leading") {
+      if (alignment === 'leading') {
         return candidate >= anchor && candidate < anchor + windowMs;
       }
       const halfWindow = windowMs / 2;
-      return candidate >= anchor - halfWindow && candidate < anchor + halfWindow;
+      return (
+        candidate >= anchor - halfWindow && candidate < anchor + halfWindow
+      );
     };
 
     if (sequence) {
-      const sample = options.sample ?? "begin";
+      const sample = options.sample ?? 'begin';
       const range = options.range ?? this.timeRange();
       const resultSchema = Object.freeze([
-        { name: "interval", kind: "interval" as const },
+        { name: 'interval', kind: 'interval' as const },
         ...buildResultColumns(),
       ]) as unknown as AggregateSchema<S, Mapping>;
 
@@ -1033,12 +1243,16 @@ export class TimeSeries<S extends SeriesSchema> {
       }
 
       const buckets = toBoundedSequence(sequence, range, sample).intervals();
-      const resultRows = buckets.map(bucket => {
+      const resultRows = buckets.map((bucket) => {
         const anchor = sampleTime(bucket, sample);
-        const contributors = this.events.filter(candidate => anchorInWindow(candidate.begin(), anchor));
-        const aggregated = resultSchema.slice(1).map(column => {
-          const operation = mapping[column.name as keyof Mapping] as AggregateFunction;
-          const values = contributors.map(candidate => {
+        const contributors = this.events.filter((candidate) =>
+          anchorInWindow(candidate.begin(), anchor),
+        );
+        const aggregated = resultSchema.slice(1).map((column) => {
+          const operation = mapping[
+            column.name as keyof Mapping
+          ] as AggregateFunction;
+          const values = contributors.map((candidate) => {
             const data = candidate.data();
             return data[column.name as keyof typeof data];
           }) as ReadonlyArray<ScalarValue | undefined>;
@@ -1051,7 +1265,7 @@ export class TimeSeries<S extends SeriesSchema> {
       return new TimeSeries({
         name: this.name,
         schema: resultSchema as unknown as SeriesSchema,
-        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
+        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
       }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
     }
 
@@ -1060,12 +1274,16 @@ export class TimeSeries<S extends SeriesSchema> {
       ...buildResultColumns(),
     ]) as unknown as RollingSchema<S, Mapping>;
 
-    const resultRows = this.events.map(event => {
+    const resultRows = this.events.map((event) => {
       const anchor = event.begin();
-      const contributors = this.events.filter(candidate => anchorInWindow(candidate.begin(), anchor));
-      const aggregated = resultSchema.slice(1).map(column => {
-        const operation = mapping[column.name as keyof Mapping] as AggregateFunction;
-        const values = contributors.map(candidate => {
+      const contributors = this.events.filter((candidate) =>
+        anchorInWindow(candidate.begin(), anchor),
+      );
+      const aggregated = resultSchema.slice(1).map((column) => {
+        const operation = mapping[
+          column.name as keyof Mapping
+        ] as AggregateFunction;
+        const values = contributors.map((candidate) => {
           const data = candidate.data();
           return data[column.name as keyof typeof data];
         }) as ReadonlyArray<ScalarValue | undefined>;
@@ -1078,7 +1296,7 @@ export class TimeSeries<S extends SeriesSchema> {
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
     }) as unknown as TimeSeries<RollingSchema<S, Mapping>>;
   }
 
@@ -1109,123 +1327,186 @@ export class TimeSeries<S extends SeriesSchema> {
       | { alpha: number; output?: Output }
       | { window: DurationInput; alignment?: RollingAlignment; output?: Output }
       | { span: number; output?: Output },
-  ): TimeSeries<Output extends string ? SmoothAppendSchema<S, Output> : SmoothSchema<S, Target>> {
+  ): TimeSeries<
+    Output extends string
+      ? SmoothAppendSchema<S, Output>
+      : SmoothSchema<S, Target>
+  > {
     const output = options.output;
-    const resultSchema = output === undefined
-      ? makeSmoothSchema(this.schema, column)
-      : makeSmoothSchema(this.schema, column, output);
+    const resultSchema =
+      output === undefined
+        ? makeSmoothSchema(this.schema, column)
+        : makeSmoothSchema(this.schema, column, output);
 
-    const anchors = this.events.map(event => eventAnchorTime(event.key()));
-    const sourceValues: ReadonlyArray<number | undefined> = this.events.map(event => {
-      const raw = event.get(column);
-      return typeof raw === "number" ? raw : undefined;
-    });
+    const anchors = this.events.map((event) => eventAnchorTime(event.key()));
+    const sourceValues: ReadonlyArray<number | undefined> = this.events.map(
+      (event) => {
+        const raw = event.get(column);
+        return typeof raw === 'number' ? raw : undefined;
+      },
+    );
 
-    if (method === "ema") {
-      if (!("alpha" in options)) {
-        throw new TypeError("ema smoothing requires an alpha option");
+    if (method === 'ema') {
+      if (!('alpha' in options)) {
+        throw new TypeError('ema smoothing requires an alpha option');
       }
       const alpha = options.alpha;
-      if (typeof alpha !== "number" || !Number.isFinite(alpha) || alpha <= 0 || alpha > 1) {
-        throw new TypeError("ema smoothing requires alpha to be a finite number in the range (0, 1]");
+      if (
+        typeof alpha !== 'number' ||
+        !Number.isFinite(alpha) ||
+        alpha <= 0 ||
+        alpha > 1
+      ) {
+        throw new TypeError(
+          'ema smoothing requires alpha to be a finite number in the range (0, 1]',
+        );
       }
 
       let previous: number | undefined;
-      const resultRows = this.events.map(event => {
+      const resultRows = this.events.map((event) => {
         const raw = event.get(column);
-        const smoothed = typeof raw !== "number"
-          ? undefined
-          : previous === undefined
-            ? raw
-            : alpha * raw + (1 - alpha) * previous;
+        const smoothed =
+          typeof raw !== 'number'
+            ? undefined
+            : previous === undefined
+              ? raw
+              : alpha * raw + (1 - alpha) * previous;
 
         if (smoothed !== undefined) {
           previous = smoothed;
         }
 
-        const nextEvent = output === undefined
-          ? event.set(column, smoothed as EventDataForSchema<S>[Target])
-          : event.merge({ [output]: smoothed });
+        const nextEvent =
+          output === undefined
+            ? event.set(column, smoothed as EventDataForSchema<S>[Target])
+            : event.merge({ [output]: smoothed });
         return Object.freeze([
           nextEvent.key(),
-          ...resultSchema.slice(1).map(nextColumn => nextEvent.data()[nextColumn.name as keyof ReturnType<typeof nextEvent.data>]),
+          ...resultSchema
+            .slice(1)
+            .map(
+              (nextColumn) =>
+                nextEvent.data()[
+                  nextColumn.name as keyof ReturnType<typeof nextEvent.data>
+                ],
+            ),
         ]);
       });
 
       return new TimeSeries({
         name: this.name,
         schema: resultSchema as unknown as SeriesSchema,
-        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
-      }) as unknown as TimeSeries<Output extends string ? SmoothAppendSchema<S, Output> : SmoothSchema<S, Target>>;
+        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+      }) as unknown as TimeSeries<
+        Output extends string
+          ? SmoothAppendSchema<S, Output>
+          : SmoothSchema<S, Target>
+      >;
     }
 
-    if (method === "loess") {
-      if (!("span" in options)) {
-        throw new TypeError("loess smoothing requires a span option");
+    if (method === 'loess') {
+      if (!('span' in options)) {
+        throw new TypeError('loess smoothing requires a span option');
       }
       const span = options.span;
-      if (typeof span !== "number" || !Number.isFinite(span) || span <= 0 || span > 1) {
-        throw new TypeError("loess smoothing requires span to be a finite number in the range (0, 1]");
+      if (
+        typeof span !== 'number' ||
+        !Number.isFinite(span) ||
+        span <= 0 ||
+        span > 1
+      ) {
+        throw new TypeError(
+          'loess smoothing requires span to be a finite number in the range (0, 1]',
+        );
       }
 
       const resultRows = this.events.map((event, index) => {
         const smoothed = loessAt(anchors[index]!, anchors, sourceValues, span);
-        const nextEvent = output === undefined
-          ? event.set(column, smoothed as EventDataForSchema<S>[Target])
-          : event.merge({ [output]: smoothed });
+        const nextEvent =
+          output === undefined
+            ? event.set(column, smoothed as EventDataForSchema<S>[Target])
+            : event.merge({ [output]: smoothed });
         return Object.freeze([
           nextEvent.key(),
-          ...resultSchema.slice(1).map(nextColumn => nextEvent.data()[nextColumn.name as keyof ReturnType<typeof nextEvent.data>]),
+          ...resultSchema
+            .slice(1)
+            .map(
+              (nextColumn) =>
+                nextEvent.data()[
+                  nextColumn.name as keyof ReturnType<typeof nextEvent.data>
+                ],
+            ),
         ]);
       });
 
       return new TimeSeries({
         name: this.name,
         schema: resultSchema as unknown as SeriesSchema,
-        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
-      }) as unknown as TimeSeries<Output extends string ? SmoothAppendSchema<S, Output> : SmoothSchema<S, Target>>;
+        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+      }) as unknown as TimeSeries<
+        Output extends string
+          ? SmoothAppendSchema<S, Output>
+          : SmoothSchema<S, Target>
+      >;
     }
 
-    if (!("window" in options)) {
-      throw new TypeError("movingAverage smoothing requires a window option");
+    if (!('window' in options)) {
+      throw new TypeError('movingAverage smoothing requires a window option');
     }
     const window = options.window;
     const windowMs = parseDurationInput(window!);
-    const alignment = options.alignment ?? "trailing";
+    const alignment = options.alignment ?? 'trailing';
     const anchorInWindow = (candidate: number, anchor: number): boolean => {
-      if (alignment === "trailing") {
+      if (alignment === 'trailing') {
         return candidate > anchor - windowMs && candidate <= anchor;
       }
-      if (alignment === "leading") {
+      if (alignment === 'leading') {
         return candidate >= anchor && candidate < anchor + windowMs;
       }
       const halfWindow = windowMs / 2;
-      return candidate >= anchor - halfWindow && candidate < anchor + halfWindow;
+      return (
+        candidate >= anchor - halfWindow && candidate < anchor + halfWindow
+      );
     };
 
     const resultRows = this.events.map((event, index) => {
       const anchor = anchors[index]!;
       const values = sourceValues
-        .filter((_, candidateIndex) => anchorInWindow(anchors[candidateIndex]!, anchor))
-        .flatMap(value => value === undefined ? [] : [value]);
-      const smoothed = values.length === 0
-        ? undefined
-        : values.reduce((sum, value) => sum + value, 0) / values.length;
+        .filter((_, candidateIndex) =>
+          anchorInWindow(anchors[candidateIndex]!, anchor),
+        )
+        .flatMap((value) => (value === undefined ? [] : [value]));
+      const smoothed =
+        values.length === 0
+          ? undefined
+          : values.reduce((sum, value) => sum + value, 0) / values.length;
 
-      const nextEvent = output === undefined
-        ? event.set(column, smoothed as EventDataForSchema<S>[Target])
-        : event.merge({ [output]: smoothed });
+      const nextEvent =
+        output === undefined
+          ? event.set(column, smoothed as EventDataForSchema<S>[Target])
+          : event.merge({ [output]: smoothed });
       return Object.freeze([
         nextEvent.key(),
-        ...resultSchema.slice(1).map(nextColumn => nextEvent.data()[nextColumn.name as keyof ReturnType<typeof nextEvent.data>]),
+        ...resultSchema
+          .slice(1)
+          .map(
+            (nextColumn) =>
+              nextEvent.data()[
+                nextColumn.name as keyof ReturnType<typeof nextEvent.data>
+              ],
+          ),
       ]);
     });
 
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>["rows"],
-    }) as unknown as TimeSeries<Output extends string ? SmoothAppendSchema<S, Output> : SmoothSchema<S, Target>>;
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    }) as unknown as TimeSeries<
+      Output extends string
+        ? SmoothAppendSchema<S, Output>
+        : SmoothSchema<S, Target>
+    >;
   }
 
   /** Example: `series.slice(0, 10)`. Returns a positional half-open slice of the series. */
@@ -1238,7 +1519,9 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /** Example: `series.filter(event => event.get("active"))`. Returns a new series containing only events that match the predicate. */
-  filter(predicate: (event: EventForSchema<S>, index: number) => boolean): TimeSeries<S> {
+  filter(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): TimeSeries<S> {
     return new TimeSeries({
       name: this.name,
       schema: this.schema,
@@ -1250,24 +1533,30 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /** Example: `series.find(event => event.get("value") > 0)`. Returns the first event that matches the predicate, if any. */
-  find(predicate: (event: EventForSchema<S>, index: number) => boolean): EventForSchema<S> | undefined {
+  find(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): EventForSchema<S> | undefined {
     return this.events.find((event, index) => predicate(event, index));
   }
 
   /** Example: `series.some(event => event.get("healthy"))`. Returns `true` when at least one event matches the predicate. */
-  some(predicate: (event: EventForSchema<S>, index: number) => boolean): boolean {
+  some(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
     return this.events.some((event, index) => predicate(event, index));
   }
 
   /** Example: `series.every(event => event.get("healthy"))`. Returns `true` when every event matches the predicate. */
-  every(predicate: (event: EventForSchema<S>, index: number) => boolean): boolean {
+  every(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
     return this.events.every((event, index) => predicate(event, index));
   }
 
   /** Example: `series.includesKey(new Time(Date.now()))`. Returns `true` when the series contains an event with an exactly matching key. */
   includesKey(key: KeyLike): boolean {
     const normalizedKey = toKey(key);
-    return this.events.some(event => event.key().equals(normalizedKey));
+    return this.events.some((event) => event.key().equals(normalizedKey));
   }
 
   /** Example: `series.bisect(new Time(Date.now()))`. Returns the insertion index for the supplied key in the ordered event sequence. */
@@ -1293,7 +1582,10 @@ export class TimeSeries<S extends SeriesSchema> {
     const normalizedKey = toKey(key);
     const index = this.bisect(normalizedKey);
 
-    if (index < this.events.length && this.events[index]!.key().equals(normalizedKey)) {
+    if (
+      index < this.events.length &&
+      this.events[index]!.key().equals(normalizedKey)
+    ) {
       return this.events[index];
     }
 
@@ -1313,7 +1605,10 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     const start = first.begin();
-    const end = this.events.reduce((maxEnd, event) => Math.max(maxEnd, event.end()), first.end());
+    const end = this.events.reduce(
+      (maxEnd, event) => Math.max(maxEnd, event.end()),
+      first.end(),
+    );
     return new TimeRange({ start, end });
   }
 
@@ -1355,7 +1650,7 @@ export class TimeSeries<S extends SeriesSchema> {
    * Use `trim(...)` when you want those overlapping keys clipped to the supplied range.
    */
   overlapping(range: RangeLike): TimeSeries<S> {
-    return this.filter(event => event.overlaps(range));
+    return this.filter((event) => event.overlaps(range));
   }
 
   /**
@@ -1368,7 +1663,7 @@ export class TimeSeries<S extends SeriesSchema> {
    */
   containedBy(range: RangeLike): TimeSeries<S> {
     const selectionRange = toSelectionRange(range);
-    return this.filter(event => selectionRange.contains(event));
+    return this.filter((event) => selectionRange.contains(event));
   }
 
   /**
@@ -1380,7 +1675,7 @@ export class TimeSeries<S extends SeriesSchema> {
    */
   trim(range: RangeLike): TimeSeries<S> {
     const trimmedEvents = this.events
-      .map(event => event.trim(range))
+      .map((event) => event.trim(range))
       .filter((event): event is EventForSchema<S> => event !== undefined);
 
     return new TimeSeries({
@@ -1393,13 +1688,13 @@ export class TimeSeries<S extends SeriesSchema> {
   /** Example: `series.before(Date.now())`. Returns the events ending strictly before the supplied temporal boundary. */
   before(boundary: BoundaryLike): TimeSeries<S> {
     const limit = toBoundaryTimestamp(boundary);
-    return this.filter(event => event.end() < limit);
+    return this.filter((event) => event.end() < limit);
   }
 
   /** Example: `series.after(Date.now())`. Returns the events beginning strictly after the supplied temporal boundary. */
   after(boundary: BoundaryLike): TimeSeries<S> {
     const limit = toBoundaryTimestamp(boundary);
-    return this.filter(event => event.begin() > limit);
+    return this.filter((event) => event.begin() > limit);
   }
 
   /**
@@ -1417,11 +1712,17 @@ export class TimeSeries<S extends SeriesSchema> {
    * Use `overlapping(...)` for intersection-based selection or `trim(...)` for clipped output.
    */
   within(range: RangeLike): TimeSeries<S>;
-  within(beginOrRange: TimestampInput | RangeLike, end?: TimestampInput): TimeSeries<S> {
-    const range = end === undefined
-      ? toSelectionRange(beginOrRange as RangeLike)
-      : new TimeRange({ start: beginOrRange as TimestampInput, end });
-    return this.filter(event => event.begin() >= range.begin() && event.end() <= range.end());
+  within(
+    beginOrRange: TimestampInput | RangeLike,
+    end?: TimestampInput,
+  ): TimeSeries<S> {
+    const range =
+      end === undefined
+        ? toSelectionRange(beginOrRange as RangeLike)
+        : new TimeRange({ start: beginOrRange as TimestampInput, end });
+    return this.filter(
+      (event) => event.begin() >= range.begin() && event.end() <= range.end(),
+    );
   }
 
   /** Example: `series.select("cpu", "healthy")`. Returns a new series containing only the selected payload fields. */
@@ -1429,13 +1730,15 @@ export class TimeSeries<S extends SeriesSchema> {
     ...keys: Keys
   ): TimeSeries<SelectSchema<S, Keys[number] & string>> {
     const firstColumn = this.schema[0]!;
-    const selectedColumns = this.schema.slice(1).filter(column => keys.includes(column.name as Keys[number]));
+    const selectedColumns = this.schema
+      .slice(1)
+      .filter((column) => keys.includes(column.name as Keys[number]));
     const resultSchema = Object.freeze([
       firstColumn,
       ...selectedColumns,
     ]) as unknown as SelectSchema<S, Keys[number] & string>;
 
-    const resultEvents = this.events.map(event => {
+    const resultEvents = this.events.map((event) => {
       const selectedEvent = event.select(...keys);
       return selectedEvent;
     });
@@ -1443,7 +1746,10 @@ export class TimeSeries<S extends SeriesSchema> {
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(resultSchema as unknown as SeriesSchema, resultEvents as unknown as EventForSchema<SeriesSchema>[]),
+      rows: toRows(
+        resultSchema as unknown as SeriesSchema,
+        resultEvents as unknown as EventForSchema<SeriesSchema>[],
+      ),
     }) as unknown as TimeSeries<SelectSchema<S, Keys[number] & string>>;
   }
 
@@ -1452,16 +1758,18 @@ export class TimeSeries<S extends SeriesSchema> {
     mapping: Mapping,
   ): TimeSeries<RenameSchema<S, Mapping>> {
     const firstColumn = this.schema[0]!;
-    const renamedColumns = this.schema.slice(1).map(column => ({
+    const renamedColumns = this.schema.slice(1).map((column) => ({
       ...column,
-      name: (mapping as Partial<Record<string, string>>)[column.name] ?? column.name,
+      name:
+        (mapping as Partial<Record<string, string>>)[column.name] ??
+        column.name,
     }));
     const resultSchema = Object.freeze([
       firstColumn,
       ...renamedColumns,
     ]) as unknown as RenameSchema<S, Mapping>;
 
-    const resultEvents = this.events.map(event => {
+    const resultEvents = this.events.map((event) => {
       const renamedEvent = event.rename(mapping);
       return renamedEvent;
     });
@@ -1469,7 +1777,10 @@ export class TimeSeries<S extends SeriesSchema> {
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(resultSchema as unknown as SeriesSchema, resultEvents as unknown as EventForSchema<SeriesSchema>[]),
+      rows: toRows(
+        resultSchema as unknown as SeriesSchema,
+        resultEvents as unknown as EventForSchema<SeriesSchema>[],
+      ),
     }) as unknown as TimeSeries<RenameSchema<S, Mapping>>;
   }
 
@@ -1505,7 +1816,7 @@ export class TimeSeries<S extends SeriesSchema> {
     reducer: (values: Pick<EventDataForSchema<S>, Keys[number]>) => R,
     options?: { append?: boolean },
   ): TimeSeries<CollapseSchema<S, Keys[number] & string, Name, R, boolean>> {
-    const nextEvents = this.events.map(event => {
+    const nextEvents = this.events.map((event) => {
       if (options?.append === true) {
         return event.collapse(keys, output, reducer, { append: true });
       }
@@ -1516,26 +1827,34 @@ export class TimeSeries<S extends SeriesSchema> {
     const append = options?.append === true;
     const keptColumns = append
       ? this.schema.slice(1)
-      : this.schema.slice(1).filter(column => !keys.includes(column.name as Keys[number]));
+      : this.schema
+          .slice(1)
+          .filter((column) => !keys.includes(column.name as Keys[number]));
 
     const resultSchema = Object.freeze([
       firstColumn,
       ...keptColumns,
       {
         name: output,
-        kind: typeof nextEvents[0]?.get(output) === "number"
-          ? "number"
-          : typeof nextEvents[0]?.get(output) === "boolean"
-            ? "boolean"
-            : "string",
+        kind:
+          typeof nextEvents[0]?.get(output) === 'number'
+            ? 'number'
+            : typeof nextEvents[0]?.get(output) === 'boolean'
+              ? 'boolean'
+              : 'string',
       },
     ]) as unknown as CollapseSchema<S, Keys[number] & string, Name, R, boolean>;
 
     return new TimeSeries({
       name: this.name,
       schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(resultSchema as unknown as SeriesSchema, nextEvents as unknown as EventForSchema<SeriesSchema>[]),
-    }) as unknown as TimeSeries<CollapseSchema<S, Keys[number] & string, Name, R, boolean>>;
+      rows: toRows(
+        resultSchema as unknown as SeriesSchema,
+        nextEvents as unknown as EventForSchema<SeriesSchema>[],
+      ),
+    }) as unknown as TimeSeries<
+      CollapseSchema<S, Keys[number] & string, Name, R, boolean>
+    >;
   }
 
   /** Example: `series.length`. Returns the number of events in the series. */
@@ -1552,7 +1871,7 @@ export class TimeSeries<S extends SeriesSchema> {
     t: number,
     valueColumns: ValueColumnsForSchema<S>,
   ): EventDataForSchema<S> {
-    const exact = this.find(event => event.begin() === t);
+    const exact = this.find((event) => event.begin() === t);
     if (exact) {
       return exact.data() as EventDataForSchema<S>;
     }
@@ -1569,13 +1888,17 @@ export class TimeSeries<S extends SeriesSchema> {
     const nextData = next.data();
 
     for (const column of valueColumns) {
-      const previousValue = previousData[column.name as keyof typeof previousData];
+      const previousValue =
+        previousData[column.name as keyof typeof previousData];
       const nextValue = nextData[column.name as keyof typeof nextData];
 
-      if (column.kind === "number"
-        && typeof previousValue === "number"
-        && typeof nextValue === "number") {
-        result[column.name] = previousValue + (nextValue - previousValue) * ratio;
+      if (
+        column.kind === 'number' &&
+        typeof previousValue === 'number' &&
+        typeof nextValue === 'number'
+      ) {
+        result[column.name] =
+          previousValue + (nextValue - previousValue) * ratio;
         continue;
       }
 

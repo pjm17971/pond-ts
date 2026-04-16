@@ -3,15 +3,15 @@ import type {
   IntervalInput,
   TimeRangeInput,
   TimestampInput,
-} from "./temporal.js";
-import type { Event } from "./Event.js";
-import type { Interval } from "./Interval.js";
-import type { Time } from "./Time.js";
-import type { TimeRange } from "./TimeRange.js";
+} from './temporal.js';
+import type { Event } from './Event.js';
+import type { Interval } from './Interval.js';
+import type { Time } from './Time.js';
+import type { TimeRange } from './TimeRange.js';
 
-export type ScalarKind = "number" | "string" | "boolean";
+export type ScalarKind = 'number' | 'string' | 'boolean';
 export type ScalarValue = number | string | boolean;
-export type FirstColKind = "time" | "interval" | "timeRange";
+export type FirstColKind = 'time' | 'interval' | 'timeRange';
 
 export type ColumnDef<Name extends string, Kind extends string> = {
   name: Name;
@@ -20,25 +20,35 @@ export type ColumnDef<Name extends string, Kind extends string> = {
 };
 
 export type FirstColumn =
-  | ColumnDef<"time", "time">
-  | ColumnDef<"interval", "interval">
-  | ColumnDef<"timeRange", "timeRange">;
+  | ColumnDef<'time', 'time'>
+  | ColumnDef<'interval', 'interval'>
+  | ColumnDef<'timeRange', 'timeRange'>;
 
-export type ValueColumn<Name extends string = string> = ColumnDef<Name, ScalarKind>;
+export type ValueColumn<Name extends string = string> = ColumnDef<
+  Name,
+  ScalarKind
+>;
 
 export type SeriesSchema = readonly [FirstColumn, ...ValueColumn[]];
 
-export type ValueForKind<K extends string> =
-  K extends "time" ? TimestampInput | Time
-  : K extends "interval" ? IntervalInput | Interval
-  : K extends "timeRange" ? TimeRangeInput | TimeRange
-  : K extends "number" ? number
-  : K extends "string" ? string
-  : K extends "boolean" ? boolean
-  : never;
+export type ValueForKind<K extends string> = K extends 'time'
+  ? TimestampInput | Time
+  : K extends 'interval'
+    ? IntervalInput | Interval
+    : K extends 'timeRange'
+      ? TimeRangeInput | TimeRange
+      : K extends 'number'
+        ? number
+        : K extends 'string'
+          ? string
+          : K extends 'boolean'
+            ? boolean
+            : never;
 
 export type RowForSchema<S extends readonly ColumnDef<string, string>[]> = {
-  [I in keyof S]: S[I] extends ColumnDef<any, infer K> ? ValueForKind<K> : never;
+  [I in keyof S]: S[I] extends ColumnDef<any, infer K>
+    ? ValueForKind<K>
+    : never;
 };
 
 export type TimeSeriesInput<S extends SeriesSchema> = {
@@ -52,24 +62,41 @@ export type JsonTimeRangeInput =
   | readonly [start: JsonTimestampInput, end: JsonTimestampInput]
   | { start: JsonTimestampInput; end: JsonTimestampInput };
 export type JsonIntervalInput =
-  | readonly [value: string | number, start: JsonTimestampInput, end: JsonTimestampInput]
-  | { value: string | number; start: JsonTimestampInput; end: JsonTimestampInput };
+  | readonly [
+      value: string | number,
+      start: JsonTimestampInput,
+      end: JsonTimestampInput,
+    ]
+  | {
+      value: string | number;
+      start: JsonTimestampInput;
+      end: JsonTimestampInput;
+    };
 
-export type JsonValueForKind<K extends string> =
-  K extends "time" ? JsonTimestampInput
-  : K extends "timeRange" ? JsonTimeRangeInput
-  : K extends "interval" ? JsonIntervalInput
-  : K extends "number" ? number
-  : K extends "string" ? string
-  : K extends "boolean" ? boolean
-  : never;
+export type JsonValueForKind<K extends string> = K extends 'time'
+  ? JsonTimestampInput
+  : K extends 'timeRange'
+    ? JsonTimeRangeInput
+    : K extends 'interval'
+      ? JsonIntervalInput
+      : K extends 'number'
+        ? number
+        : K extends 'string'
+          ? string
+          : K extends 'boolean'
+            ? boolean
+            : never;
 
 export type JsonRowForSchema<S extends readonly ColumnDef<string, string>[]> = {
-  [I in keyof S]: S[I] extends ColumnDef<any, infer K> ? JsonValueForKind<K> | null : never;
+  [I in keyof S]: S[I] extends ColumnDef<any, infer K>
+    ? JsonValueForKind<K> | null
+    : never;
 };
 
 export type JsonObjectRowForSchema<S extends SeriesSchema> = {
-  [C in S[number] as C["name"]]: C extends ColumnDef<any, infer K> ? JsonValueForKind<K> | null : never;
+  [C in S[number] as C['name']]: C extends ColumnDef<any, infer K>
+    ? JsonValueForKind<K> | null
+    : never;
 };
 
 export type TimeSeriesJsonInput<S extends SeriesSchema> = {
@@ -78,42 +105,55 @@ export type TimeSeriesJsonInput<S extends SeriesSchema> = {
   rows: ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>;
 };
 
-export type NormalizedValueForKind<K extends string> =
-  K extends "time" ? Time
-  : K extends "timeRange" ? TimeRange
-  : K extends "interval" ? Interval
-  : K extends "number" ? number
-  : K extends "string" ? string
-  : K extends "boolean" ? boolean
-  : never;
+export type NormalizedValueForKind<K extends string> = K extends 'time'
+  ? Time
+  : K extends 'timeRange'
+    ? TimeRange
+    : K extends 'interval'
+      ? Interval
+      : K extends 'number'
+        ? number
+        : K extends 'string'
+          ? string
+          : K extends 'boolean'
+            ? boolean
+            : never;
 
-export type NormalizedRowForSchema<S extends readonly ColumnDef<string, string>[]> = {
-  [I in keyof S]: S[I] extends ColumnDef<any, infer K> ? NormalizedValueForKind<K> : never;
+export type NormalizedRowForSchema<
+  S extends readonly ColumnDef<string, string>[],
+> = {
+  [I in keyof S]: S[I] extends ColumnDef<any, infer K>
+    ? NormalizedValueForKind<K>
+    : never;
 };
 
 type DataValueForColumn<C extends ColumnDef<string, string>> =
   C extends ColumnDef<any, infer K>
-    ? C["required"] extends false
+    ? C['required'] extends false
       ? NormalizedValueForKind<K> | undefined
       : NormalizedValueForKind<K>
     : never;
 
-type DataColumnsForSchema<S extends SeriesSchema> =
-  S extends readonly [FirstColumn, ...infer Rest]
-    ? Rest extends readonly ValueColumn[]
-      ? Rest
-      : never
-    : never;
+type DataColumnsForSchema<S extends SeriesSchema> = S extends readonly [
+  FirstColumn,
+  ...infer Rest,
+]
+  ? Rest extends readonly ValueColumn[]
+    ? Rest
+    : never
+  : never;
 
 export type EventDataForSchema<S extends SeriesSchema> = {
-  [C in DataColumnsForSchema<S>[number] as C["name"]]: DataValueForColumn<C>;
+  [C in DataColumnsForSchema<S>[number] as C['name']]: DataValueForColumn<C>;
 };
 
-export type EventKeyForKind<K extends FirstColKind> =
-  K extends "time" ? Time
-  : K extends "timeRange" ? TimeRange
-  : K extends "interval" ? Interval
-  : never;
+export type EventKeyForKind<K extends FirstColKind> = K extends 'time'
+  ? Time
+  : K extends 'timeRange'
+    ? TimeRange
+    : K extends 'interval'
+      ? Interval
+      : never;
 
 export type EventKeyForSchema<S extends SeriesSchema> =
   S[0] extends ColumnDef<any, infer K>
@@ -132,21 +172,33 @@ export type RekeySchema<
   First extends FirstColumn,
 > = readonly [First, ...ValueColumnsForSchema<S>];
 
-export type TimeKeyedSchema<S extends SeriesSchema> = RekeySchema<S, ColumnDef<"time", "time">>;
-export type TimeRangeKeyedSchema<S extends SeriesSchema> = RekeySchema<S, ColumnDef<"timeRange", "timeRange">>;
-export type IntervalKeyedSchema<S extends SeriesSchema> = RekeySchema<S, ColumnDef<"interval", "interval">>;
+export type TimeKeyedSchema<S extends SeriesSchema> = RekeySchema<
+  S,
+  ColumnDef<'time', 'time'>
+>;
+export type TimeRangeKeyedSchema<S extends SeriesSchema> = RekeySchema<
+  S,
+  ColumnDef<'timeRange', 'timeRange'>
+>;
+export type IntervalKeyedSchema<S extends SeriesSchema> = RekeySchema<
+  S,
+  ColumnDef<'interval', 'interval'>
+>;
 
-export type ValueColumnsForSchema<S extends SeriesSchema> =
-  S extends readonly [FirstColumn, ...infer Rest]
-    ? Rest extends readonly ValueColumn[]
-      ? Rest
-      : never
-    : never;
+export type ValueColumnsForSchema<S extends SeriesSchema> = S extends readonly [
+  FirstColumn,
+  ...infer Rest,
+]
+  ? Rest extends readonly ValueColumn[]
+    ? Rest
+    : never
+  : never;
 
-export type KindForValue<V extends ScalarValue> =
-  V extends number ? "number"
-  : V extends string ? "string"
-  : "boolean";
+export type KindForValue<V extends ScalarValue> = V extends number
+  ? 'number'
+  : V extends string
+    ? 'string'
+    : 'boolean';
 
 export type CollapseData<
   D,
@@ -164,14 +216,17 @@ type DropSelectedColumns<
 > = Columns extends readonly [infer Head, ...infer Tail]
   ? Head extends ValueColumn
     ? Tail extends readonly ValueColumn[]
-      ? Head["name"] extends Keys
+      ? Head['name'] extends Keys
         ? DropSelectedColumns<Tail, Keys>
         : [Head, ...DropSelectedColumns<Tail, Keys>]
       : []
     : []
   : [];
 
-type OutputColumn<Name extends string, R extends ScalarValue> = ColumnDef<Name, KindForValue<R>>;
+type OutputColumn<Name extends string, R extends ScalarValue> = ColumnDef<
+  Name,
+  KindForValue<R>
+>;
 
 export type CollapseColumns<
   Columns extends readonly ValueColumn[],
@@ -194,10 +249,7 @@ export type CollapseSchema<
   ...CollapseColumns<ValueColumnsForSchema<S>, Keys, Name, R, Append>,
 ];
 
-export type SelectData<
-  D,
-  Keys extends keyof D,
-> = Readonly<Pick<D, Keys>>;
+export type SelectData<D, Keys extends keyof D> = Readonly<Pick<D, Keys>>;
 
 type PickSelectedColumns<
   Columns extends readonly ValueColumn[],
@@ -205,7 +257,7 @@ type PickSelectedColumns<
 > = Columns extends readonly [infer Head, ...infer Tail]
   ? Head extends ValueColumn
     ? Tail extends readonly ValueColumn[]
-      ? Head["name"] extends Keys
+      ? Head['name'] extends Keys
         ? [Head, ...PickSelectedColumns<Tail, Keys>]
         : PickSelectedColumns<Tail, Keys>
       : []
@@ -215,19 +267,13 @@ type PickSelectedColumns<
 export type SelectSchema<
   S extends SeriesSchema,
   Keys extends keyof EventDataForSchema<S> & string,
-> = readonly [
-  S[0],
-  ...PickSelectedColumns<ValueColumnsForSchema<S>, Keys>,
-];
+> = readonly [S[0], ...PickSelectedColumns<ValueColumnsForSchema<S>, Keys>];
 
 export type RenameMap<D> = Partial<{
   [K in keyof D & string]: string;
 }>;
 
-export type RenameData<
-  D,
-  Mapping extends RenameMap<D>,
-> = Readonly<{
+export type RenameData<D, Mapping extends RenameMap<D>> = Readonly<{
   [Name in keyof D & string as Name extends keyof Mapping
     ? Mapping[Name] extends string
       ? Mapping[Name]
@@ -238,16 +284,17 @@ export type RenameData<
 type RenameColumn<
   Column extends ValueColumn,
   Mapping extends Partial<Record<string, string>>,
-> = Column extends ColumnDef<infer Name, infer Kind>
-  ? ColumnDef<
-      Name extends keyof Mapping
-        ? Mapping[Name] extends string
-          ? Mapping[Name]
-          : Name
-        : Name,
-      Kind
-    >
-  : never;
+> =
+  Column extends ColumnDef<infer Name, infer Kind>
+    ? ColumnDef<
+        Name extends keyof Mapping
+          ? Mapping[Name] extends string
+            ? Mapping[Name]
+            : Name
+          : Name,
+        Kind
+      >
+    : never;
 
 type RenameColumns<
   Columns extends readonly ValueColumn[],
@@ -263,14 +310,12 @@ type RenameColumns<
 export type RenameSchema<
   S extends SeriesSchema,
   Mapping extends RenameMap<EventDataForSchema<S>>,
-> = readonly [
-  S[0],
-  ...RenameColumns<ValueColumnsForSchema<S>, Mapping>,
-];
+> = readonly [S[0], ...RenameColumns<ValueColumnsForSchema<S>, Mapping>];
 
-type OptionalizeColumn<Column extends ValueColumn> = Column extends ColumnDef<infer Name, infer Kind>
-  ? ColumnDef<Name, Kind> & { readonly required: false }
-  : never;
+type OptionalizeColumn<Column extends ValueColumn> =
+  Column extends ColumnDef<infer Name, infer Kind>
+    ? ColumnDef<Name, Kind> & { readonly required: false }
+    : never;
 
 type OptionalizeColumns<Columns extends readonly ValueColumn[]> =
   Columns extends readonly [infer Head, ...infer Tail]
@@ -282,40 +327,51 @@ type OptionalizeColumns<Columns extends readonly ValueColumn[]> =
     : [];
 
 export type AlignSchema<S extends SeriesSchema> = readonly [
-  ColumnDef<"interval", "interval">,
+  ColumnDef<'interval', 'interval'>,
   ...OptionalizeColumns<ValueColumnsForSchema<S>>,
 ];
 
-export type AggregateFunction = "sum" | "avg" | "min" | "max" | "count" | "first" | "last";
-export type RollingAlignment = "trailing" | "leading" | "centered";
-export type SmoothMethod = "ema" | "movingAverage" | "loess";
-export type JoinType = "inner" | "left" | "right" | "outer";
-export type JoinConflictMode = "error" | "prefix";
+export type AggregateFunction =
+  | 'sum'
+  | 'avg'
+  | 'min'
+  | 'max'
+  | 'count'
+  | 'first'
+  | 'last';
+export type RollingAlignment = 'trailing' | 'leading' | 'centered';
+export type SmoothMethod = 'ema' | 'movingAverage' | 'loess';
+export type JoinType = 'inner' | 'left' | 'right' | 'outer';
+export type JoinConflictMode = 'error' | 'prefix';
 
-type AggregateFunctionsForKind<Kind extends ScalarKind> =
-  Kind extends "number"
-    ? AggregateFunction
-    : "count" | "first" | "last";
+type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
+  ? AggregateFunction
+  : 'count' | 'first' | 'last';
 
 type AggregateMapEntries<S extends SeriesSchema> = {
-  [C in ValueColumnsForSchema<S>[number] as C["name"]]?: AggregateFunctionsForKind<C["kind"]>;
+  [C in ValueColumnsForSchema<S>[number] as C['name']]?: AggregateFunctionsForKind<
+    C['kind']
+  >;
 };
 
-export type AggregateMap<S extends SeriesSchema> = Readonly<AggregateMapEntries<S>>;
+export type AggregateMap<S extends SeriesSchema> = Readonly<
+  AggregateMapEntries<S>
+>;
 
 type AggregateKindForColumn<
   Column extends ValueColumn,
   Op extends AggregateFunction,
-> = Op extends "sum" | "avg" | "count"
-  ? "number"
-  : Column["kind"];
+> = Op extends 'sum' | 'avg' | 'count' ? 'number' : Column['kind'];
 
 type AggregateColumnForMap<
   Column extends ValueColumn,
   Mapping,
-> = Column["name"] extends keyof Mapping
-  ? Mapping[Column["name"]] extends AggregateFunction
-    ? ColumnDef<Column["name"], AggregateKindForColumn<Column, Mapping[Column["name"]]>> & {
+> = Column['name'] extends keyof Mapping
+  ? Mapping[Column['name']] extends AggregateFunction
+    ? ColumnDef<
+        Column['name'],
+        AggregateKindForColumn<Column, Mapping[Column['name']]>
+      > & {
         readonly required: false;
       }
     : never
@@ -327,32 +383,31 @@ type AggregateColumns<
 > = Columns extends readonly [infer Head, ...infer Tail]
   ? Head extends ValueColumn
     ? Tail extends readonly ValueColumn[]
-      ? Head["name"] extends keyof Mapping
-        ? [AggregateColumnForMap<Head, Mapping>, ...AggregateColumns<Tail, Mapping>]
+      ? Head['name'] extends keyof Mapping
+        ? [
+            AggregateColumnForMap<Head, Mapping>,
+            ...AggregateColumns<Tail, Mapping>,
+          ]
         : AggregateColumns<Tail, Mapping>
       : []
     : []
   : [];
 
-export type AggregateSchema<
-  S extends SeriesSchema,
-  Mapping,
-> = readonly [
-  ColumnDef<"interval", "interval">,
+export type AggregateSchema<S extends SeriesSchema, Mapping> = readonly [
+  ColumnDef<'interval', 'interval'>,
   ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
 ];
 
-export type RollingSchema<
-  S extends SeriesSchema,
-  Mapping,
-> = readonly [
+export type RollingSchema<S extends SeriesSchema, Mapping> = readonly [
   S[0],
   ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
 ];
-export type NumericColumnNameForSchema<S extends SeriesSchema> =
-  Extract<ValueColumnsForSchema<S>[number], ColumnDef<string, "number">>["name"];
+export type NumericColumnNameForSchema<S extends SeriesSchema> = Extract<
+  ValueColumnsForSchema<S>[number],
+  ColumnDef<string, 'number'>
+>['name'];
 
-type OptionalNumberColumn<Name extends string> = ColumnDef<Name, "number"> & {
+type OptionalNumberColumn<Name extends string> = ColumnDef<Name, 'number'> & {
   readonly required: false;
 };
 
@@ -362,8 +417,11 @@ type ReplaceSmoothedColumn<
 > = Columns extends readonly [infer Head, ...infer Tail]
   ? Head extends ValueColumn
     ? Tail extends readonly ValueColumn[]
-      ? Head["name"] extends Target
-        ? [OptionalNumberColumn<Head["name"]>, ...ReplaceSmoothedColumn<Tail, Target>]
+      ? Head['name'] extends Target
+        ? [
+            OptionalNumberColumn<Head['name']>,
+            ...ReplaceSmoothedColumn<Tail, Target>,
+          ]
         : [Head, ...ReplaceSmoothedColumn<Tail, Target>]
       : []
     : []
@@ -372,19 +430,12 @@ type ReplaceSmoothedColumn<
 export type SmoothSchema<
   S extends SeriesSchema,
   Target extends NumericColumnNameForSchema<S>,
-> = readonly [
-  S[0],
-  ...ReplaceSmoothedColumn<ValueColumnsForSchema<S>, Target>,
-];
+> = readonly [S[0], ...ReplaceSmoothedColumn<ValueColumnsForSchema<S>, Target>];
 
 export type SmoothAppendSchema<
   S extends SeriesSchema,
   Name extends string,
-> = readonly [
-  S[0],
-  ...ValueColumnsForSchema<S>,
-  OptionalNumberColumn<Name>,
-];
+> = readonly [S[0], ...ValueColumnsForSchema<S>, OptionalNumberColumn<Name>];
 
 type JoinColumns<
   Left extends readonly ValueColumn[],
@@ -399,7 +450,8 @@ export type JoinSchema<
   ...JoinColumns<ValueColumnsForSchema<Left>, ValueColumnsForSchema<Right>>,
 ];
 
-type ColumnNamesForSchema<S extends SeriesSchema> = ValueColumnsForSchema<S>[number]["name"];
+type ColumnNamesForSchema<S extends SeriesSchema> =
+  ValueColumnsForSchema<S>[number]['name'];
 type DuplicateNamesForPair<
   Left extends SeriesSchema,
   Right extends SeriesSchema,
@@ -415,9 +467,12 @@ type PrefixedOptionalizeColumn<
   Column extends ValueColumn,
   Duplicates extends string,
   Prefix extends string,
-> = Column extends ColumnDef<infer Name, infer Kind>
-  ? ColumnDef<PrefixNameIfDuplicate<Name, Duplicates, Prefix>, Kind> & { readonly required: false }
-  : never;
+> =
+  Column extends ColumnDef<infer Name, infer Kind>
+    ? ColumnDef<PrefixNameIfDuplicate<Name, Duplicates, Prefix>, Kind> & {
+        readonly required: false;
+      }
+    : never;
 
 type PrefixedOptionalizeColumns<
   Columns extends readonly ValueColumn[],
@@ -426,7 +481,10 @@ type PrefixedOptionalizeColumns<
 > = Columns extends readonly [infer Head, ...infer Tail]
   ? Head extends ValueColumn
     ? Tail extends readonly ValueColumn[]
-      ? [PrefixedOptionalizeColumn<Head, Duplicates, Prefix>, ...PrefixedOptionalizeColumns<Tail, Duplicates, Prefix>]
+      ? [
+          PrefixedOptionalizeColumn<Head, Duplicates, Prefix>,
+          ...PrefixedOptionalizeColumns<Tail, Duplicates, Prefix>,
+        ]
       : []
     : []
   : [];
@@ -437,8 +495,16 @@ export type PrefixedJoinSchema<
   Prefixes extends readonly [string, string],
 > = readonly [
   Left[0],
-  ...PrefixedOptionalizeColumns<ValueColumnsForSchema<Left>, DuplicateNamesForPair<Left, Right>, Prefixes[0]>,
-  ...PrefixedOptionalizeColumns<ValueColumnsForSchema<Right>, DuplicateNamesForPair<Left, Right>, Prefixes[1]>,
+  ...PrefixedOptionalizeColumns<
+    ValueColumnsForSchema<Left>,
+    DuplicateNamesForPair<Left, Right>,
+    Prefixes[0]
+  >,
+  ...PrefixedOptionalizeColumns<
+    ValueColumnsForSchema<Right>,
+    DuplicateNamesForPair<Left, Right>,
+    Prefixes[1]
+  >,
 ];
 
 type JoinManySchemaHelper<
@@ -482,7 +548,9 @@ type DuplicateNamesAcrossSchemas<
   Schemas extends readonly [SeriesSchema, ...SeriesSchema[]],
 > = DuplicateNamesAcrossSchemasHelper<Schemas>;
 
-type PrefixTupleForSchemas<Schemas extends readonly [SeriesSchema, ...SeriesSchema[]]> = {
+type PrefixTupleForSchemas<
+  Schemas extends readonly [SeriesSchema, ...SeriesSchema[]],
+> = {
   [K in keyof Schemas]: string;
 };
 
@@ -497,12 +565,20 @@ type PrefixedJoinManyColumns<
         ? Tail extends readonly [SeriesSchema, ...SeriesSchema[]]
           ? PrefixTail extends PrefixTupleForSchemas<Tail>
             ? [
-                ...PrefixedOptionalizeColumns<ValueColumnsForSchema<Head>, Duplicates, PrefixHead>,
+                ...PrefixedOptionalizeColumns<
+                  ValueColumnsForSchema<Head>,
+                  Duplicates,
+                  PrefixHead
+                >,
                 ...PrefixedJoinManyColumns<Tail, PrefixTail, Duplicates>,
               ]
             : never
           : [
-              ...PrefixedOptionalizeColumns<ValueColumnsForSchema<Head>, Duplicates, PrefixHead>,
+              ...PrefixedOptionalizeColumns<
+                ValueColumnsForSchema<Head>,
+                Duplicates,
+                PrefixHead
+              >,
             ]
         : never
       : never
@@ -512,7 +588,4 @@ type PrefixedJoinManyColumns<
 export type PrefixedJoinManySchema<
   Schemas extends readonly [SeriesSchema, ...SeriesSchema[]],
   Prefixes extends PrefixTupleForSchemas<Schemas>,
-> = readonly [
-  Schemas[0][0],
-  ...PrefixedJoinManyColumns<Schemas, Prefixes>,
-];
+> = readonly [Schemas[0][0], ...PrefixedJoinManyColumns<Schemas, Prefixes>];

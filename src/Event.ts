@@ -1,7 +1,7 @@
-import { Interval } from "./Interval.js";
-import { Time } from "./Time.js";
-import { TimeRange } from "./TimeRange.js";
-import type { EventKey, IntervalValue, TemporalLike } from "./temporal.js";
+import { Interval } from './Interval.js';
+import { Time } from './Time.js';
+import { TimeRange } from './TimeRange.js';
+import type { EventKey, IntervalValue, TemporalLike } from './temporal.js';
 
 type ScalarValue = number | string | boolean;
 type CollapseData<
@@ -17,10 +17,7 @@ type SelectData<D, Keys extends keyof D> = Readonly<Pick<D, Keys>>;
 type RenameMap<D> = Partial<{
   [K in keyof D & string]: string;
 }>;
-type RenameData<
-  D,
-  Mapping extends RenameMap<D>,
-> = Readonly<{
+type RenameData<D, Mapping extends RenameMap<D>> = Readonly<{
   [Name in keyof D & string as Name extends keyof Mapping
     ? Mapping[Name] extends string
       ? Mapping[Name]
@@ -64,7 +61,7 @@ export class Event<K extends EventKey, D> {
   }
 
   /** Example: `event.type()`. Returns the underlying key kind. */
-  type(): K["kind"] {
+  type(): K['kind'] {
     return this.#key.kind;
   }
 
@@ -106,7 +103,9 @@ export class Event<K extends EventKey, D> {
   }
 
   /** Example: `event.rename({ cpu: "usage" })`. Returns a new event with payload fields renamed according to the supplied mapping. */
-  rename<const Mapping extends RenameMap<D>>(mapping: Mapping): Event<K, RenameData<D, Mapping>> {
+  rename<const Mapping extends RenameMap<D>>(
+    mapping: Mapping,
+  ): Event<K, RenameData<D, Mapping>> {
     const renamed: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(this.#data)) {
       const nextKey = (mapping as Partial<Record<string, string>>)[key] ?? key;
@@ -170,7 +169,10 @@ export class Event<K extends EventKey, D> {
     }
     nextData[output] = collapsedValue;
 
-    return new Event(this.#key, nextData) as Event<K, CollapseData<D, Keys[number], Name, R, boolean>>;
+    return new Event(this.#key, nextData) as Event<
+      K,
+      CollapseData<D, Keys[number], Name, R, boolean>
+    >;
   }
 
   /** Example: `event.timeRange()`. Returns the event extent as a `TimeRange`. */
@@ -226,27 +228,35 @@ export class Event<K extends EventKey, D> {
   }
 
   /** Example: `event.asTime({ at: "center" })`. Converts the event key to a point-in-time key using the supplied anchor within the current extent. */
-  asTime(options: { at?: "begin" | "center" | "end" } = {}): Event<Time, D> {
-    const at = options.at ?? "begin";
+  asTime(options: { at?: 'begin' | 'center' | 'end' } = {}): Event<Time, D> {
+    const at = options.at ?? 'begin';
     const timestamp =
-      at === "center" ? this.begin() + (this.end() - this.begin()) / 2
-      : at === "end" ? this.end()
-      : this.begin();
+      at === 'center'
+        ? this.begin() + (this.end() - this.begin()) / 2
+        : at === 'end'
+          ? this.end()
+          : this.begin();
     return this.withKey(new Time(timestamp));
   }
 
   /** Example: `event.asTimeRange()`. Converts the event key to an unlabeled `TimeRange` covering the same extent. */
   asTimeRange(): Event<TimeRange, D> {
-    return this.withKey(new TimeRange({ start: this.begin(), end: this.end() }));
+    return this.withKey(
+      new TimeRange({ start: this.begin(), end: this.end() }),
+    );
   }
 
   /** Example: `event.asInterval("bucket-a")`. Converts the event key to a labeled `Interval` covering the same extent. */
   asInterval(value: IntervalValue): Event<Interval, D>;
-  asInterval(getValue: (event: Event<K, D>) => IntervalValue): Event<Interval, D>;
-  asInterval(value: IntervalValue | ((event: Event<K, D>) => IntervalValue)): Event<Interval, D> {
-    const nextValue = typeof value === "function"
-      ? value(this)
-      : value;
-    return this.withKey(new Interval({ value: nextValue, start: this.begin(), end: this.end() }));
+  asInterval(
+    getValue: (event: Event<K, D>) => IntervalValue,
+  ): Event<Interval, D>;
+  asInterval(
+    value: IntervalValue | ((event: Event<K, D>) => IntervalValue),
+  ): Event<Interval, D> {
+    const nextValue = typeof value === 'function' ? value(this) : value;
+    return this.withKey(
+      new Interval({ value: nextValue, start: this.begin(), end: this.end() }),
+    );
   }
 }
