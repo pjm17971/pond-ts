@@ -1024,6 +1024,32 @@ export class TimeSeries<S extends SeriesSchema> {
     Object.freeze(this);
   }
 
+  /**
+   * Builds a series from event data that has already been validated and ordered by the caller.
+   *
+   * This is intentionally private and only used by transforms that preserve the existing event
+   * order and normalized key invariants.
+   */
+  static #fromTrustedEvents<NextSchema extends SeriesSchema>(
+    name: string,
+    schema: NextSchema,
+    events: ReadonlyArray<EventForSchema<NextSchema>>,
+  ): TimeSeries<NextSchema> {
+    const series = Object.create(TimeSeries.prototype) as {
+      name: string;
+      schema: NextSchema;
+      events: ReadonlyArray<EventForSchema<NextSchema>>;
+    };
+
+    series.name = name;
+    series.schema = Object.freeze(schema.slice()) as NextSchema;
+    series.events = Object.freeze(events.slice()) as ReadonlyArray<
+      EventForSchema<NextSchema>
+    >;
+
+    return Object.freeze(series) as TimeSeries<NextSchema>;
+  }
+
   /** Example: `series.firstColumnKind`. Returns the first-column kind from the series schema. */
   get firstColumnKind(): FirstColKind {
     return this.schema[0]!.kind;
@@ -1081,15 +1107,20 @@ export class TimeSeries<S extends SeriesSchema> {
       ...this.schema.slice(1),
     ]) as TimeKeyedSchema<S>;
 
+    const resultEvents = this.events.map((event) => event.asTime(options));
+
+    if ((options.at ?? 'begin') === 'begin') {
+      return TimeSeries.#fromTrustedEvents(
+        this.name,
+        schema,
+        resultEvents as EventForSchema<typeof schema>[],
+      );
+    }
+
     return new TimeSeries({
       name: this.name,
       schema,
-      rows: toRows(
-        schema,
-        this.events.map((event) => event.asTime(options)) as EventForSchema<
-          typeof schema
-        >[],
-      ),
+      rows: toRows(schema, resultEvents as EventForSchema<typeof schema>[]),
     });
   }
 
@@ -1100,16 +1131,13 @@ export class TimeSeries<S extends SeriesSchema> {
       ...this.schema.slice(1),
     ]) as TimeRangeKeyedSchema<S>;
 
-    return new TimeSeries({
-      name: this.name,
+    const resultEvents = this.events.map((event) => event.asTimeRange());
+
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
       schema,
-      rows: toRows(
-        schema,
-        this.events.map((event) => event.asTimeRange()) as EventForSchema<
-          typeof schema
-        >[],
-      ),
-    });
+      resultEvents as EventForSchema<typeof schema>[],
+    );
   }
 
   /** Example: `series.asInterval(event => event.begin())`. Converts the series key type to `"interval"` while preserving each event extent and supplying interval labels. */
@@ -1132,11 +1160,7 @@ export class TimeSeries<S extends SeriesSchema> {
         : event.asInterval(value);
     }) as EventForSchema<typeof schema>[];
 
-    return new TimeSeries({
-      name: this.name,
-      schema,
-      rows: toRows(schema, nextEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(this.name, schema, nextEvents);
   }
 
   /**
@@ -1246,11 +1270,7 @@ export class TimeSeries<S extends SeriesSchema> {
       }
     }
 
-    return new TimeSeries({
-      name: left.name,
-      schema: resultSchema,
-      rows: toRows(resultSchema, joinedEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(left.name, resultSchema, joinedEvents);
   }
 
   /**
@@ -2111,25 +2131,22 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.slice(0, 10)`. Returns a positional half-open slice of the series. */
   slice(beginIndex?: number, endIndex?: number): TimeSeries<S> {
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(this.schema, this.events.slice(beginIndex, endIndex)),
-    });
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.slice(beginIndex, endIndex),
+    );
   }
 
   /** Example: `series.filter(event => event.get("active"))`. Returns a new series containing only events that match the predicate. */
   filter(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): TimeSeries<S> {
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(
-        this.schema,
-        this.events.filter((event, index) => predicate(event, index)),
-      ),
-    });
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.filter((event, index) => predicate(event, index)),
+    );
   }
 
   /** Example: `series.find(event => event.get("value") > 0)`. Returns the first event that matches the predicate, if any. */
@@ -2282,11 +2299,7 @@ export class TimeSeries<S extends SeriesSchema> {
       .map((event) => event.trim(range))
       .filter((event): event is EventForSchema<S> => event !== undefined);
 
-    return new TimeSeries({
-      name: this.name,
-      schema: this.schema,
-      rows: toRows(this.schema, trimmedEvents),
-    });
+    return TimeSeries.#fromTrustedEvents(this.name, this.schema, trimmedEvents);
   }
 
   /** Example: `series.before(Date.now())`. Returns the events ending strictly before the supplied temporal boundary. */
@@ -2347,14 +2360,11 @@ export class TimeSeries<S extends SeriesSchema> {
       return selectedEvent;
     });
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        resultEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<SelectSchema<S, Keys[number] & string>>;
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      resultEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<SelectSchema<S, Keys[number] & string>>;
   }
 
   /** Example: `series.rename({ cpu: "usage" })`. Returns a new series with payload field names renamed according to the supplied mapping. */
@@ -2378,14 +2388,11 @@ export class TimeSeries<S extends SeriesSchema> {
       return renamedEvent;
     });
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        resultEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<RenameSchema<S, Mapping>>;
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      resultEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<RenameSchema<S, Mapping>>;
   }
 
   /** Example: `series.collapse(["in", "out"], "avg", fn)`. Collapses selected payload fields into a single derived field across each event in the series. */
@@ -2449,14 +2456,11 @@ export class TimeSeries<S extends SeriesSchema> {
       },
     ]) as unknown as CollapseSchema<S, Keys[number] & string, Name, R, boolean>;
 
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
-      rows: toRows(
-        resultSchema as unknown as SeriesSchema,
-        nextEvents as unknown as EventForSchema<SeriesSchema>[],
-      ),
-    }) as unknown as TimeSeries<
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      resultSchema as unknown as SeriesSchema,
+      nextEvents as unknown as EventForSchema<SeriesSchema>[],
+    ) as unknown as TimeSeries<
       CollapseSchema<S, Keys[number] & string, Name, R, boolean>
     >;
   }

@@ -3,6 +3,10 @@
 This document turns the broader roadmap in [FUTURE.md](FUTURE.md) into a phased
 execution plan.
 
+It should also serve as durable project memory. When meaningful work lands, this
+document should be updated in the same pass so a lost session does not erase the
+current state of the project.
+
 It is intentionally biased toward shipping useful increments while protecting
 the core design of Pond:
 
@@ -26,29 +30,67 @@ What already exists today:
 - npm packaging and automated release flow
 - a Docusaurus docs site plus generated API reference
 
-What is not yet stable enough to build on aggressively:
+What has been completed recently:
 
-- performance characteristics of the current core
-- edge-case coverage in several analytical paths
-- a settled plan for live/stateful composition
+- [x] Phase 0 performance work landed for:
+  - [x] `aggregate()`
+  - [x] `rolling()`
+  - [x] `smooth('movingAverage')`
+  - [x] `includesKey()`
+  - [x] linear alignment via `#alignLinearAt()`
+  - [x] `smooth('loess')`
+- [x] each of those changes has:
+  - [x] dedicated regression coverage
+  - [x] a benchmark script
+  - [x] a repo note documenting baseline and post-fix observations
+- [x] the main checkpoints for this work are:
+  - [x] `05a7af3` `Optimize core TimeSeries performance paths`
+  - [x] `60b2f07` `Optimize alignment and loess smoothing`
+
+Useful references for current performance state:
+
+- [PERF_AGGREGATE.md](PERF_AGGREGATE.md)
+- [PERF_ROLLING.md](PERF_ROLLING.md)
+- [PERF_SMOOTH.md](PERF_SMOOTH.md)
+- [PERF_INCLUDES_KEY.md](PERF_INCLUDES_KEY.md)
+- [PERF_ALIGN_LINEAR.md](PERF_ALIGN_LINEAR.md)
+- [PERF_LOESS.md](PERF_LOESS.md)
+
+What is still not stable enough to build on aggressively:
+
+- derived-transform construction still does avoidable validation/row round-trips
+- edge-case coverage in several analytical paths is still lighter than it
+  should be
+- custom reducers and serialization are still missing
+- a settled plan for live/stateful composition is still ahead of us
 
 ---
 
 ## Phase 0: Core performance
 
+Status: in progress, with several major hotspots already completed.
+
 Goal: make the current library scale better before adding major new APIs.
 
-Scope:
+Completed:
 
-- fix O(N²) and O(N × B) hot paths in:
-  - `aggregate()`
-  - `rolling()`
-  - `smooth('movingAverage')`
-  - `smooth('loess')`
-- add an internal pre-validated constructor path for derived series
-- remove `events -> rows -> validate -> events` round-trips where avoidable
-- replace linear scans with bisect where possible
-- reduce avoidable allocation in temporal comparisons and event construction
+- [x] optimized `aggregate()` for time-keyed point-series aggregation
+- [x] optimized event-driven `rolling()` with incremental sliding-window reducers
+- [x] optimized `smooth('movingAverage')`
+- [x] optimized `includesKey()` using `bisect()`
+- [x] optimized dense linear alignment by replacing repeated exact-match scans
+  with a forward cursor
+- [x] optimized `smooth('loess')` by precomputing defined points and avoiding a
+  full distance sort per output sample
+- [x] added benchmark-backed regression tests and observation notes for each of
+  the above
+
+Remaining scope:
+
+- [ ] add an internal pre-validated constructor path for derived series
+- [ ] remove `events -> rows -> validate -> events` round-trips where avoidable
+- [ ] replace additional linear scans with bisect where possible
+- [ ] reduce avoidable allocation in temporal comparisons and event construction
 
 Primary references:
 
@@ -59,7 +101,8 @@ Definition of done:
 
 - existing public behavior is preserved
 - targeted benchmarks show clear wins on large series
-- the main hot paths no longer have quadratic behavior on sorted data
+- the main remaining hot paths no longer have obvious quadratic behavior on
+  sorted data
 - derived transforms avoid unnecessary re-validation
 
 Suggested deliverables:
@@ -70,6 +113,8 @@ Suggested deliverables:
 ---
 
 ## Phase 1: Batch hardening
+
+Status: not started.
 
 Goal: make the existing batch surface trustworthy enough to extend.
 
@@ -100,6 +145,8 @@ Definition of done:
 ---
 
 ## Phase 2: Batch expansion
+
+Status: not started.
 
 Goal: fill the most obvious product gaps in the batch analytics story.
 
@@ -133,6 +180,8 @@ Definition of done:
 ---
 
 ## Phase 3: Live core
+
+Status: not started.
 
 Goal: introduce a minimal but principled live layer without collapsing the
 immutable `TimeSeries` model.
@@ -168,6 +217,8 @@ Definition of done:
 
 ## Phase 4: Live composition
 
+Status: not started.
+
 Goal: validate the live composition model before building UI integrations on top
 of it.
 
@@ -200,6 +251,8 @@ Definition of done:
 
 ## Phase 5: React integration
 
+Status: not started.
+
 Goal: make Pond useful in actual frontend apps without forcing a framework-y
 runtime model into the core package.
 
@@ -225,6 +278,8 @@ Definition of done:
 ---
 
 ## Phase 6: Ecosystem and adapters
+
+Status: not started.
 
 Goal: make Pond easier to adopt in real products before committing to a full
 first-party charting system.
@@ -257,6 +312,7 @@ Definition of done:
 
 These should happen throughout the phases rather than being deferred:
 
+- keep this document current whenever a meaningful implementation milestone lands
 - keep the docs site aligned with shipped behavior
 - add end-to-end examples whenever a major capability lands
 - keep API reference generation working in CI

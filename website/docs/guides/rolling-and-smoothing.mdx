@@ -35,6 +35,15 @@ Supported alignments:
 
 Use `smooth(...)` for trend extraction or visualization-friendly derived values.
 
+### Choosing a method
+
+- Use `ema` when you want the lightest-weight smoother and a good default for
+  streaming-style trend lines.
+- Use `movingAverage` when you want explicit windowed smoothing with predictable
+  trailing, leading, or centered behavior.
+- Use `loess` when shape fidelity matters more than speed and you want a more
+  flexible offline smoother.
+
 ### EMA
 
 ```ts
