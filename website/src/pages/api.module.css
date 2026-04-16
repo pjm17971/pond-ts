@@ -1,7 +1,19 @@
 .page {
   margin: 0 auto;
-  max-width: 1200px;
-  padding: 3rem 1.5rem 4rem;
+  max-width: 1680px;
+  padding: 2rem 1rem 4rem;
+}
+
+.hero {
+  align-items: end;
+  display: flex;
+  gap: 1.5rem;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.copy {
+  max-width: 60rem;
 }
 
 .lede {
@@ -12,14 +24,16 @@
 
 .actions {
   display: flex;
+  flex-shrink: 0;
   gap: 0.75rem;
-  margin: 1.5rem 0 2rem;
 }
 
 .button {
-  border: 1px solid var(--ifm-color-primary);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(75, 129, 224, 0.28);
   border-radius: 999px;
-  color: var(--ifm-color-primary);
+  box-shadow: 0 12px 28px rgba(59, 95, 171, 0.08);
+  color: #2f63c6;
   display: inline-flex;
   font-weight: 600;
   padding: 0.65rem 1rem;
@@ -27,20 +41,25 @@
 }
 
 .button:hover {
-  background: color-mix(in srgb, var(--ifm-color-primary) 8%, transparent);
+  background: rgba(255, 255, 255, 0.96);
   text-decoration: none;
 }
 
 .frame {
-  background: var(--ifm-background-surface-color);
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 1rem;
-  height: 75vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 250, 255, 0.98));
+  border: 1px solid rgba(75, 129, 224, 0.14);
+  border-radius: 1.5rem;
+  box-shadow: 0 28px 64px rgba(56, 90, 163, 0.12);
+  height: 78vh;
   overflow: hidden;
+  padding: 0.75rem;
 }
 
 .frame iframe {
+  background: #fff;
   border: 0;
+  border-radius: 1rem;
   display: block;
   height: 100%;
   width: 100%;
@@ -48,10 +67,16 @@
 
 @media (max-width: 996px) {
   .page {
-    padding: 2rem 1rem 3rem;
+    padding: 1.5rem 0.75rem 3rem;
+  }
+
+  .hero {
+    align-items: start;
+    flex-direction: column;
   }
 
   .frame {
     height: 68vh;
+    padding: 0.5rem;
   }
 }

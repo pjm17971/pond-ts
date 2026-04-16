@@ -7,16 +7,16 @@
 }
 
 .featureInner {
-  border: 1px solid var(--ifm-color-emphasis-200);
+  border: 1px solid rgba(75, 129, 224, 0.14);
   border-radius: 1rem;
   background: linear-gradient(
     180deg,
-    rgba(14, 116, 144, 0.08),
-    rgba(15, 118, 110, 0.02)
+    rgba(102, 146, 233, 0.12),
+    rgba(255, 255, 255, 0.9)
   );
   padding: 1.5rem;
   width: 100%;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 24px 54px rgba(49, 78, 139, 0.08);
 }
 
 .featureInner h3 {

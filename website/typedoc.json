@@ -7,5 +7,9 @@
   "readme": "none",
   "cleanOutputDir": true,
   "excludePrivate": true,
-  "excludeProtected": true
+  "excludeProtected": true,
+  "lightHighlightTheme": "github-light",
+  "darkHighlightTheme": "github-light",
+  "customCss": "typedoc/custom.css",
+  "customJs": "typedoc/custom.js"
 }
