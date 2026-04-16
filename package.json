@@ -24,8 +24,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
     "prepack": "npm run build",
     "test": "npm run test:type && npm run test:runtime",
     "test:runtime": "vitest run",
