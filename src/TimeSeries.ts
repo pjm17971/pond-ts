@@ -1169,7 +1169,9 @@ export class TimeSeries<S extends SeriesSchema> {
    * emitted as `null`. By default rows are emitted as arrays; use `rowFormat: "object"` for rows
    * keyed by schema column names.
    */
-  toJSON(options: { rowFormat?: JsonRowFormat } = {}): TimeSeriesJsonInput<S> {
+  toJSON(
+    options: { rowFormat?: JsonRowFormat } = {},
+  ): TimeSeriesJsonInput<SeriesSchema> {
     const rowFormat = options.rowFormat ?? 'array';
     const dataColumns = this.schema.slice(1);
 
@@ -1191,12 +1193,12 @@ export class TimeSeries<S extends SeriesSchema> {
           );
         }
 
-        return Object.freeze(row) as JsonObjectRowForSchema<S>;
+        return Object.freeze(row) as JsonObjectRowForSchema<SeriesSchema>;
       });
 
       return {
         name: this.name,
-        schema: this.schema as S,
+        schema: this.schema as SeriesSchema,
         rows,
       };
     }
@@ -1208,12 +1210,12 @@ export class TimeSeries<S extends SeriesSchema> {
         ...dataColumns.map((column) =>
           serializeJsonValue(data[column.name as keyof typeof data]),
         ),
-      ]) as JsonRowForSchema<S>;
+      ]) as JsonRowForSchema<SeriesSchema>;
     });
 
     return {
       name: this.name,
-      schema: this.schema as S,
+      schema: this.schema as SeriesSchema,
       rows,
     };
   }
@@ -1262,10 +1264,8 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /** Example: `series.toObjects()`. Returns normalized schema-keyed object rows using temporal key objects and `undefined` for missing payload values. */
-  toObjects(): ReadonlyArray<NormalizedObjectRowForSchema<S>> {
-    return toObjects(this.schema, this.events) as ReadonlyArray<
-      NormalizedObjectRowForSchema<S>
-    >;
+  toObjects(): ReadonlyArray<NormalizedObjectRow> {
+    return toObjects(this.schema, this.events);
   }
 
   /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
