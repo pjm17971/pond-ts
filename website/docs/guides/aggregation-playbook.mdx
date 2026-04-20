@@ -168,12 +168,48 @@ const quantiles = series.reduce({
 Empty-bucket semantics apply: `avg`/`min`/`max`/`first`/`last` return `undefined` on an
 empty series, while `count` returns `0` and `sum` returns `0`.
 
+## Grouping with `groupBy`
+
+`groupBy(column)` partitions a series by the distinct values of a payload column,
+returning `Map<string, TimeSeries<S>>`. Each group preserves the full schema and event order.
+
+```ts
+const perHost = series.groupBy('host');
+// Map { "api-1" => TimeSeries, "api-2" => TimeSeries, ... }
+```
+
+An optional transform callback is applied to each group, avoiding intermediate maps:
+
+```ts
+const perHostAvg = series.groupBy('host', (group) =>
+  group.reduce({ cpu: 'avg', requests: 'sum' }),
+);
+// Map { "api-1" => { cpu: 25, requests: 1200 }, ... }
+```
+
+This composes naturally with any series method:
+
+```ts
+// per-host hourly aggregation
+const hourly = series.groupBy('host', (group) =>
+  group.aggregate(Sequence.every('1h'), { cpu: 'avg' }),
+);
+
+// per-host rolling averages
+const rolling = series.groupBy('host', (group) =>
+  group.rolling('5m', { cpu: 'avg' }),
+);
+```
+
+The transform callback also receives the group key as its second argument.
+
 ## Aggregation vs rolling vs reduce
 
 - `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
 - `rolling(window, ...)` computes moving values anchored per source event key.
 - `rolling(sequence, window, ...)` computes moving values anchored per sequence bucket sample.
 - `reduce(...)` collapses the entire series to a scalar or record — no time bucketing.
+- `groupBy(column)` partitions by column value, then any of the above can be applied per group.
 
-Use aggregation for reporting periods, rolling for trend/online-style summaries, and reduce
-for whole-series statistics.
+Use aggregation for reporting periods, rolling for trend/online-style summaries, reduce
+for whole-series statistics, and groupBy for multi-entity analytics.

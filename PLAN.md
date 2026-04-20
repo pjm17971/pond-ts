@@ -59,9 +59,9 @@ order-preserving derived transforms (`filter`, `select`, `rename`, `collapse`,
 - [x] docs cover both ingest and export
 - [x] custom aggregate reducers and named aggregate outputs
 - [x] edge-case tests for empty series, single-event series, empty aggregation
-  buckets, rolling alignment edge cases, and half-open interval semantics
+      buckets, rolling alignment edge cases, and half-open interval semantics
 - [x] test and document custom reducers for `rolling()` (type plumbing already
-  accepted `CustomAggregateReducer`; added edge-case tests and docs)
+      accepted `CustomAggregateReducer`; added edge-case tests and docs)
 
 ---
 
@@ -71,7 +71,6 @@ Goal: make the existing batch surface trustworthy enough to extend.
 
 Remaining scope: none — all items complete. Phase 1 is ready for the decision
 gate: is the batch layer complete and trustworthy enough to be the foundation?
-
 
 Definition of done:
 
@@ -99,14 +98,17 @@ From the original audit, not yet addressed:
 
 ## Phase 2: Batch expansion
 
-Status: not started.
+Status: in progress.
 
 Goal: fill the most obvious product gaps in the batch analytics story.
 
+Completed:
+
+- [x] `reduce` — collapse a series to a scalar or record (whole-series aggregation)
+- [x] `groupBy` — partition by column value, optional transform callback
+
 Scope:
 
-- `groupBy` — the biggest missing capability for real multi-entity analytics
-- `reduce` — collapse a series to a scalar or record (whole-series aggregation)
 - `resample` — convenience over align + aggregate
 - `diff` / `rate` — per-event differences or rates of change
 - `fill` / `fillNull` — explicit gap-filling for sparse or nullable data
