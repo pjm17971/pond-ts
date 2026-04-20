@@ -1575,6 +1575,275 @@ describe('TimeSeries', () => {
     expect(counted.at(1)?.get('value')).toBe(2);
   });
 
+  it('supports min and max aggregations at the series level', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [0, 10],
+        [5, 2],
+        [10, 8],
+        [15, 4],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      { value: 'min' },
+      { range: new TimeRange({ start: 0, end: 10 }) },
+    );
+    const aggregatedMax = ts.aggregate(
+      Sequence.every(10),
+      { value: 'max' },
+      { range: new TimeRange({ start: 0, end: 10 }) },
+    );
+
+    expect(aggregated.at(0)?.get('value')).toBe(2);
+    expect(aggregated.at(1)?.get('value')).toBe(4);
+    expect(aggregatedMax.at(0)?.get('value')).toBe(10);
+    expect(aggregatedMax.at(1)?.get('value')).toBe(8);
+  });
+
+  it('supports custom reducers for aggregate buckets', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+      { name: 'status', kind: 'string' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [0, 1, 'a'],
+        [5, 2, 'b'],
+        [10, 3, 'c'],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      {
+        value: (values) =>
+          values.reduce<number>(
+            (sum, value) => sum + (typeof value === 'number' ? value : 0),
+            0,
+          ),
+        status: (values) =>
+          values.filter((value): value is string => typeof value === 'string')
+            .length > 0
+            ? 'seen'
+            : undefined,
+      },
+      { range: new TimeRange({ start: 0, end: 30 }) },
+    );
+
+    expect(aggregated.length).toBe(4);
+    expect(aggregated.at(0)?.get('value')).toBe(3);
+    expect(aggregated.at(0)?.get('status')).toBe('seen');
+    expect(aggregated.at(1)?.get('value')).toBe(3);
+    expect(aggregated.at(1)?.get('status')).toBe('seen');
+    expect(aggregated.at(2)?.get('value')).toBe(0);
+    expect(aggregated.at(2)?.get('status')).toBeUndefined();
+    expect(aggregated.at(3)?.get('value')).toBe(0);
+    expect(aggregated.at(3)?.get('status')).toBeUndefined();
+  });
+
+  it('supports named aggregate outputs using from + using with built-ins', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'latency', kind: 'number' },
+      { name: 'host', kind: 'string' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'api',
+      schema,
+      rows: [
+        [0, 100, 'a'],
+        [5, 200, 'b'],
+        [10, 300, 'c'],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      {
+        latency_avg: { from: 'latency', using: 'avg' },
+        host_last: { from: 'host', using: 'last' },
+      },
+      { range: new TimeRange({ start: 0, end: 10 }) },
+    );
+
+    expect(aggregated.at(0)?.get('latency_avg')).toBe(150);
+    expect(aggregated.at(0)?.get('host_last')).toBe('b');
+    expect(aggregated.at(1)?.get('latency_avg')).toBe(300);
+    expect(aggregated.at(1)?.get('host_last')).toBe('c');
+  });
+
+  it('supports multiple named custom outputs from a single source column', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'latency', kind: 'number' },
+      { name: 'host', kind: 'string' },
+    ] as const;
+    const quantile = (values: number[], q: number): number | undefined => {
+      if (values.length === 0) {
+        return undefined;
+      }
+      const sorted = [...values].sort((left, right) => left - right);
+      const index = Math.floor((sorted.length - 1) * q);
+      return sorted[index];
+    };
+
+    const ts = new TimeSeries({
+      name: 'api',
+      schema,
+      rows: [
+        [0, 100, 'a'],
+        [1, 200, 'a'],
+        [2, 300, 'b'],
+        [3, 400, 'b'],
+      ],
+    });
+
+    const aggregated = ts.aggregate(
+      Sequence.every(10),
+      {
+        p50: {
+          from: 'latency',
+          using: (values) =>
+            quantile(
+              values.filter(
+                (value): value is number => typeof value === 'number',
+              ),
+              0.5,
+            ),
+          kind: 'number',
+        },
+        p95: {
+          from: 'latency',
+          using: (values) =>
+            quantile(
+              values.filter(
+                (value): value is number => typeof value === 'number',
+              ),
+              0.95,
+            ),
+          kind: 'number',
+        },
+        host: { from: 'host', using: 'last' },
+      },
+      { range: new TimeRange({ start: 0, end: 0 }) },
+    );
+
+    expect(aggregated.length).toBe(1);
+    expect(aggregated.at(0)?.get('p50')).toBe(200);
+    expect(aggregated.at(0)?.get('p95')).toBe(300);
+    expect(aggregated.at(0)?.get('host')).toBe('b');
+  });
+
+  it('supports custom reducers for event-driven rolling windows', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [0, 1],
+        [5, 2],
+        [10, 3],
+      ],
+    });
+
+    const rolled = ts.rolling(10, {
+      value: (values) => {
+        const numeric = values.filter(
+          (value): value is number => typeof value === 'number',
+        );
+        if (numeric.length === 0) {
+          return undefined;
+        }
+        const total = numeric.reduce((sum, value) => sum + value, 0);
+        return total / numeric.length;
+      },
+    });
+
+    expect(rolled.at(0)?.get('value')).toBe(1);
+    expect(rolled.at(1)?.get('value')).toBe(1.5);
+    expect(rolled.at(2)?.get('value')).toBe(2.5);
+  });
+
+  it('supports custom reducers for sequence-driven rolling windows', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [0, 1],
+        [5, 2],
+        [10, 3],
+      ],
+    });
+
+    const rolled = ts.rolling(
+      Sequence.every(10),
+      10,
+      {
+        value: (values) => values.filter((value) => value !== undefined).length,
+      },
+      { range: new TimeRange({ start: 0, end: 20 }) },
+    );
+
+    expect(rolled.length).toBe(3);
+    expect(rolled.at(0)?.get('value')).toBe(1);
+    expect(rolled.at(1)?.get('value')).toBe(2);
+    expect(rolled.at(2)?.get('value')).toBe(0);
+  });
+
+  it('supports mixed built-in and custom reducers in rolling windows', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+      { name: 'status', kind: 'string' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'mixed',
+      schema,
+      rows: [
+        [0, 10, 'a'],
+        [5, 20, 'b'],
+        [10, 30, 'c'],
+      ],
+    });
+
+    const rolled = ts.rolling(10, {
+      value: 'avg',
+      status: (values) =>
+        values.filter((v): v is string => typeof v === 'string').join(','),
+    });
+
+    expect(rolled.at(0)?.get('value')).toBe(10);
+    expect(rolled.at(0)?.get('status')).toBe('a');
+    expect(rolled.at(1)?.get('value')).toBe(15);
+    expect(rolled.at(1)?.get('status')).toBe('a,b');
+    expect(rolled.at(2)?.get('value')).toBe(25);
+    expect(rolled.at(2)?.get('status')).toBe('b,c');
+  });
+
   it('aggregates interval-like events into every overlapping bucket', () => {
     const schema = [
       { name: 'interval', kind: 'interval' },

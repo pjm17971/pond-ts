@@ -11,6 +11,7 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       items: [
         'guides/alignment-and-aggregation',
+        'guides/aggregation-playbook',
         'guides/rolling-and-smoothing',
         'guides/json-ingest-and-timezones',
       ],
