@@ -252,9 +252,13 @@ describe('TimeSeries edge cases', () => {
 
     it('aggregate with single event in one bucket', () => {
       const ts = singleEventSeries(5, 10);
-      const agg = ts.aggregate(Sequence.every(10), { value: 'avg' }, {
-        range: new TimeRange({ start: 0, end: 9 }),
-      });
+      const agg = ts.aggregate(
+        Sequence.every(10),
+        { value: 'avg' },
+        {
+          range: new TimeRange({ start: 0, end: 9 }),
+        },
+      );
       expect(agg.length).toBe(1);
       expect(agg.at(0)?.get('value')).toBe(10);
     });
@@ -332,9 +336,13 @@ describe('TimeSeries edge cases', () => {
         ],
       });
 
-      const agg = ts.aggregate(Sequence.every(10), { value: 'avg' }, {
-        range: new TimeRange({ start: 0, end: 29 }),
-      });
+      const agg = ts.aggregate(
+        Sequence.every(10),
+        { value: 'avg' },
+        {
+          range: new TimeRange({ start: 0, end: 29 }),
+        },
+      );
 
       expect(agg.length).toBe(3);
       expect(agg.at(0)?.get('value')).toBe(15);
@@ -349,9 +357,13 @@ describe('TimeSeries edge cases', () => {
         rows: [[0, 10]],
       });
 
-      const agg = ts.aggregate(Sequence.every(10), { value: 'count' }, {
-        range: new TimeRange({ start: 0, end: 19 }),
-      });
+      const agg = ts.aggregate(
+        Sequence.every(10),
+        { value: 'count' },
+        {
+          range: new TimeRange({ start: 0, end: 19 }),
+        },
+      );
 
       expect(agg.length).toBe(2);
       expect(agg.at(0)?.get('value')).toBe(1);
@@ -365,9 +377,13 @@ describe('TimeSeries edge cases', () => {
         rows: [[0, 10]],
       });
 
-      const agg = ts.aggregate(Sequence.every(10), { value: 'sum' }, {
-        range: new TimeRange({ start: 0, end: 19 }),
-      });
+      const agg = ts.aggregate(
+        Sequence.every(10),
+        { value: 'sum' },
+        {
+          range: new TimeRange({ start: 0, end: 19 }),
+        },
+      );
 
       expect(agg.at(0)?.get('value')).toBe(10);
       expect(agg.at(1)?.get('value')).toBe(0);
@@ -380,12 +396,20 @@ describe('TimeSeries edge cases', () => {
         rows: [[0, 10]],
       });
 
-      const aggMin = ts.aggregate(Sequence.every(10), { value: 'min' }, {
-        range: new TimeRange({ start: 0, end: 19 }),
-      });
-      const aggMax = ts.aggregate(Sequence.every(10), { value: 'max' }, {
-        range: new TimeRange({ start: 0, end: 19 }),
-      });
+      const aggMin = ts.aggregate(
+        Sequence.every(10),
+        { value: 'min' },
+        {
+          range: new TimeRange({ start: 0, end: 19 }),
+        },
+      );
+      const aggMax = ts.aggregate(
+        Sequence.every(10),
+        { value: 'max' },
+        {
+          range: new TimeRange({ start: 0, end: 19 }),
+        },
+      );
 
       expect(aggMin.at(1)?.get('value')).toBeUndefined();
       expect(aggMax.at(1)?.get('value')).toBeUndefined();
@@ -500,9 +524,14 @@ describe('TimeSeries edge cases', () => {
         ],
       });
 
-      const rolled = ts.rolling(Sequence.every(50), 100, { value: 'avg' }, {
-        range: new TimeRange({ start: 100, end: 149 }),
-      });
+      const rolled = ts.rolling(
+        Sequence.every(50),
+        100,
+        { value: 'avg' },
+        {
+          range: new TimeRange({ start: 100, end: 149 }),
+        },
+      );
       expect(rolled.length).toBe(1);
     });
 
@@ -553,9 +582,7 @@ describe('TimeSeries edge cases', () => {
       const ts = singleEventSeries(0, 42);
       const rolled = ts.rolling(10, {
         value: (values) => {
-          const nums = values.filter(
-            (v): v is number => typeof v === 'number',
-          );
+          const nums = values.filter((v): v is number => typeof v === 'number');
           return nums.length > 0 ? nums[0]! * 2 : undefined;
         },
       });
@@ -581,7 +608,9 @@ describe('TimeSeries edge cases', () => {
 
       const rolled = ts.rolling(10, {
         status: (values) =>
-          values.filter((v) => v === 'warn').length > 0 ? 'degraded' : 'healthy',
+          values.filter((v) => v === 'warn').length > 0
+            ? 'degraded'
+            : 'healthy',
       });
 
       expect(rolled.at(0)?.get('status')).toBe('healthy');
@@ -734,10 +763,7 @@ describe('TimeSeries edge cases', () => {
       const counts = Array.from({ length: agg.length }, (_, i) =>
         agg.at(i)?.get('value'),
       );
-      const totalCount = (counts as number[]).reduce(
-        (a, b) => a + b,
-        0,
-      );
+      const totalCount = (counts as number[]).reduce((a, b) => a + b, 0);
       expect(totalCount).toBe(7);
     });
   });
