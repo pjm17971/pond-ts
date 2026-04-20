@@ -107,12 +107,14 @@ Completed:
 - [x] `reduce` — collapse a series to a scalar or record (whole-series aggregation)
 - [x] `groupBy` — partition by column value, optional transform callback
 - [x] `diff` / `rate` — per-event differences and per-second rates of change
+- [x] `fill` — per-column gap-filling strategies (hold, linear, zero, literal)
 
-Scope:
-
-- `fill` / `fillNull` — explicit gap-filling for sparse or nullable data
+Scope: none — all items complete.
 
 Dropped:
+
+- `fillNull` — `fill()` covers all use cases; a separate method doesn't earn its
+  API surface
 
 - `resample` — everything it would do is already covered by `aggregate()`
   (downsample) and `align()` (upsample); adding it as pure sugar doesn't earn
@@ -186,12 +188,25 @@ const perSec = series.rate('requests', 'cpu');
 const deltas = series.diff('requests', { drop: true });
 ```
 
-**`fill`**: per-column strategies (`hold`, `linear`, `zero`, `null`, or
-literal). Optional `limit` caps consecutive fills:
+**`fill`**: replaces `undefined` values using per-column strategies. Strategies
+and options are separate arguments. Strategy names: `hold` (forward fill),
+`linear` (time-interpolated), `zero`. Non-string values in the mapping are
+literal fill values. `limit` caps consecutive fills per column.
 
 ```ts
-const filled = series.fill({ cpu: 'linear', host: 'hold', limit: 3 });
+// single strategy for all columns
+series.fill('hold');
+series.fill('hold', { limit: 3 });
+
+// per-column strategies
+series.fill({ cpu: 'linear', host: 'hold' });
+
+// literal fill values
+series.fill({ cpu: 0, host: 'unknown' });
 ```
+
+`linear` requires known values on both sides of a gap; leading and trailing
+undefined runs are left unfilled.
 
 **Per-column alignment**: extend `align()` to accept a per-column map. Default
 (`'hold'`) applies to any column not in the map:
