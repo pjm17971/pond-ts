@@ -1,4 +1,4 @@
-import {useEffect} from 'react';
+import { useEffect } from 'react';
 
 import Layout from '@theme/Layout';
 import useBaseUrl from '@docusaurus/useBaseUrl';

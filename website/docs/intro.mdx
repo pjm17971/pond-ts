@@ -30,13 +30,13 @@ Pond takes a different approach:
 ## Example
 
 ```ts
-import {Sequence, TimeSeries} from 'pond-ts';
+import { Sequence, TimeSeries } from 'pond-ts';
 
 const schema = [
-  {name: 'time', kind: 'time'},
-  {name: 'cpu', kind: 'number'},
-  {name: 'requests', kind: 'number'},
-  {name: 'host', kind: 'string'},
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'requests', kind: 'number' },
+  { name: 'host', kind: 'string' },
 ] as const;
 
 const cpu = TimeSeries.fromJSON({

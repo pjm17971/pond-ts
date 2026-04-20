@@ -52,7 +52,9 @@ html[data-theme='os'] {
 html[data-theme='dark'],
 html[data-theme='os'] {
   --color-background: var(--light-color-background) !important;
-  --color-background-secondary: var(--light-color-background-secondary) !important;
+  --color-background-secondary: var(
+    --light-color-background-secondary
+  ) !important;
   --color-background-active: var(--light-color-background-active) !important;
   --color-background-warning: var(--light-color-background-warning) !important;
   --color-warning-text: var(--light-color-warning-text) !important;

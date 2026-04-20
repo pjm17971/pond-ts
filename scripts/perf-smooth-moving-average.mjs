@@ -11,7 +11,11 @@ function makeSeries(length) {
   return new TimeSeries({
     name: 'cpu',
     schema,
-    rows: Array.from({ length }, (_, index) => [index * 1_000, index % 100, (index % 7) + 1]),
+    rows: Array.from({ length }, (_, index) => [
+      index * 1_000,
+      index % 100,
+      (index % 7) + 1,
+    ]),
   });
 }
 
@@ -26,7 +30,10 @@ function median(values) {
 function benchmark(length, repeats = 5) {
   const series = makeSeries(length);
 
-  series.smooth('value', 'movingAverage', { window: 60_000, alignment: 'trailing' });
+  series.smooth('value', 'movingAverage', {
+    window: 60_000,
+    alignment: 'trailing',
+  });
 
   const samples = [];
   for (let run = 0; run < repeats; run += 1) {
@@ -37,7 +44,9 @@ function benchmark(length, repeats = 5) {
     });
     const end = performance.now();
     if (smoothed.length !== length) {
-      throw new Error(`unexpected output length for ${length}: ${smoothed.length}`);
+      throw new Error(
+        `unexpected output length for ${length}: ${smoothed.length}`,
+      );
     }
     samples.push(end - start);
   }

@@ -7,13 +7,13 @@ sidebar_position: 20
 This example shows a common Pond workflow for infrastructure metrics.
 
 ```ts
-import {Sequence, TimeSeries} from 'pond-ts';
+import { Sequence, TimeSeries } from 'pond-ts';
 
 const schema = [
-  {name: 'time', kind: 'time'},
-  {name: 'cpu', kind: 'number'},
-  {name: 'requests', kind: 'number'},
-  {name: 'host', kind: 'string'},
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'requests', kind: 'number' },
+  { name: 'host', kind: 'string' },
 ] as const;
 
 const cpu = TimeSeries.fromJSON({

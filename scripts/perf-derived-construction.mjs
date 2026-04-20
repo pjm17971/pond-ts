@@ -32,11 +32,9 @@ function median(values) {
 }
 
 function derive(series) {
-  const selected = series.filter((event) => event.get('active')).select(
-    'cpu',
-    'requests',
-    'host',
-  );
+  const selected = series
+    .filter((event) => event.get('active'))
+    .select('cpu', 'requests', 'host');
   const renamed = selected.rename({ host: 'server' });
   const collapsed = renamed.collapse(
     ['cpu', 'requests'],

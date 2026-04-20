@@ -1,4 +1,4 @@
-import type {ReactNode} from 'react';
+import type { ReactNode } from 'react';
 import clsx from 'clsx';
 import Heading from '@theme/Heading';
 import styles from './styles.module.css';
@@ -26,7 +26,7 @@ const featureList: FeatureItem[] = [
   },
 ];
 
-function Feature({title, description}: FeatureItem): ReactNode {
+function Feature({ title, description }: FeatureItem): ReactNode {
   return (
     <div className={clsx('col col--4', styles.featureCard)}>
       <div className={styles.featureInner}>

@@ -46,10 +46,10 @@ describe('TimeSeries.reduce', () => {
 
     it('custom reducer receives all values', () => {
       const result = makeSeries().reduce('value', (values) => {
-        const nums = values.filter(
-          (v): v is number => typeof v === 'number',
-        );
-        return nums.length > 0 ? Math.max(...nums) - Math.min(...nums) : undefined;
+        const nums = values.filter((v): v is number => typeof v === 'number');
+        return nums.length > 0
+          ? Math.max(...nums) - Math.min(...nums)
+          : undefined;
       });
       expect(result).toBe(30);
     });

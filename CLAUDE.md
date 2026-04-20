@@ -27,3 +27,7 @@ this — a lost session should not erase the current state of the project.
 - `npx vitest run test/<file>` — run a specific test file
 - `npx tsc --noEmit` — type check
 - `npx prettier --write .` — format
+
+## Before opening a PR
+
+Run `npx prettier --write .` before committing. Unformatted code will fail review.
