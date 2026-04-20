@@ -31,6 +31,32 @@ Supported alignments:
 - `leading`
 - `centered`
 
+### Custom reducers
+
+Rolling windows accept the same custom reducer functions as `aggregate(...)`. The
+reducer contract is `(values: ReadonlyArray<ScalarValue | undefined>) => ScalarValue | undefined`.
+
+```ts
+const rolled = series.rolling('5m', {
+  cpu: (values) => {
+    const nums = values.filter((v): v is number => typeof v === 'number');
+    return nums.length === 0
+      ? undefined
+      : nums.reduce((a, b) => a + b, 0) / nums.length;
+  },
+});
+```
+
+You can mix built-in and custom reducers in the same mapping:
+
+```ts
+const mixed = series.rolling('5m', {
+  cpu: 'avg',
+  status: (values) =>
+    values.filter((v): v is string => typeof v === 'string').join(','),
+});
+```
+
 ## Smoothing
 
 Use `smooth(...)` for trend extraction or visualization-friendly derived values.

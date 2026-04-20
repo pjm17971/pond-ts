@@ -58,6 +58,10 @@ order-preserving derived transforms (`filter`, `select`, `rename`, `collapse`,
 - [x] both array-row and object-row JSON shapes supported
 - [x] docs cover both ingest and export
 - [x] custom aggregate reducers and named aggregate outputs
+- [x] edge-case tests for empty series, single-event series, empty aggregation
+  buckets, rolling alignment edge cases, and half-open interval semantics
+- [x] test and document custom reducers for `rolling()` (type plumbing already
+  accepted `CustomAggregateReducer`; added edge-case tests and docs)
 
 ---
 
@@ -65,21 +69,14 @@ order-preserving derived transforms (`filter`, `select`, `rename`, `collapse`,
 
 Goal: make the existing batch surface trustworthy enough to extend.
 
-Remaining scope:
+Remaining scope: none — all items complete. Phase 1 is ready for the decision
+gate: is the batch layer complete and trustworthy enough to be the foundation?
 
-- edge-case tests for:
-  - empty series
-  - single-event series
-  - empty aggregation buckets
-  - rolling alignment edge cases
-  - half-open interval semantics
-- test and document custom reducers for `rolling()` (type plumbing already
-  accepts `CustomAggregateReducer`, needs coverage and docs)
 
 Definition of done:
 
-- custom reducer typing and runtime behavior are documented and covered
-- edge-case coverage exists for every current analytical primitive
+- [x] custom reducer typing and runtime behavior are documented and covered
+- [x] edge-case coverage exists for every current analytical primitive
 
 ### Remaining performance items (lower priority, address incrementally)
 
