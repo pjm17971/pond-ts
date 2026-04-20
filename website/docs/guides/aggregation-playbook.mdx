@@ -237,6 +237,42 @@ These compose naturally with `groupBy`:
 const perHostRate = series.groupBy('host', (group) => group.rate('requests'));
 ```
 
+## Gap-filling with `fill`
+
+`fill(strategy, options?)` replaces `undefined` values in payload columns. A single strategy
+applies to all columns, or a per-column mapping targets specific columns.
+
+Strategies: `"hold"` (forward fill), `"linear"` (time-interpolated), `"zero"`.
+
+```ts
+// forward fill all columns
+const filled = series.fill('hold');
+
+// per-column strategies
+const filled = series.fill({ cpu: 'linear', host: 'hold' });
+
+// literal fill values (non-string values in the mapping)
+const filled = series.fill({ cpu: 0, host: 'unknown' });
+```
+
+`limit` caps consecutive fills per column:
+
+```ts
+const filled = series.fill('hold', { limit: 3 });
+```
+
+`"linear"` interpolates by time between the nearest known values on each side. Leading and
+trailing `undefined` runs are left unfilled (no extrapolation). `"hold"` also leaves leading
+`undefined` unfilled (no previous value to carry).
+
+Typical pipeline after aggregation with empty buckets:
+
+```ts
+const hourly = series
+  .aggregate(Sequence.every('1h'), { cpu: 'avg', host: 'last' })
+  .fill({ cpu: 'linear', host: 'hold' });
+```
+
 ## Aggregation vs rolling vs reduce vs diff/rate
 
 - `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
@@ -246,7 +282,9 @@ const perHostRate = series.groupBy('host', (group) => group.rate('requests'));
 - `groupBy(column)` partitions by column value, then any of the above can be applied per group.
 - `diff(columns)` computes per-event differences for numeric columns.
 - `rate(columns)` computes per-second rates of change for numeric columns.
+- `fill(strategy)` replaces `undefined` gaps using hold, linear, zero, or literal strategies.
 
 Use aggregation for reporting periods, rolling for trend/online-style summaries, reduce
-for whole-series statistics, groupBy for multi-entity analytics, and diff/rate for
-point-to-point changes and velocities.
+for whole-series statistics, groupBy for multi-entity analytics, diff/rate for
+point-to-point changes and velocities, and fill for gap-filling after any operation that
+produces `undefined` values.

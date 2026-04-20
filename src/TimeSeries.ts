@@ -77,6 +77,13 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
 };
 type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
+type FillStrategy = 'hold' | 'linear' | 'zero';
+type FillMapping<S extends SeriesSchema> = {
+  [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
+};
+type ResolvedFillSpec =
+  | { mode: FillStrategy }
+  | { mode: 'literal'; value: ScalarValue };
 type SeriesTuple = readonly [
   TimeSeries<SeriesSchema>,
   ...TimeSeries<SeriesSchema>[],
@@ -1861,6 +1868,168 @@ export class TimeSeries<S extends SeriesSchema> {
     return TimeSeries.#fromTrustedEvents<OutSchema>(
       this.name,
       outSchema,
+      resultEvents,
+    );
+  }
+
+  /**
+   * Example: `series.fill("hold")`.
+   * Fills `undefined` values using the given strategy for all payload columns.
+   *
+   * Example: `series.fill({ cpu: "linear", host: "hold" })`.
+   * Per-column fill strategies. Unmentioned columns are left as-is.
+   * Strategy names: `"hold"` (forward fill), `"linear"` (time-interpolated),
+   * `"zero"` (fill with 0). A non-string value is used as a literal fill value.
+   *
+   * Example: `series.fill("hold", { limit: 3 })`.
+   * Caps consecutive fills per column. After `limit` consecutive fills, further
+   * `undefined` values are left as-is until a real value resets the counter.
+   *
+   * `"linear"` requires known values on both sides of a gap to interpolate.
+   * Leading and trailing `undefined` runs are left unfilled.
+   */
+  fill(
+    strategy: FillStrategy | FillMapping<S>,
+    options?: { limit?: number },
+  ): TimeSeries<S> {
+    if (this.events.length === 0) {
+      return this;
+    }
+
+    const colNames = this.schema.slice(1).map((c) => c.name);
+    const specs: Map<string, ResolvedFillSpec> = new Map();
+
+    if (typeof strategy === 'string') {
+      for (const name of colNames) {
+        specs.set(name, { mode: strategy });
+      }
+    } else {
+      const strategies: Set<string> = new Set(['hold', 'linear', 'zero']);
+      for (const [name, spec] of Object.entries(strategy)) {
+        if (typeof spec === 'string' && strategies.has(spec)) {
+          specs.set(name, { mode: spec as FillStrategy });
+        } else {
+          specs.set(name, { mode: 'literal', value: spec as ScalarValue });
+        }
+      }
+    }
+
+    const limit = options?.limit;
+    const n = this.events.length;
+
+    const columns: Record<string, (ScalarValue | undefined)[]> = {};
+    for (const name of colNames) {
+      columns[name] = new Array(n);
+    }
+    for (let i = 0; i < n; i++) {
+      const data = this.events[i]!.data();
+      for (const name of colNames) {
+        columns[name]![i] = data[name as keyof typeof data] as
+          | ScalarValue
+          | undefined;
+      }
+    }
+
+    const times = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      times[i] = this.events[i]!.begin();
+    }
+
+    for (const [name, spec] of specs) {
+      const col = columns[name];
+      if (!col) continue;
+
+      switch (spec.mode) {
+        case 'hold': {
+          let last: ScalarValue | undefined;
+          let consecutive = 0;
+          for (let i = 0; i < n; i++) {
+            if (col[i] !== undefined) {
+              last = col[i];
+              consecutive = 0;
+            } else if (last !== undefined) {
+              consecutive++;
+              if (limit === undefined || consecutive <= limit) {
+                col[i] = last;
+              }
+            }
+          }
+          break;
+        }
+        case 'zero': {
+          let consecutive = 0;
+          for (let i = 0; i < n; i++) {
+            if (col[i] !== undefined) {
+              consecutive = 0;
+            } else {
+              consecutive++;
+              if (limit === undefined || consecutive <= limit) {
+                col[i] = 0;
+              }
+            }
+          }
+          break;
+        }
+        case 'literal': {
+          let consecutive = 0;
+          for (let i = 0; i < n; i++) {
+            if (col[i] !== undefined) {
+              consecutive = 0;
+            } else {
+              consecutive++;
+              if (limit === undefined || consecutive <= limit) {
+                col[i] = spec.value;
+              }
+            }
+          }
+          break;
+        }
+        case 'linear': {
+          let gapStart = -1;
+          for (let i = 0; i < n; i++) {
+            if (col[i] !== undefined) {
+              if (gapStart >= 0 && gapStart > 0) {
+                const before = col[gapStart - 1] as number;
+                const after = col[i] as number;
+                const t0 = times[gapStart - 1]!;
+                const t1 = times[i]!;
+                const span = t1 - t0;
+                const gapLen = i - gapStart;
+                for (let j = gapStart; j < i; j++) {
+                  const fillIndex = j - gapStart + 1;
+                  if (limit !== undefined && fillIndex > limit) break;
+                  if (span === 0) {
+                    col[j] = before;
+                  } else {
+                    const ratio = (times[j]! - t0) / span;
+                    col[j] = before + (after - before) * ratio;
+                  }
+                }
+              }
+              gapStart = -1;
+            } else if (gapStart < 0) {
+              gapStart = i;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    const resultEvents: EventForSchema<S>[] = [];
+    for (let i = 0; i < n; i++) {
+      const data: Record<string, unknown> = {};
+      for (const name of colNames) {
+        data[name] = columns[name]![i];
+      }
+      resultEvents.push(
+        new Event(this.events[i]!.key(), data) as unknown as EventForSchema<S>,
+      );
+    }
+
+    return TimeSeries.#fromTrustedEvents<S>(
+      this.name,
+      this.schema,
       resultEvents,
     );
   }
