@@ -181,6 +181,20 @@ const series = TimeSeries.fromJSON({
 });
 ```
 
+Export back into the same JSON-friendly shape:
+
+```ts
+const rows = series.toJSON();
+const objectRows = series.toJSON({ rowFormat: 'object' });
+```
+
+For normalized in-memory export helpers:
+
+```ts
+const normalizedRows = series.toRows();
+const normalizedObjects = series.toObjects();
+```
+
 ## Event and series transforms
 
 Event-level transforms:
