@@ -75,11 +75,6 @@ type SeriesTuple = readonly [
   ...TimeSeries<SeriesSchema>[],
 ];
 
-function isBuiltInAggregateReducer(
-  reducer: AggregateReducer,
-): reducer is AggregateFunction {
-  return typeof reducer === 'string';
-}
 type SchemasForSeriesTuple<T extends SeriesTuple> = {
   [I in keyof T]: T[I] extends TimeSeries<infer Schema> ? Schema : never;
 } extends infer Result
@@ -547,6 +542,12 @@ function aggregateValues(
   }
 }
 
+function isBuiltInAggregateReducer(
+  reducer: AggregateReducer,
+): reducer is AggregateFunction {
+  return typeof reducer === 'string';
+}
+
 function applyAggregateReducer(
   reducer: AggregateReducer,
   values: ReadonlyArray<ScalarValue | undefined>,
@@ -600,9 +601,12 @@ function normalizeAggregateColumns<S extends SeriesSchema>(
         `aggregate source column '${sourceName}' must be a scalar value column`,
       );
     }
-    const reducer = (
-      isAggregateOutputSpec<S>(raw) ? raw.using : raw
-    ) as AggregateReducer;
+    const reducer = isAggregateOutputSpec<S>(raw) ? raw.using : raw;
+    if (typeof reducer !== 'string' && typeof reducer !== 'function') {
+      throw new TypeError(
+        `aggregate reducer for '${outputName}' must be a built-in name or function`,
+      );
+    }
     const explicitKind = isAggregateOutputSpec<S>(raw) ? raw.kind : undefined;
     const resolvedKind =
       explicitKind ??
@@ -1536,11 +1540,11 @@ export class TimeSeries<S extends SeriesSchema> {
     const columns = aggregateColumns;
 
     if (isTimeKeyed(this)) {
+      const builtInOnly = columns.every((column) =>
+        isBuiltInAggregateReducer(column.reducer),
+      );
       let eventIndex = 0;
       const resultRows = buckets.map((bucket) => {
-        const builtInOnly = columns.every((column) =>
-          isBuiltInAggregateReducer(column.reducer),
-        );
         const states = builtInOnly
           ? columns.map((column) =>
               createAggregateBucketState(column.reducer as AggregateFunction),
@@ -1721,12 +1725,6 @@ export class TimeSeries<S extends SeriesSchema> {
 
     const windowMs = parseDurationInput(window);
     const alignment = options.alignment ?? 'trailing';
-    const hasCustomReducer = this.schema.slice(1).some((column) => {
-      const reducer = mapping[column.name as keyof Mapping] as
-        | AggregateReducer
-        | undefined;
-      return reducer !== undefined && !isBuiltInAggregateReducer(reducer);
-    });
     const anchorInWindow = (candidate: number, anchor: number): boolean => {
       if (alignment === 'trailing') {
         return candidate > anchor - windowMs && candidate <= anchor;
@@ -1788,54 +1786,60 @@ export class TimeSeries<S extends SeriesSchema> {
       this.schema[0],
       ...resultColumns,
     ]) as unknown as RollingSchema<S, Mapping>;
-    const reducerStates = hasCustomReducer
-      ? []
-      : resultColumns.map((column) =>
-          createRollingReducerState(
-            mapping[column.name as keyof Mapping] as AggregateFunction,
-          ),
-        );
+    const reducerStates = resultColumns.map((column) => {
+      const reducer = mapping[column.name as keyof Mapping] as AggregateReducer;
+      return isBuiltInAggregateReducer(reducer)
+        ? createRollingReducerState(reducer)
+        : null;
+    });
     const beginTimes = this.events.map((event) => event.begin());
     const resultRows: TimeSeriesInput<SeriesSchema>['rows'][number][] =
       new Array(this.events.length);
     let windowStart = 0;
     let windowEnd = 0;
     const addEvent = (index: number): void => {
-      if (hasCustomReducer) {
-        return;
-      }
       const event = this.events[index]!;
       const data = event.data();
-      for (
-        let reducerIndex = 0;
-        reducerIndex < reducerStates.length;
-        reducerIndex++
-      ) {
-        const column = resultColumns[reducerIndex]!;
-        reducerStates[reducerIndex]!.add(
-          index,
-          data[column.name as keyof typeof data] as ScalarValue | undefined,
-        );
+      for (let i = 0; i < reducerStates.length; i++) {
+        const state = reducerStates[i];
+        if (state) {
+          const column = resultColumns[i]!;
+          state.add(
+            index,
+            data[column.name as keyof typeof data] as ScalarValue | undefined,
+          );
+        }
       }
     };
     const removeEvent = (index: number): void => {
-      if (hasCustomReducer) {
-        return;
-      }
       const event = this.events[index]!;
       const data = event.data();
-      for (
-        let reducerIndex = 0;
-        reducerIndex < reducerStates.length;
-        reducerIndex++
-      ) {
-        const column = resultColumns[reducerIndex]!;
-        reducerStates[reducerIndex]!.remove(
-          index,
-          data[column.name as keyof typeof data] as ScalarValue | undefined,
-        );
+      for (let i = 0; i < reducerStates.length; i++) {
+        const state = reducerStates[i];
+        if (state) {
+          const column = resultColumns[i]!;
+          state.remove(
+            index,
+            data[column.name as keyof typeof data] as ScalarValue | undefined,
+          );
+        }
       }
     };
+    const snapshotWindow = (): (ScalarValue | undefined)[] =>
+      resultColumns.map((column, i) => {
+        const state = reducerStates[i];
+        if (state) return state.snapshot();
+        const reducer = mapping[
+          column.name as keyof Mapping
+        ] as AggregateReducer;
+        const values = this.events
+          .slice(windowStart, windowEnd)
+          .map((event) => {
+            const data = event.data();
+            return data[column.name as keyof typeof data];
+          }) as ReadonlyArray<ScalarValue | undefined>;
+        return applyAggregateReducer(reducer, values);
+      });
 
     if (alignment === 'trailing') {
       for (let groupStart = 0; groupStart < this.events.length; ) {
@@ -1865,21 +1869,7 @@ export class TimeSeries<S extends SeriesSchema> {
           windowStart += 1;
         }
 
-        const contributors = hasCustomReducer
-          ? this.events.slice(windowStart, windowEnd)
-          : undefined;
-        const aggregated = hasCustomReducer
-          ? resultColumns.map((column) => {
-              const reducer = mapping[
-                column.name as keyof Mapping
-              ] as AggregateReducer;
-              const values = contributors!.map((event) => {
-                const data = event.data();
-                return data[column.name as keyof typeof data];
-              }) as ReadonlyArray<ScalarValue | undefined>;
-              return applyAggregateReducer(reducer, values);
-            })
-          : reducerStates.map((state) => state.snapshot());
+        const aggregated = snapshotWindow();
         for (let index = groupStart; index < groupEnd; index++) {
           resultRows[index] = Object.freeze([
             this.events[index]!.key(),
@@ -1918,21 +1908,7 @@ export class TimeSeries<S extends SeriesSchema> {
           windowEnd += 1;
         }
 
-        const contributors = hasCustomReducer
-          ? this.events.slice(windowStart, windowEnd)
-          : undefined;
-        const aggregated = hasCustomReducer
-          ? resultColumns.map((column) => {
-              const reducer = mapping[
-                column.name as keyof Mapping
-              ] as AggregateReducer;
-              const values = contributors!.map((event) => {
-                const data = event.data();
-                return data[column.name as keyof typeof data];
-              }) as ReadonlyArray<ScalarValue | undefined>;
-              return applyAggregateReducer(reducer, values);
-            })
-          : reducerStates.map((state) => state.snapshot());
+        const aggregated = snapshotWindow();
         for (let index = groupStart; index < groupEnd; index++) {
           resultRows[index] = Object.freeze([
             this.events[index]!.key(),
@@ -1972,21 +1948,7 @@ export class TimeSeries<S extends SeriesSchema> {
           windowEnd += 1;
         }
 
-        const contributors = hasCustomReducer
-          ? this.events.slice(windowStart, windowEnd)
-          : undefined;
-        const aggregated = hasCustomReducer
-          ? resultColumns.map((column) => {
-              const reducer = mapping[
-                column.name as keyof Mapping
-              ] as AggregateReducer;
-              const values = contributors!.map((event) => {
-                const data = event.data();
-                return data[column.name as keyof typeof data];
-              }) as ReadonlyArray<ScalarValue | undefined>;
-              return applyAggregateReducer(reducer, values);
-            })
-          : reducerStates.map((state) => state.snapshot());
+        const aggregated = snapshotWindow();
         for (let index = groupStart; index < groupEnd; index++) {
           resultRows[index] = Object.freeze([
             this.events[index]!.key(),

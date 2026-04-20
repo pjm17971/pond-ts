@@ -1692,6 +1692,37 @@ describe('TimeSeries', () => {
     expect(rolled.at(2)?.get('value')).toBe(0);
   });
 
+  it('supports mixed built-in and custom reducers in rolling windows', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+      { name: 'status', kind: 'string' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'mixed',
+      schema,
+      rows: [
+        [0, 10, 'a'],
+        [5, 20, 'b'],
+        [10, 30, 'c'],
+      ],
+    });
+
+    const rolled = ts.rolling(10, {
+      value: 'avg',
+      status: (values) =>
+        values.filter((v): v is string => typeof v === 'string').join(','),
+    });
+
+    expect(rolled.at(0)?.get('value')).toBe(10);
+    expect(rolled.at(0)?.get('status')).toBe('a');
+    expect(rolled.at(1)?.get('value')).toBe(15);
+    expect(rolled.at(1)?.get('status')).toBe('a,b');
+    expect(rolled.at(2)?.get('value')).toBe(25);
+    expect(rolled.at(2)?.get('status')).toBe('b,c');
+  });
+
   it('aggregates interval-like events into every overlapping bucket', () => {
     const schema = [
       { name: 'interval', kind: 'interval' },
