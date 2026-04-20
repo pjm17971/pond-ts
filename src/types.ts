@@ -497,6 +497,14 @@ export type SmoothAppendSchema<
   Name extends string,
 > = readonly [S[0], ...ValueColumnsForSchema<S>, OptionalNumberColumn<Name>];
 
+export type DiffSchema<
+  S extends SeriesSchema,
+  Targets extends NumericColumnNameForSchema<S>,
+> = readonly [
+  S[0],
+  ...ReplaceSmoothedColumn<ValueColumnsForSchema<S>, Targets>,
+];
+
 type JoinColumns<
   Left extends readonly ValueColumn[],
   Right extends readonly ValueColumn[],
