@@ -51,10 +51,6 @@ Missing or incomplete:
 
 ### 5. Sequence improvements
 Missing:
-- validation for explicit sequences
-  - ordered
-  - non-overlapping
-  - positive duration
 - calendar-aware sequence generation
 - richer generation helpers
 - clearer anchor/grid APIs
@@ -89,10 +85,12 @@ Keep these distinct:
 ## Recommended next steps
 
 ### Near term
-1. Validate `Sequence([...])`
-2. Add built-in `aggregate(sequence, ...)`
-3. Add merge/join for aligned series
-4. Add rolling windows on top of that
+1. Add built-in `aggregate(sequence, ...)`
+2. Add merge/join for aligned series
+3. Add rolling windows on top of that
+
+Completed:
+- ✅ Validate explicit sequence interval lists (`BoundedSequence([...])`)
 
 ### Aggregation design
 Recommended shape:

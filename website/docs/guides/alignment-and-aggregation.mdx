@@ -38,6 +38,10 @@ const aggregated = series.aggregate(Sequence.every('5m'), {
   requests: 'sum',
   host: 'last',
 });
+
+const renamed = series.aggregate(Sequence.every('5m'), {
+  cpu_avg: {from: 'cpu', using: 'avg'},
+});
 ```
 
 Supported built-in reducers:
@@ -49,6 +53,9 @@ Supported built-in reducers:
 - `count`
 - `first`
 - `last`
+
+You can also pass custom reducer functions in the mapping. See the
+[Aggregation Playbook](./aggregation-playbook) for reducer contracts and examples.
 
 ## Bucket semantics
 

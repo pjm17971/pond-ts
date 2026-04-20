@@ -1,0 +1,140 @@
+---
+sidebar_position: 11
+---
+
+# Aggregation Playbook
+
+This guide covers aggregation end-to-end: bucket semantics, built-in reducers, custom reducers,
+empty bucket behavior, and how aggregation relates to rolling windows.
+
+## Core shape
+
+Use `aggregate(sequence, mapping, options?)` to produce an interval-keyed `TimeSeries`.
+
+```ts
+import {Sequence, TimeRange} from 'pond-ts';
+
+const aggregated = series.aggregate(
+  Sequence.every('5m'),
+  {
+    cpu: 'avg',
+    requests: 'sum',
+    host: 'last',
+  },
+  {range: new TimeRange({start, end})},
+);
+```
+
+The result key is always `interval`, with one output event per bucket.
+
+`mapping` supports two shapes:
+
+- shorthand by source column name:
+  - `{ latency: 'avg', host: 'last' }`
+- explicit output specs:
+  - `{ latency_avg: { from: 'latency', using: 'avg' } }`
+
+## Bucket membership rules
+
+Aggregation uses half-open intervals:
+
+- `[begin, end)`
+
+So an event exactly at `end` belongs to the next bucket.
+
+For interval-like source keys (`Interval` / `TimeRange`), a source event contributes to every
+bucket it overlaps under half-open overlap rules.
+
+## Built-in reducers
+
+Available built-ins:
+
+- `sum`
+- `avg`
+- `min`
+- `max`
+- `count`
+- `first`
+- `last`
+
+Typical mapping:
+
+```ts
+const byBucket = series.aggregate(Sequence.every('1m'), {
+  value: 'avg',
+  status: 'last',
+  samples: 'count',
+});
+```
+
+## Custom reducers
+
+You can supply a reducer function per mapped column.
+
+Reducer contract:
+
+- input: `ReadonlyArray<ScalarValue | undefined>`
+- output: `ScalarValue | undefined`
+
+```ts
+const custom = series.aggregate(Sequence.every('10m'), {
+  value: (values) =>
+    values.reduce<number>(
+      (sum, value) => sum + (typeof value === 'number' ? value : 0),
+      0,
+    ),
+  status: (values) =>
+    values.filter((value): value is string => typeof value === 'string').join(','),
+});
+```
+
+Custom reducers are also supported in `rolling(...)` mappings.
+
+## Named output columns (`from` + `using`)
+
+When you want multiple outputs from one source column, use the explicit spec form:
+
+```ts
+const quantiles = series.aggregate(Sequence.every('5m'), {
+  p50: {
+    from: 'latency',
+    using: (values) =>
+      quantile(
+        values.filter((value): value is number => typeof value === 'number'),
+        0.5,
+      ),
+    kind: 'number',
+  },
+  p95: {
+    from: 'latency',
+    using: (values) =>
+      quantile(
+        values.filter((value): value is number => typeof value === 'number'),
+        0.95,
+      ),
+    kind: 'number',
+  },
+  host: { from: 'host', using: 'last' },
+});
+```
+
+Use `kind` for custom reducers when the output type differs from the source column.
+
+## Empty-bucket behavior
+
+When a bucket has no contributing source values:
+
+- `count` returns `0`
+- `sum` returns `0`
+- `avg`, `min`, `max`, `first`, `last` return `undefined`
+- custom reducer return depends on your implementation
+
+This makes it easy to choose between sparse semantics (`undefined`) and explicit zero semantics.
+
+## Aggregation vs rolling
+
+- `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
+- `rolling(window, ...)` computes moving values anchored per source event key.
+- `rolling(sequence, window, ...)` computes moving values anchored per sequence bucket sample.
+
+Use aggregation for reporting periods and rolling for trend/online-style summaries.
