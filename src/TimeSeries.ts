@@ -1686,6 +1686,61 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
+   * Example: `series.groupBy("host")`.
+   * Partitions the series into groups keyed by the distinct values of a payload column.
+   * Each group is a `TimeSeries` with the same schema, preserving event order.
+   *
+   * Example: `series.groupBy("host", group => group.rolling("5m", { cpu: "avg" }))`.
+   * When a transform callback is supplied, it is applied to each group and the result
+   * map contains the transform outputs instead of raw sub-series.
+   */
+  groupBy(
+    column: keyof EventDataForSchema<S> & string,
+  ): Map<string, TimeSeries<S>>;
+  groupBy<R>(
+    column: keyof EventDataForSchema<S> & string,
+    transform: (group: TimeSeries<S>, key: string) => R,
+  ): Map<string, R>;
+  groupBy<R>(
+    column: keyof EventDataForSchema<S> & string,
+    transform?: (group: TimeSeries<S>, key: string) => R,
+  ): Map<string, TimeSeries<S>> | Map<string, R> {
+    const buckets = new Map<string, EventForSchema<S>[]>();
+
+    for (const event of this.events) {
+      const raw = event.data()[column as keyof EventDataForSchema<S>];
+      const key = raw === undefined ? 'undefined' : String(raw);
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(key, bucket);
+      }
+      bucket.push(event);
+    }
+
+    const buildGroup = (events: EventForSchema<S>[]): TimeSeries<S> =>
+      new TimeSeries({
+        name: this.name,
+        schema: this.schema,
+        rows: toRows(this.schema, events) as TimeSeriesInput<S>['rows'],
+      });
+
+    if (transform) {
+      const result = new Map<string, R>();
+      for (const [key, events] of buckets) {
+        result.set(key, transform(buildGroup(events), key));
+      }
+      return result;
+    }
+
+    const result = new Map<string, TimeSeries<S>>();
+    for (const [key, events] of buckets) {
+      result.set(key, buildGroup(events));
+    }
+    return result;
+  }
+
+  /**
    * Example: `series.rolling("1h", { value: "avg" })`.
    * Computes event-driven rolling aggregations over the ordered series.
    *
