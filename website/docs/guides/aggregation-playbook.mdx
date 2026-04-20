@@ -131,10 +131,47 @@ When a bucket has no contributing source values:
 
 This makes it easy to choose between sparse semantics (`undefined`) and explicit zero semantics.
 
-## Aggregation vs rolling
+## Whole-series reduction with `reduce`
+
+`reduce(...)` collapses an entire series to a scalar or record instead of bucketing by time.
+It uses the same reducer specs as `aggregate` — built-in names or custom functions.
+
+Single-column form returns a scalar:
+
+```ts
+const avg = series.reduce('cpu', 'avg');       // number | undefined
+const total = series.reduce('requests', 'sum'); // number | undefined
+```
+
+Multi-column form returns a record:
+
+```ts
+const summary = series.reduce({
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
+});
+// { cpu: number | undefined, requests: number | undefined, host: string | undefined }
+```
+
+Named output specs work here too:
+
+```ts
+const quantiles = series.reduce({
+  p50: { from: 'latency', using: myP50Reducer, kind: 'number' },
+  p99: { from: 'latency', using: myP99Reducer, kind: 'number' },
+});
+```
+
+Empty-bucket semantics apply: `avg`/`min`/`max`/`first`/`last` return `undefined` on an
+empty series, while `count` returns `0` and `sum` returns `0`.
+
+## Aggregation vs rolling vs reduce
 
 - `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
 - `rolling(window, ...)` computes moving values anchored per source event key.
 - `rolling(sequence, window, ...)` computes moving values anchored per sequence bucket sample.
+- `reduce(...)` collapses the entire series to a scalar or record — no time bucketing.
 
-Use aggregation for reporting periods and rolling for trend/online-style summaries.
+Use aggregation for reporting periods, rolling for trend/online-style summaries, and reduce
+for whole-series statistics.

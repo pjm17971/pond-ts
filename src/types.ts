@@ -453,6 +453,18 @@ export type RollingSchema<S extends SeriesSchema, Mapping> = readonly [
   S[0],
   ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
 ];
+type ReduceResultForMap<
+  S extends SeriesSchema,
+  Mapping,
+> = {
+  [K in keyof Mapping & string]: ScalarValue | undefined;
+};
+
+export type ReduceResult<
+  S extends SeriesSchema,
+  Mapping,
+> = ReduceResultForMap<S, Mapping>;
+
 export type NumericColumnNameForSchema<S extends SeriesSchema> = Extract<
   ValueColumnsForSchema<S>[number],
   ColumnDef<string, 'number'>
