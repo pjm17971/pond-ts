@@ -105,6 +105,8 @@ export type TimeSeriesJsonInput<S extends SeriesSchema> = {
   rows: ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>;
 };
 
+export type JsonRowFormat = 'array' | 'object';
+
 export type NormalizedValueForKind<K extends string> = K extends 'time'
   ? Time
   : K extends 'timeRange'
@@ -126,6 +128,23 @@ export type NormalizedRowForSchema<
     ? NormalizedValueForKind<K>
     : never;
 };
+
+type NormalizedDataValueForColumn<C extends ColumnDef<string, string>> =
+  C extends ColumnDef<any, infer K>
+    ? K extends FirstColKind
+      ? EventKeyForKind<K>
+      : C['required'] extends false
+        ? NormalizedValueForKind<K> | undefined
+        : NormalizedValueForKind<K>
+    : never;
+
+export type NormalizedObjectRowForSchema<S extends SeriesSchema> = Partial<{
+  [C in S[number] as C['name']]: NormalizedDataValueForColumn<C>;
+}>;
+
+export type NormalizedObjectRow = Readonly<
+  Record<string, EventKey | ScalarValue | undefined>
+>;
 
 type DataValueForColumn<C extends ColumnDef<string, string>> =
   C extends ColumnDef<any, infer K>

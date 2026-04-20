@@ -202,6 +202,127 @@ describe('TimeSeries', () => {
     expect(ts.at(0)?.get('active')).toBe(true);
   });
 
+  it('serializes to JSON-style array rows and round-trips through fromJSON', () => {
+    const schema = [
+      { name: 'timeRange', kind: 'timeRange' },
+      { name: 'value', kind: 'number' },
+      { name: 'status', kind: 'string', required: false },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'windows',
+      schema,
+      rows: [
+        [new TimeRange({ start: 0, end: 10 }), 1, 'ok'],
+        [new TimeRange({ start: 10, end: 20 }), 2, undefined],
+      ],
+    });
+
+    const json = ts.toJSON();
+
+    expect(json).toEqual({
+      name: 'windows',
+      schema,
+      rows: [
+        [[0, 10], 1, 'ok'],
+        [[10, 20], 2, null],
+      ],
+    });
+
+    const roundTripped = TimeSeries.fromJSON(json);
+    expect(roundTripped.rows).toEqual(ts.rows);
+  });
+
+  it('serializes to JSON object rows keyed by schema names', () => {
+    const schema = [
+      { name: 'interval', kind: 'interval' },
+      { name: 'value', kind: 'number' },
+      { name: 'active', kind: 'boolean' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'windows',
+      schema,
+      rows: [[new Interval({ value: 'a', start: 0, end: 10 }), 1, true]],
+    });
+
+    const json = ts.toJSON({ rowFormat: 'object' });
+
+    expect(json).toEqual({
+      name: 'windows',
+      schema,
+      rows: [
+        {
+          interval: { value: 'a', start: 0, end: 10 },
+          value: 1,
+          active: true,
+        },
+      ],
+    });
+
+    const roundTripped = TimeSeries.fromJSON(json);
+    expect(roundTripped.rows).toEqual(ts.rows);
+  });
+
+  it('exports normalized row arrays with toRows()', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+      { name: 'status', kind: 'string', required: false },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [new Date('2025-01-01T00:00:00.000Z'), 1, 'ok'],
+        [new Date('2025-01-01T00:01:00.000Z'), 2, undefined],
+      ],
+    });
+
+    const rows = ts.toRows();
+
+    expect(rows).toEqual(ts.rows);
+    expect(rows[0]?.[0]).toBeInstanceOf(Time);
+    expect(rows[1]).toEqual([
+      new Time(Date.parse('2025-01-01T00:01:00.000Z')),
+      2,
+      undefined,
+    ]);
+  });
+
+  it('exports normalized object rows with toObjects()', () => {
+    const schema = [
+      { name: 'interval', kind: 'interval' },
+      { name: 'value', kind: 'number' },
+      { name: 'active', kind: 'boolean', required: false },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'windows',
+      schema,
+      rows: [
+        [new Interval({ value: 'a', start: 0, end: 10 }), 1, true],
+        [new Interval({ value: 'b', start: 10, end: 20 }), 2, undefined],
+      ],
+    });
+
+    const objects = ts.toObjects();
+
+    expect(objects).toEqual([
+      {
+        interval: new Interval({ value: 'a', start: 0, end: 10 }),
+        value: 1,
+        active: true,
+      },
+      {
+        interval: new Interval({ value: 'b', start: 10, end: 20 }),
+        value: 2,
+        active: undefined,
+      },
+    ]);
+  });
+
   it('supports the README worked example flow end to end', () => {
     const schema = [
       { name: 'time', kind: 'time' },

@@ -12,12 +12,16 @@ import type {
   FirstColKind,
   IntervalKeyedSchema,
   JsonObjectRowForSchema,
+  JsonRowFormat,
   JsonRowForSchema,
+  JsonValueForKind,
   JoinConflictMode,
   JoinManySchema,
   JoinSchema,
   JoinType,
   NumericColumnNameForSchema,
+  NormalizedObjectRow,
+  NormalizedObjectRowForSchema,
   NormalizedRowForSchema,
   PrefixedJoinManySchema,
   PrefixedJoinSchema,
@@ -204,6 +208,32 @@ function parseJsonRows<S extends SeriesSchema>(
     ) as TimeSeriesInput<S>['rows'][number];
   }) as TimeSeriesInput<S>['rows'];
 }
+
+function serializeJsonKey(
+  kind: FirstColKind,
+  key: EventKey,
+  rowFormat: JsonRowFormat,
+): JsonValueForKind<FirstColKind> {
+  if (kind === 'time') {
+    return key.begin();
+  }
+
+  if (kind === 'timeRange') {
+    return rowFormat === 'object'
+      ? { start: key.begin(), end: key.end() }
+      : [key.begin(), key.end()];
+  }
+
+  const interval = key as Interval;
+  return rowFormat === 'object'
+    ? { value: interval.value, start: interval.begin(), end: interval.end() }
+    : [interval.value, interval.begin(), interval.end()];
+}
+
+function serializeJsonValue(value: unknown): unknown {
+  return value === undefined ? null : value;
+}
+
 type PrefixesForSeriesTuple<T extends SeriesTuple> = {
   [I in keyof T]: string;
 } extends infer Result
@@ -225,6 +255,26 @@ function toRows<S extends SeriesSchema>(
         .map((column) => data[column.name as keyof typeof data]),
     ]) as TimeSeriesInput<S>['rows'][number];
   }) as TimeSeriesInput<S>['rows'];
+}
+
+function toObjects<S extends SeriesSchema>(
+  schema: S,
+  events: ReadonlyArray<EventForSchema<S>>,
+): ReadonlyArray<NormalizedObjectRow> {
+  const keyColumn = schema[0]!;
+  const dataColumns = schema.slice(1);
+  return events.map((event) => {
+    const row: Record<string, unknown> = {
+      [keyColumn.name]: event.key(),
+    };
+    const data = event.data();
+
+    for (const column of dataColumns) {
+      row[column.name] = data[column.name as keyof typeof data];
+    }
+
+    return Object.freeze(row) as NormalizedObjectRowForSchema<S>;
+  }) as ReadonlyArray<NormalizedObjectRow>;
 }
 
 function isEventKey(value: unknown): value is EventKey {
@@ -1066,7 +1116,7 @@ export class TimeSeries<S extends SeriesSchema> {
   static joinMany<const T extends SeriesTuple>(
     series: T,
     options: JoinOptions = {},
-  ): TimeSeries<SeriesSchema> {
+  ): any {
     const prepared = prepareSeriesForJoin(
       series as unknown as SeriesTuple,
       options,
@@ -1112,6 +1162,65 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
+   * Example: `series.toJSON({ rowFormat: "object" })`.
+   * Serializes the series into the JSON-friendly shape accepted by `TimeSeries.fromJSON(...)`.
+   *
+   * Timestamps are emitted as numbers to avoid time zone ambiguity. Missing payload values are
+   * emitted as `null`. By default rows are emitted as arrays; use `rowFormat: "object"` for rows
+   * keyed by schema column names.
+   */
+  toJSON(
+    options: { rowFormat?: JsonRowFormat } = {},
+  ): TimeSeriesJsonInput<SeriesSchema> {
+    const rowFormat = options.rowFormat ?? 'array';
+    const dataColumns = this.schema.slice(1);
+
+    if (rowFormat === 'object') {
+      const keyColumn = this.schema[0]!;
+      const rows = this.events.map((event) => {
+        const row: Record<string, unknown> = {
+          [keyColumn.name]: serializeJsonKey(
+            keyColumn.kind,
+            event.key(),
+            rowFormat,
+          ),
+        };
+        const data = event.data();
+
+        for (const column of dataColumns) {
+          row[column.name] = serializeJsonValue(
+            data[column.name as keyof typeof data],
+          );
+        }
+
+        return Object.freeze(row) as JsonObjectRowForSchema<SeriesSchema>;
+      });
+
+      return {
+        name: this.name,
+        schema: this.schema as SeriesSchema,
+        rows,
+      };
+    }
+
+    const rows = this.events.map((event) => {
+      const data = event.data();
+      return Object.freeze([
+        serializeJsonKey(this.schema[0]!.kind, event.key(), rowFormat),
+        ...dataColumns.map((column) =>
+          serializeJsonValue(data[column.name as keyof typeof data]),
+        ),
+      ]) as JsonRowForSchema<SeriesSchema>;
+    });
+
+    return {
+      name: this.name,
+      schema: this.schema as SeriesSchema,
+      rows,
+    };
+  }
+
+  /**
    * Builds a series from event data that has already been validated and ordered by the caller.
    *
    * This is intentionally private and only used by transforms that preserve the existing event
@@ -1147,6 +1256,16 @@ export class TimeSeries<S extends SeriesSchema> {
     return toRows(this.schema, this.events) as ReadonlyArray<
       NormalizedRowForSchema<S>
     >;
+  }
+
+  /** Example: `series.toRows()`. Returns normalized row arrays using `Time`/`TimeRange`/`Interval` keys and `undefined` for missing payload values. */
+  toRows(): ReadonlyArray<NormalizedRowForSchema<S>> {
+    return this.rows;
+  }
+
+  /** Example: `series.toObjects()`. Returns normalized schema-keyed object rows using temporal key objects and `undefined` for missing payload values. */
+  toObjects(): ReadonlyArray<NormalizedObjectRow> {
+    return toObjects(this.schema, this.events);
   }
 
   /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
@@ -1282,11 +1401,14 @@ export class TimeSeries<S extends SeriesSchema> {
   join<Other extends SeriesSchema>(
     other: TimeSeries<Other>,
     options: JoinOptions = {},
-  ): TimeSeries<SeriesSchema> {
-    const [left, right] = prepareSeriesForJoin([this, other], options) as [
-      TimeSeries<SeriesSchema>,
-      TimeSeries<SeriesSchema>,
-    ];
+  ): any {
+    const [left, right] = prepareSeriesForJoin(
+      [
+        this as unknown as TimeSeries<SeriesSchema>,
+        other as unknown as TimeSeries<SeriesSchema>,
+      ],
+      options,
+    ) as [TimeSeries<SeriesSchema>, TimeSeries<SeriesSchema>];
     const joinType = options.type ?? 'outer';
 
     if (left.firstColumnKind !== right.firstColumnKind) {
@@ -1509,7 +1631,7 @@ export class TimeSeries<S extends SeriesSchema> {
     sequence: SequenceLike,
     mapping: AggregateMap<S> | AggregateOutputMap<S>,
     options: { range?: TemporalLike } = {},
-  ): TimeSeries<SeriesSchema> {
+  ): any {
     return this.#aggregateInternal(sequence, mapping, options);
   }
   #aggregateInternal(
@@ -2550,7 +2672,7 @@ export class TimeSeries<S extends SeriesSchema> {
     output: Name,
     reducer: (values: Pick<EventDataForSchema<S>, Keys[number]>) => R,
     options?: { append?: boolean },
-  ): TimeSeries<CollapseSchema<S, Keys[number] & string, Name, R, boolean>> {
+  ): any {
     const nextEvents = this.events.map((event) => {
       if (options?.append === true) {
         return event.collapse(keys, output, reducer, { append: true });

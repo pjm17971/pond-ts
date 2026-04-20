@@ -46,6 +46,11 @@ What has been completed recently:
 - [x] the main checkpoints for this work are:
   - [x] `05a7af3` `Optimize core TimeSeries performance paths`
   - [x] `60b2f07` `Optimize alignment and loess smoothing`
+- [x] Phase 1 has started with JSON export support:
+  - [x] `toJSON()` now round-trips with `fromJSON(...)`
+  - [x] `toRows()` and `toObjects()` now provide explicit normalized export helpers
+  - [x] both array-row and object-row JSON shapes are supported
+  - [x] docs now cover both ingest and export
 
 Useful references for current performance state:
 
@@ -61,7 +66,7 @@ What is still not stable enough to build on aggressively:
 - derived-transform construction still does avoidable validation/row round-trips
 - edge-case coverage in several analytical paths is still lighter than it
   should be
-- custom reducers and serialization are still missing
+- custom reducers are still missing
 - a settled plan for live/stateful composition is still ahead of us
 
 ---
@@ -114,7 +119,7 @@ Suggested deliverables:
 
 ## Phase 1: Batch hardening
 
-Status: not started.
+Status: in progress.
 
 Goal: make the existing batch surface trustworthy enough to extend.
 
@@ -126,8 +131,8 @@ Scope:
   - empty aggregation buckets
   - rolling alignment edge cases
   - half-open interval semantics
-- add `toJSON()`
-- add `toRows()` and `toObjects()` as explicit export helpers
+- [x] add `toJSON()`
+- [x] add `toRows()` and `toObjects()` as explicit export helpers
 - add custom reducers for `aggregate()` and `rolling()`
 
 Why this phase matters:
@@ -138,7 +143,7 @@ Why this phase matters:
 
 Definition of done:
 
-- round-trip `toJSON()` / `fromJSON()` works in tests
+- [x] round-trip `toJSON()` / `fromJSON()` works in tests
 - custom reducer typing and runtime behavior are documented and covered
 - edge-case coverage exists for every current analytical primitive
 
