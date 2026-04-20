@@ -9,7 +9,7 @@ sidebar_position: 10
 Use `align(...)` to sample a series on a sequence grid and produce an interval-keyed view.
 
 ```ts
-import {Sequence} from 'pond-ts';
+import { Sequence } from 'pond-ts';
 
 const aligned = series.align(Sequence.every('1m'), {
   method: 'hold',
@@ -40,7 +40,7 @@ const aggregated = series.aggregate(Sequence.every('5m'), {
 });
 
 const renamed = series.aggregate(Sequence.every('5m'), {
-  cpu_avg: {from: 'cpu', using: 'avg'},
+  cpu_avg: { from: 'cpu', using: 'avg' },
 });
 ```
 

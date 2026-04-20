@@ -25,6 +25,7 @@ import type {
   NormalizedRowForSchema,
   PrefixedJoinManySchema,
   PrefixedJoinSchema,
+  ReduceResult,
   RenameMap,
   RenameSchema,
   RollingAlignment,
@@ -1744,6 +1745,55 @@ export class TimeSeries<S extends SeriesSchema> {
       schema: resultSchema,
       rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
     });
+  }
+
+  /**
+   * Example: `series.reduce("value", "avg")`.
+   * Collapses the entire series to a single scalar value using the specified reducer.
+   *
+   * Example: `series.reduce({ cpu: "avg", requests: "sum" })`.
+   * Collapses the entire series to a record with one entry per mapped column.
+   *
+   * Uses the same reducer specs as `aggregate(...)` — built-in names like `"avg"`, `"sum"`,
+   * `"count"`, or custom functions `(values) => result`. Where `aggregate` buckets by time and
+   * produces a new `TimeSeries`, `reduce` treats the whole series as one bucket and produces
+   * a plain value or record.
+   */
+  reduce(
+    column: ValueColumnsForSchema<S>[number]['name'],
+    reducer: AggregateReducer,
+  ): ScalarValue | undefined;
+  reduce<const Mapping extends AggregateMap<S>>(
+    mapping: Mapping,
+  ): ReduceResult<S, Mapping>;
+  reduce<const Mapping extends AggregateOutputMap<S>>(
+    mapping: Mapping,
+  ): ReduceResult<S, Mapping>;
+  reduce(
+    columnOrMapping:
+      | ValueColumnsForSchema<S>[number]['name']
+      | AggregateMap<S>
+      | AggregateOutputMap<S>,
+    reducer?: AggregateReducer,
+  ): ScalarValue | undefined | Record<string, ScalarValue | undefined> {
+    if (typeof columnOrMapping === 'string') {
+      const values = this.events.map((event) => {
+        const data = event.data();
+        return data[columnOrMapping as keyof typeof data];
+      }) as ReadonlyArray<ScalarValue | undefined>;
+      return applyAggregateReducer(reducer!, values);
+    }
+
+    const columns = normalizeAggregateColumns(this.schema, columnOrMapping);
+    const result: Record<string, ScalarValue | undefined> = {};
+    for (const col of columns) {
+      const values = this.events.map((event) => {
+        const data = event.data();
+        return data[col.source as keyof typeof data];
+      }) as ReadonlyArray<ScalarValue | undefined>;
+      result[col.output] = applyAggregateReducer(col.reducer, values);
+    }
+    return result;
   }
 
   /**

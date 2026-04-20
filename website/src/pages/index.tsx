@@ -1,4 +1,4 @@
-import type {ReactNode} from 'react';
+import type { ReactNode } from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
@@ -9,7 +9,7 @@ import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
 function HomepageHeader(): ReactNode {
-  const {siteConfig} = useDocusaurusContext();
+  const { siteConfig } = useDocusaurusContext();
   const logoUrl = useBaseUrl('/img/logo.png');
 
   return (
@@ -25,12 +25,16 @@ function HomepageHeader(): ReactNode {
         </Heading>
         <p className={styles.heroSubtitle}>{siteConfig.tagline}</p>
         <div className={styles.buttons}>
-          <Link className="button button--primary button--lg" to="/docs/getting-started">
+          <Link
+            className="button button--primary button--lg"
+            to="/docs/getting-started"
+          >
             Get started
           </Link>
           <Link
             className="button button--outline button--primary button--lg"
-            to="/docs/examples/cpu-metrics">
+            to="/docs/examples/cpu-metrics"
+          >
             Explore an example
           </Link>
         </div>
@@ -45,12 +49,13 @@ function HomepageHeader(): ReactNode {
 }
 
 export default function Home(): ReactNode {
-  const {siteConfig} = useDocusaurusContext();
+  const { siteConfig } = useDocusaurusContext();
 
   return (
     <Layout
       title={siteConfig.title}
-      description="Typed time series primitives for modern TypeScript projects">
+      description="Typed time series primitives for modern TypeScript projects"
+    >
       <HomepageHeader />
       <main>
         <HomepageFeatures />

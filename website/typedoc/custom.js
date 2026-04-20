@@ -7,15 +7,16 @@ try {
 
 const pathname = window.location.pathname;
 const generatedApiIndex = pathname.indexOf('/generated-api/');
-const siteBase = generatedApiIndex >= 0 ? pathname.slice(0, generatedApiIndex) : '';
+const siteBase =
+  generatedApiIndex >= 0 ? pathname.slice(0, generatedApiIndex) : '';
 const toolbarLinks = document.getElementById('tsd-toolbar-links');
 
 if (toolbarLinks && !toolbarLinks.dataset.pondEnhanced) {
   const links = [
-    {label: 'Pond', href: `${siteBase}/`},
-    {label: 'Docs', href: `${siteBase}/docs/getting-started`},
-    {label: 'Examples', href: `${siteBase}/docs/examples/cpu-metrics`},
-    {label: 'GitHub', href: 'https://github.com/pjm17971/pond-ts'},
+    { label: 'Pond', href: `${siteBase}/` },
+    { label: 'Docs', href: `${siteBase}/docs/getting-started` },
+    { label: 'Examples', href: `${siteBase}/docs/examples/cpu-metrics` },
+    { label: 'GitHub', href: 'https://github.com/pjm17971/pond-ts' },
   ];
 
   for (const link of links) {

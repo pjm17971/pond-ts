@@ -42,7 +42,9 @@ function benchmark(length, repeats = 3) {
     const end = performance.now();
 
     if (smoothed.length !== length) {
-      throw new Error(`unexpected smoothed length for ${length}: ${smoothed.length}`);
+      throw new Error(
+        `unexpected smoothed length for ${length}: ${smoothed.length}`,
+      );
     }
 
     samples.push(end - start);

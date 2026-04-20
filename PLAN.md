@@ -33,14 +33,14 @@ What is still not stable enough to build on aggressively:
 
 All five critical O(N^2) hot paths have been optimized:
 
-| Method | Was | Now | Speedup (largest test) |
-|--------|-----|-----|------------------------|
-| `aggregate()` | O(N x B) | O(N + B) | **172x** at 16k events |
-| `rolling()` (event-driven) | O(N^2) | O(N) sliding window | **182x** at 4k events |
-| `smooth('movingAverage')` | O(N^2) | O(N) sliding deque | **15x** at 4k events |
-| `smooth('loess')` | O(N^2 log N) | precomputed neighbors | **7.5x** at 1.6k events |
-| `includesKey()` | O(N) | O(log N) bisect | **819x** at 8k events |
-| `#alignLinearAt()` | O(N) + O(log N) | forward cursor | **134x** at 4k events |
+| Method                     | Was             | Now                   | Speedup (largest test)  |
+| -------------------------- | --------------- | --------------------- | ----------------------- |
+| `aggregate()`              | O(N x B)        | O(N + B)              | **172x** at 16k events  |
+| `rolling()` (event-driven) | O(N^2)          | O(N) sliding window   | **182x** at 4k events   |
+| `smooth('movingAverage')`  | O(N^2)          | O(N) sliding deque    | **15x** at 4k events    |
+| `smooth('loess')`          | O(N^2 log N)    | precomputed neighbors | **7.5x** at 1.6k events |
+| `includesKey()`            | O(N)            | O(log N) bisect       | **819x** at 8k events   |
+| `#alignLinearAt()`         | O(N) + O(log N) | forward cursor        | **134x** at 4k events   |
 
 Landed in commits `05a7af3` and `60b2f07`. Each change has dedicated regression
 tests and a benchmark script.
@@ -128,7 +128,7 @@ materializing intermediate maps:
 ```ts
 const perHost = series.groupBy('host');
 const perHostRolling = series.groupBy('host', (group) =>
-  group.rolling('5m', { cpu: 'avg' })
+  group.rolling('5m', { cpu: 'avg' }),
 );
 ```
 
@@ -139,7 +139,7 @@ Supports both built-in and custom reducers, same as `aggregate`:
 
 ```ts
 // single column
-const avg = series.reduce('cpu', 'avg');        // => number
+const avg = series.reduce('cpu', 'avg'); // => number
 
 // multi-column
 const summary = series.reduce({
@@ -149,13 +149,14 @@ const summary = series.reduce({
 // => { cpu: number, requests: number }
 
 // custom reducer
-const weighted = series.reduce('cpu', (values) =>
-  values.reduce((a, b) => a + b, 0) / values.length
+const weighted = series.reduce(
+  'cpu',
+  (values) => values.reduce((a, b) => a + b, 0) / values.length,
 );
 
 // per-group reduction
 const perHost = series.groupBy('host', (g) =>
-  g.reduce({ cpu: 'avg', requests: 'p95' })
+  g.reduce({ cpu: 'avg', requests: 'p95' }),
 );
 // => Map<string, { cpu: number, requests: number }>
 ```
@@ -165,7 +166,9 @@ internally:
 
 ```ts
 const hourly = series.resample(Sequence.hourly(), {
-  cpu: 'avg', requests: 'sum', host: 'last',
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
 });
 ```
 
@@ -259,7 +262,7 @@ source and apply the predicate. Views compose by stacking.
 
 ```ts
 const pipeline = live
-  .filter(e => e.get('host') === 'api-1')
+  .filter((e) => e.get('host') === 'api-1')
   .select('cpu', 'requests');
 // materializes lazily on .toTimeSeries()
 ```
@@ -282,12 +285,12 @@ deque of recent events and evicts those outside the window.
 **`LiveSmooth`**: EMA needs only previous smoothed value. Moving average and
 LOESS use a sliding deque.
 
-| Transform | Live behavior | Owns a buffer? |
-|-----------|---------------|----------------|
-| `filter`, `map`, `select`, `rename`, `collapse` | Lazy view over source | No |
-| `aggregate` | Accumulator per bucket + closed output | Yes |
-| `rolling` | Sliding deque + output per event | Yes |
-| `smooth` | Running state + output per event | Yes |
+| Transform                                       | Live behavior                          | Owns a buffer? |
+| ----------------------------------------------- | -------------------------------------- | -------------- |
+| `filter`, `map`, `select`, `rename`, `collapse` | Lazy view over source                  | No             |
+| `aggregate`                                     | Accumulator per bucket + closed output | Yes            |
+| `rolling`                                       | Sliding deque + output per event       | Yes            |
+| `smooth`                                        | Running state + output per event       | Yes            |
 
 ### Composition
 
@@ -386,14 +389,14 @@ Definition of done:
 
 ## Recommended release grouping
 
-| Release band | Focus |
-|--------------|-------|
-| `0.1.x` | Performance fixes, hardening, serialization, custom reducers |
-| `0.2.x` | `groupBy`, `resample`, `diff`/`rate`, `fill` |
-| `0.3.x` | `LiveSeries` core and subscriptions |
-| `0.4.x` | Live views and live stateful transforms |
-| `0.5.x` | React hooks |
-| `0.6.x` | Node adapters and third-party chart adapters |
+| Release band | Focus                                                        |
+| ------------ | ------------------------------------------------------------ |
+| `0.1.x`      | Performance fixes, hardening, serialization, custom reducers |
+| `0.2.x`      | `groupBy`, `resample`, `diff`/`rate`, `fill`                 |
+| `0.3.x`      | `LiveSeries` core and subscriptions                          |
+| `0.4.x`      | Live views and live stateful transforms                      |
+| `0.5.x`      | React hooks                                                  |
+| `0.6.x`      | Node adapters and third-party chart adapters                 |
 
 ---
 

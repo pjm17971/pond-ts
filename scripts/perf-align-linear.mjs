@@ -41,7 +41,9 @@ function benchmark(length, repeats = 5) {
     const end = performance.now();
 
     if (aligned.length !== Math.floor(((length - 1) * 10) / 5) + 1) {
-      throw new Error(`unexpected aligned length for ${length}: ${aligned.length}`);
+      throw new Error(
+        `unexpected aligned length for ${length}: ${aligned.length}`,
+      );
     }
 
     samples.push(end - start);

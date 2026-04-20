@@ -13,13 +13,13 @@ npm install pond-ts
 ## First series
 
 ```ts
-import {TimeSeries} from 'pond-ts';
+import { TimeSeries } from 'pond-ts';
 
 const schema = [
-  {name: 'time', kind: 'time'},
-  {name: 'cpu', kind: 'number'},
-  {name: 'host', kind: 'string'},
-  {name: 'healthy', kind: 'boolean'},
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+  { name: 'healthy', kind: 'boolean' },
 ] as const;
 
 const series = new TimeSeries({
@@ -61,7 +61,7 @@ After construction, the most common operations are:
 - smoothing a numeric signal
 
 ```ts
-import {Sequence} from 'pond-ts';
+import { Sequence } from 'pond-ts';
 
 const aligned = series.align(Sequence.every('1m'), {
   method: 'hold',

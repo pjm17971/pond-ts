@@ -43,6 +43,7 @@ export type {
   NormalizedObjectRowForSchema,
   NormalizedObjectRow,
   NormalizedValueForKind,
+  ReduceResult,
   RenameData,
   RenameMap,
   RenameSchema,

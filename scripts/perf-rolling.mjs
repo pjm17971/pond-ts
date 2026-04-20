@@ -11,7 +11,11 @@ function makeSeries(length) {
   return new TimeSeries({
     name: 'cpu',
     schema,
-    rows: Array.from({ length }, (_, index) => [index * 1_000, index % 100, (index % 7) + 1]),
+    rows: Array.from({ length }, (_, index) => [
+      index * 1_000,
+      index % 100,
+      (index % 7) + 1,
+    ]),
   });
 }
 
@@ -35,7 +39,9 @@ function benchmark(length, repeats = 5) {
     const rolled = series.rolling(60_000, { value: 'avg', load: 'sum' });
     const end = performance.now();
     if (rolled.length !== length) {
-      throw new Error(`unexpected output length for ${length}: ${rolled.length}`);
+      throw new Error(
+        `unexpected output length for ${length}: ${rolled.length}`,
+      );
     }
     samples.push(end - start);
   }
