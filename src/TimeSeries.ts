@@ -31,6 +31,7 @@ import type {
   RollingAlignment,
   RollingSchema,
   CustomAggregateReducer,
+  DiffSchema,
   ScalarValue,
   SmoothMethod,
   SmoothAppendSchema,
@@ -56,6 +57,7 @@ import type {
   TimeRangeInput,
   TimestampInput,
 } from './temporal.js';
+import { Event } from './Event.js';
 import { Sequence } from './Sequence.js';
 import { validateAndNormalize } from './validate.js';
 import type { DurationInput } from './Sequence.js';
@@ -1738,6 +1740,129 @@ export class TimeSeries<S extends SeriesSchema> {
       result.set(key, buildGroup(events));
     }
     return result;
+  }
+
+  /**
+   * Example: `series.diff("requests")`.
+   * Computes per-event differences for the specified numeric columns.
+   * Non-specified columns pass through unchanged. The first event gets
+   * `undefined` in affected columns unless `{ drop: true }` is passed,
+   * which removes the first event entirely.
+   *
+   * Example: `series.diff(["requests", "cpu"])`.
+   * Multiple columns can be diffed in a single call.
+   *
+   * Example: `series.diff("requests", { drop: true })`.
+   * Drops the first event instead of keeping it with undefined values.
+   */
+  diff<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): TimeSeries<DiffSchema<S, Target>> {
+    return this.#diffOrRate('diff', columns, options);
+  }
+
+  /**
+   * Example: `series.rate("requests")`.
+   * Computes the per-second rate of change for the specified numeric columns.
+   * Non-specified columns pass through unchanged. The first event gets
+   * `undefined` in affected columns unless `{ drop: true }` is passed,
+   * which removes the first event entirely.
+   *
+   * Example: `series.rate(["requests", "cpu"])`.
+   * Multiple columns can be rated in a single call.
+   *
+   * Example: `series.rate("requests", { drop: true })`.
+   * Drops the first event instead of keeping it with undefined values.
+   */
+  rate<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): TimeSeries<DiffSchema<S, Target>> {
+    return this.#diffOrRate('rate', columns, options);
+  }
+
+  #diffOrRate<Target extends NumericColumnNameForSchema<S>>(
+    mode: 'diff' | 'rate',
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): TimeSeries<DiffSchema<S, Target>> {
+    type OutSchema = DiffSchema<S, Target>;
+
+    const cols = typeof columns === 'string' ? [columns] : columns;
+    const drop = options?.drop === true;
+
+    if (cols.length === 0) {
+      throw new Error(`${mode}() requires at least one column name`);
+    }
+
+    const targetSet = new Set<string>(cols);
+
+    const outSchema = Object.freeze(
+      this.schema.map((col, i) => {
+        if (i === 0) return col;
+        if (targetSet.has(col.name)) {
+          return { ...col, kind: 'number' as const, required: false as const };
+        }
+        return col;
+      }),
+    ) as unknown as OutSchema;
+
+    const events = this.events;
+    if (events.length === 0) {
+      return TimeSeries.#fromTrustedEvents<OutSchema>(this.name, outSchema, []);
+    }
+
+    const resultEvents: EventForSchema<OutSchema>[] = [];
+
+    if (!drop) {
+      const firstData = { ...events[0]!.data() } as Record<string, unknown>;
+      for (const col of cols) {
+        firstData[col] = undefined;
+      }
+      resultEvents.push(
+        new Event(
+          events[0]!.key(),
+          firstData,
+        ) as unknown as EventForSchema<OutSchema>,
+      );
+    }
+
+    for (let i = 1; i < events.length; i++) {
+      const prev = events[i - 1]!;
+      const curr = events[i]!;
+      const data = { ...curr.data() } as Record<string, unknown>;
+
+      const dt =
+        mode === 'rate' ? (curr.begin() - prev.begin()) / 1000 : undefined;
+
+      for (const col of cols) {
+        const prevVal = (prev.data() as Record<string, unknown>)[col];
+        const currVal = data[col];
+
+        if (typeof currVal === 'number' && typeof prevVal === 'number') {
+          const delta = currVal - prevVal;
+          data[col] =
+            mode === 'rate' && dt !== 0
+              ? delta / dt!
+              : mode === 'rate'
+                ? undefined
+                : delta;
+        } else {
+          data[col] = undefined;
+        }
+      }
+
+      resultEvents.push(
+        new Event(curr.key(), data) as unknown as EventForSchema<OutSchema>,
+      );
+    }
+
+    return TimeSeries.#fromTrustedEvents<OutSchema>(
+      this.name,
+      outSchema,
+      resultEvents,
+    );
   }
 
   /**

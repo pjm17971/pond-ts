@@ -52,6 +52,7 @@ export type {
   ScalarKind,
   ScalarValue,
   CustomAggregateReducer,
+  DiffSchema,
   NumericColumnNameForSchema,
   SmoothMethod,
   SmoothAppendSchema,

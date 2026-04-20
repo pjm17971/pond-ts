@@ -203,13 +203,50 @@ const rolling = series.groupBy('host', (group) =>
 
 The transform callback also receives the group key as its second argument.
 
-## Aggregation vs rolling vs reduce
+## Differences and rates with `diff` and `rate`
+
+`diff(columns)` computes the per-event difference for one or more numeric columns.
+`rate(columns)` divides the difference by the time gap in seconds, giving a per-second rate of change.
+
+```ts
+const deltas = series.diff('requests');
+const perSecond = series.rate('requests');
+```
+
+Multiple columns:
+
+```ts
+const deltas = series.diff(['cpu', 'mem']);
+const perSecond = series.rate(['cpu', 'mem']);
+```
+
+The first event gets `undefined` in affected columns (no previous value to diff against).
+Non-targeted columns pass through unchanged.
+
+To drop the first event instead of keeping it with `undefined`:
+
+```ts
+const deltas = series.diff('requests', { drop: true });
+```
+
+`rate` handles zero time gaps by returning `undefined` (avoids division by zero).
+
+These compose naturally with `groupBy`:
+
+```ts
+const perHostRate = series.groupBy('host', (group) => group.rate('requests'));
+```
+
+## Aggregation vs rolling vs reduce vs diff/rate
 
 - `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
 - `rolling(window, ...)` computes moving values anchored per source event key.
 - `rolling(sequence, window, ...)` computes moving values anchored per sequence bucket sample.
 - `reduce(...)` collapses the entire series to a scalar or record — no time bucketing.
 - `groupBy(column)` partitions by column value, then any of the above can be applied per group.
+- `diff(columns)` computes per-event differences for numeric columns.
+- `rate(columns)` computes per-second rates of change for numeric columns.
 
 Use aggregation for reporting periods, rolling for trend/online-style summaries, reduce
-for whole-series statistics, and groupBy for multi-entity analytics.
+for whole-series statistics, groupBy for multi-entity analytics, and diff/rate for
+point-to-point changes and velocities.

@@ -106,12 +106,17 @@ Completed:
 
 - [x] `reduce` — collapse a series to a scalar or record (whole-series aggregation)
 - [x] `groupBy` — partition by column value, optional transform callback
+- [x] `diff` / `rate` — per-event differences and per-second rates of change
 
 Scope:
 
-- `resample` — convenience over align + aggregate
-- `diff` / `rate` — per-event differences or rates of change
 - `fill` / `fillNull` — explicit gap-filling for sparse or nullable data
+
+Dropped:
+
+- `resample` — everything it would do is already covered by `aggregate()`
+  (downsample) and `align()` (upsample); adding it as pure sugar doesn't earn
+  its API surface
 
 Nice-to-have in the same wave:
 
@@ -163,23 +168,22 @@ const perHost = series.groupBy('host', (g) =>
 // => Map<string, { cpu: number, requests: number }>
 ```
 
-**`resample`**: purely syntactic sugar. Delegates to `align` then `aggregate`
-internally:
+**`diff` / `rate`**: operate on one or more named numeric columns. Non-specified
+columns pass through unchanged. First event gets `undefined` in affected columns
+by default; `{ drop: true }` removes it instead. `rate` divides by time gap in
+seconds. Options object is always the last argument, after column names.
 
 ```ts
-const hourly = series.resample(Sequence.hourly(), {
-  cpu: 'avg',
-  requests: 'sum',
-  host: 'last',
-});
-```
-
-**`diff` / `rate`**: first event is either dropped or filled with `null`
-(configurable). `rate` divides by time gap in seconds:
-
-```ts
+// single column
 const deltas = series.diff('requests');
-const perSecond = series.rate('requests');
+const perSec = series.rate('requests');
+
+// multi-column
+const deltas = series.diff('requests', 'cpu');
+const perSec = series.rate('requests', 'cpu');
+
+// drop first event instead of undefined
+const deltas = series.diff('requests', { drop: true });
 ```
 
 **`fill`**: per-column strategies (`hold`, `linear`, `zero`, `null`, or
@@ -394,7 +398,7 @@ Definition of done:
 | Release band | Focus                                                        |
 | ------------ | ------------------------------------------------------------ |
 | `0.1.x`      | Performance fixes, hardening, serialization, custom reducers |
-| `0.2.x`      | `groupBy`, `resample`, `diff`/`rate`, `fill`                 |
+| `0.2.x`      | `groupBy`, `reduce`, `diff`/`rate`, `fill`                   |
 | `0.3.x`      | `LiveSeries` core and subscriptions                          |
 | `0.4.x`      | Live views and live stateful transforms                      |
 | `0.5.x`      | React hooks                                                  |
