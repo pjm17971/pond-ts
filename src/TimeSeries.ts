@@ -1547,7 +1547,7 @@ export class TimeSeries<S extends SeriesSchema> {
             for (let i = 0; i < intervals.length; i += 1) {
               const interval = intervals[i]!;
               const t = sampleTime(interval, sample);
-              const data = this.#alignLinearAt(t, valueColumns, cursor);
+              const data = alignLinearAt(this, t, valueColumns, cursor);
               const row = new Array(resultColumns.length + 1);
               row[0] = interval;
 
@@ -1563,7 +1563,7 @@ export class TimeSeries<S extends SeriesSchema> {
           })()
         : intervals.map((interval) => {
             const t = sampleTime(interval, sample);
-            const data = this.#alignHoldAt(t);
+            const data = alignHoldAt(this, t);
 
             return Object.freeze([
               interval,
@@ -1633,118 +1633,7 @@ export class TimeSeries<S extends SeriesSchema> {
     mapping: AggregateMap<S> | AggregateOutputMap<S>,
     options: { range?: TemporalLike } = {},
   ): any {
-    return this.#aggregateInternal(sequence, mapping, options);
-  }
-  #aggregateInternal(
-    sequence: SequenceLike,
-    mapping: AggregateMap<S> | AggregateOutputMap<S>,
-    options: { range?: TemporalLike } = {},
-  ): TimeSeries<SeriesSchema> {
-    const range = options.range ?? this.timeRange();
-    const aggregateColumns = normalizeAggregateColumns(this.schema, mapping);
-    const resultSchema = Object.freeze([
-      { name: 'interval', kind: 'interval' as const },
-      ...aggregateColumns.map((column) => ({
-        name: column.output,
-        kind: column.kind,
-        required: false as const,
-      })),
-    ]) as unknown as SeriesSchema;
-
-    if (!range) {
-      return new TimeSeries({
-        name: this.name,
-        schema: resultSchema,
-        rows: [],
-      });
-    }
-
-    const buckets = toBoundedSequence(sequence, range, 'begin').intervals();
-    const columns = aggregateColumns;
-
-    if (isTimeKeyed(this)) {
-      const builtInOnly = columns.every((column) =>
-        isBuiltInAggregateReducer(column.reducer),
-      );
-      let eventIndex = 0;
-      const resultRows = buckets.map((bucket) => {
-        const states = builtInOnly
-          ? columns.map((column) =>
-              createAggregateBucketState(column.reducer as AggregateFunction),
-            )
-          : undefined;
-
-        while (
-          eventIndex < this.events.length &&
-          this.events[eventIndex]!.begin() < bucket.begin()
-        ) {
-          eventIndex += 1;
-        }
-
-        const bucketStart = eventIndex;
-        let scanIndex = bucketStart;
-        while (
-          scanIndex < this.events.length &&
-          this.events[scanIndex]!.begin() < bucket.end()
-        ) {
-          if (states) {
-            const data = this.events[scanIndex]!.data();
-            for (let index = 0; index < columns.length; index += 1) {
-              const column = columns[index]!;
-              states[index]!.add(
-                data[column.source as keyof typeof data] as
-                  | ScalarValue
-                  | undefined,
-              );
-            }
-          }
-          scanIndex += 1;
-        }
-
-        eventIndex = scanIndex;
-        if (states) {
-          return Object.freeze([
-            bucket,
-            ...states.map((state) => state.snapshot()),
-          ]);
-        }
-        const contributors = this.events.slice(bucketStart, scanIndex);
-        const aggregated = columns.map((column) => {
-          const values = contributors.map((event) => {
-            const data = event.data();
-            return data[column.source as keyof typeof data];
-          }) as ReadonlyArray<ScalarValue | undefined>;
-          return applyAggregateReducer(column.reducer, values);
-        });
-        return Object.freeze([bucket, ...aggregated]);
-      });
-
-      return new TimeSeries({
-        name: this.name,
-        schema: resultSchema as unknown as SeriesSchema,
-        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
-      });
-    }
-
-    const resultRows = buckets.map((bucket) => {
-      const contributors = this.events.filter((event) =>
-        bucketOverlapsHalfOpen(bucket, event.key()),
-      );
-      const aggregated = columns.map((column) => {
-        const values = contributors.map((event) => {
-          const data = event.data();
-          return data[column.source as keyof typeof data];
-        }) as ReadonlyArray<ScalarValue | undefined>;
-        return applyAggregateReducer(column.reducer, values);
-      });
-      return Object.freeze([bucket, ...aggregated]);
-    });
-
-    return new TimeSeries({
-      name: this.name,
-      schema: resultSchema,
-      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
-    });
+    return aggregateInternal(this, sequence, mapping, options);
   }
 
   /**
@@ -2765,65 +2654,181 @@ export class TimeSeries<S extends SeriesSchema> {
   get length(): number {
     return this.events.length;
   }
+}
 
-  #alignHoldAt(t: number): EventDataForSchema<S> {
-    const event = this.atOrBefore(new Time(t));
-    return (event?.data() ?? {}) as EventDataForSchema<S>;
+function aggregateInternal<S extends SeriesSchema>(
+  series: TimeSeries<S>,
+  sequence: SequenceLike,
+  mapping: AggregateMap<S> | AggregateOutputMap<S>,
+  options: { range?: TemporalLike } = {},
+): TimeSeries<SeriesSchema> {
+  const range = options.range ?? series.timeRange();
+  const aggregateColumns = normalizeAggregateColumns(series.schema, mapping);
+  const resultSchema = Object.freeze([
+    { name: 'interval', kind: 'interval' as const },
+    ...aggregateColumns.map((column) => ({
+      name: column.output,
+      kind: column.kind,
+      required: false as const,
+    })),
+  ]) as unknown as SeriesSchema;
+
+  if (!range) {
+    return new TimeSeries({
+      name: series.name,
+      schema: resultSchema,
+      rows: [],
+    });
   }
 
-  #alignLinearAt(
-    t: number,
-    valueColumns: ValueColumnsForSchema<S>,
-    cursor?: AlignCursor,
-  ): EventDataForSchema<S> {
-    const events = this.events;
-    const hasCursor = cursor !== undefined;
-    let index = hasCursor ? cursor.index : this.bisect(t);
+  const buckets = toBoundedSequence(sequence, range, 'begin').intervals();
+  const columns = aggregateColumns;
 
-    if (hasCursor) {
-      while (index < events.length && events[index]!.begin() < t) {
-        index += 1;
-      }
-      cursor.index = index;
-    }
+  if (isTimeKeyed(series)) {
+    const builtInOnly = columns.every((column) =>
+      isBuiltInAggregateReducer(column.reducer),
+    );
+    let eventIndex = 0;
+    const resultRows = buckets.map((bucket) => {
+      const states = builtInOnly
+        ? columns.map((column) =>
+            createAggregateBucketState(column.reducer as AggregateFunction),
+          )
+        : undefined;
 
-    if (index < events.length && events[index]!.begin() === t) {
-      return events[index]!.data() as EventDataForSchema<S>;
-    }
-
-    if (index === 0) {
-      return {} as EventDataForSchema<S>;
-    }
-
-    const previous = events[index - 1]!;
-    const next = events[index];
-    if (!next || previous.begin() === next.begin()) {
-      return previous.data() as EventDataForSchema<S>;
-    }
-
-    const ratio = (t - previous.begin()) / (next.begin() - previous.begin());
-    const result: Record<string, unknown> = {};
-    const previousData = previous.data();
-    const nextData = next.data();
-
-    for (const column of valueColumns) {
-      const previousValue =
-        previousData[column.name as keyof typeof previousData];
-      const nextValue = nextData[column.name as keyof typeof nextData];
-
-      if (
-        column.kind === 'number' &&
-        typeof previousValue === 'number' &&
-        typeof nextValue === 'number'
+      while (
+        eventIndex < series.events.length &&
+        series.events[eventIndex]!.begin() < bucket.begin()
       ) {
-        result[column.name] =
-          previousValue + (nextValue - previousValue) * ratio;
-        continue;
+        eventIndex += 1;
       }
 
-      result[column.name] = previousValue;
+      const bucketStart = eventIndex;
+      let scanIndex = bucketStart;
+      while (
+        scanIndex < series.events.length &&
+        series.events[scanIndex]!.begin() < bucket.end()
+      ) {
+        if (states) {
+          const data = series.events[scanIndex]!.data();
+          for (let index = 0; index < columns.length; index += 1) {
+            const column = columns[index]!;
+            states[index]!.add(
+              data[column.source as keyof typeof data] as
+                | ScalarValue
+                | undefined,
+            );
+          }
+        }
+        scanIndex += 1;
+      }
+
+      eventIndex = scanIndex;
+      if (states) {
+        return Object.freeze([
+          bucket,
+          ...states.map((state) => state.snapshot()),
+        ]);
+      }
+      const contributors = series.events.slice(bucketStart, scanIndex);
+      const aggregated = columns.map((column) => {
+        const values = contributors.map((event) => {
+          const data = event.data();
+          return data[column.source as keyof typeof data];
+        }) as ReadonlyArray<ScalarValue | undefined>;
+        return applyAggregateReducer(column.reducer, values);
+      });
+      return Object.freeze([bucket, ...aggregated]);
+    });
+
+    return new TimeSeries({
+      name: series.name,
+      schema: resultSchema as unknown as SeriesSchema,
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    });
+  }
+
+  const resultRows = buckets.map((bucket) => {
+    const contributors = series.events.filter((event) =>
+      bucketOverlapsHalfOpen(bucket, event.key()),
+    );
+    const aggregated = columns.map((column) => {
+      const values = contributors.map((event) => {
+        const data = event.data();
+        return data[column.source as keyof typeof data];
+      }) as ReadonlyArray<ScalarValue | undefined>;
+      return applyAggregateReducer(column.reducer, values);
+    });
+    return Object.freeze([bucket, ...aggregated]);
+  });
+
+  return new TimeSeries({
+    name: series.name,
+    schema: resultSchema,
+    rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+  });
+}
+
+function alignHoldAt<S extends SeriesSchema>(
+  series: TimeSeries<S>,
+  t: number,
+): EventDataForSchema<S> {
+  const event = series.atOrBefore(new Time(t));
+  return (event?.data() ?? {}) as EventDataForSchema<S>;
+}
+
+function alignLinearAt<S extends SeriesSchema>(
+  series: TimeSeries<S>,
+  t: number,
+  valueColumns: ValueColumnsForSchema<S>,
+  cursor?: AlignCursor,
+): EventDataForSchema<S> {
+  const events = series.events;
+  const hasCursor = cursor !== undefined;
+  let index = hasCursor ? cursor.index : series.bisect(t);
+
+  if (hasCursor) {
+    while (index < events.length && events[index]!.begin() < t) {
+      index += 1;
+    }
+    cursor.index = index;
+  }
+
+  if (index < events.length && events[index]!.begin() === t) {
+    return events[index]!.data() as EventDataForSchema<S>;
+  }
+
+  if (index === 0) {
+    return {} as EventDataForSchema<S>;
+  }
+
+  const previous = events[index - 1]!;
+  const next = events[index];
+  if (!next || previous.begin() === next.begin()) {
+    return previous.data() as EventDataForSchema<S>;
+  }
+
+  const ratio = (t - previous.begin()) / (next.begin() - previous.begin());
+  const result: Record<string, unknown> = {};
+  const previousData = previous.data();
+  const nextData = next.data();
+
+  for (const column of valueColumns) {
+    const previousValue =
+      previousData[column.name as keyof typeof previousData];
+    const nextValue = nextData[column.name as keyof typeof nextData];
+
+    if (
+      column.kind === 'number' &&
+      typeof previousValue === 'number' &&
+      typeof nextValue === 'number'
+    ) {
+      result[column.name] = previousValue + (nextValue - previousValue) * ratio;
+      continue;
     }
 
-    return result as EventDataForSchema<S>;
+    result[column.name] = previousValue;
   }
+
+  return result as EventDataForSchema<S>;
 }
