@@ -28,6 +28,31 @@ const series = TimeSeries.fromJSON({
 });
 ```
 
+## JSON export
+
+Use `series.toJSON()` to serialize back into the same JSON-friendly shape.
+
+```ts
+const payload = series.toJSON();
+
+const objectRows = series.toJSON({
+  rowFormat: 'object',
+});
+```
+
+`toJSON()` emits numeric timestamps and uses `null` for missing payload values so
+the result can round-trip through `TimeSeries.fromJSON(...)` without ambiguity.
+
+For normalized in-memory export helpers, use:
+
+```ts
+const rows = series.toRows();
+const objects = series.toObjects();
+```
+
+Those retain `Time`, `TimeRange`, and `Interval` key objects instead of
+converting them into JSON-friendly numbers or tuples.
+
 ## Why `parse.timeZone` matters
 
 Ambiguous local timestamps like `2025-01-01T09:00` need a time zone context.
