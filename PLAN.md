@@ -72,6 +72,7 @@ Goal: make the existing batch surface trustworthy enough to extend.
 Remaining scope: none — all items complete. Phase 1 is ready for the decision
 gate: is the batch layer complete and trustworthy enough to be the foundation?
 
+
 Definition of done:
 
 - [x] custom reducer typing and runtime behavior are documented and covered
@@ -105,6 +106,7 @@ Goal: fill the most obvious product gaps in the batch analytics story.
 Scope:
 
 - `groupBy` — the biggest missing capability for real multi-entity analytics
+- `reduce` — collapse a series to a scalar or record (whole-series aggregation)
 - `resample` — convenience over align + aggregate
 - `diff` / `rate` — per-event differences or rates of change
 - `fill` / `fillNull` — explicit gap-filling for sparse or nullable data
@@ -128,6 +130,34 @@ const perHost = series.groupBy('host');
 const perHostRolling = series.groupBy('host', (group) =>
   group.rolling('5m', { cpu: 'avg' })
 );
+```
+
+**`reduce`**: collapses an entire series to a scalar or record, using the same
+reducer specs as `aggregate` but without a time-bucketing sequence. Where
+`aggregate` always produces a new `TimeSeries`, `reduce` produces a plain value.
+Supports both built-in and custom reducers, same as `aggregate`:
+
+```ts
+// single column
+const avg = series.reduce('cpu', 'avg');        // => number
+
+// multi-column
+const summary = series.reduce({
+  cpu: 'avg',
+  requests: 'p95',
+});
+// => { cpu: number, requests: number }
+
+// custom reducer
+const weighted = series.reduce('cpu', (values) =>
+  values.reduce((a, b) => a + b, 0) / values.length
+);
+
+// per-group reduction
+const perHost = series.groupBy('host', (g) =>
+  g.reduce({ cpu: 'avg', requests: 'p95' })
+);
+// => Map<string, { cpu: number, requests: number }>
 ```
 
 **`resample`**: purely syntactic sugar. Delegates to `align` then `aggregate`
