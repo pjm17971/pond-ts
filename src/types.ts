@@ -339,14 +339,18 @@ export type AggregateFunction =
   | 'count'
   | 'first'
   | 'last';
+export type CustomAggregateReducer = (
+  values: ReadonlyArray<ScalarValue | undefined>,
+) => ScalarValue | undefined;
+export type AggregateReducer = AggregateFunction | CustomAggregateReducer;
 export type RollingAlignment = 'trailing' | 'leading' | 'centered';
 export type SmoothMethod = 'ema' | 'movingAverage' | 'loess';
 export type JoinType = 'inner' | 'left' | 'right' | 'outer';
 export type JoinConflictMode = 'error' | 'prefix';
 
 type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
-  ? AggregateFunction
-  : 'count' | 'first' | 'last';
+  ? AggregateReducer
+  : 'count' | 'first' | 'last' | CustomAggregateReducer;
 
 type AggregateMapEntries<S extends SeriesSchema> = {
   [C in ValueColumnsForSchema<S>[number] as C['name']]?: AggregateFunctionsForKind<
@@ -358,16 +362,44 @@ export type AggregateMap<S extends SeriesSchema> = Readonly<
   AggregateMapEntries<S>
 >;
 
+type ValueColumnByName<
+  S extends SeriesSchema,
+  Name extends ValueColumnsForSchema<S>[number]['name'],
+> = Extract<ValueColumnsForSchema<S>[number], ColumnDef<Name, ScalarKind>>;
+
+type AggregateReducerForColumn<
+  S extends SeriesSchema,
+  Name extends ValueColumnsForSchema<S>[number]['name'],
+> = AggregateFunctionsForKind<ValueColumnByName<S, Name>['kind']>;
+
+export type AggregateOutputSpec<
+  S extends SeriesSchema,
+  Name extends ValueColumnsForSchema<S>[number]['name'] =
+    ValueColumnsForSchema<S>[number]['name'],
+> = Readonly<{
+  from: Name;
+  using: AggregateReducerForColumn<S, Name>;
+  kind?: ScalarKind;
+}>;
+
+export type AggregateOutputMap<S extends SeriesSchema> = Readonly<
+  Record<string, AggregateOutputSpec<S>>
+>;
+
 type AggregateKindForColumn<
   Column extends ValueColumn,
-  Op extends AggregateFunction,
-> = Op extends 'sum' | 'avg' | 'count' ? 'number' : Column['kind'];
+  Op extends AggregateReducer,
+> = Op extends AggregateFunction
+  ? Op extends 'sum' | 'avg' | 'count'
+    ? 'number'
+    : Column['kind']
+  : Column['kind'];
 
 type AggregateColumnForMap<
   Column extends ValueColumn,
   Mapping,
 > = Column['name'] extends keyof Mapping
-  ? Mapping[Column['name']] extends AggregateFunction
+  ? Mapping[Column['name']] extends AggregateReducer
     ? ColumnDef<
         Column['name'],
         AggregateKindForColumn<Column, Mapping[Column['name']]>

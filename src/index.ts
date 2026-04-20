@@ -9,6 +9,9 @@ export { ValidationError } from './errors.js';
 export type {
   AlignSchema,
   AggregateFunction,
+  AggregateReducer,
+  AggregateOutputMap,
+  AggregateOutputSpec,
   AggregateMap,
   AggregateSchema,
   ColumnDef,
@@ -44,6 +47,7 @@ export type {
   RowForSchema,
   ScalarKind,
   ScalarValue,
+  CustomAggregateReducer,
   NumericColumnNameForSchema,
   SmoothMethod,
   SmoothAppendSchema,

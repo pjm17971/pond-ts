@@ -490,6 +490,49 @@ void aggregatedCpuHost;
 void aggregatedCpuHealthy;
 void aggregatedTypedSchemaEvent;
 
+const customAggregatedCpuSeries = cpuSeries.aggregate(
+  Sequence.every('1m'),
+  {
+    cpu: (values) =>
+      values.reduce<number>(
+        (sum, value) => sum + (typeof value === 'number' ? value : 0),
+        0,
+      ),
+    host: (values) =>
+      values.find((value): value is string => typeof value === 'string'),
+  },
+  { range: new TimeRange({ start: 1735689600000, end: 1735689660000 }) },
+);
+const customAggregatedCpuEvent = customAggregatedCpuSeries.first();
+if (!customAggregatedCpuEvent) {
+  throw new Error('missing custom aggregated event');
+}
+const customAggregatedCpuValue: number | undefined =
+  customAggregatedCpuEvent.get('cpu');
+const customAggregatedCpuHost: string | undefined =
+  customAggregatedCpuEvent.get('host');
+void customAggregatedCpuValue;
+void customAggregatedCpuHost;
+
+const renamedAggregatedCpuSeries = cpuSeries.aggregate(
+  Sequence.every('1m'),
+  {
+    cpu_avg: { from: 'cpu', using: 'avg' },
+    host_last: { from: 'host', using: 'last' },
+  },
+  { range: new TimeRange({ start: 1735689600000, end: 1735689660000 }) },
+);
+const renamedAggregatedCpuEvent = renamedAggregatedCpuSeries.first();
+if (!renamedAggregatedCpuEvent) {
+  throw new Error('missing renamed aggregated event');
+}
+const renamedAggregatedCpuAvg: string | number | boolean | undefined =
+  renamedAggregatedCpuEvent.get('cpu_avg');
+const renamedAggregatedHostLast: string | number | boolean | undefined =
+  renamedAggregatedCpuEvent.get('host_last');
+void renamedAggregatedCpuAvg;
+void renamedAggregatedHostLast;
+
 const rolledCpuSeries = cpuSeries.rolling('1m', {
   cpu: 'avg',
   host: 'last',
@@ -517,6 +560,30 @@ void rolledCpuValue;
 void rolledCpuHost;
 void rolledCpuHealthy;
 void rolledCpuTypedEvent;
+
+const customRolledCpuSeries = cpuSeries.rolling('1m', {
+  cpu: (values) => values.filter((value) => typeof value === 'number').length,
+  host: (values) =>
+    values
+      .slice()
+      .reverse()
+      .find((value): value is string => typeof value === 'string'),
+  healthy: (values) =>
+    values.some((value): boolean => typeof value === 'boolean'),
+});
+const customRolledCpuEvent = customRolledCpuSeries.first();
+if (!customRolledCpuEvent) {
+  throw new Error('missing custom rolled event');
+}
+const customRolledCpuValue: number | undefined =
+  customRolledCpuEvent.get('cpu');
+const customRolledCpuHost: string | undefined =
+  customRolledCpuEvent.get('host');
+const customRolledCpuHealthy: boolean | undefined =
+  customRolledCpuEvent.get('healthy');
+void customRolledCpuValue;
+void customRolledCpuHost;
+void customRolledCpuHealthy;
 
 const rolledCpuOnSequence = cpuSeries.rolling(
   Sequence.every('1m'),
