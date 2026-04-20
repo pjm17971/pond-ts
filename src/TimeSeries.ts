@@ -1321,10 +1321,7 @@ export class TimeSeries<S extends SeriesSchema> {
         other as unknown as TimeSeries<SeriesSchema>,
       ],
       options,
-    ) as [
-      TimeSeries<SeriesSchema>,
-      TimeSeries<SeriesSchema>,
-    ];
+    ) as [TimeSeries<SeriesSchema>, TimeSeries<SeriesSchema>];
     const joinType = options.type ?? 'outer';
 
     if (left.firstColumnKind !== right.firstColumnKind) {

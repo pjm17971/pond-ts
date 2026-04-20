@@ -284,7 +284,11 @@ describe('TimeSeries', () => {
 
     expect(rows).toEqual(ts.rows);
     expect(rows[0]?.[0]).toBeInstanceOf(Time);
-    expect(rows[1]).toEqual([new Time(Date.parse('2025-01-01T00:01:00.000Z')), 2, undefined]);
+    expect(rows[1]).toEqual([
+      new Time(Date.parse('2025-01-01T00:01:00.000Z')),
+      2,
+      undefined,
+    ]);
   });
 
   it('exports normalized object rows with toObjects()', () => {
