@@ -11,6 +11,32 @@ import type {
   SeriesSchema,
 } from './types.js';
 
+type DurationInput = number | `${number}${'ms' | 's' | 'm' | 'h' | 'd'}`;
+
+function parseDuration(value: DurationInput): number {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new TypeError('duration must be a positive finite number');
+    }
+    return value;
+  }
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
+  if (!match) throw new TypeError(`unsupported duration '${value}'`);
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const multiplier =
+    unit === 'ms'
+      ? 1
+      : unit === 's'
+        ? 1_000
+        : unit === 'm'
+          ? 60_000
+          : unit === 'h'
+            ? 3_600_000
+            : 86_400_000;
+  return amount * multiplier;
+}
+
 type ColumnSpec = {
   output: string;
   source: string;
@@ -18,33 +44,36 @@ type ColumnSpec = {
   kind: string;
 };
 
-type ClosedBucket = {
-  start: number;
-  end: number;
-  values: (ScalarValue | undefined)[];
-};
-
-type OpenBucket = {
+type PendingBucket = {
   start: number;
   end: number;
   states: AggregateBucketState[];
 };
 
-type CloseListener = (
-  event: Event<Interval, Record<string, ScalarValue | undefined>>,
-) => void;
+type ClosedEvent = Event<Interval, Record<string, ScalarValue | undefined>>;
+
+type BucketListener = (event: ClosedEvent) => void;
+type CloseListener = (event: ClosedEvent) => void;
 type UpdateListener = () => void;
 
+export type LiveAggregationOptions = {
+  grace?: DurationInput | `${number}${'ms' | 's' | 'm' | 'h' | 'd'}`;
+};
+
 export class LiveAggregation<S extends SeriesSchema> {
-  readonly #source: LiveSource<S>;
+  readonly name: string;
+  readonly schema: SeriesSchema;
+
   readonly #columns: ColumnSpec[];
-  readonly #resultSchema: SeriesSchema;
   readonly #stepMs: number;
   readonly #anchorMs: number;
+  readonly #graceMs: number;
 
-  #closed: ClosedBucket[];
-  #open: OpenBucket | undefined;
+  readonly #pending: Map<number, PendingBucket>;
+  #watermark: number;
+  readonly #closedEvents: ClosedEvent[];
 
+  readonly #onBucket: Set<BucketListener>;
   readonly #onClose: Set<CloseListener>;
   readonly #onUpdate: Set<UpdateListener>;
   readonly #unsubscribe: () => void;
@@ -53,10 +82,12 @@ export class LiveAggregation<S extends SeriesSchema> {
     source: LiveSource<S>,
     sequence: Sequence,
     mapping: AggregateMap<S>,
+    options?: LiveAggregationOptions,
   ) {
-    this.#source = source;
+    this.name = source.name;
     this.#stepMs = sequence.stepMs();
     this.#anchorMs = sequence.anchor();
+    this.#graceMs = options?.grace ? parseDuration(options.grace as any) : 0;
 
     const colsByName = new Map(
       source.schema.slice(1).map((c) => [c.name, c] as const),
@@ -72,7 +103,7 @@ export class LiveAggregation<S extends SeriesSchema> {
       this.#columns.push({ output: name, source: name, reducer, kind });
     }
 
-    this.#resultSchema = Object.freeze([
+    this.schema = Object.freeze([
       { name: 'time', kind: 'interval' },
       ...this.#columns.map((c) => ({
         name: c.output,
@@ -81,8 +112,10 @@ export class LiveAggregation<S extends SeriesSchema> {
       })),
     ]) as unknown as SeriesSchema;
 
-    this.#closed = [];
-    this.#open = undefined;
+    this.#pending = new Map();
+    this.#watermark = -Infinity;
+    this.#closedEvents = [];
+    this.#onBucket = new Set();
     this.#onClose = new Set();
     this.#onUpdate = new Set();
 
@@ -96,12 +129,21 @@ export class LiveAggregation<S extends SeriesSchema> {
     });
   }
 
+  get length(): number {
+    return this.#closedEvents.length;
+  }
+
   get closedCount(): number {
-    return this.#closed.length;
+    return this.#closedEvents.length;
   }
 
   get hasOpenBucket(): boolean {
-    return this.#open !== undefined;
+    return this.#pending.size > 0;
+  }
+
+  at(index: number): ClosedEvent | undefined {
+    if (index < 0) index = this.#closedEvents.length + index;
+    return this.#closedEvents[index];
   }
 
   closed(): TimeSeries<SeriesSchema> {
@@ -112,14 +154,27 @@ export class LiveAggregation<S extends SeriesSchema> {
     return this.#buildSeries(true);
   }
 
+  on(type: 'event', fn: CloseListener): () => void;
+  on(type: 'bucket', fn: BucketListener): this;
   on(type: 'close', fn: CloseListener): this;
   on(type: 'update', fn: UpdateListener): this;
-  on(type: 'close' | 'update', fn: CloseListener | UpdateListener): this {
-    const set =
-      type === 'close'
-        ? (this.#onClose as Set<any>)
-        : (this.#onUpdate as Set<any>);
-    set.add(fn);
+  on(
+    type: 'event' | 'bucket' | 'close' | 'update',
+    fn: BucketListener | CloseListener | UpdateListener,
+  ): this | (() => void) {
+    if (type === 'event' || type === 'close') {
+      this.#onClose.add(fn as CloseListener);
+      if (type === 'event')
+        return () => {
+          this.#onClose.delete(fn as CloseListener);
+        };
+      return this;
+    }
+    if (type === 'bucket') {
+      this.#onBucket.add(fn as BucketListener);
+      return this;
+    }
+    this.#onUpdate.add(fn as UpdateListener);
     return this;
   }
 
@@ -138,71 +193,102 @@ export class LiveAggregation<S extends SeriesSchema> {
 
   #ingest(event: EventForSchema<S>): void {
     const bucket = this.#bucketFor(event.begin());
+    const ts = event.begin();
 
-    if (this.#open && bucket.start > this.#open.start) {
-      this.#closeBucket();
-    }
+    if (ts > this.#watermark) this.#watermark = ts;
 
-    if (!this.#open || bucket.start !== this.#open.start) {
-      this.#open = {
+    const closeCutoff = this.#watermark - this.#graceMs;
+
+    if (bucket.end <= closeCutoff) return;
+
+    let pending = this.#pending.get(bucket.start);
+    if (!pending) {
+      pending = {
         start: bucket.start,
         end: bucket.end,
         states: this.#columns.map((c) =>
           resolveReducer(c.reducer).bucketState(),
         ),
       };
+      this.#pending.set(bucket.start, pending);
     }
 
     const data = event.data() as Record<string, ScalarValue | undefined>;
     for (let i = 0; i < this.#columns.length; i++) {
-      this.#open.states[i]!.add(data[this.#columns[i]!.source]);
+      pending.states[i]!.add(data[this.#columns[i]!.source]);
+    }
+
+    if (this.#onBucket.size > 0) {
+      const interval = new Interval({
+        value: pending.start,
+        start: pending.start,
+        end: pending.end,
+      });
+      const record: Record<string, ScalarValue | undefined> = {};
+      for (let i = 0; i < this.#columns.length; i++) {
+        record[this.#columns[i]!.output] = pending.states[i]!.snapshot();
+      }
+      const evt = new Event(interval, record);
+      for (const fn of this.#onBucket) fn(evt);
+    }
+
+    this.#closeEligible(closeCutoff);
+  }
+
+  #closeEligible(closeCutoff: number): void {
+    const eligible: number[] = [];
+    for (const [start, b] of this.#pending) {
+      if (b.end <= closeCutoff) eligible.push(start);
+    }
+    if (eligible.length === 0) return;
+    eligible.sort((a, b) => a - b);
+    for (const start of eligible) {
+      const b = this.#pending.get(start)!;
+      this.#pending.delete(start);
+      this.#finalizeBucket(b);
     }
   }
 
-  #closeBucket(): void {
-    if (!this.#open) return;
-    const values = this.#open.states.map((s) => s.snapshot());
-    this.#closed.push({
-      start: this.#open.start,
-      end: this.#open.end,
-      values,
-    });
-
+  #finalizeBucket(bucket: PendingBucket): void {
     const interval = new Interval({
-      value: this.#open.start,
-      start: this.#open.start,
-      end: this.#open.end,
+      value: bucket.start,
+      start: bucket.start,
+      end: bucket.end,
     });
     const record: Record<string, ScalarValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
-      record[this.#columns[i]!.output] = values[i];
+      record[this.#columns[i]!.output] = bucket.states[i]!.snapshot();
     }
     const evt = new Event(interval, record);
+    this.#closedEvents.push(evt);
     for (const fn of this.#onClose) fn(evt);
-
-    this.#open = undefined;
   }
 
   #buildSeries(includeOpen: boolean): TimeSeries<SeriesSchema> {
-    const rows: unknown[][] = this.#closed.map((b) => [
-      new Interval({ value: b.start, start: b.start, end: b.end }),
-      ...b.values,
-    ]);
+    const rows: unknown[][] = this.#closedEvents.map((event) => {
+      const data = event.data() as Record<string, ScalarValue | undefined>;
+      return [event.key(), ...this.#columns.map((c) => data[c.output])];
+    });
 
-    if (includeOpen && this.#open) {
-      rows.push([
-        new Interval({
-          value: this.#open.start,
-          start: this.#open.start,
-          end: this.#open.end,
-        }),
-        ...this.#open.states.map((s) => s.snapshot()),
-      ]);
+    if (includeOpen) {
+      const pendingBuckets = [...this.#pending.values()].sort(
+        (a, b) => a.start - b.start,
+      );
+      for (const b of pendingBuckets) {
+        rows.push([
+          new Interval({
+            value: b.start,
+            start: b.start,
+            end: b.end,
+          }),
+          ...b.states.map((s) => s.snapshot()),
+        ]);
+      }
     }
 
     return new TimeSeries({
-      name: this.#source.name,
-      schema: this.#resultSchema,
+      name: this.name,
+      schema: this.schema,
       rows: rows as any,
     });
   }

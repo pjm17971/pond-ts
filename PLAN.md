@@ -425,10 +425,13 @@ Completed:
       `window()`, composable with all live transforms via `LiveSource`
 - [x] `LiveAggregation` and `Rolling` accept any `LiveSource<S>`, not just
       `LiveSeries<S>`
+- [x] `LiveAggregation` and `Rolling` satisfy `LiveSource` for chaining
+      (`name`, `schema`, `length`, `at()`, `on('event')`)
+- [x] Grace period for `LiveAggregation` — delays bucket closing so
+      out-of-order events within the window accumulate into their correct bucket
 
 Remaining:
 
-- [ ] `LiveAggregation` and `Rolling` implement `LiveSource` for chaining
 - [ ] per-event views: `diff`, `rate`, `pctChange` (stateless, prev→curr)
 - [ ] carry-forward views: `fill`, `cumulative` (small state per column)
 - [ ] docs page for live transforms
@@ -500,16 +503,35 @@ model — the `process` function closes over the state.
 
 ### Accumulators
 
-**`LiveAggregation`**: maintains closed buckets (finalized), open bucket
-(partial), and watermark. A bucket closes when an event arrives past the
-boundary. `.closed()` returns finalized results; `.snapshot()` includes the
-open bucket's partial value. Uses `AggregateBucketState` from the reducer
-registry for incremental accumulation.
+**`LiveAggregation`**: maintains pending buckets (accumulating), a watermark
+(highest timestamp seen), and an optional grace period. A bucket closes when
+its `end <= watermark - grace`. With zero grace (default), buckets close
+immediately on boundary crossing — matching the behavior before grace was
+added. With grace > 0, multiple buckets can be pending simultaneously, and
+late events within the grace window route to their correct bucket instead of
+being lost.
+
+`.closed()` returns only finalized buckets; `.snapshot()` includes all
+pending buckets as provisional results. As a `LiveSource`, `at(index)` and
+`length` expose the closed-bucket event buffer; `on('event', fn)` fires
+when a bucket finalizes.
+
+```ts
+new LiveAggregation(
+  source,
+  Sequence.every('1m'),
+  { value: 'avg' },
+  { grace: '5s' },
+);
+```
 
 **`Rolling`**: maintains a sliding-window reduction. Supports both
 time-based windows (`'5m'`) and count-based windows (`100`). Uses
 `RollingReducerState` from the reducer registry for incremental add/remove.
-Fires `update` on every source event.
+As a `LiveSource`, each source event produces an output event containing the
+current aggregate value at that point. The output buffer grows with each
+source event (downstream consumers can use `.window()` to bound it).
+`on('event', fn)` fires per source event with the new aggregate.
 
 | Transform             | Live behavior                          | Owns a buffer? | Chainable? |
 | --------------------- | -------------------------------------- | -------------- | ---------- |
@@ -517,8 +539,8 @@ Fires `update` on every source event.
 | `window`              | Bounded view with eviction             | Yes (view)     | Yes        |
 | `diff/rate/pctChange` | Per-event with prev-event state        | Yes (view)     | Yes        |
 | `fill/cumulative`     | Per-event with carry-forward state     | Yes (view)     | Yes        |
-| `LiveAggregation`     | Accumulator per bucket + closed stream | Yes            | Planned    |
-| `Rolling`             | Sliding window + per-event output      | Yes            | Planned    |
+| `LiveAggregation`     | Accumulator per bucket + closed stream | Yes            | Yes        |
+| `Rolling`             | Sliding window + per-event output      | Yes            | Yes        |
 
 ### LiveSource interface and LiveView
 
@@ -565,8 +587,8 @@ live
   .filter(pred)
   .select('cpu', 'mem')
   .window('5m')
-  .aggregate(Sequence.every('1m'), { cpu: 'avg' }) // planned chaining
-  .filter((e) => (e.get('cpu') as number) > threshold); // further view on output
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' })
+  .filter((e) => (e.get('cpu') as number) > threshold);
 ```
 
 Multiple consumers fan out from one source with shared buffer but separate
@@ -590,7 +612,7 @@ Definition of done:
 
 - [x] stateful transforms use existing reducer infrastructure incrementally
 - [x] stateless and stateful transforms compose cleanly
-- [ ] stateful transforms implement `LiveSource` for full pipeline chaining
+- [x] stateful transforms satisfy `LiveSource` for pipeline chaining
 - [ ] filtered/live aggregation pipelines are demonstrated in examples
 - [x] snapshot vs closed/finalized semantics are explicit where relevant
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LiveSeries, Rolling } from '../src/index.js';
+import { LiveSeries, LiveView, Rolling } from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -206,6 +206,127 @@ describe('edge cases', () => {
     expect(tail.value().value).toBe(10); // min(10, 50)
     live.push([3000, 5, 'a']);
     expect(tail.value().value).toBe(5); // min(50, 5)
+    tail.dispose();
+  });
+});
+
+// ── LiveSource interface ────────────────────────────────────────
+
+describe('Rolling LiveSource', () => {
+  it('exposes name and schema', () => {
+    const live = makeLive();
+    const tail = new Rolling(live, '5s', { value: 'avg' });
+    expect(tail.name).toBe('test');
+    expect(tail.schema[0]).toEqual({ name: 'time', kind: 'time' });
+    expect(tail.schema[1]).toEqual({
+      name: 'value',
+      kind: 'number',
+      required: false,
+    });
+    tail.dispose();
+  });
+
+  it('length equals total output events', () => {
+    const live = makeLive();
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+    expect(tail.length).toBe(0);
+    live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
+    expect(tail.length).toBe(3);
+    tail.dispose();
+  });
+
+  it('at() returns output events with rolling aggregate', () => {
+    const live = makeLive();
+    live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+
+    expect(tail.at(0)?.get('value')).toBe(10); // sum after first event
+    expect(tail.at(1)?.get('value')).toBe(30); // sum after second
+    expect(tail.at(2)?.get('value')).toBe(60); // sum after third
+    tail.dispose();
+  });
+
+  it('output events have source timestamps', () => {
+    const live = makeLive();
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+
+    expect(tail.at(0)?.begin()).toBe(0);
+    expect(tail.at(1)?.begin()).toBe(1000);
+    tail.dispose();
+  });
+
+  it('at() supports negative indexing', () => {
+    const live = makeLive();
+    live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+
+    expect(tail.at(-1)?.get('value')).toBe(60);
+    expect(tail.at(-2)?.get('value')).toBe(30);
+    tail.dispose();
+  });
+
+  it('on("event") fires per source event and returns unsubscribe', () => {
+    const live = makeLive();
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const values: number[] = [];
+    const unsub = tail.on('event', (event: any) => {
+      values.push(event.get('value'));
+    });
+
+    live.push([0, 10, 'a']);
+    live.push([1000, 20, 'a']);
+    expect(values).toEqual([10, 30]);
+
+    unsub();
+    live.push([2000, 30, 'a']);
+    expect(values).toEqual([10, 30]);
+    tail.dispose();
+  });
+
+  it('output events reflect window eviction', () => {
+    const live = makeLive();
+    const tail = new Rolling(live, 2, { value: 'sum' });
+
+    live.push([0, 10, 'a']);
+    expect(tail.at(0)?.get('value')).toBe(10);
+
+    live.push([1000, 20, 'a']);
+    expect(tail.at(1)?.get('value')).toBe(30);
+
+    live.push([2000, 30, 'a']);
+    // Window evicted first event, so sum is now 20+30=50
+    expect(tail.at(2)?.get('value')).toBe(50);
+    expect(tail.length).toBe(3);
+    tail.dispose();
+  });
+
+  it('can feed a LiveView for chaining', () => {
+    const live = makeLive();
+    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const view = new LiveView(tail as any, (event: any) =>
+      (event.get('value') as number) > 15 ? event : undefined,
+    );
+
+    live.push([0, 10, 'a']); // avg=10, filtered out
+    expect(view.length).toBe(0);
+
+    live.push([1000, 20, 'a']); // avg=15, filtered out
+    expect(view.length).toBe(0);
+
+    live.push([2000, 30, 'a']); // avg=20, passes
+    expect(view.length).toBe(1);
+    tail.dispose();
+  });
+
+  it('processes existing events into output buffer', () => {
+    const live = makeLive();
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    const tail = new Rolling(live, '5s', { value: 'sum' });
+
+    expect(tail.length).toBe(2);
+    expect(tail.at(0)?.get('value')).toBe(10);
+    expect(tail.at(1)?.get('value')).toBe(30);
     tail.dispose();
   });
 });
