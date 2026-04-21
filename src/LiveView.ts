@@ -1,5 +1,5 @@
 import { LiveAggregation } from './LiveAggregation.js';
-import { TailReduce, type TailReduceWindow } from './TailReduce.js';
+import { Rolling, type RollingWindow } from './Rolling.js';
 import { TimeSeries } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
 import type {
@@ -119,7 +119,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     });
   }
 
-  window(size: TailReduceWindow): LiveView<S> {
+  window(size: RollingWindow): LiveView<S> {
     if (typeof size === 'number' && Number.isInteger(size) && size > 0) {
       const count = size;
       return new LiveView(this, (event: EventForSchema<S>) => event, {
@@ -147,8 +147,8 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     return new LiveAggregation(this, sequence, mapping);
   }
 
-  tail(window: TailReduceWindow, mapping: AggregateMap<S>): TailReduce<S> {
-    return new TailReduce(this, window, mapping);
+  rolling(window: RollingWindow, mapping: AggregateMap<S>): Rolling<S> {
+    return new Rolling(this, window, mapping);
   }
 
   toTimeSeries(name?: string): TimeSeries<S> {

@@ -5,7 +5,7 @@ import {
   LiveSeries,
   LiveView,
   Sequence,
-  TailReduce,
+  Rolling,
   TimeSeries,
 } from '../src/index.js';
 
@@ -341,14 +341,14 @@ describe('chaining', () => {
     agg.dispose();
   });
 
-  it('filter → tail', () => {
+  it('filter → rolling', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'a'], [3000, 40, 'a']);
-    const tail = live
+    const r = live
       .filter((e) => e.get('host') === 'a')
-      .tail('10s', { value: 'avg' });
-    expect(tail.value().value).toBeCloseTo(26.67, 1); // avg(10,30,40)
-    tail.dispose();
+      .rolling('10s', { value: 'avg' });
+    expect(r.value().value).toBeCloseTo(26.67, 1); // avg(10,30,40)
+    r.dispose();
   });
 
   it('filter → toTimeSeries', () => {
@@ -734,13 +734,13 @@ describe('edge cases', () => {
     view.dispose();
   });
 
-  it('TailReduce accepts LiveView directly', () => {
+  it('Rolling accepts LiveView directly', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'a']);
     const view = live.filter((e) => e.get('host') === 'a');
-    const tail = new TailReduce(view, '10s', { value: 'sum' });
-    expect(tail.value().value).toBe(40); // 10+30
-    tail.dispose();
+    const r = new Rolling(view, '10s', { value: 'sum' });
+    expect(r.value().value).toBe(40); // 10+30
+    r.dispose();
     view.dispose();
   });
 });

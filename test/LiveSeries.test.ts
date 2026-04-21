@@ -3,7 +3,7 @@ import {
   LiveAggregation,
   LiveSeries,
   Sequence,
-  TailReduce,
+  Rolling,
   TimeSeries,
 } from '../src/index.js';
 
@@ -507,22 +507,22 @@ describe('aggregate() method', () => {
   });
 });
 
-describe('tail() method', () => {
-  it('returns a TailReduce', () => {
+describe('rolling() method', () => {
+  it('returns a Rolling', () => {
     const live = makeLive();
-    const tail = live.tail('5s', { value: 'avg' });
-    expect(tail).toBeInstanceOf(TailReduce);
-    tail.dispose();
+    const r = live.rolling('5s', { value: 'avg' });
+    expect(r).toBeInstanceOf(Rolling);
+    r.dispose();
   });
 
   it('chains with on()', () => {
     const live = makeLive();
     const updates: number[] = [];
-    const tail = live
-      .tail('5s', { value: 'sum' })
+    const r = live
+      .rolling('5s', { value: 'sum' })
       .on('update', (v) => updates.push(v.value as number));
     live.push([0, 10, 'a'], [1000, 20, 'a']);
     expect(updates).toEqual([10, 30]);
-    tail.dispose();
+    r.dispose();
   });
 });
