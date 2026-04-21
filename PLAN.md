@@ -432,9 +432,9 @@ Completed:
 
 Remaining:
 
-- [ ] per-event views: `diff`, `rate`, `pctChange` (stateless, prev→curr)
-- [ ] carry-forward views: `fill`, `cumulative` (small state per column)
-- [ ] docs page for live transforms
+- [x] per-event views: `diff`, `rate`, `pctChange` (stateless, prev→curr)
+- [x] carry-forward views: `fill`, `cumulative` (small state per column)
+- [x] docs page for live transforms
 
 ### Batch → Live applicability
 
@@ -442,27 +442,27 @@ Not every batch `TimeSeries` method needs a live equivalent. The live layer is
 about ingestion and incremental computation — when you need the full analytical
 toolkit, snapshot to `TimeSeries` and use the batch API.
 
-| Batch method      | Live?       | Notes                                                |
-| ----------------- | ----------- | ---------------------------------------------------- |
-| `filter(pred)`    | **done**    | LiveView                                             |
-| `map(fn)`         | **done**    | LiveView                                             |
-| `select(...cols)` | **done**    | LiveView, schema-narrowing                           |
-| `aggregate()`     | **done**    | LiveAggregation (bucketed)                           |
-| `diff(...cols)`   | **planned** | stateless view, needs previous event                 |
-| `rate(...cols)`   | **planned** | stateless view, delta / time gap                     |
-| `pctChange()`     | **planned** | stateless view, (curr-prev)/prev                     |
-| `fill(strategy)`  | **planned** | carry-forward state per column (hold, zero, literal) |
-| `cumulative()`    | **planned** | carry-forward state per column (sum, max, min)       |
-| `rename(mapping)` | skip        | achievable with `map()`                              |
-| `collapse()`      | skip        | achievable with `map()`                              |
-| `rolling()`       | covered     | `Rolling` as chainable source (see below)            |
-| `smooth()`        | covered     | EMA is a closure in `map()`; MA is rolling avg       |
-| `shift(col, n)`   | maybe       | needs lookback buffer, niche for live                |
-| `align()`         | no          | resampling assumes complete data                     |
-| `join()`          | no          | two-stream join is a different primitive             |
-| `groupBy()`       | no          | partitioning is a source-level concern               |
-| `within/trim`     | no          | temporal selection — snapshot then slice             |
-| `reduce()`        | no          | whole-series → scalar — that's `Rolling`             |
+| Batch method      | Live?    | Notes                                                |
+| ----------------- | -------- | ---------------------------------------------------- |
+| `filter(pred)`    | **done** | LiveView                                             |
+| `map(fn)`         | **done** | LiveView                                             |
+| `select(...cols)` | **done** | LiveView, schema-narrowing                           |
+| `aggregate()`     | **done** | LiveAggregation (bucketed)                           |
+| `diff(...cols)`   | **done** | stateless view, needs previous event                 |
+| `rate(...cols)`   | **done** | stateless view, delta / time gap                     |
+| `pctChange()`     | **done** | stateless view, (curr-prev)/prev                     |
+| `fill(strategy)`  | **done** | carry-forward state per column (hold, zero, literal) |
+| `cumulative()`    | **done** | carry-forward state per column (sum, max, min)       |
+| `rename(mapping)` | skip     | achievable with `map()`                              |
+| `collapse()`      | skip     | achievable with `map()`                              |
+| `rolling()`       | covered  | `Rolling` as chainable source (see below)            |
+| `smooth()`        | covered  | EMA is a closure in `map()`; MA is rolling avg       |
+| `shift(col, n)`   | maybe    | needs lookback buffer, niche for live                |
+| `align()`         | no       | resampling assumes complete data                     |
+| `join()`          | no       | two-stream join is a different primitive             |
+| `groupBy()`       | no       | partitioning is a source-level concern               |
+| `within/trim`     | no       | temporal selection — snapshot then slice             |
+| `reduce()`        | no       | whole-series → scalar — that's `Rolling`             |
 
 ### Chainable stateful transforms
 
@@ -613,7 +613,7 @@ Definition of done:
 - [x] stateful transforms use existing reducer infrastructure incrementally
 - [x] stateless and stateful transforms compose cleanly
 - [x] stateful transforms satisfy `LiveSource` for pipeline chaining
-- [ ] filtered/live aggregation pipelines are demonstrated in examples
+- [x] filtered/live aggregation pipelines are demonstrated in examples
 - [x] snapshot vs closed/finalized semantics are explicit where relevant
 
 ---

@@ -232,6 +232,77 @@ This makes `Rolling` the live equivalent of the batch `rolling()` method. The
 output buffer grows unboundedly — downstream consumers can compose with
 `window()` to bound it if needed.
 
+## Per-event transforms: diff, rate, pctChange
+
+These methods compute per-event deltas by comparing consecutive events. Each
+returns a `LiveView` that tracks the previous event's values in a closure.
+
+```ts
+// Absolute difference between consecutive events
+const deltas = live.diff('requests');
+
+// Per-second rate of change (delta / time gap in seconds)
+const perSec = live.rate('requests');
+
+// Percentage change: (curr - prev) / prev
+const pctChg = live.pctChange('requests');
+```
+
+Multiple columns work:
+
+```ts
+const deltas = live.diff(['cpu', 'mem']);
+```
+
+The first event has no predecessor, so target columns are `undefined`. Use
+`{ drop: true }` to omit it, or chain with `fill('zero')` to replace with
+zeros:
+
+```ts
+const clean = live.diff('requests', { drop: true });
+const filled = live.diff('requests').fill('zero');
+```
+
+Non-target columns pass through unchanged.
+
+## Carry-forward transforms: fill, cumulative
+
+### fill
+
+Replaces `undefined` values as events arrive. Only forward-looking strategies
+are supported in live mode — `bfill` and `linear` require future values and
+will throw.
+
+```ts
+// Carry forward the last known value for all columns
+const held = live.fill('hold');
+
+// Fill undefined with zero
+const zeroed = live.fill('zero');
+
+// Per-column strategies and literal fill values
+const mixed = live.fill({ cpu: 'hold', host: 'unknown' });
+
+// Cap consecutive fills
+const limited = live.fill('hold', { limit: 3 });
+```
+
+### cumulative
+
+Running accumulation over the stream. Supports `sum`, `max`, `min`, `count`,
+and custom functions:
+
+```ts
+const running = live.cumulative({ requests: 'sum' });
+const peaks = live.cumulative({ cpu: 'max' });
+const custom = live.cumulative({
+  requests: (acc, value) => acc + value * 2,
+});
+```
+
+Non-accumulated columns pass through unchanged. When a target column's value is
+not a number, the accumulator holds its previous value.
+
 ## Composition patterns
 
 ### Multi-stage pipeline
@@ -245,6 +316,21 @@ const pipeline = live
 
 pipeline.on('close', (bucket) => {
   storeMetric('api-1-cpu-1m', bucket.get('cpu'), bucket.begin());
+});
+```
+
+### Diff → fill pipeline
+
+A common pattern: compute deltas and fill the first-event gap:
+
+```ts
+const requestRate = live
+  .filter((e) => e.get('host') === 'api-1')
+  .diff('requests')
+  .fill('zero');
+
+requestRate.on('event', (event) => {
+  updateChart(event.begin(), event.get('requests'));
 });
 ```
 

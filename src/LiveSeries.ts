@@ -1,7 +1,14 @@
 import { Event } from './Event.js';
 import { Interval } from './Interval.js';
 import { LiveAggregation } from './LiveAggregation.js';
-import { LiveView } from './LiveView.js';
+import {
+  LiveView,
+  makeDiffView,
+  makeFillView,
+  makeCumulativeView,
+  type LiveFillMapping,
+  type LiveFillStrategy,
+} from './LiveView.js';
 import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
 import { Rolling, type RollingWindow } from './Rolling.js';
@@ -11,9 +18,11 @@ import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
 import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
+  DiffSchema,
   EventDataForSchema,
   EventForSchema,
   FirstColKind,
+  NumericColumnNameForSchema,
   RowForSchema,
   SelectSchema,
   SeriesSchema,
@@ -322,6 +331,45 @@ export class LiveSeries<S extends SeriesSchema> {
 
   rolling(window: RollingWindow, mapping: AggregateMap<S>): Rolling<S> {
     return new Rolling(this, window, mapping);
+  }
+
+  diff<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LiveView<DiffSchema<S, Target>> {
+    return makeDiffView(this, 'diff', columns, options);
+  }
+
+  rate<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LiveView<DiffSchema<S, Target>> {
+    return makeDiffView(this, 'rate', columns, options);
+  }
+
+  pctChange<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LiveView<DiffSchema<S, Target>> {
+    return makeDiffView(this, 'pctChange', columns, options);
+  }
+
+  fill(
+    strategy: LiveFillStrategy | LiveFillMapping<S>,
+    options?: { limit?: number },
+  ): LiveView<S> {
+    return makeFillView(this, strategy, options);
+  }
+
+  cumulative<const Targets extends NumericColumnNameForSchema<S>>(spec: {
+    [K in Targets]:
+      | 'sum'
+      | 'max'
+      | 'min'
+      | 'count'
+      | ((acc: number, value: number) => number);
+  }): LiveView<DiffSchema<S, Targets>> {
+    return makeCumulativeView(this, spec);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;
