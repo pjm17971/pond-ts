@@ -28,25 +28,8 @@ export type LiveFillMapping<S extends SeriesSchema> = {
     | ScalarValue;
 };
 
-type DurationInput = `${number}${'ms' | 's' | 'm' | 'h' | 'd'}`;
-
-function parseDuration(value: DurationInput): number {
-  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
-  if (!match) throw new TypeError(`unsupported duration '${value}'`);
-  const amount = Number(match[1]);
-  const unit = match[2];
-  const multiplier =
-    unit === 'ms'
-      ? 1
-      : unit === 's'
-        ? 1_000
-        : unit === 'm'
-          ? 60_000
-          : unit === 'h'
-            ? 3_600_000
-            : 86_400_000;
-  return amount * multiplier;
-}
+import { parseDuration } from './utils/duration.js';
+import type { DurationInput } from './utils/duration.js';
 
 type EventListener<S extends SeriesSchema> = (event: EventForSchema<S>) => void;
 

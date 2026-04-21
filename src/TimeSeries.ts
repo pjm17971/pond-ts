@@ -60,7 +60,8 @@ import type {
 import { Event } from './Event.js';
 import { Sequence } from './Sequence.js';
 import { validateAndNormalize } from './validate.js';
-import type { DurationInput } from './Sequence.js';
+import type { DurationInput } from './utils/duration.js';
+import { parseDuration } from './utils/duration.js';
 import {
   resolveReducer,
   type AggregateBucketState,
@@ -678,36 +679,6 @@ function createRollingReducerState(
   operation: AggregateFunction,
 ): RollingReducerState {
   return resolveReducer(operation).rollingState();
-}
-
-function parseDurationInput(value: DurationInput): number {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || value <= 0) {
-      throw new TypeError(
-        'rolling window must be a positive finite number of milliseconds',
-      );
-    }
-    return value;
-  }
-
-  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
-  if (!match) {
-    throw new TypeError(`unsupported duration '${value}'`);
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2];
-  const multiplier =
-    unit === 'ms'
-      ? 1
-      : unit === 's'
-        ? 1_000
-        : unit === 'm'
-          ? 60_000
-          : unit === 'h'
-            ? 3_600_000
-            : 86_400_000;
-  return amount * multiplier;
 }
 
 function duplicateValueColumnNames(
@@ -2079,7 +2050,7 @@ export class TimeSeries<S extends SeriesSchema> {
         {};
     }
 
-    const windowMs = parseDurationInput(window);
+    const windowMs = parseDuration(window);
     const alignment = options.alignment ?? 'trailing';
     const anchorInWindow = (candidate: number, anchor: number): boolean => {
       if (alignment === 'trailing') {
@@ -2492,7 +2463,7 @@ export class TimeSeries<S extends SeriesSchema> {
       throw new TypeError('movingAverage smoothing requires a window option');
     }
     const window = options.window;
-    const windowMs = parseDurationInput(window!);
+    const windowMs = parseDuration(window!);
     const alignment = options.alignment ?? 'trailing';
     const resultValues = new Array<number | undefined>(this.events.length);
     let windowStart = 0;
