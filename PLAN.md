@@ -620,8 +620,8 @@ Definition of done:
 
 ## Phase 5: React integration
 
-Status: not started. Monorepo restructure complete — `@pond-ts/react` package
-skeleton is in place at `packages/react/`.
+Status: in progress. Monorepo restructure complete — `@pond-ts/react` package
+at `packages/react/`.
 
 Goal: make Pond useful in frontend apps without forcing a framework-y runtime
 model into the core package.
@@ -630,14 +630,18 @@ Entry point: `@pond-ts/react` (separate workspace package)
 
 ### Hooks
 
-- `useLiveSeries` — creates and owns a `LiveSeries` for component lifetime;
+- [x] `useLiveSeries` — creates and owns a `LiveSeries` for component lifetime;
   returns a stable `live` ref and a throttled `TimeSeries` snapshot
-- `useTimeSeries` — thin wrapper around `fromJSON` for static/fetched data
-- `useSnapshot` — converts any live stateful transform into a throttled
-  `TimeSeries` for rendering
-- `useWindow` — derived windowed view that updates as the live series grows
-- `useDerived` — applies a batch transform to a snapshot, recomputing when the
-  source changes
+- [x] `useTimeSeries` — memoized `TimeSeries.fromJSON(...)` for static/fetched
+  data; re-parses only when key changes
+- [x] `useSnapshot` — converts any `LiveSource` into a throttled `TimeSeries`
+  snapshot for rendering; works with `LiveSeries`, `LiveView`,
+  `LiveAggregation`, and `LiveRollingAggregation`
+- [x] `useWindow` — derived windowed view that updates as the source grows;
+  disposes the view on cleanup
+- [x] `useDerived` — applies a batch transform to a snapshot, recomputing when
+  the input changes
+- [x] `takeSnapshot` — utility: build a `TimeSeries` from any `LiveSource`
 
 **Render throttling** is critical. Raw data can arrive at hundreds of events per
 second. The `throttle` option caps how often the snapshot is recomputed.
