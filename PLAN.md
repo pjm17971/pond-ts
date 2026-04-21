@@ -410,10 +410,24 @@ Definition of done:
 
 ## Phase 4: Live composition
 
-Status: not started.
+Status: in progress.
 
 Goal: validate the live composition model before building UI integrations on top
 of it.
+
+Completed:
+
+- [x] `LiveAggregation` — incremental bucketed aggregation over a `LiveSeries`
+- [x] `TailReduce` — sliding-window reduction (time-based or count-based) over
+      a `LiveSeries`
+
+Remaining:
+
+- [ ] stateless views (`filter`, `map`, `select`, etc.)
+- [ ] `LiveRolling` — per-event rolling output
+- [ ] `LiveSmooth` — running smoothing
+- [ ] pipeline chaining (output of one transform feeds the next)
+- [ ] docs page for live transforms
 
 ### Stateless transforms: views, not copies
 
@@ -438,7 +452,25 @@ If a transform needs memory between events, it becomes its own live object.
 **`LiveAggregation`**: maintains closed buckets (finalized), open bucket
 (partial), and watermark. A bucket closes when an event arrives past the
 boundary. `.closed()` returns finalized results; `.snapshot()` includes the
-open bucket's partial value.
+open bucket's partial value. Uses `AggregateBucketState` from the reducer
+registry for incremental accumulation — each event touches only the open
+bucket's state, never re-scans closed buckets.
+
+**`TailReduce`**: maintains a sliding-window reduction over the tail of a
+`LiveSeries`. Supports both time-based windows (`'5m'`) and count-based windows
+(`100`). Uses `RollingReducerState` from the reducer registry for incremental
+add/remove. Fires `update` on every source event with the current aggregate
+value.
+
+```ts
+// Time-based: avg CPU over last 5 minutes
+const gauge = new TailReduce(live, '5m', { cpu: 'avg' });
+gauge.value(); // { cpu: 0.42 }
+gauge.on('update', (v) => renderGauge(v));
+
+// Count-based: sum of last 100 events
+const tail = new TailReduce(live, 100, { value: 'sum' });
+```
 
 **`LiveRolling`**: each push produces a new rolling output event. Maintains a
 deque of recent events and evicts those outside the window.
@@ -449,9 +481,10 @@ LOESS use a sliding deque.
 | Transform                                       | Live behavior                          | Owns a buffer? |
 | ----------------------------------------------- | -------------------------------------- | -------------- |
 | `filter`, `map`, `select`, `rename`, `collapse` | Lazy view over source                  | No             |
-| `aggregate`                                     | Accumulator per bucket + closed output | Yes            |
-| `rolling`                                       | Sliding deque + output per event       | Yes            |
-| `smooth`                                        | Running state + output per event       | Yes            |
+| `LiveAggregation`                               | Accumulator per bucket + closed output | Yes            |
+| `TailReduce`                                    | Sliding window + scalar output         | Yes            |
+| `LiveRolling`                                   | Sliding deque + output per event       | Yes            |
+| `LiveSmooth`                                    | Running state + output per event       | Yes            |
 
 ### Composition
 
@@ -465,9 +498,10 @@ to latest event timestamp, not wall-clock.
 
 Definition of done:
 
-- stateless and stateful transforms compose cleanly
-- filtered/live aggregation pipelines are demonstrated in examples
-- snapshot vs closed/finalized semantics are explicit where relevant
+- [x] stateful transforms use existing reducer infrastructure incrementally
+- [ ] stateless and stateful transforms compose cleanly
+- [ ] filtered/live aggregation pipelines are demonstrated in examples
+- [x] snapshot vs closed/finalized semantics are explicit where relevant
 
 ---
 

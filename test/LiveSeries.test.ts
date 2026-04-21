@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LiveSeries, TimeSeries } from '../src/index.js';
+import {
+  LiveAggregation,
+  LiveSeries,
+  Sequence,
+  TailReduce,
+  TimeSeries,
+} from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -476,5 +482,47 @@ describe('edge cases', () => {
     }
     expect(live.length).toBe(100);
     expect(live.first()?.get('value')).toBe(900);
+  });
+});
+
+// ── Convenience methods ─────────────────────────────────────────
+
+describe('aggregate() method', () => {
+  it('returns a LiveAggregation', () => {
+    const live = makeLive();
+    const agg = live.aggregate(Sequence.every('5s'), { value: 'avg' });
+    expect(agg).toBeInstanceOf(LiveAggregation);
+    agg.dispose();
+  });
+
+  it('chains with on()', () => {
+    const live = makeLive();
+    const closed: number[] = [];
+    const agg = live
+      .aggregate(Sequence.every('5s'), { value: 'sum' })
+      .on('close', (e) => closed.push(e.get('value') as number));
+    live.push([0, 10, 'a'], [2000, 20, 'a'], [5000, 30, 'a']);
+    expect(closed).toEqual([30]);
+    agg.dispose();
+  });
+});
+
+describe('tail() method', () => {
+  it('returns a TailReduce', () => {
+    const live = makeLive();
+    const tail = live.tail('5s', { value: 'avg' });
+    expect(tail).toBeInstanceOf(TailReduce);
+    tail.dispose();
+  });
+
+  it('chains with on()', () => {
+    const live = makeLive();
+    const updates: number[] = [];
+    const tail = live
+      .tail('5s', { value: 'sum' })
+      .on('update', (v) => updates.push(v.value as number));
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    expect(updates).toEqual([10, 30]);
+    tail.dispose();
   });
 });
