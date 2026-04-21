@@ -30,70 +30,8 @@ with no regressions. The advantage grows with data size.
 | **Serialization** | 4x              | Simpler internal representation               |
 | **Event access**  | 23x             | Array indexing vs ImmutableJS `get()`         |
 
-<details>
-<summary>Full benchmark results (54 operations, 3 data sizes)</summary>
-
-```
-Operation                       N      pondjs (ms)  pond-ts (ms) Speedup
-new TimeSeries()                1000   0.94         0.23         4.1x
-new TimeSeries()                4000   2.91         0.53         5.5x
-new TimeSeries()                16000  14.36        2.17         6.6x
-aggregate(10s, avg)             1000   1.67         0.19         8.9x
-aggregate(1m, sum)              1000   0.91         0.08         11.0x
-aggregate(10s, avg+max+min)     1000   1.86         0.20         9.1x
-aggregate(10s, avg)             4000   4.89         0.20         24.9x
-aggregate(1m, sum)              4000   3.86         0.12         31.2x
-aggregate(10s, avg+max+min)     4000   7.09         0.34         21.2x
-aggregate(10s, avg)             16000  20.35        0.83         24.7x
-aggregate(1m, sum)              16000  15.39        0.49         31.5x
-aggregate(10s, avg+max+min)     16000  32.41        1.33         24.5x
-rate(value)                     1000   1.06         0.27         4.0x
-rate(value)                     4000   5.26         0.35         15.1x
-rate(value)                     16000  23.81        1.35         17.7x
-fill(hold/pad)                  1000   0.67         0.29         2.3x
-fill(zero)                      1000   0.66         0.30         2.2x
-fill(linear)                    1000   0.65         0.31         2.1x
-fill(hold/pad)                  4000   3.02         0.81         3.7x
-fill(zero)                      4000   3.05         0.29         10.4x
-fill(linear)                    4000   3.09         0.29         10.5x
-fill(hold/pad)                  16000  12.55        1.20         10.5x
-fill(zero)                      16000  12.27        1.19         10.3x
-fill(linear)                    16000  12.66        1.18         10.7x
-select(value)                   1000   0.75         0.14         5.3x
-map(x*2)                        1000   0.73         0.44         1.6x
-collapse(a+b+c, sum)            1000   1.17         0.27         4.3x
-rename(value→measurement)       1000   0.82         0.20         4.2x
-select(value)                   4000   3.68         0.26         14.2x
-map(x*2)                        4000   3.43         1.02         3.4x
-collapse(a+b+c, sum)            4000   5.09         0.83         6.1x
-rename(value→measurement)       4000   4.28         0.45         9.6x
-select(value)                   16000  16.07        1.01         15.9x
-map(x*2)                        16000  15.39        4.79         3.2x
-collapse(a+b+c, sum)            16000  23.40        3.63         6.4x
-rename(value→measurement)       16000  21.43        1.67         12.8x
-align(5s, linear)               1000   1.10         0.13         8.8x
-align(5s, linear)               4000   4.19         0.17         24.7x
-align(10s, linear)              16000  14.13        0.44         32.3x
-at(i).get() full scan           1000   0.23         0.08         2.9x
-at(i).get() full scan           4000   0.59         0.17         3.5x
-at(i).get() full scan           16000  2.55         0.11         22.9x
-toJSON()                        1000   0.41         0.14         3.0x
-toJSON()                        4000   1.27         0.28         4.5x
-toJSON()                        16000  5.70         1.31         4.4x
-map → select                    1000   1.52         0.35         4.3x
-map → select                    4000   7.27         1.23         5.9x
-map → select                    16000  32.25        6.31         5.1x
-median(value)                   1000   0.29         0.07         4.3x
-stdev(value)                    1000   0.23         0.07         3.5x
-median(value)                   4000   1.65         0.25         6.5x
-stdev(value)                    4000   1.07         0.14         7.9x
-median(value)                   16000  9.70         1.31         7.4x
-stdev(value)                    16000  5.22         0.57         9.1x
-```
-
+See the [full benchmark results](website/docs/guides/benchmarks.mdx) for detailed numbers.
 Run locally: `npm run build && node bench/vs-pondjs.cjs`
-
-</details>
 
 ## Install
 
