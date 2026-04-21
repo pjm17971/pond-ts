@@ -121,11 +121,9 @@ export class TailReduce<S extends SeriesSchema> {
     return this.#entries.length;
   }
 
-  on(type: 'update', fn: UpdateListener): () => void {
+  on(type: 'update', fn: UpdateListener): this {
     this.#onUpdate.add(fn);
-    return () => {
-      this.#onUpdate.delete(fn);
-    };
+    return this;
   }
 
   dispose(): void {

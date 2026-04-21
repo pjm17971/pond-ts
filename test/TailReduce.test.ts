@@ -149,16 +149,11 @@ describe('multiple columns', () => {
 // ── Subscriptions ───────────────────────────────────────────────
 
 describe('subscriptions', () => {
-  it('unsubscribe stops updates', () => {
+  it('on() returns this for chaining', () => {
     const live = makeLive();
     const tail = new TailReduce(live, '5s', { value: 'sum' });
-    let count = 0;
-    const unsub = tail.on('update', () => count++);
-    live.push([0, 10, 'a']);
-    expect(count).toBe(1);
-    unsub();
-    live.push([1000, 20, 'a']);
-    expect(count).toBe(1);
+    const result = tail.on('update', () => {});
+    expect(result).toBe(tail);
     tail.dispose();
   });
 

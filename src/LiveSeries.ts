@@ -1,11 +1,15 @@
 import { Event } from './Event.js';
 import { Interval } from './Interval.js';
+import { LiveAggregation } from './LiveAggregation.js';
 import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
+import { TailReduce, type TailReduceWindow } from './TailReduce.js';
 import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
+import type { Sequence } from './Sequence.js';
 import type {
+  AggregateMap,
   EventForSchema,
   FirstColKind,
   RowForSchema,
@@ -255,6 +259,14 @@ export class LiveSeries<S extends SeriesSchema> {
       schema: this.schema,
       rows: rows as RowForSchema<S>[],
     });
+  }
+
+  aggregate(sequence: Sequence, mapping: AggregateMap<S>): LiveAggregation<S> {
+    return new LiveAggregation(this, sequence, mapping);
+  }
+
+  tail(window: TailReduceWindow, mapping: AggregateMap<S>): TailReduce<S> {
+    return new TailReduce(this, window, mapping);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;

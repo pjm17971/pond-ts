@@ -174,18 +174,13 @@ describe('subscriptions', () => {
     agg.dispose();
   });
 
-  it('unsubscribe stops listener', () => {
+  it('on() returns this for chaining', () => {
     const live = makeLive();
     const agg = new LiveAggregation(live, Sequence.every('5s'), {
       value: 'sum',
     });
-    let count = 0;
-    const unsub = agg.on('update', () => count++);
-    live.push([0, 10, 'a']);
-    expect(count).toBe(1);
-    unsub();
-    live.push([1000, 20, 'a']);
-    expect(count).toBe(1);
+    const result = agg.on('update', () => {});
+    expect(result).toBe(agg);
     agg.dispose();
   });
 

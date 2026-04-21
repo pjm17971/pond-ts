@@ -112,17 +112,15 @@ export class LiveAggregation<S extends SeriesSchema> {
     return this.#buildSeries(true);
   }
 
-  on(type: 'close', fn: CloseListener): () => void;
-  on(type: 'update', fn: UpdateListener): () => void;
-  on(type: 'close' | 'update', fn: CloseListener | UpdateListener): () => void {
+  on(type: 'close', fn: CloseListener): this;
+  on(type: 'update', fn: UpdateListener): this;
+  on(type: 'close' | 'update', fn: CloseListener | UpdateListener): this {
     const set =
       type === 'close'
         ? (this.#onClose as Set<any>)
         : (this.#onUpdate as Set<any>);
     set.add(fn);
-    return () => {
-      set.delete(fn);
-    };
+    return this;
   }
 
   dispose(): void {
