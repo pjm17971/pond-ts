@@ -620,12 +620,13 @@ Definition of done:
 
 ## Phase 5: React integration
 
-Status: not started.
+Status: not started. Monorepo restructure complete — `@pond-ts/react` package
+skeleton is in place at `packages/react/`.
 
 Goal: make Pond useful in frontend apps without forcing a framework-y runtime
 model into the core package.
 
-Entry point: `pond-ts/react`
+Entry point: `@pond-ts/react` (separate workspace package)
 
 ### Hooks
 
@@ -676,13 +677,21 @@ Later, only after the previous phases are stable:
 
 ### Package structure
 
+Monorepo with npm workspaces (`packages/*`):
+
 ```
-pond-ts              -> core batch library (current)
+pond-ts              -> packages/core — batch + live library
+@pond-ts/react       -> packages/react — React hooks
+@pond-ts/charts      -> future — first-party chart components
+```
+
+Subpath entry points within `pond-ts`:
+
+```
+pond-ts              -> core batch library
 pond-ts/live         -> LiveSeries, subscriptions, retention, live transforms
-pond-ts/node         -> Node stream adapters (Readable/Writable)
-pond-ts/react        -> hooks (useLiveSeries, useSnapshot, etc.)
-pond-ts/adapters     -> bridge adapters for third-party chart libs (interim)
-@pond-ts/charts      -> first-party chart components (separate package, later)
+pond-ts/node         -> Node stream adapters (Readable/Writable, future)
+pond-ts/adapters     -> bridge adapters for third-party chart libs (future)
 ```
 
 Browser-safe by default. Node-specific APIs go behind a separate entry point.

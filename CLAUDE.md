@@ -14,19 +14,43 @@ the relevant section of PLAN.md in the same pass. Move items from "remaining" to
 "completed", add new design notes, or adjust phase scope as needed. Do not defer
 this — a lost session should not erase the current state of the project.
 
+## Monorepo structure
+
+npm workspaces with two packages:
+
+- `packages/core` — the `pond-ts` package (batch + live time series)
+- `packages/react` — the `@pond-ts/react` package (React hooks, peer-depends on React)
+
+Root-level config (prettier, gitignore, CLAUDE.md, PLAN.md, README.md) is shared.
+Docs site lives at `website/`.
+
 ## Stack
 
 - TypeScript (strict)
 - Vitest for tests
 - Docusaurus for docs
-- npm for packaging
+- npm workspaces for packaging
 
 ## Commands
 
-- `npx vitest run` — run all tests
+From repo root:
+
+- `npm run build` — build all packages
+- `npm test` — test all packages
+- `npm run verify` — format check + build + test
+
+For a specific package:
+
+- `npm run build --workspace=pond-ts` — build core
+- `npm test --workspace=pond-ts` — test core
+- `npm run build --workspace=@pond-ts/react` — build react
+
+From within `packages/core/`:
+
+- `npx vitest run` — run all core tests
 - `npx vitest run test/<file>` — run a specific test file
-- `npx tsc --noEmit` — type check
-- `npx prettier --write .` — format
+- `npx tsc --noEmit` — type check core
+- `npx prettier --write .` — format core
 
 ## Before opening a PR
 

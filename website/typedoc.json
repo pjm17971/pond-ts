@@ -1,7 +1,7 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["../src/index.ts"],
-  "tsconfig": "../tsconfig.json",
+  "entryPoints": ["../packages/core/src/index.ts"],
+  "tsconfig": "../packages/core/tsconfig.json",
   "out": "static/generated-api",
   "name": "Pond API Reference",
   "readme": "none",

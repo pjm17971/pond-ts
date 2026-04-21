@@ -31,7 +31,7 @@ with no regressions. The advantage grows with data size.
 | **Event access**  | 23x             | Array indexing vs ImmutableJS `get()`         |
 
 See the [full benchmark results](website/docs/guides/benchmarks.mdx) for detailed numbers.
-Run locally: `npm run build && node bench/vs-pondjs.cjs`
+Run locally: `npm run build && node packages/core/bench/vs-pondjs.cjs`
 
 ## Install
 
