@@ -597,6 +597,68 @@ describe('grace period', () => {
     expect(agg.closedCount).toBe(1);
     agg.dispose();
   });
+
+  it('defaults grace from source graceWindow', () => {
+    const live = new LiveSeries({
+      name: 'test',
+      schema,
+      ordering: 'reorder',
+      graceWindow: '3s',
+    });
+    // No explicit grace option — should inherit 3000ms from source
+    const agg = new LiveAggregation(live, Sequence.every('5s'), {
+      value: 'sum',
+    });
+
+    live.push([0, 10, 'a']);
+    live.push([5000, 20, 'a']);
+    // With inherited 3s grace: closeCutoff = 5000-3000 = 2000, bucket end 5000 > 2000
+    expect(agg.closedCount).toBe(0);
+
+    live.push([8000, 30, 'a']);
+    // closeCutoff = 8000-3000 = 5000, bucket end 5000 <= 5000
+    expect(agg.closedCount).toBe(1);
+    agg.dispose();
+  });
+
+  it('explicit grace overrides source graceWindow', () => {
+    const live = new LiveSeries({
+      name: 'test',
+      schema,
+      ordering: 'reorder',
+      graceWindow: '10s',
+    });
+    // Explicit grace: '1s' overrides source's 10s
+    const agg = new LiveAggregation(
+      live,
+      Sequence.every('5s'),
+      { value: 'sum' },
+      { grace: '1s' },
+    );
+
+    live.push([0, 10, 'a']);
+    live.push([5000, 20, 'a']);
+    // With 1s grace: closeCutoff = 5000-1000 = 4000, bucket end 5000 > 4000
+    expect(agg.closedCount).toBe(0);
+
+    live.push([6000, 30, 'a']);
+    // closeCutoff = 6000-1000 = 5000, bucket end 5000 <= 5000
+    expect(agg.closedCount).toBe(1);
+    agg.dispose();
+  });
+
+  it('source without graceWindow defaults to zero grace', () => {
+    const live = makeLive(); // strict ordering, no graceWindow
+    const agg = new LiveAggregation(live, Sequence.every('5s'), {
+      value: 'sum',
+    });
+
+    live.push([0, 10, 'a']);
+    live.push([5000, 20, 'a']);
+    // No grace: closes immediately
+    expect(agg.closedCount).toBe(1);
+    agg.dispose();
+  });
 });
 
 // ── Bucket event (provisional updates) ──────────────────────────

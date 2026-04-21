@@ -87,7 +87,15 @@ export class LiveAggregation<S extends SeriesSchema> {
     this.name = source.name;
     this.#stepMs = sequence.stepMs();
     this.#anchorMs = sequence.anchor();
-    this.#graceMs = options?.grace ? parseDuration(options.grace as any) : 0;
+    const sourceGraceMs =
+      'graceWindowMs' in source &&
+      typeof (source as any).graceWindowMs === 'number' &&
+      isFinite((source as any).graceWindowMs)
+        ? (source as any).graceWindowMs
+        : 0;
+    this.#graceMs = options?.grace
+      ? parseDuration(options.grace as any)
+      : sourceGraceMs;
 
     const colsByName = new Map(
       source.schema.slice(1).map((c) => [c.name, c] as const),
