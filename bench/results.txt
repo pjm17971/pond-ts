@@ -1,0 +1,113 @@
+pond-ts vs pondjs benchmark
+======================================================================
+
+── N = 1000 ──
+  1000 events: all operations measured
+── N = 4000 ──
+  4000 events: all operations measured
+── N = 16000 ──
+  16000 events: all operations measured
+
+==========================================================================================
+RESULTS
+==========================================================================================
+
+── Construction ────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+new TimeSeries()                1000   0.94         0.23         4.1x      pond-ts ★
+new TimeSeries()                4000   2.91         0.53         5.5x      pond-ts ★
+new TimeSeries()                16000  14.36        2.17         6.6x      pond-ts ★
+
+── Aggregation ─────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+aggregate(10s, avg)             1000   1.67         0.19         8.9x      pond-ts ★
+aggregate(1m, sum)              1000   0.91         0.08         11.0x     pond-ts ★
+aggregate(10s, avg+max+min)     1000   1.86         0.20         9.1x      pond-ts ★
+aggregate(10s, avg)             4000   4.89         0.20         24.9x     pond-ts ★
+aggregate(1m, sum)              4000   3.86         0.12         31.2x     pond-ts ★
+aggregate(10s, avg+max+min)     4000   7.09         0.34         21.2x     pond-ts ★
+aggregate(10s, avg)             16000  20.35        0.83         24.7x     pond-ts ★
+aggregate(1m, sum)              16000  15.39        0.49         31.5x     pond-ts ★
+aggregate(10s, avg+max+min)     16000  32.41        1.33         24.5x     pond-ts ★
+
+── Rate ────────────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+rate(value)                     1000   1.06         0.27         4.0x      pond-ts ★
+rate(value)                     4000   5.26         0.35         15.1x     pond-ts ★
+rate(value)                     16000  23.81        1.35         17.7x     pond-ts ★
+
+── Fill ────────────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+fill(hold/pad)                  1000   0.67         0.29         2.3x      pond-ts ★
+fill(zero)                      1000   0.66         0.30         2.2x      pond-ts ★
+fill(linear)                    1000   0.65         0.31         2.1x      pond-ts ★
+fill(hold/pad)                  4000   3.02         0.81         3.7x      pond-ts ★
+fill(zero)                      4000   3.05         0.29         10.4x     pond-ts ★
+fill(linear)                    4000   3.09         0.29         10.5x     pond-ts ★
+fill(hold/pad)                  16000  12.55        1.20         10.5x     pond-ts ★
+fill(zero)                      16000  12.27        1.19         10.3x     pond-ts ★
+fill(linear)                    16000  12.66        1.18         10.7x     pond-ts ★
+
+── Transform ───────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+select(value)                   1000   0.75         0.14         5.3x      pond-ts ★
+map(x*2)                        1000   0.73         0.44         1.6x      pond-ts
+collapse(a+b+c, sum)            1000   1.17         0.27         4.3x      pond-ts ★
+rename(value→measurement)       1000   0.82         0.20         4.2x      pond-ts ★
+select(value)                   4000   3.68         0.26         14.2x     pond-ts ★
+map(x*2)                        4000   3.43         1.02         3.4x      pond-ts ★
+collapse(a+b+c, sum)            4000   5.09         0.83         6.1x      pond-ts ★
+rename(value→measurement)       4000   4.28         0.45         9.6x      pond-ts ★
+select(value)                   16000  16.07        1.01         15.9x     pond-ts ★
+map(x*2)                        16000  15.39        4.79         3.2x      pond-ts ★
+collapse(a+b+c, sum)            16000  23.40        3.63         6.4x      pond-ts ★
+rename(value→measurement)       16000  21.43        1.67         12.8x     pond-ts ★
+
+── Alignment ───────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+align(5s, linear)               1000   1.10         0.13         8.8x      pond-ts ★
+align(5s, linear)               4000   4.19         0.17         24.7x     pond-ts ★
+align(10s, linear)              16000  14.13        0.44         32.3x     pond-ts ★
+
+── Access ──────────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+at(i).get() full scan           1000   0.23         0.08         2.9x      pond-ts ★
+at(i).get() full scan           4000   0.59         0.17         3.5x      pond-ts ★
+at(i).get() full scan           16000  2.55         0.11         22.9x     pond-ts ★
+
+── Serialization ───────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+toJSON()                        1000   0.41         0.14         3.0x      pond-ts ★
+toJSON()                        4000   1.27         0.28         4.5x      pond-ts ★
+toJSON()                        16000  5.70         1.31         4.4x      pond-ts ★
+
+── Chained ─────────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+map → select                    1000   1.52         0.35         4.3x      pond-ts ★
+map → select                    4000   7.27         1.23         5.9x      pond-ts ★
+map → select                    16000  32.25        6.31         5.1x      pond-ts ★
+
+── Statistics ──────────────────────────────────────────────────────────────────────
+Operation                       N      pondjs (ms)  pond-ts (ms) Speedup   Winner
+─────────────────────────────────────────────────────────────────────────────────────
+median(value)                   1000   0.29         0.07         4.3x      pond-ts ★
+stdev(value)                    1000   0.23         0.07         3.5x      pond-ts ★
+median(value)                   4000   1.65         0.25         6.5x      pond-ts ★
+stdev(value)                    4000   1.07         0.14         7.9x      pond-ts ★
+median(value)                   16000  9.70         1.31         7.4x      pond-ts ★
+stdev(value)                    16000  5.22         0.57         9.1x      pond-ts ★
+
+── Summary ────────────────────────────────────────────────────────
+Total benchmarks: 54
+pond-ts faster: 54  (53 by 2x+)
+pondjs faster:  0  (0 by 2x+)
+Geometric mean speedup: 7.55x
