@@ -9,16 +9,14 @@ import {
   resolveTimeZone,
   toPlainDateStart,
 } from './calendar.js';
+import { parseDuration } from './utils/duration.js';
+import type { DurationInput } from './utils/duration.js';
 import { Interval } from './Interval.js';
-import { TimeRange } from './TimeRange.js';
-import type {
-  TemporalLike,
-  TimestampInput,
-  TimeRangeInput,
-  IntervalInput,
-} from './temporal.js';
+import { toTimeRange } from './TimeRange.js';
+import type { TemporalLike, TimestampInput } from './temporal.js';
+import { normalizeTimestamp } from './temporal.js';
 
-export type DurationInput = number | `${number}${'ms' | 's' | 'm' | 'h' | 'd'}`;
+export type { DurationInput };
 export type SequenceSample = 'begin' | 'center';
 
 type FixedSequenceInput = {
@@ -31,73 +29,6 @@ type CalendarSequenceInput = {
   timeZone: string;
   weekStartsOn?: WeekStartsOn;
 };
-
-function normalizeTimestamp(value: TimestampInput): number {
-  return value instanceof Date ? value.getTime() : value;
-}
-
-function toTimeRange(value: TemporalLike): TimeRange {
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    'timeRange' in value &&
-    typeof value.timeRange === 'function'
-  ) {
-    return value.timeRange();
-  }
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    'begin' in value &&
-    'end' in value
-  ) {
-    return new TimeRange({ start: value.begin(), end: value.end() });
-  }
-  if (value instanceof Date || typeof value === 'number') {
-    const timestamp = normalizeTimestamp(value);
-    return new TimeRange({ start: timestamp, end: timestamp });
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 2) {
-      return new TimeRange(value as TimeRangeInput);
-    }
-    return new Interval(value as IntervalInput).timeRange();
-  }
-  if ('value' in value) {
-    return new Interval(value as IntervalInput).timeRange();
-  }
-  return new TimeRange(value as TimeRangeInput);
-}
-
-function parseDuration(value: DurationInput): number {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || value <= 0) {
-      throw new TypeError(
-        'sequence duration must be a positive finite number of milliseconds',
-      );
-    }
-    return value;
-  }
-
-  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
-  if (!match) {
-    throw new TypeError(`unsupported duration '${value}'`);
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2];
-  const multiplier =
-    unit === 'ms'
-      ? 1
-      : unit === 's'
-        ? 1_000
-        : unit === 'm'
-          ? 60_000
-          : unit === 'h'
-            ? 3_600_000
-            : 86_400_000;
-  return amount * multiplier;
-}
 
 /**
  * An unbounded fixed-step grid definition used for alignment or aggregation.
@@ -123,7 +54,7 @@ export class Sequence {
     if ('every' in input) {
       this.#kind = 'fixed';
       this.#stepMs = parseDuration(input.every);
-      this.#anchorMs = normalizeTimestamp(input.anchor ?? 0);
+      this.#anchorMs = normalizeTimestamp(input.anchor ?? 0, 'anchor');
     } else {
       this.#kind = 'calendar';
       this.#calendarUnit = input.unit;
