@@ -1,6 +1,7 @@
 export { BoundedSequence } from './BoundedSequence.js';
 export { Event } from './Event.js';
 export { Interval } from './Interval.js';
+export { LiveSeries } from './LiveSeries.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
@@ -82,3 +83,8 @@ export type {
   TimestampInput,
 } from './temporal.js';
 export type { DurationInput, SequenceSample } from './Sequence.js';
+export type {
+  LiveSeriesOptions,
+  OrderingMode,
+  RetentionPolicy,
+} from './LiveSeries.js';

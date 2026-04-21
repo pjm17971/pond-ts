@@ -347,20 +347,21 @@ Definition of done:
 
 ## Phase 3: Live core
 
-Status: not started.
+Status: complete.
 
 Goal: introduce a minimal but principled live layer without collapsing the
 immutable `TimeSeries` model.
 
 Scope:
 
-- `LiveSeries<S>` — mutable, append-optimized buffer sharing the same schema
-  type as `TimeSeries`
-- push/append APIs
-- retention policies (`maxEvents`, `maxAge`, `maxBytes`)
-- immutable snapshot via `toTimeSeries()`
-- ordering modes (`strict`, `drop`, `reorder`) and late-arrival policy
-- subscriptions (`event`, `batch`, `evict`) — synchronous, inline with push
+- [x] `LiveSeries<S>` — mutable, append-optimized buffer sharing the same schema
+      type as `TimeSeries`
+- [x] push/append APIs
+- [x] retention policies (`maxEvents`, `maxAge`, `maxBytes`)
+- [x] immutable snapshot via `toTimeSeries()`
+- [x] ordering modes (`strict`, `drop`, `reorder`) and late-arrival policy
+- [x] subscriptions (`event`, `batch`, `evict`) — synchronous, inline with push
+- [x] docs page for LiveSeries
 
 Non-goals for this phase:
 
@@ -379,12 +380,31 @@ within a grace window).
 **Subscriptions** are synchronous and fire inline with `push`. Async fanout is
 the caller's responsibility.
 
+**Subscription ordering**: within a single `push()` call, listeners fire in
+this order: `event` (once per event, inline with insertion) → retention runs →
+`batch` (once with all added events) → `evict` (if retention removed events).
+
+**`reorder` mode**: without a `graceWindow`, any out-of-order event is inserted
+in sorted position via binary search. With a `graceWindow`, events older than
+the window relative to the latest timestamp throw. This gives callers control
+over how much disorder they'll tolerate.
+
+**`toTimeSeries()` snapshot**: reconstructs rows from the internal event array
+and passes them through the standard `TimeSeries` constructor. This re-validates
+events redundantly but keeps the two classes fully decoupled. Snapshot is not a
+hot path — if profiling proves otherwise, a trusted constructor bridge can be
+added later.
+
+**Byte estimation** for `maxBytes`: rough per-event estimate (64 bytes base +
+8 per number + 2×length per string + 4 per boolean). Intentionally approximate —
+the goal is order-of-magnitude memory capping, not precise measurement.
+
 Definition of done:
 
-- `LiveSeries` can ingest ordered data reliably
-- retention and snapshot semantics are clearly documented
-- subscriptions are predictable and synchronous
-- the API is small enough to change if the composition model reveals flaws
+- [x] `LiveSeries` can ingest ordered data reliably
+- [x] retention and snapshot semantics are clearly documented
+- [x] subscriptions are predictable and synchronous
+- [x] the API is small enough to change if the composition model reveals flaws
 
 ---
 
