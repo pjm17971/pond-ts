@@ -11,7 +11,10 @@ import {
 } from './LiveView.js';
 import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
-import { Rolling, type RollingWindow } from './Rolling.js';
+import {
+  LiveRollingAggregation,
+  type RollingWindow,
+} from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
@@ -304,8 +307,11 @@ export class LiveSeries<S extends SeriesSchema> {
     return new LiveAggregation(this, sequence, mapping);
   }
 
-  rolling(window: RollingWindow, mapping: AggregateMap<S>): Rolling<S> {
-    return new Rolling(this, window, mapping);
+  rolling(
+    window: RollingWindow,
+    mapping: AggregateMap<S>,
+  ): LiveRollingAggregation<S> {
+    return new LiveRollingAggregation(this, window, mapping);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(
