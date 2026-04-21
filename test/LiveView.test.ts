@@ -5,7 +5,7 @@ import {
   LiveSeries,
   LiveView,
   Sequence,
-  Rolling,
+  LiveRollingAggregation,
   TimeSeries,
 } from '../src/index.js';
 
@@ -734,11 +734,11 @@ describe('edge cases', () => {
     view.dispose();
   });
 
-  it('Rolling accepts LiveView directly', () => {
+  it('LiveRollingAggregation accepts LiveView directly', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'a']);
     const view = live.filter((e) => e.get('host') === 'a');
-    const r = new Rolling(view, '10s', { value: 'sum' });
+    const r = new LiveRollingAggregation(view, '10s', { value: 'sum' });
     expect(r.value().value).toBe(40); // 10+30
     r.dispose();
     view.dispose();

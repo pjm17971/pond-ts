@@ -64,7 +64,7 @@ type EventListener = (event: any) => void;
 
 export type RollingWindow = DurationInput | number;
 
-export class Rolling<S extends SeriesSchema> {
+export class LiveRollingAggregation<S extends SeriesSchema> {
   readonly name: string;
   readonly schema: SeriesSchema;
 

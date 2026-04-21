@@ -1,6 +1,9 @@
 import { Event } from './Event.js';
 import { LiveAggregation } from './LiveAggregation.js';
-import { Rolling, type RollingWindow } from './Rolling.js';
+import {
+  LiveRollingAggregation,
+  type RollingWindow,
+} from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
 import type {
@@ -160,8 +163,11 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     return new LiveAggregation(this, sequence, mapping);
   }
 
-  rolling(window: RollingWindow, mapping: AggregateMap<S>): Rolling<S> {
-    return new Rolling(this, window, mapping);
+  rolling(
+    window: RollingWindow,
+    mapping: AggregateMap<S>,
+  ): LiveRollingAggregation<S> {
+    return new LiveRollingAggregation(this, window, mapping);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

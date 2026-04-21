@@ -6,7 +6,7 @@ export type { LiveAggregationOptions } from './LiveAggregation.js';
 export { LiveSeries } from './LiveSeries.js';
 export { LiveView } from './LiveView.js';
 export type { LiveFillMapping, LiveFillStrategy } from './LiveView.js';
-export { Rolling } from './Rolling.js';
+export { LiveRollingAggregation } from './LiveRollingAggregation.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
@@ -94,4 +94,4 @@ export type {
   OrderingMode,
   RetentionPolicy,
 } from './LiveSeries.js';
-export type { RollingWindow } from './Rolling.js';
+export type { RollingWindow } from './LiveRollingAggregation.js';

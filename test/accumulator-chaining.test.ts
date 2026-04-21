@@ -166,9 +166,9 @@ describe('LiveAggregation chaining', () => {
   });
 });
 
-// ── Rolling chaining ─────────────────────────────────────────────
+// ── LiveRollingAggregation chaining ──────────────────────────────
 
-describe('Rolling chaining', () => {
+describe('LiveRollingAggregation chaining', () => {
   it('filter: removes rolling values by predicate', () => {
     const live = makeLive();
     const r = live.rolling(2, { value: 'avg' });

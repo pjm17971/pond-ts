@@ -410,7 +410,7 @@ Definition of done:
 
 ## Phase 4: Live composition
 
-Status: in progress.
+Status: complete.
 
 Goal: validate the live composition model before building UI integrations on top
 of it.
@@ -418,14 +418,14 @@ of it.
 Completed:
 
 - [x] `LiveAggregation` — incremental bucketed aggregation over a `LiveSeries`
-- [x] `Rolling` — sliding-window reduction (time-based or count-based) over
+- [x] `LiveRollingAggregation` — sliding-window reduction (time-based or count-based) over
       a `LiveSeries`
 - [x] `LiveSource<S>` interface — common contract for LiveSeries and LiveView
 - [x] `LiveView<S>` — derived view with `filter()`, `map()`, `select()`,
       `window()`, composable with all live transforms via `LiveSource`
-- [x] `LiveAggregation` and `Rolling` accept any `LiveSource<S>`, not just
+- [x] `LiveAggregation` and `LiveRollingAggregation` accept any `LiveSource<S>`, not just
       `LiveSeries<S>`
-- [x] `LiveAggregation` and `Rolling` satisfy `LiveSource` for chaining
+- [x] `LiveAggregation` and `LiveRollingAggregation` satisfy `LiveSource` for chaining
       (`name`, `schema`, `length`, `at()`, `on('event')`)
 - [x] Grace period for `LiveAggregation` — delays bucket closing so
       out-of-order events within the window accumulate into their correct bucket
@@ -442,31 +442,31 @@ Not every batch `TimeSeries` method needs a live equivalent. The live layer is
 about ingestion and incremental computation — when you need the full analytical
 toolkit, snapshot to `TimeSeries` and use the batch API.
 
-| Batch method      | Live?    | Notes                                                |
-| ----------------- | -------- | ---------------------------------------------------- |
-| `filter(pred)`    | **done** | LiveView                                             |
-| `map(fn)`         | **done** | LiveView                                             |
-| `select(...cols)` | **done** | LiveView, schema-narrowing                           |
-| `aggregate()`     | **done** | LiveAggregation (bucketed)                           |
-| `diff(...cols)`   | **done** | stateless view, needs previous event                 |
-| `rate(...cols)`   | **done** | stateless view, delta / time gap                     |
-| `pctChange()`     | **done** | stateless view, (curr-prev)/prev                     |
-| `fill(strategy)`  | **done** | carry-forward state per column (hold, zero, literal) |
-| `cumulative()`    | **done** | carry-forward state per column (sum, max, min)       |
-| `rename(mapping)` | skip     | achievable with `map()`                              |
-| `collapse()`      | skip     | achievable with `map()`                              |
-| `rolling()`       | covered  | `Rolling` as chainable source (see below)            |
-| `smooth()`        | covered  | EMA is a closure in `map()`; MA is rolling avg       |
-| `shift(col, n)`   | maybe    | needs lookback buffer, niche for live                |
-| `align()`         | no       | resampling assumes complete data                     |
-| `join()`          | no       | two-stream join is a different primitive             |
-| `groupBy()`       | no       | partitioning is a source-level concern               |
-| `within/trim`     | no       | temporal selection — snapshot then slice             |
-| `reduce()`        | no       | whole-series → scalar — that's `Rolling`             |
+| Batch method      | Live?    | Notes                                                    |
+| ----------------- | -------- | -------------------------------------------------------- |
+| `filter(pred)`    | **done** | LiveView                                                 |
+| `map(fn)`         | **done** | LiveView                                                 |
+| `select(...cols)` | **done** | LiveView, schema-narrowing                               |
+| `aggregate()`     | **done** | LiveAggregation (bucketed)                               |
+| `diff(...cols)`   | **done** | stateless view, needs previous event                     |
+| `rate(...cols)`   | **done** | stateless view, delta / time gap                         |
+| `pctChange()`     | **done** | stateless view, (curr-prev)/prev                         |
+| `fill(strategy)`  | **done** | carry-forward state per column (hold, zero, literal)     |
+| `cumulative()`    | **done** | carry-forward state per column (sum, max, min)           |
+| `rename(mapping)` | skip     | achievable with `map()`                                  |
+| `collapse()`      | skip     | achievable with `map()`                                  |
+| `rolling()`       | covered  | `LiveRollingAggregation` as chainable source (see below) |
+| `smooth()`        | covered  | EMA is a closure in `map()`; MA is rolling avg           |
+| `shift(col, n)`   | maybe    | needs lookback buffer, niche for live                    |
+| `align()`         | no       | resampling assumes complete data                         |
+| `join()`          | no       | two-stream join is a different primitive                 |
+| `groupBy()`       | no       | partitioning is a source-level concern                   |
+| `within/trim`     | no       | temporal selection — snapshot then slice                 |
+| `reduce()`        | no       | whole-series → scalar — that's `LiveRollingAggregation`  |
 
 ### Chainable stateful transforms
 
-`LiveAggregation` emits closed buckets. `Rolling` emits per-event aggregate
+`LiveAggregation` emits closed buckets. `LiveRollingAggregation` emits per-event aggregate
 values. Both should implement `LiveSource<S>` so their output can feed further
 views:
 
@@ -479,12 +479,12 @@ live
 ```
 
 For `LiveAggregation`, the output events are interval-keyed (closed buckets).
-For `Rolling`, each source event produces a new time-keyed output event with
-the current sliding-window aggregate. This makes Rolling-as-source the live
-equivalent of `rolling()` — no separate `LiveRolling` class needed.
+For `LiveRollingAggregation`, each source event produces a new time-keyed output event with
+the current sliding-window aggregate. This makes LiveRollingAggregation-as-source the live
+equivalent of `rolling()` — no separate class needed.
 
 Similarly, `LiveSmooth` is not needed as a dedicated class: EMA is a stateful
-closure inside `map()`, and moving average is `Rolling`-as-source with
+closure inside `map()`, and moving average is `LiveRollingAggregation`-as-source with
 `'avg'`.
 
 ### Views
@@ -525,7 +525,7 @@ new LiveAggregation(
 );
 ```
 
-**`Rolling`**: maintains a sliding-window reduction. Supports both
+**`LiveRollingAggregation`**: maintains a sliding-window reduction. Supports both
 time-based windows (`'5m'`) and count-based windows (`100`). Uses
 `RollingReducerState` from the reducer registry for incremental add/remove.
 As a `LiveSource`, each source event produces an output event containing the
@@ -533,21 +533,21 @@ current aggregate value at that point. The output buffer grows with each
 source event (downstream consumers can use `.window()` to bound it).
 `on('event', fn)` fires per source event with the new aggregate.
 
-| Transform             | Live behavior                          | Owns a buffer? | Chainable? |
-| --------------------- | -------------------------------------- | -------------- | ---------- |
-| `filter/map/select`   | Per-event transform                    | Yes (view)     | Yes        |
-| `window`              | Bounded view with eviction             | Yes (view)     | Yes        |
-| `diff/rate/pctChange` | Per-event with prev-event state        | Yes (view)     | Yes        |
-| `fill/cumulative`     | Per-event with carry-forward state     | Yes (view)     | Yes        |
-| `LiveAggregation`     | Accumulator per bucket + closed stream | Yes            | Yes        |
-| `Rolling`             | Sliding window + per-event output      | Yes            | Yes        |
+| Transform                | Live behavior                          | Owns a buffer? | Chainable? |
+| ------------------------ | -------------------------------------- | -------------- | ---------- |
+| `filter/map/select`      | Per-event transform                    | Yes (view)     | Yes        |
+| `window`                 | Bounded view with eviction             | Yes (view)     | Yes        |
+| `diff/rate/pctChange`    | Per-event with prev-event state        | Yes (view)     | Yes        |
+| `fill/cumulative`        | Per-event with carry-forward state     | Yes (view)     | Yes        |
+| `LiveAggregation`        | Accumulator per bucket + closed stream | Yes            | Yes        |
+| `LiveRollingAggregation` | Sliding window + per-event output      | Yes            | Yes        |
 
 ### LiveSource interface and LiveView
 
 `LiveSource<S>` is the common interface that all live objects expose for
 downstream consumers: `name`, `schema`, `length`, `at(index)`, and
 `on('event', fn)`. Both `LiveSeries` and `LiveView` satisfy it, so
-`LiveAggregation` and `Rolling` accept any `LiveSource<S>`.
+`LiveAggregation` and `LiveRollingAggregation` accept any `LiveSource<S>`.
 
 `LiveView<S>` wraps a source with a `process: (event) => event | undefined`
 function. If `process` returns `undefined`, the event is filtered out. This
@@ -600,10 +600,10 @@ latest event timestamp, not wall-clock.
 
 ### Dropped from scope
 
-- **`LiveRolling`**: covered by `Rolling` implementing `LiveSource` — the
+- **`LiveRolling`**: covered by `LiveRollingAggregation` implementing `LiveSource` — the
   per-event output stream IS the rolling output.
 - **`LiveSmooth`**: EMA is a stateful closure in `map()`. Moving average is
-  `Rolling`-as-source with `'avg'`. LOESS is too expensive for per-event
+  `LiveRollingAggregation`-as-source with `'avg'`. LOESS is too expensive for per-event
   streaming.
 - **`rename`/`collapse` views**: achievable with `map()`. Don't earn dedicated
   API surface in the live layer.

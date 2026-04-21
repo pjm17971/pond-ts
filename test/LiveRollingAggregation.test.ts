@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LiveSeries, LiveView, Rolling } from '../src/index.js';
+import { LiveSeries, LiveView, LiveRollingAggregation } from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -13,7 +13,7 @@ function makeLive() {
 
 // ── Time-based window ───────────────────────────────────────────
 
-describe('Rolling time-based', () => {
+describe('LiveRollingAggregationtime-based', () => {
   it('computes aggregate over time window', () => {
     const live = makeLive();
     live.push(
@@ -23,7 +23,7 @@ describe('Rolling time-based', () => {
       [3000, 40, 'a'],
       [4000, 50, 'a'],
     );
-    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'avg' });
     expect(tail.value().value).toBe(30); // avg(10,20,30,40,50)
     tail.dispose();
   });
@@ -31,7 +31,7 @@ describe('Rolling time-based', () => {
   it('evicts events outside the window', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
-    const tail = new Rolling(live, '3s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '3s', { value: 'sum' });
     // window covers [0, 2000], cutoff = 2000-3000 = -1000, all included
     expect(tail.value().value).toBe(60);
 
@@ -43,7 +43,7 @@ describe('Rolling time-based', () => {
 
   it('updates on each push', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '10s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '10s', { value: 'sum' });
     const updates: number[] = [];
     tail.on('update', (v) => updates.push(v.value as number));
 
@@ -55,7 +55,7 @@ describe('Rolling time-based', () => {
 
   it('handles empty source', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'avg' });
     expect(tail.value().value).toBeUndefined();
     expect(tail.windowSize).toBe(0);
     tail.dispose();
@@ -64,7 +64,7 @@ describe('Rolling time-based', () => {
   it('processes existing events', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     expect(tail.value().value).toBe(30);
     tail.dispose();
   });
@@ -72,7 +72,7 @@ describe('Rolling time-based', () => {
   it('keeps events exactly at boundary', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [5000, 20, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     // cutoff = 5000-5000 = 0, event at 0 has timestamp === cutoff, NOT evicted
     expect(tail.value().value).toBe(30);
     tail.dispose();
@@ -81,7 +81,7 @@ describe('Rolling time-based', () => {
 
 // ── Count-based window ──────────────────────────────────────────
 
-describe('Rolling count-based', () => {
+describe('LiveRollingAggregationcount-based', () => {
   it('keeps last N events', () => {
     const live = makeLive();
     live.push(
@@ -91,7 +91,7 @@ describe('Rolling count-based', () => {
       [3000, 40, 'a'],
       [4000, 50, 'a'],
     );
-    const tail = new Rolling(live, 3, { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, 3, { value: 'avg' });
     expect(tail.windowSize).toBe(3);
     expect(tail.value().value).toBe(40); // avg(30,40,50)
     tail.dispose();
@@ -99,7 +99,7 @@ describe('Rolling count-based', () => {
 
   it('evicts oldest when window exceeds count', () => {
     const live = makeLive();
-    const tail = new Rolling(live, 2, { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, 2, { value: 'sum' });
     live.push([0, 10, 'a'], [1000, 20, 'a']);
     expect(tail.value().value).toBe(30);
     live.push([2000, 30, 'a']);
@@ -110,7 +110,7 @@ describe('Rolling count-based', () => {
 
   it('count of 1 always has the latest event', () => {
     const live = makeLive();
-    const tail = new Rolling(live, 1, { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, 1, { value: 'sum' });
     live.push([0, 10, 'a']);
     expect(tail.value().value).toBe(10);
     live.push([1000, 20, 'a']);
@@ -120,7 +120,7 @@ describe('Rolling count-based', () => {
 
   it('handles fewer events than window size', () => {
     const live = makeLive();
-    const tail = new Rolling(live, 100, { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, 100, { value: 'sum' });
     live.push([0, 10, 'a'], [1000, 20, 'a']);
     expect(tail.value().value).toBe(30);
     expect(tail.windowSize).toBe(2);
@@ -139,7 +139,7 @@ describe('multiple columns', () => {
     ] as const;
     const live = new LiveSeries({ name: 'multi', schema: numSchema });
     live.push([0, 10, 100], [1000, 20, 200], [2000, 30, 300]);
-    const tail = new Rolling(live, '5s', { a: 'avg', b: 'max' });
+    const tail = new LiveRollingAggregation(live, '5s', { a: 'avg', b: 'max' });
     expect(tail.value().a).toBe(20);
     expect(tail.value().b).toBe(300);
     tail.dispose();
@@ -151,7 +151,7 @@ describe('multiple columns', () => {
 describe('subscriptions', () => {
   it('on() returns this for chaining', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     const result = tail.on('update', () => {});
     expect(result).toBe(tail);
     tail.dispose();
@@ -159,7 +159,7 @@ describe('subscriptions', () => {
 
   it('dispose stops receiving source events', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     live.push([0, 10, 'a']);
     expect(tail.value().value).toBe(10);
     tail.dispose();
@@ -175,13 +175,14 @@ describe('edge cases', () => {
   it('rejects unknown column', () => {
     const live = makeLive();
     expect(
-      () => new Rolling(live, '5s', { nonexistent: 'sum' } as any),
+      () =>
+        new LiveRollingAggregation(live, '5s', { nonexistent: 'sum' } as any),
     ).toThrow(/unknown column/);
   });
 
   it('many rapid pushes with count window', () => {
     const live = makeLive();
-    const tail = new Rolling(live, 10, { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, 10, { value: 'sum' });
     for (let i = 0; i < 1000; i++) {
       live.push([i * 1000, i, `h${i % 5}`]);
     }
@@ -194,7 +195,7 @@ describe('edge cases', () => {
   it('single event in window', () => {
     const live = makeLive();
     live.push([0, 42, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'avg' });
     expect(tail.value().value).toBe(42);
     tail.dispose();
   });
@@ -202,7 +203,7 @@ describe('edge cases', () => {
   it('works with min reducer', () => {
     const live = makeLive();
     live.push([0, 30, 'a'], [1000, 10, 'a'], [2000, 50, 'a']);
-    const tail = new Rolling(live, 2, { value: 'min' });
+    const tail = new LiveRollingAggregation(live, 2, { value: 'min' });
     expect(tail.value().value).toBe(10); // min(10, 50)
     live.push([3000, 5, 'a']);
     expect(tail.value().value).toBe(5); // min(50, 5)
@@ -212,10 +213,10 @@ describe('edge cases', () => {
 
 // ── LiveSource interface ────────────────────────────────────────
 
-describe('Rolling LiveSource', () => {
+describe('LiveRollingAggregationLiveSource', () => {
   it('exposes name and schema', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'avg' });
     expect(tail.name).toBe('test');
     expect(tail.schema[0]).toEqual({ name: 'time', kind: 'time' });
     expect(tail.schema[1]).toEqual({
@@ -228,7 +229,7 @@ describe('Rolling LiveSource', () => {
 
   it('length equals total output events', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     expect(tail.length).toBe(0);
     live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
     expect(tail.length).toBe(3);
@@ -238,7 +239,7 @@ describe('Rolling LiveSource', () => {
   it('at() returns output events with rolling aggregate', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
 
     expect(tail.at(0)?.get('value')).toBe(10); // sum after first event
     expect(tail.at(1)?.get('value')).toBe(30); // sum after second
@@ -249,7 +250,7 @@ describe('Rolling LiveSource', () => {
   it('output events have source timestamps', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
 
     expect(tail.at(0)?.begin()).toBe(0);
     expect(tail.at(1)?.begin()).toBe(1000);
@@ -259,7 +260,7 @@ describe('Rolling LiveSource', () => {
   it('at() supports negative indexing', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
 
     expect(tail.at(-1)?.get('value')).toBe(60);
     expect(tail.at(-2)?.get('value')).toBe(30);
@@ -268,7 +269,7 @@ describe('Rolling LiveSource', () => {
 
   it('on("event") fires per source event and returns unsubscribe', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
     const values: number[] = [];
     const unsub = tail.on('event', (event: any) => {
       values.push(event.get('value'));
@@ -286,7 +287,7 @@ describe('Rolling LiveSource', () => {
 
   it('output events reflect window eviction', () => {
     const live = makeLive();
-    const tail = new Rolling(live, 2, { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, 2, { value: 'sum' });
 
     live.push([0, 10, 'a']);
     expect(tail.at(0)?.get('value')).toBe(10);
@@ -303,7 +304,7 @@ describe('Rolling LiveSource', () => {
 
   it('can feed a LiveView for chaining', () => {
     const live = makeLive();
-    const tail = new Rolling(live, '5s', { value: 'avg' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'avg' });
     const view = new LiveView(tail as any, (event: any) =>
       (event.get('value') as number) > 15 ? event : undefined,
     );
@@ -322,7 +323,7 @@ describe('Rolling LiveSource', () => {
   it('processes existing events into output buffer', () => {
     const live = makeLive();
     live.push([0, 10, 'a'], [1000, 20, 'a']);
-    const tail = new Rolling(live, '5s', { value: 'sum' });
+    const tail = new LiveRollingAggregation(live, '5s', { value: 'sum' });
 
     expect(tail.length).toBe(2);
     expect(tail.at(0)?.get('value')).toBe(10);

@@ -8,7 +8,10 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './LiveView.js';
-import { Rolling, type RollingWindow } from './Rolling.js';
+import {
+  LiveRollingAggregation,
+  type RollingWindow,
+} from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
@@ -272,8 +275,8 @@ export class LiveAggregation<S extends SeriesSchema> {
   rolling(
     windowSize: RollingWindow,
     mapping: AggregateMap<SeriesSchema>,
-  ): Rolling<SeriesSchema> {
-    return new Rolling(this as any, windowSize, mapping);
+  ): LiveRollingAggregation<SeriesSchema> {
+    return new LiveRollingAggregation(this as any, windowSize, mapping);
   }
 
   dispose(): void {

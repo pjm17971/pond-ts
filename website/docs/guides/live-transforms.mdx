@@ -190,9 +190,9 @@ alerts.on('event', (bucket) => {
 - `agg.at(i)` — access the i-th closed bucket event
 - `agg.on('event', fn)` — fires on bucket close (same as `on('close')`)
 
-## Rolling: sliding-window reduction
+## LiveRollingAggregation: sliding-window reduction
 
-`Rolling` maintains a sliding-window aggregate that updates on every source
+`LiveRollingAggregation` maintains a sliding-window aggregate that updates on every source
 event. It supports time-based and count-based windows:
 
 ```ts
@@ -209,12 +209,12 @@ rolling.on('update', (val) => {
 
 ### As a LiveSource
 
-`Rolling` also satisfies `LiveSource`. Each source event produces an output
+`LiveRollingAggregation` also satisfies `LiveSource`. Each source event produces an output
 event containing the rolling aggregate at that point, preserving the source
 event's timestamp:
 
 ```ts
-const rolling = new Rolling(live, '5m', { cpu: 'avg' });
+const rolling = new LiveRollingAggregation(live, '5m', { cpu: 'avg' });
 
 // Output buffer grows with each source event
 rolling.length; // number of output events so far
@@ -228,7 +228,7 @@ rolling.on('event', (event) => {
 });
 ```
 
-This makes `Rolling` the live equivalent of the batch `rolling()` method. The
+This makes `LiveRollingAggregation` the live equivalent of the batch `rolling()` method. The
 output buffer grows unboundedly — downstream consumers can compose with
 `window()` to bound it if needed.
 

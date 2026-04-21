@@ -3,7 +3,7 @@ import {
   LiveAggregation,
   LiveSeries,
   Sequence,
-  Rolling,
+  LiveRollingAggregation,
   TimeSeries,
 } from '../src/index.js';
 
@@ -508,10 +508,10 @@ describe('aggregate() method', () => {
 });
 
 describe('rolling() method', () => {
-  it('returns a Rolling', () => {
+  it('returns a LiveRollingAggregation', () => {
     const live = makeLive();
     const r = live.rolling('5s', { value: 'avg' });
-    expect(r).toBeInstanceOf(Rolling);
+    expect(r).toBeInstanceOf(LiveRollingAggregation);
     r.dispose();
   });
 
