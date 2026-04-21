@@ -1,3 +1,8 @@
 // @pond-ts/react — React hooks for pond-ts live time series
-// Placeholder — hooks will be added in Phase 5.
-export {};
+
+export { useLiveSeries } from './useLiveSeries.js';
+export { useTimeSeries } from './useTimeSeries.js';
+export { useSnapshot, type UseSnapshotOptions } from './useSnapshot.js';
+export { useWindow } from './useWindow.js';
+export { useDerived } from './useDerived.js';
+export { takeSnapshot } from './takeSnapshot.js';
