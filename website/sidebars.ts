@@ -14,6 +14,8 @@ const sidebars: SidebarsConfig = {
         'guides/aggregation-playbook',
         'guides/rolling-and-smoothing',
         'guides/json-ingest-and-timezones',
+        'guides/live-series',
+        'guides/live-transforms',
       ],
     },
     {

@@ -1,0 +1,304 @@
+---
+sidebar_position: 14
+---
+
+# Live Transforms
+
+Live transforms build incremental processing pipelines on top of `LiveSeries`.
+Events flow through a chain of views and accumulators, each subscribing to its
+upstream source and emitting results to downstream consumers. Everything is
+synchronous and driven by data — no background timers, no implicit scheduling.
+
+## LiveView: filter, map, select, window
+
+`LiveView` wraps any live source with a per-event transform. The built-in
+methods on `LiveSeries` return pre-configured views:
+
+```ts
+import { LiveSeries, Sequence } from 'pond-ts';
+
+const live = new LiveSeries({
+  name: 'metrics',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+    { name: 'mem', kind: 'number' },
+    { name: 'host', kind: 'string' },
+  ] as const,
+});
+
+// Filter: only events from one host
+const api1 = live.filter((e) => e.get('host') === 'api-1');
+
+// Map: transform values
+const pct = live.map((e) => e.set('cpu', (e.get('cpu') as number) * 100));
+
+// Select: narrow the schema to specific columns
+const cpuOnly = live.select('cpu');
+
+// Window: bounded view over recent data
+const last5m = live.window('5m'); // time-based
+const last100 = live.window(100); // count-based
+```
+
+Views maintain their own event buffer and implement the `LiveSource` interface,
+so they compose by stacking:
+
+```ts
+const pipeline = live
+  .filter((e) => e.get('host') === 'api-1')
+  .select('cpu')
+  .window('5m');
+
+// Snapshot the windowed view into a TimeSeries for batch analytics
+const ts = pipeline.toTimeSeries();
+```
+
+### Subscriptions
+
+Every view exposes `on('event', fn)` for push-based notification:
+
+```ts
+const unsub = api1.on('event', (event) => {
+  console.log('api-1 cpu:', event.get('cpu'));
+});
+
+// Stop listening
+unsub();
+```
+
+### Cleanup
+
+Call `dispose()` to unsubscribe a view from its source and stop receiving events.
+
+## LiveAggregation: bucketed aggregation
+
+`LiveAggregation` incrementally aggregates events into fixed-size time buckets.
+Buckets finalize as the data advances past their boundary.
+
+```ts
+const agg = new LiveAggregation(live, Sequence.every('1m'), {
+  cpu: 'avg',
+  mem: 'max',
+});
+
+// closed() returns only finalized buckets
+const closed = agg.closed();
+
+// snapshot() includes the current open bucket's partial value
+const snap = agg.snapshot();
+```
+
+Or create it from a view for filtered aggregation:
+
+```ts
+const agg = live
+  .filter((e) => e.get('host') === 'api-1')
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' });
+```
+
+### Subscriptions
+
+```ts
+// Fires when a bucket finalizes
+agg.on('close', (event) => {
+  console.log(
+    `[${event.begin()} – ${event.end()}] avg cpu: ${event.get('cpu')}`,
+  );
+});
+
+// Fires on every accumulation with the provisional bucket state
+agg.on('bucket', (event) => {
+  updateDashboard(event.begin(), event.get('cpu'));
+});
+
+// Fires on every source event (no payload)
+agg.on('update', () => {
+  rerenderSnapshot(agg.snapshot());
+});
+```
+
+The `bucket` event is especially useful for live dashboards — it gives you the
+evolving partial aggregate as events accumulate, without waiting for the bucket
+to close.
+
+### Grace period for out-of-order events
+
+In messaging systems, events often arrive slightly out of order. The `grace`
+option delays bucket closing so late events can still accumulate into their
+correct bucket:
+
+```ts
+const live = new LiveSeries({
+  name: 'metrics',
+  schema,
+  ordering: 'reorder',
+  graceWindow: '10s',
+});
+
+// Grace defaults from the source's graceWindow — no need to repeat it
+const agg = new LiveAggregation(live, Sequence.every('1m'), { cpu: 'avg' });
+
+// Or override with an explicit value
+const agg2 = new LiveAggregation(
+  live,
+  Sequence.every('1m'),
+  { cpu: 'avg' },
+  { grace: '5s' },
+);
+```
+
+When the source is a `LiveSeries` with a `graceWindow`, `LiveAggregation`
+inherits that value as its default grace period. You can still override it with
+an explicit `grace` option. If the source has no grace window (e.g. strict
+ordering), the default is zero — buckets close immediately.
+
+With a grace period active, a bucket doesn't finalize until the data's watermark
+(highest timestamp seen) advances past `bucket.end + grace`. During that window:
+
+- Late events route to their correct bucket and update the partial aggregate
+- The `bucket` event fires with each update, reflecting the revised state
+- `snapshot()` includes all pending buckets as provisional results
+
+Once the grace window expires, the bucket closes normally and fires the `close`
+event with the final value. Events arriving after their bucket's grace window
+has expired are silently dropped.
+
+**Tip:** pair `ordering: 'reorder'` on the source `LiveSeries` with a
+`graceWindow` — the aggregation will automatically inherit the same tolerance
+for late events.
+
+### As a LiveSource
+
+`LiveAggregation` satisfies the `LiveSource` interface. Its output events are
+interval-keyed closed buckets:
+
+```ts
+// Chain further processing on closed bucket stream
+import { LiveView } from 'pond-ts';
+
+const alerts = new LiveView(agg, (event) =>
+  event.get('cpu') > 0.9 ? event : undefined,
+);
+
+alerts.on('event', (bucket) => {
+  notify(`High CPU in bucket ${bucket.begin()}`);
+});
+```
+
+- `agg.length` — number of closed buckets
+- `agg.at(i)` — access the i-th closed bucket event
+- `agg.on('event', fn)` — fires on bucket close (same as `on('close')`)
+
+## Rolling: sliding-window reduction
+
+`Rolling` maintains a sliding-window aggregate that updates on every source
+event. It supports time-based and count-based windows:
+
+```ts
+const rolling = live.rolling('5m', { cpu: 'avg' });
+
+// Current aggregate value
+rolling.value(); // { cpu: 0.42 }
+
+// Updates on every source event
+rolling.on('update', (val) => {
+  console.log('rolling avg:', val.cpu);
+});
+```
+
+### As a LiveSource
+
+`Rolling` also satisfies `LiveSource`. Each source event produces an output
+event containing the rolling aggregate at that point, preserving the source
+event's timestamp:
+
+```ts
+const rolling = new Rolling(live, '5m', { cpu: 'avg' });
+
+// Output buffer grows with each source event
+rolling.length; // number of output events so far
+rolling.at(0); // first output event (aggregate after first source event)
+rolling.at(-1); // most recent output event
+
+// Push-based notification
+rolling.on('event', (event) => {
+  // event.begin() is the source event's timestamp
+  // event.get('cpu') is the rolling average at that point
+});
+```
+
+This makes `Rolling` the live equivalent of the batch `rolling()` method. The
+output buffer grows unboundedly — downstream consumers can compose with
+`window()` to bound it if needed.
+
+## Composition patterns
+
+### Multi-stage pipeline
+
+```ts
+const pipeline = live
+  .filter((e) => e.get('host') === 'api-1')
+  .select('cpu')
+  .window('10m')
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' });
+
+pipeline.on('close', (bucket) => {
+  storeMetric('api-1-cpu-1m', bucket.get('cpu'), bucket.begin());
+});
+```
+
+### Multiple consumers from one source
+
+```ts
+// One filtered view, two different aggregations
+const api1 = live.filter((e) => e.get('host') === 'api-1');
+
+const minuteAgg = api1.aggregate(Sequence.every('1m'), { cpu: 'avg' });
+const rollingAvg = api1.rolling('5m', { cpu: 'avg' });
+```
+
+Each consumer maintains independent state but shares the upstream event stream.
+
+### EMA smoothing via map
+
+Exponential moving average doesn't need a dedicated class — it's a stateful
+closure inside `map()`:
+
+```ts
+function ema(alpha: number) {
+  let prev: number | undefined;
+  return live.map((event) => {
+    const raw = event.get('cpu') as number;
+    prev = prev === undefined ? raw : alpha * raw + (1 - alpha) * prev;
+    return event.set('cpu', prev);
+  });
+}
+
+const smoothed = ema(0.3);
+```
+
+### Snapshot for batch analytics
+
+When you need the full batch toolkit, snapshot any live source into a
+`TimeSeries`:
+
+```ts
+const ts = live.window('1h').toTimeSeries();
+
+// Full batch API available
+const grouped = ts.groupBy('host', (g) => g.reduce({ cpu: 'avg' }));
+const filled = ts.fill({ cpu: 'linear' });
+```
+
+## Cleanup
+
+Call `dispose()` on any view or accumulator to unsubscribe from its source.
+After disposal, the object stops receiving events but its current state remains
+readable.
+
+```ts
+agg.dispose();
+rolling.dispose();
+view.dispose();
+```

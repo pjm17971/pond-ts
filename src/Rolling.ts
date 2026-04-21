@@ -1,3 +1,4 @@
+import { Event } from './Event.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
 import type {
   AggregateMap,
@@ -36,6 +37,7 @@ function parseDuration(value: DurationInput): number {
 type ColumnSpec = {
   source: string;
   reducer: string;
+  kind: string;
 };
 
 type WindowEntry = {
@@ -45,10 +47,14 @@ type WindowEntry = {
 };
 
 type UpdateListener = (value: Record<string, ScalarValue | undefined>) => void;
+type EventListener = (event: any) => void;
 
 export type RollingWindow = DurationInput | number;
 
 export class Rolling<S extends SeriesSchema> {
+  readonly name: string;
+  readonly schema: SeriesSchema;
+
   readonly #columns: ColumnSpec[];
   readonly #states: RollingReducerState[];
   readonly #entries: WindowEntry[];
@@ -57,7 +63,9 @@ export class Rolling<S extends SeriesSchema> {
   readonly #windowCount: number | undefined;
   #nextIndex: number;
 
+  readonly #outputEvents: any[];
   readonly #onUpdate: Set<UpdateListener>;
+  readonly #onEvent: Set<EventListener>;
   readonly #unsubscribe: () => void;
 
   constructor(
@@ -65,6 +73,8 @@ export class Rolling<S extends SeriesSchema> {
     window: RollingWindow,
     mapping: AggregateMap<S>,
   ) {
+    this.name = source.name;
+
     if (typeof window === 'number' && Number.isInteger(window) && window > 0) {
       this.#windowMs = undefined;
       this.#windowCount = window;
@@ -86,17 +96,30 @@ export class Rolling<S extends SeriesSchema> {
     for (const [name, reducer] of Object.entries(
       mapping as Record<string, string>,
     )) {
-      if (!colsByName.has(name))
-        throw new TypeError(`unknown column '${name}'`);
-      this.#columns.push({ source: name, reducer });
+      const col = colsByName.get(name);
+      if (!col) throw new TypeError(`unknown column '${name}'`);
+      const kind =
+        resolveReducer(reducer).outputKind === 'number' ? 'number' : col.kind;
+      this.#columns.push({ source: name, reducer, kind });
     }
+
+    this.schema = Object.freeze([
+      source.schema[0],
+      ...this.#columns.map((c) => ({
+        name: c.source,
+        kind: c.kind,
+        required: false,
+      })),
+    ]) as unknown as SeriesSchema;
 
     this.#states = this.#columns.map((c) =>
       resolveReducer(c.reducer).rollingState(),
     );
     this.#entries = [];
     this.#nextIndex = 0;
+    this.#outputEvents = [];
     this.#onUpdate = new Set();
+    this.#onEvent = new Set();
 
     for (let i = 0; i < source.length; i++) {
       this.#ingest(source.at(i)!);
@@ -107,6 +130,15 @@ export class Rolling<S extends SeriesSchema> {
       const val = this.value();
       for (const fn of this.#onUpdate) fn(val);
     });
+  }
+
+  get length(): number {
+    return this.#outputEvents.length;
+  }
+
+  at(index: number): any {
+    if (index < 0) index = this.#outputEvents.length + index;
+    return this.#outputEvents[index];
   }
 
   value(): Record<string, ScalarValue | undefined> {
@@ -121,8 +153,19 @@ export class Rolling<S extends SeriesSchema> {
     return this.#entries.length;
   }
 
-  on(type: 'update', fn: UpdateListener): this {
-    this.#onUpdate.add(fn);
+  on(type: 'event', fn: EventListener): () => void;
+  on(type: 'update', fn: UpdateListener): this;
+  on(
+    type: 'event' | 'update',
+    fn: EventListener | UpdateListener,
+  ): this | (() => void) {
+    if (type === 'event') {
+      this.#onEvent.add(fn as EventListener);
+      return () => {
+        this.#onEvent.delete(fn as EventListener);
+      };
+    }
+    this.#onUpdate.add(fn as UpdateListener);
     return this;
   }
 
@@ -148,6 +191,14 @@ export class Rolling<S extends SeriesSchema> {
     this.#entries.push(entry);
 
     this.#evict(event.begin());
+
+    const record: Record<string, ScalarValue | undefined> = {};
+    for (let i = 0; i < this.#columns.length; i++) {
+      record[this.#columns[i]!.source] = this.#states[i]!.snapshot();
+    }
+    const outputEvent = new Event(event.key(), record);
+    this.#outputEvents.push(outputEvent);
+    for (const fn of this.#onEvent) fn(outputEvent);
   }
 
   #evict(latestTimestamp: number): void {

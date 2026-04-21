@@ -203,6 +203,10 @@ export class LiveSeries<S extends SeriesSchema> {
     return this.#events.length;
   }
 
+  get graceWindowMs(): number {
+    return this.#graceWindowMs;
+  }
+
   at(index: number): EventForSchema<S> | undefined {
     if (index < 0) index = this.#events.length + index;
     return this.#events[index];
