@@ -88,7 +88,8 @@ export type {
   TimeRangeInput,
   TimestampInput,
 } from './temporal.js';
-export type { DurationInput, SequenceSample } from './Sequence.js';
+export type { DurationInput } from './utils/duration.js';
+export type { SequenceSample } from './Sequence.js';
 export type {
   LiveSeriesOptions,
   OrderingMode,
