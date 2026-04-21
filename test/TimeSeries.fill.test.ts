@@ -63,6 +63,52 @@ describe('TimeSeries.fill', () => {
     });
   });
 
+  describe('bfill strategy', () => {
+    it('backward fills undefined values', () => {
+      const filled = makeGappy().fill('bfill');
+      expect(filled.at(0)?.get('value')).toBe(10);
+      expect(filled.at(1)?.get('value')).toBe(40);
+      expect(filled.at(2)?.get('value')).toBe(40);
+      expect(filled.at(3)?.get('value')).toBe(40);
+      expect(filled.at(4)?.get('value')).toBe(50);
+    });
+
+    it('backward fills string columns', () => {
+      const filled = makeGappy().fill('bfill');
+      expect(filled.at(1)?.get('host')).toBe('b');
+      expect(filled.at(2)?.get('host')).toBe('b');
+      expect(filled.at(3)?.get('host')).toBe('b');
+    });
+
+    it('leaves trailing undefined unfilled', () => {
+      const ts = new TimeSeries({
+        name: 'trailing',
+        schema,
+        rows: [
+          [1000, 10, 'a'],
+          [2000, undefined, undefined],
+          [3000, undefined, undefined],
+        ],
+      });
+      const filled = ts.fill('bfill');
+      expect(filled.at(0)?.get('value')).toBe(10);
+      expect(filled.at(1)?.get('value')).toBeUndefined();
+      expect(filled.at(2)?.get('value')).toBeUndefined();
+    });
+
+    it('respects limit', () => {
+      const filled = makeGappy().fill('bfill', { limit: 1 });
+      expect(filled.at(2)?.get('value')).toBe(40);
+      expect(filled.at(1)?.get('value')).toBeUndefined();
+    });
+
+    it('works in per-column mode', () => {
+      const filled = makeGappy().fill({ value: 'bfill', host: 'hold' });
+      expect(filled.at(1)?.get('value')).toBe(40);
+      expect(filled.at(1)?.get('host')).toBe('a');
+    });
+  });
+
   describe('zero strategy', () => {
     it('fills undefined with 0', () => {
       const filled = makeGappy().fill('zero');

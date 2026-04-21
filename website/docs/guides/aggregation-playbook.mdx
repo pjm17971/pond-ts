@@ -47,15 +47,15 @@ bucket it overlaps under half-open overlap rules.
 
 ## Built-in reducers
 
-Available built-ins:
+Pond ships 12 named reducers plus percentile patterns. See the
+[Reducer Reference](./reducer-reference.mdx) for detailed behavior, empty-bucket
+semantics, and rolling window complexity for each one.
 
-- `sum`
-- `avg`
-- `min`
-- `max`
-- `count`
-- `first`
-- `last`
+**Numeric:** `sum`, `avg`, `min`, `max`, `median`, `stdev`, `difference`, `count`
+
+**Percentiles:** `p50`, `p95`, `p99`, `p99.9`, etc. (any `p` + number 0--100)
+
+**Any type:** `first`, `last`, `keep`
 
 Typical mapping:
 
@@ -98,24 +98,8 @@ When you want multiple outputs from one source column, use the explicit spec for
 
 ```ts
 const quantiles = series.aggregate(Sequence.every('5m'), {
-  p50: {
-    from: 'latency',
-    using: (values) =>
-      quantile(
-        values.filter((value): value is number => typeof value === 'number'),
-        0.5,
-      ),
-    kind: 'number',
-  },
-  p95: {
-    from: 'latency',
-    using: (values) =>
-      quantile(
-        values.filter((value): value is number => typeof value === 'number'),
-        0.95,
-      ),
-    kind: 'number',
-  },
+  p50: { from: 'latency', using: 'p50', kind: 'number' },
+  p95: { from: 'latency', using: 'p95', kind: 'number' },
   host: { from: 'host', using: 'last' },
 });
 ```
@@ -126,9 +110,8 @@ Use `kind` for custom reducers when the output type differs from the source colu
 
 When a bucket has no contributing source values:
 
-- `count` returns `0`
-- `sum` returns `0`
-- `avg`, `min`, `max`, `first`, `last` return `undefined`
+- `count` and `sum` return `0`
+- all other built-ins return `undefined`
 - custom reducer return depends on your implementation
 
 This makes it easy to choose between sparse semantics (`undefined`) and explicit zero semantics.
@@ -237,16 +220,70 @@ These compose naturally with `groupBy`:
 const perHostRate = series.groupBy('host', (group) => group.rate('requests'));
 ```
 
+## Percentage change with `pctChange`
+
+`pctChange(columns)` computes `(curr - prev) / prev` for named numeric columns. The first
+event gets `undefined` (no previous value). Time gap does not matter — purely value-relative.
+
+```ts
+const pct = series.pctChange('price');
+const pct = series.pctChange(['cpu', 'mem']);
+const pct = series.pctChange('price', { drop: true });
+```
+
+Returns `undefined` when the previous value is zero (avoids division by zero).
+
+## Running accumulation with `cumulative`
+
+`cumulative(spec)` computes running values for named numeric columns. Non-accumulated
+columns pass through unchanged.
+
+Built-in accumulators: `"sum"`, `"max"`, `"min"`, `"count"`. Custom accumulators take
+`(acc: number, value: number) => number`.
+
+```ts
+const running = series.cumulative({ requests: 'sum' });
+const peaks = series.cumulative({ cpu: 'max' });
+const mixed = series.cumulative({
+  requests: 'sum',
+  cpu: 'max',
+  errors: 'count',
+});
+
+// custom accumulator
+const product = series.cumulative({ value: (acc, v) => acc * v });
+```
+
+When a source value is `undefined`, the accumulator carries forward its previous value.
+
+## Lag/lead with `shift`
+
+`shift(columns, n)` moves column values forward (positive = lag) or backward (negative = lead)
+by N events. Vacated positions get `undefined`. Event keys are unchanged.
+
+```ts
+const lagged = series.shift('value', 1); // lag by 1
+const lead = series.shift('value', -1); // lead by 1
+const lagged = series.shift(['cpu', 'mem'], 2);
+```
+
+For time-based shifting on irregular data, align to a regular grid first, then shift by the
+corresponding number of events.
+
 ## Gap-filling with `fill`
 
 `fill(strategy, options?)` replaces `undefined` values in payload columns. A single strategy
 applies to all columns, or a per-column mapping targets specific columns.
 
-Strategies: `"hold"` (forward fill), `"linear"` (time-interpolated), `"zero"`.
+Strategies: `"hold"` (forward fill), `"bfill"` (backward fill), `"linear"` (time-interpolated),
+`"zero"`.
 
 ```ts
 // forward fill all columns
 const filled = series.fill('hold');
+
+// backward fill
+const filled = series.fill('bfill');
 
 // per-column strategies
 const filled = series.fill({ cpu: 'linear', host: 'hold' });
@@ -262,8 +299,9 @@ const filled = series.fill('hold', { limit: 3 });
 ```
 
 `"linear"` interpolates by time between the nearest known values on each side. Leading and
-trailing `undefined` runs are left unfilled (no extrapolation). `"hold"` also leaves leading
-`undefined` unfilled (no previous value to carry).
+trailing `undefined` runs are left unfilled (no extrapolation). `"hold"` leaves leading
+`undefined` unfilled (no previous value to carry). `"bfill"` leaves trailing `undefined`
+unfilled (no future value to propagate).
 
 Typical pipeline after aggregation with empty buckets:
 
@@ -273,18 +311,17 @@ const hourly = series
   .fill({ cpu: 'linear', host: 'hold' });
 ```
 
-## Aggregation vs rolling vs reduce vs diff/rate
+## Method comparison
 
-- `aggregate(...)` groups by fixed sequence buckets and outputs interval keys.
-- `rolling(window, ...)` computes moving values anchored per source event key.
-- `rolling(sequence, window, ...)` computes moving values anchored per sequence bucket sample.
-- `reduce(...)` collapses the entire series to a scalar or record — no time bucketing.
-- `groupBy(column)` partitions by column value, then any of the above can be applied per group.
-- `diff(columns)` computes per-event differences for numeric columns.
-- `rate(columns)` computes per-second rates of change for numeric columns.
-- `fill(strategy)` replaces `undefined` gaps using hold, linear, zero, or literal strategies.
-
-Use aggregation for reporting periods, rolling for trend/online-style summaries, reduce
-for whole-series statistics, groupBy for multi-entity analytics, diff/rate for
-point-to-point changes and velocities, and fill for gap-filling after any operation that
-produces `undefined` values.
+| Method                         | Purpose                                               |
+| ------------------------------ | ----------------------------------------------------- |
+| `aggregate(sequence, mapping)` | Group by fixed time buckets, output interval keys     |
+| `rolling(window, mapping)`     | Moving values anchored per source event               |
+| `reduce(column, reducer)`      | Collapse entire series to a scalar or record          |
+| `groupBy(column)`              | Partition by column value, apply any method per group |
+| `diff(columns)`                | Per-event differences                                 |
+| `rate(columns)`                | Per-second rates of change                            |
+| `pctChange(columns)`           | Percentage change relative to previous value          |
+| `cumulative(spec)`             | Running sum, max, min, count, or custom accumulation  |
+| `shift(columns, n)`            | Lag or lead column values by N events                 |
+| `fill(strategy)`               | Gap-fill with hold, bfill, linear, zero, or literal   |

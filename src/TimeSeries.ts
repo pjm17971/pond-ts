@@ -77,7 +77,7 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
 };
 type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
-type FillStrategy = 'hold' | 'linear' | 'zero';
+type FillStrategy = 'hold' | 'bfill' | 'linear' | 'zero';
 type FillMapping<S extends SeriesSchema> = {
   [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
 };
@@ -567,6 +567,562 @@ function bucketOverlapsHalfOpen(bucket: Interval, event: EventKey): boolean {
   return event.begin() < bucket.end() && bucket.begin() < event.end();
 }
 
+// ── Reducer registry ────────────────────────────────────────
+
+function percentileOfSorted(sorted: number[], q: number): number {
+  const rank = (q / 100) * (sorted.length - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return sorted[lo]!;
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (rank - lo);
+}
+
+function parsePercentile(op: string): number | undefined {
+  if (op.length > 1 && op.charCodeAt(0) === 112) {
+    const q = Number(op.slice(1));
+    if (q >= 0 && q <= 100) return q;
+  }
+  return undefined;
+}
+
+type AggregateBucketState = {
+  add(value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+type RollingReducerState = {
+  add(index: number, value: ScalarValue | undefined): void;
+  remove(index: number, value: ScalarValue | undefined): void;
+  snapshot(): ScalarValue | undefined;
+};
+
+type ReducerDef = {
+  outputKind: 'number' | 'source';
+  reduce(
+    defined: ReadonlyArray<ScalarValue>,
+    numeric: ReadonlyArray<number>,
+  ): ScalarValue | undefined;
+  bucketState(): AggregateBucketState;
+  rollingState(): RollingReducerState;
+};
+
+type RollingWindowEntry<T> = { index: number; value: T };
+
+function compactEntries<T>(
+  entries: RollingWindowEntry<T>[],
+  head: number,
+): [RollingWindowEntry<T>[], number] {
+  if (head > 0 && head * 2 >= entries.length) return [entries.slice(head), 0];
+  return [entries, head];
+}
+
+function rollingMonotoneDeque(
+  compare: (a: number, b: number) => boolean,
+): RollingReducerState {
+  let entries: RollingWindowEntry<number>[] = [];
+  let head = 0;
+  return {
+    add(index, value) {
+      if (typeof value !== 'number') return;
+      while (entries.length > head) {
+        if (compare(entries[entries.length - 1]!.value, value)) break;
+        entries.pop();
+      }
+      entries.push({ index, value });
+    },
+    remove(index, value) {
+      if (typeof value !== 'number') return;
+      if (entries[head]?.index === index) {
+        head += 1;
+        [entries, head] = compactEntries(entries, head);
+      }
+    },
+    snapshot() {
+      return entries[head]?.value;
+    },
+  };
+}
+
+function rollingOrderedEntries(
+  pick: (
+    entries: RollingWindowEntry<ScalarValue>[],
+    head: number,
+  ) => ScalarValue | undefined,
+): RollingReducerState {
+  let entries: RollingWindowEntry<ScalarValue>[] = [];
+  let head = 0;
+  return {
+    add(index, value) {
+      if (value !== undefined) entries.push({ index, value });
+    },
+    remove(index, value) {
+      if (value === undefined) return;
+      if (entries[head]?.index === index) {
+        head += 1;
+        [entries, head] = compactEntries(entries, head);
+      }
+    },
+    snapshot() {
+      return pick(entries, head);
+    },
+  };
+}
+
+function rollingSortedArray(): {
+  sorted: number[];
+  add(index: number, value: ScalarValue | undefined): void;
+  remove(index: number, value: ScalarValue | undefined): void;
+} {
+  const sorted: number[] = [];
+  function bisect(v: number): number {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sorted[mid]! < v) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+  return {
+    sorted,
+    add(_index, value) {
+      if (typeof value !== 'number') return;
+      sorted.splice(bisect(value), 0, value);
+    },
+    remove(_index, value) {
+      if (typeof value !== 'number') return;
+      const pos = bisect(value);
+      if (pos < sorted.length && sorted[pos] === value) sorted.splice(pos, 1);
+    },
+  };
+}
+
+const reducerRegistry: Record<string, ReducerDef> = {
+  count: {
+    outputKind: 'number',
+    reduce(defined) {
+      return defined.length;
+    },
+    bucketState() {
+      let n = 0;
+      return {
+        add(v) {
+          if (v !== undefined) n++;
+        },
+        snapshot() {
+          return n;
+        },
+      };
+    },
+    rollingState() {
+      let n = 0;
+      return {
+        add(_i, v) {
+          if (v !== undefined) n++;
+        },
+        remove(_i, v) {
+          if (v !== undefined) n--;
+        },
+        snapshot() {
+          return n;
+        },
+      };
+    },
+  },
+
+  sum: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      return numeric.reduce((s, v) => s + v, 0);
+    },
+    bucketState() {
+      let s = 0;
+      return {
+        add(v) {
+          if (typeof v === 'number') s += v;
+        },
+        snapshot() {
+          return s;
+        },
+      };
+    },
+    rollingState() {
+      let s = 0;
+      return {
+        add(_i, v) {
+          if (typeof v === 'number') s += v;
+        },
+        remove(_i, v) {
+          if (typeof v === 'number') s -= v;
+        },
+        snapshot() {
+          return s;
+        },
+      };
+    },
+  },
+
+  avg: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      return numeric.length === 0
+        ? undefined
+        : numeric.reduce((s, v) => s + v, 0) / numeric.length;
+    },
+    bucketState() {
+      let s = 0;
+      let n = 0;
+      return {
+        add(v) {
+          if (typeof v === 'number') {
+            s += v;
+            n++;
+          }
+        },
+        snapshot() {
+          return n === 0 ? undefined : s / n;
+        },
+      };
+    },
+    rollingState() {
+      let s = 0;
+      let n = 0;
+      return {
+        add(_i, v) {
+          if (typeof v === 'number') {
+            s += v;
+            n++;
+          }
+        },
+        remove(_i, v) {
+          if (typeof v === 'number') {
+            s -= v;
+            n--;
+          }
+        },
+        snapshot() {
+          return n === 0 ? undefined : s / n;
+        },
+      };
+    },
+  },
+
+  min: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      return numeric.length === 0
+        ? undefined
+        : numeric.reduce((a, b) => (a <= b ? a : b));
+    },
+    bucketState() {
+      let lo: number | undefined;
+      return {
+        add(v) {
+          if (typeof v === 'number' && (lo === undefined || v < lo)) lo = v;
+        },
+        snapshot() {
+          return lo;
+        },
+      };
+    },
+    rollingState() {
+      return rollingMonotoneDeque((existing, incoming) => existing <= incoming);
+    },
+  },
+
+  max: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      return numeric.length === 0
+        ? undefined
+        : numeric.reduce((a, b) => (a >= b ? a : b));
+    },
+    bucketState() {
+      let hi: number | undefined;
+      return {
+        add(v) {
+          if (typeof v === 'number' && (hi === undefined || v > hi)) hi = v;
+        },
+        snapshot() {
+          return hi;
+        },
+      };
+    },
+    rollingState() {
+      return rollingMonotoneDeque((existing, incoming) => existing >= incoming);
+    },
+  },
+
+  first: {
+    outputKind: 'source',
+    reduce(defined) {
+      return defined[0];
+    },
+    bucketState() {
+      let val: ScalarValue | undefined;
+      return {
+        add(v) {
+          if (val === undefined && v !== undefined) val = v;
+        },
+        snapshot() {
+          return val;
+        },
+      };
+    },
+    rollingState() {
+      return rollingOrderedEntries((entries, head) => entries[head]?.value);
+    },
+  },
+
+  last: {
+    outputKind: 'source',
+    reduce(defined) {
+      return defined[defined.length - 1];
+    },
+    bucketState() {
+      let val: ScalarValue | undefined;
+      return {
+        add(v) {
+          if (v !== undefined) val = v;
+        },
+        snapshot() {
+          return val;
+        },
+      };
+    },
+    rollingState() {
+      return rollingOrderedEntries(
+        (entries) => entries[entries.length - 1]?.value,
+      );
+    },
+  },
+
+  median: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      if (numeric.length === 0) return undefined;
+      const sorted = numeric.slice().sort((a, b) => a - b);
+      return percentileOfSorted(sorted, 50);
+    },
+    bucketState() {
+      const collected: number[] = [];
+      return {
+        add(v) {
+          if (typeof v === 'number') collected.push(v);
+        },
+        snapshot() {
+          if (collected.length === 0) return undefined;
+          const sorted = collected.slice().sort((a, b) => a - b);
+          return percentileOfSorted(sorted, 50);
+        },
+      };
+    },
+    rollingState() {
+      const arr = rollingSortedArray();
+      return {
+        add: arr.add,
+        remove: arr.remove,
+        snapshot() {
+          return arr.sorted.length === 0
+            ? undefined
+            : percentileOfSorted(arr.sorted, 50);
+        },
+      };
+    },
+  },
+
+  stdev: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      if (numeric.length === 0) return undefined;
+      const mean = numeric.reduce((s, v) => s + v, 0) / numeric.length;
+      const variance =
+        numeric.reduce((s, v) => s + (v - mean) ** 2, 0) / numeric.length;
+      return Math.sqrt(variance);
+    },
+    bucketState() {
+      let s = 0;
+      let sq = 0;
+      let n = 0;
+      return {
+        add(v) {
+          if (typeof v === 'number') {
+            s += v;
+            sq += v * v;
+            n++;
+          }
+        },
+        snapshot() {
+          if (n === 0) return undefined;
+          const mean = s / n;
+          return Math.sqrt(sq / n - mean * mean);
+        },
+      };
+    },
+    rollingState() {
+      let s = 0;
+      let sq = 0;
+      let n = 0;
+      return {
+        add(_i, v) {
+          if (typeof v === 'number') {
+            s += v;
+            sq += v * v;
+            n++;
+          }
+        },
+        remove(_i, v) {
+          if (typeof v === 'number') {
+            s -= v;
+            sq -= v * v;
+            n--;
+          }
+        },
+        snapshot() {
+          if (n === 0) return undefined;
+          const mean = s / n;
+          return Math.sqrt(Math.max(0, sq / n - mean * mean));
+        },
+      };
+    },
+  },
+
+  difference: {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      if (numeric.length === 0) return undefined;
+      let lo = numeric[0]!;
+      let hi = numeric[0]!;
+      for (let i = 1; i < numeric.length; i++) {
+        const v = numeric[i]!;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      return hi - lo;
+    },
+    bucketState() {
+      let lo: number | undefined;
+      let hi: number | undefined;
+      return {
+        add(v) {
+          if (typeof v !== 'number') return;
+          if (lo === undefined || v < lo) lo = v;
+          if (hi === undefined || v > hi) hi = v;
+        },
+        snapshot() {
+          return lo !== undefined && hi !== undefined ? hi - lo : undefined;
+        },
+      };
+    },
+    rollingState() {
+      const arr = rollingSortedArray();
+      return {
+        add: arr.add,
+        remove: arr.remove,
+        snapshot() {
+          return arr.sorted.length === 0
+            ? undefined
+            : arr.sorted[arr.sorted.length - 1]! - arr.sorted[0]!;
+        },
+      };
+    },
+  },
+
+  keep: {
+    outputKind: 'source',
+    reduce(defined) {
+      if (defined.length === 0) return undefined;
+      const ref = defined[0]!;
+      for (let i = 1; i < defined.length; i++) {
+        if (defined[i] !== ref) return undefined;
+      }
+      return ref;
+    },
+    bucketState() {
+      let ref: ScalarValue | undefined;
+      let hasDefined = false;
+      let allSame = true;
+      return {
+        add(v) {
+          if (v === undefined) return;
+          if (!hasDefined) {
+            ref = v;
+            hasDefined = true;
+          } else if (v !== ref) allSame = false;
+        },
+        snapshot() {
+          return hasDefined && allSame ? ref : undefined;
+        },
+      };
+    },
+    rollingState() {
+      const counts = new Map<ScalarValue, number>();
+      return {
+        add(_i, v) {
+          if (v === undefined) return;
+          counts.set(v, (counts.get(v) ?? 0) + 1);
+        },
+        remove(_i, v) {
+          if (v === undefined) return;
+          const c = counts.get(v)! - 1;
+          if (c === 0) counts.delete(v);
+          else counts.set(v, c);
+        },
+        snapshot() {
+          return counts.size === 1 ? counts.keys().next().value : undefined;
+        },
+      };
+    },
+  },
+};
+
+function percentileReducer(q: number): ReducerDef {
+  return {
+    outputKind: 'number',
+    reduce(_d, numeric) {
+      if (numeric.length === 0) return undefined;
+      const sorted = numeric.slice().sort((a, b) => a - b);
+      return percentileOfSorted(sorted, q);
+    },
+    bucketState() {
+      const collected: number[] = [];
+      return {
+        add(v) {
+          if (typeof v === 'number') collected.push(v);
+        },
+        snapshot() {
+          if (collected.length === 0) return undefined;
+          const sorted = collected.slice().sort((a, b) => a - b);
+          return percentileOfSorted(sorted, q);
+        },
+      };
+    },
+    rollingState() {
+      const arr = rollingSortedArray();
+      return {
+        add: arr.add,
+        remove: arr.remove,
+        snapshot() {
+          return arr.sorted.length === 0
+            ? undefined
+            : percentileOfSorted(arr.sorted, q);
+        },
+      };
+    },
+  };
+}
+
+function resolveReducer(operation: string): ReducerDef {
+  const r = reducerRegistry[operation];
+  if (r) return r;
+  const q = parsePercentile(operation);
+  if (q !== undefined) return percentileReducer(q);
+  throw new TypeError(`unsupported aggregate reducer: ${operation}`);
+}
+
+// ── Reducer dispatch (thin wrappers over registry) ──────────
+
 function aggregateValues(
   operation: AggregateFunction,
   values: ReadonlyArray<ScalarValue | undefined>,
@@ -577,29 +1133,7 @@ function aggregateValues(
   const numeric = defined.filter(
     (value): value is number => typeof value === 'number',
   );
-
-  switch (operation) {
-    case 'count':
-      return defined.length;
-    case 'sum':
-      return numeric.reduce((sum, value) => sum + value, 0);
-    case 'avg':
-      return numeric.length === 0
-        ? undefined
-        : numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
-    case 'min':
-      return numeric.length === 0
-        ? undefined
-        : numeric.reduce((left, right) => (left <= right ? left : right));
-    case 'max':
-      return numeric.length === 0
-        ? undefined
-        : numeric.reduce((left, right) => (left >= right ? left : right));
-    case 'first':
-      return defined[0];
-    case 'last':
-      return defined[defined.length - 1];
-  }
+  return resolveReducer(operation).reduce(defined, numeric);
 }
 
 function isBuiltInAggregateReducer(
@@ -670,7 +1204,8 @@ function normalizeAggregateColumns<S extends SeriesSchema>(
     const explicitKind = isAggregateOutputSpec<S>(raw) ? raw.kind : undefined;
     const resolvedKind =
       explicitKind ??
-      (reducer === 'sum' || reducer === 'avg' || reducer === 'count'
+      (typeof reducer === 'string' &&
+      resolveReducer(reducer).outputKind === 'number'
         ? 'number'
         : sourceColumn.kind);
     normalized.push({
@@ -684,268 +1219,16 @@ function normalizeAggregateColumns<S extends SeriesSchema>(
   return normalized;
 }
 
-type AggregateBucketState = {
-  add(value: ScalarValue | undefined): void;
-  snapshot(): ScalarValue | undefined;
-};
-
 function createAggregateBucketState(
   operation: AggregateFunction,
 ): AggregateBucketState {
-  if (operation === 'count') {
-    let definedCount = 0;
-    return {
-      add(value) {
-        if (value !== undefined) {
-          definedCount += 1;
-        }
-      },
-      snapshot() {
-        return definedCount;
-      },
-    };
-  }
-
-  if (operation === 'sum') {
-    let numericSum = 0;
-    return {
-      add(value) {
-        if (typeof value === 'number') {
-          numericSum += value;
-        }
-      },
-      snapshot() {
-        return numericSum;
-      },
-    };
-  }
-
-  if (operation === 'avg') {
-    let numericSum = 0;
-    let numericCount = 0;
-    return {
-      add(value) {
-        if (typeof value === 'number') {
-          numericSum += value;
-          numericCount += 1;
-        }
-      },
-      snapshot() {
-        return numericCount === 0 ? undefined : numericSum / numericCount;
-      },
-    };
-  }
-
-  if (operation === 'min') {
-    let numericValue: number | undefined;
-    return {
-      add(value) {
-        if (typeof value !== 'number') {
-          return;
-        }
-        numericValue =
-          numericValue === undefined || value < numericValue
-            ? value
-            : numericValue;
-      },
-      snapshot() {
-        return numericValue;
-      },
-    };
-  }
-
-  if (operation === 'max') {
-    let numericValue: number | undefined;
-    return {
-      add(value) {
-        if (typeof value !== 'number') {
-          return;
-        }
-        numericValue =
-          numericValue === undefined || value > numericValue
-            ? value
-            : numericValue;
-      },
-      snapshot() {
-        return numericValue;
-      },
-    };
-  }
-
-  if (operation === 'first') {
-    let firstValue: ScalarValue | undefined;
-    return {
-      add(value) {
-        if (firstValue === undefined && value !== undefined) {
-          firstValue = value;
-        }
-      },
-      snapshot() {
-        return firstValue;
-      },
-    };
-  }
-
-  if (operation === 'last') {
-    let lastValue: ScalarValue | undefined;
-    return {
-      add(value) {
-        if (value !== undefined) {
-          lastValue = value;
-        }
-      },
-      snapshot() {
-        return lastValue;
-      },
-    };
-  }
-
-  throw new TypeError(`unsupported aggregate reducer: ${operation}`);
+  return resolveReducer(operation).bucketState();
 }
-
-type RollingReducerState = {
-  add(index: number, value: ScalarValue | undefined): void;
-  remove(index: number, value: ScalarValue | undefined): void;
-  snapshot(): ScalarValue | undefined;
-};
-
-type RollingWindowEntry<T> = {
-  index: number;
-  value: T;
-};
 
 function createRollingReducerState(
   operation: AggregateFunction,
 ): RollingReducerState {
-  const compact = <T>(
-    entries: RollingWindowEntry<T>[],
-    head: number,
-  ): [RollingWindowEntry<T>[], number] => {
-    if (head > 0 && head * 2 >= entries.length) {
-      return [entries.slice(head), 0];
-    }
-    return [entries, head];
-  };
-
-  if (operation === 'count') {
-    let definedCount = 0;
-    return {
-      add(_index, value) {
-        if (value !== undefined) {
-          definedCount += 1;
-        }
-      },
-      remove(_index, value) {
-        if (value !== undefined) {
-          definedCount -= 1;
-        }
-      },
-      snapshot() {
-        return definedCount;
-      },
-    };
-  }
-
-  if (operation === 'sum') {
-    let numericSum = 0;
-    return {
-      add(_index, value) {
-        if (typeof value === 'number') {
-          numericSum += value;
-        }
-      },
-      remove(_index, value) {
-        if (typeof value === 'number') {
-          numericSum -= value;
-        }
-      },
-      snapshot() {
-        return numericSum;
-      },
-    };
-  }
-
-  if (operation === 'avg') {
-    let numericSum = 0;
-    let numericCount = 0;
-    return {
-      add(_index, value) {
-        if (typeof value === 'number') {
-          numericSum += value;
-          numericCount += 1;
-        }
-      },
-      remove(_index, value) {
-        if (typeof value === 'number') {
-          numericSum -= value;
-          numericCount -= 1;
-        }
-      },
-      snapshot() {
-        return numericCount === 0 ? undefined : numericSum / numericCount;
-      },
-    };
-  }
-
-  if (operation === 'min' || operation === 'max') {
-    let entries: RollingWindowEntry<number>[] = [];
-    let head = 0;
-    return {
-      add(index, value) {
-        if (typeof value !== 'number') {
-          return;
-        }
-        while (entries.length > head) {
-          const last = entries[entries.length - 1]!;
-          if (operation === 'min' ? last.value <= value : last.value >= value) {
-            break;
-          }
-          entries.pop();
-        }
-        entries.push({ index, value });
-      },
-      remove(index, value) {
-        if (typeof value !== 'number') {
-          return;
-        }
-        if (entries[head]?.index === index) {
-          head += 1;
-          [entries, head] = compact(entries, head);
-        }
-      },
-      snapshot() {
-        return entries[head]?.value;
-      },
-    };
-  }
-
-  if (operation === 'first' || operation === 'last') {
-    let entries: RollingWindowEntry<ScalarValue>[] = [];
-    let head = 0;
-    return {
-      add(index, value) {
-        if (value !== undefined) {
-          entries.push({ index, value });
-        }
-      },
-      remove(index, value) {
-        if (value === undefined) {
-          return;
-        }
-        if (entries[head]?.index === index) {
-          head += 1;
-          [entries, head] = compact(entries, head);
-        }
-      },
-      snapshot() {
-        return operation === 'first'
-          ? entries[head]?.value
-          : entries[entries.length - 1]?.value;
-      },
-    };
-  }
-
-  throw new TypeError(`unsupported rolling reducer: ${operation}`);
+  return resolveReducer(operation).rollingState();
 }
 
 function parseDurationInput(value: DurationInput): number {
@@ -1789,8 +2072,22 @@ export class TimeSeries<S extends SeriesSchema> {
     return this.#diffOrRate('rate', columns, options);
   }
 
+  /**
+   * Example: `series.pctChange("requests")`.
+   * Computes the percentage change `(curr - prev) / prev` for the specified
+   * numeric columns. Non-specified columns pass through unchanged. The first
+   * event gets `undefined` in affected columns unless `{ drop: true }` is
+   * passed.
+   */
+  pctChange<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): TimeSeries<DiffSchema<S, Target>> {
+    return this.#diffOrRate('pctChange', columns, options);
+  }
+
   #diffOrRate<Target extends NumericColumnNameForSchema<S>>(
-    mode: 'diff' | 'rate',
+    mode: 'diff' | 'rate' | 'pctChange',
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
@@ -1849,12 +2146,13 @@ export class TimeSeries<S extends SeriesSchema> {
 
         if (typeof currVal === 'number' && typeof prevVal === 'number') {
           const delta = currVal - prevVal;
-          data[col] =
-            mode === 'rate' && dt !== 0
-              ? delta / dt!
-              : mode === 'rate'
-                ? undefined
-                : delta;
+          if (mode === 'pctChange') {
+            data[col] = prevVal !== 0 ? delta / prevVal : undefined;
+          } else if (mode === 'rate') {
+            data[col] = dt !== 0 ? delta / dt! : undefined;
+          } else {
+            data[col] = delta;
+          }
         } else {
           data[col] = undefined;
         }
@@ -1862,6 +2160,184 @@ export class TimeSeries<S extends SeriesSchema> {
 
       resultEvents.push(
         new Event(curr.key(), data) as unknown as EventForSchema<OutSchema>,
+      );
+    }
+
+    return TimeSeries.#fromTrustedEvents<OutSchema>(
+      this.name,
+      outSchema,
+      resultEvents,
+    );
+  }
+
+  /**
+   * Example: `series.cumulative({ requests: "sum" })`.
+   * Computes running accumulations for the specified numeric columns.
+   * Non-accumulated columns pass through unchanged.
+   *
+   * Built-in accumulators: `"sum"`, `"max"`, `"min"`, `"count"`.
+   * Custom accumulators: `(acc: number, value: number) => number`.
+   */
+  cumulative<const Targets extends NumericColumnNameForSchema<S>>(spec: {
+    [K in Targets]:
+      | 'sum'
+      | 'max'
+      | 'min'
+      | 'count'
+      | ((acc: number, value: number) => number);
+  }): TimeSeries<DiffSchema<S, Targets>> {
+    type OutSchema = DiffSchema<S, Targets>;
+
+    const entries = Object.entries(spec) as [
+      string,
+      (
+        | 'sum'
+        | 'max'
+        | 'min'
+        | 'count'
+        | ((acc: number, value: number) => number)
+      ),
+    ][];
+
+    if (entries.length === 0) {
+      throw new Error('cumulative() requires at least one column');
+    }
+
+    const targetSet = new Set<string>(entries.map(([name]) => name));
+
+    const outSchema = Object.freeze(
+      this.schema.map((col, i) => {
+        if (i === 0) return col;
+        if (targetSet.has(col.name)) {
+          return { ...col, kind: 'number' as const, required: false as const };
+        }
+        return col;
+      }),
+    ) as unknown as OutSchema;
+
+    const events = this.events;
+    if (events.length === 0) {
+      return TimeSeries.#fromTrustedEvents<OutSchema>(this.name, outSchema, []);
+    }
+
+    const state = new Map<
+      string,
+      {
+        acc: number | undefined;
+        apply: (acc: number | undefined, value: number) => number;
+      }
+    >();
+    for (const [name, reducer] of entries) {
+      if (typeof reducer === 'function') {
+        const fn = reducer;
+        state.set(name, {
+          acc: undefined,
+          apply: (acc, v) => (acc === undefined ? v : fn(acc, v)),
+        });
+      } else {
+        switch (reducer) {
+          case 'sum':
+            state.set(name, {
+              acc: undefined,
+              apply: (acc, v) => (acc ?? 0) + v,
+            });
+            break;
+          case 'count':
+            state.set(name, { acc: undefined, apply: (acc) => (acc ?? 0) + 1 });
+            break;
+          case 'max':
+            state.set(name, {
+              acc: undefined,
+              apply: (acc, v) => (acc === undefined || v > acc ? v : acc),
+            });
+            break;
+          case 'min':
+            state.set(name, {
+              acc: undefined,
+              apply: (acc, v) => (acc === undefined || v < acc ? v : acc),
+            });
+            break;
+        }
+      }
+    }
+
+    const resultEvents: EventForSchema<OutSchema>[] = [];
+    for (const event of events) {
+      const data = { ...event.data() } as Record<string, unknown>;
+      for (const [name, s] of state) {
+        const raw = data[name];
+        if (typeof raw === 'number') {
+          s.acc = s.apply(s.acc, raw);
+          data[name] = s.acc;
+        } else {
+          data[name] = s.acc;
+        }
+      }
+      resultEvents.push(
+        new Event(event.key(), data) as unknown as EventForSchema<OutSchema>,
+      );
+    }
+
+    return TimeSeries.#fromTrustedEvents<OutSchema>(
+      this.name,
+      outSchema,
+      resultEvents,
+    );
+  }
+
+  /**
+   * Example: `series.shift("value", 1)`.
+   * Lags column values by N events (positive N) or leads them (negative N).
+   * Vacated positions get `undefined`.
+   */
+  shift<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    n: number,
+  ): TimeSeries<DiffSchema<S, Target>> {
+    type OutSchema = DiffSchema<S, Target>;
+
+    const cols = typeof columns === 'string' ? [columns] : columns;
+
+    if (cols.length === 0) {
+      throw new Error('shift() requires at least one column name');
+    }
+    if (!Number.isInteger(n)) {
+      throw new Error('shift() requires an integer offset');
+    }
+
+    const targetSet = new Set<string>(cols);
+
+    const outSchema = Object.freeze(
+      this.schema.map((col, i) => {
+        if (i === 0) return col;
+        if (targetSet.has(col.name)) {
+          return { ...col, kind: 'number' as const, required: false as const };
+        }
+        return col;
+      }),
+    ) as unknown as OutSchema;
+
+    const events = this.events;
+    if (events.length === 0) {
+      return TimeSeries.#fromTrustedEvents<OutSchema>(this.name, outSchema, []);
+    }
+
+    const resultEvents: EventForSchema<OutSchema>[] = [];
+    for (let i = 0; i < events.length; i++) {
+      const data = { ...events[i]!.data() } as Record<string, unknown>;
+      const srcIdx = i - n;
+      for (const col of cols) {
+        if (srcIdx >= 0 && srcIdx < events.length) {
+          data[col] = (events[srcIdx]!.data() as Record<string, unknown>)[col];
+        } else {
+          data[col] = undefined;
+        }
+      }
+      resultEvents.push(
+        new Event(
+          events[i]!.key(),
+          data,
+        ) as unknown as EventForSchema<OutSchema>,
       );
     }
 
@@ -1904,7 +2380,12 @@ export class TimeSeries<S extends SeriesSchema> {
         specs.set(name, { mode: strategy });
       }
     } else {
-      const strategies: Set<string> = new Set(['hold', 'linear', 'zero']);
+      const strategies: Set<string> = new Set([
+        'hold',
+        'bfill',
+        'linear',
+        'zero',
+      ]);
       for (const [name, spec] of Object.entries(strategy)) {
         if (typeof spec === 'string' && strategies.has(spec)) {
           specs.set(name, { mode: spec as FillStrategy });
@@ -1951,6 +2432,22 @@ export class TimeSeries<S extends SeriesSchema> {
               consecutive++;
               if (limit === undefined || consecutive <= limit) {
                 col[i] = last;
+              }
+            }
+          }
+          break;
+        }
+        case 'bfill': {
+          let next: ScalarValue | undefined;
+          let consecutive = 0;
+          for (let i = n - 1; i >= 0; i--) {
+            if (col[i] !== undefined) {
+              next = col[i];
+              consecutive = 0;
+            } else if (next !== undefined) {
+              consecutive++;
+              if (limit === undefined || consecutive <= limit) {
+                col[i] = next;
               }
             }
           }

@@ -357,7 +357,12 @@ export type AggregateFunction =
   | 'max'
   | 'count'
   | 'first'
-  | 'last';
+  | 'last'
+  | 'median'
+  | 'stdev'
+  | 'difference'
+  | 'keep'
+  | `p${number}`;
 export type CustomAggregateReducer = (
   values: ReadonlyArray<ScalarValue | undefined>,
 ) => ScalarValue | undefined;
@@ -369,7 +374,7 @@ export type JoinConflictMode = 'error' | 'prefix';
 
 type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
   ? AggregateReducer
-  : 'count' | 'first' | 'last' | CustomAggregateReducer;
+  : 'count' | 'first' | 'last' | 'keep' | CustomAggregateReducer;
 
 type AggregateMapEntries<S extends SeriesSchema> = {
   [C in ValueColumnsForSchema<S>[number] as C['name']]?: AggregateFunctionsForKind<
