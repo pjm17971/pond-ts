@@ -2,15 +2,36 @@
 
 TypeScript-first time series primitives built around typed events, typed schemas, and explicit temporal keys.
 
-The library is currently focused on non-streaming analytics:
+**pond-ts** is the successor to [pondjs](https://github.com/esnet/pond), rewritten from scratch in TypeScript with a focus on performance, type safety, and composable live streaming.
 
-- typed `TimeSeries` construction
-- `Time`, `TimeRange`, and `Interval` keys
-- immutable `Event` objects
+- typed `TimeSeries` construction and immutable `Event` objects
+- `Time`, `TimeRange`, and `Interval` temporal keys
 - alignment, aggregation, joins, rolling windows, and smoothing
+- `LiveSeries` with push-based ingestion, retention policies, and subscriptions
+- `LiveView`, `LiveAggregation`, and `LiveRollingAggregation` for streaming composition
 - timezone-aware calendar sequences and ingest helpers
 
 The package is intended to work in modern Node and frontend projects.
+
+## Performance
+
+pond-ts is **7.6x faster** than pondjs on average across all comparable operations,
+with no regressions. The advantage grows with data size.
+
+| Category          | Speedup (N=16k) | Notes                                         |
+| ----------------- | --------------- | --------------------------------------------- |
+| **Aggregation**   | 25–32x          | O(N+B) bucketing vs O(N×B) Pipeline           |
+| **Alignment**     | 32x             | Forward cursor vs repeated binary search      |
+| **Rate/diff**     | 18x             | Direct array walk vs Pipeline materialization |
+| **Fill**          | 10–11x          | Single-pass vs Pipeline per strategy          |
+| **Transforms**    | 3–16x           | Pre-validated constructor skips re-validation |
+| **Construction**  | 7x              | Plain objects vs ImmutableJS wrapping         |
+| **Statistics**    | 7–9x            | Direct computation vs ImmutableJS iteration   |
+| **Serialization** | 4x              | Simpler internal representation               |
+| **Event access**  | 23x             | Array indexing vs ImmutableJS `get()`         |
+
+See the [full benchmark results](website/docs/guides/benchmarks.mdx) for detailed numbers.
+Run locally: `npm run build && node bench/vs-pondjs.cjs`
 
 ## Install
 
@@ -416,14 +437,15 @@ const month = Interval.fromCalendar('month', '2025-01', {
 
 ## Current scope
 
-This package is batch-oriented and immutable.
+The library provides both batch analytics (`TimeSeries`) and live streaming
+(`LiveSeries`, `LiveView`, `LiveAggregation`, `LiveRollingAggregation`).
 
-It does not yet provide a dedicated live/streaming ingestion layer. The current focus is:
-
-- type-safe construction
-- temporal modeling
-- composable non-streaming analytics
+- type-safe construction with schema types that flow through every operation
+- temporal modeling with `Time`, `TimeRange`, and `Interval` keys
+- composable batch analytics (aggregate, align, join, rolling, smooth, fill, diff, rate, groupBy)
+- push-based live ingestion with retention policies and subscriptions
+- live composition: filter, map, select, window, diff, rate, fill, cumulative, aggregate, rolling
 
 ## License
 
-No license file is included yet.
+MIT
