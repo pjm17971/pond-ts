@@ -1,8 +1,8 @@
-import type { LiveSeries } from './LiveSeries.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
 import type {
   AggregateMap,
   EventForSchema,
+  LiveSource,
   ScalarValue,
   SeriesSchema,
 } from './types.js';
@@ -61,7 +61,7 @@ export class TailReduce<S extends SeriesSchema> {
   readonly #unsubscribe: () => void;
 
   constructor(
-    source: LiveSeries<S>,
+    source: LiveSource<S>,
     window: TailReduceWindow,
     mapping: AggregateMap<S>,
   ) {

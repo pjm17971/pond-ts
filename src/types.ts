@@ -186,6 +186,14 @@ export type EventForSchema<S extends SeriesSchema> = Event<
   EventDataForSchema<S>
 >;
 
+export interface LiveSource<S extends SeriesSchema> {
+  readonly name: string;
+  readonly schema: S;
+  readonly length: number;
+  at(index: number): EventForSchema<S> | undefined;
+  on(type: 'event', fn: (event: EventForSchema<S>) => void): () => void;
+}
+
 export type RekeySchema<
   S extends SeriesSchema,
   First extends FirstColumn,

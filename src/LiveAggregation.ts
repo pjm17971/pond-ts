@@ -1,12 +1,12 @@
 import { Event } from './Event.js';
 import { Interval } from './Interval.js';
 import { TimeSeries } from './TimeSeries.js';
-import type { LiveSeries } from './LiveSeries.js';
 import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
   EventForSchema,
+  LiveSource,
   ScalarValue,
   SeriesSchema,
 } from './types.js';
@@ -36,7 +36,7 @@ type CloseListener = (
 type UpdateListener = () => void;
 
 export class LiveAggregation<S extends SeriesSchema> {
-  readonly #source: LiveSeries<S>;
+  readonly #source: LiveSource<S>;
   readonly #columns: ColumnSpec[];
   readonly #resultSchema: SeriesSchema;
   readonly #stepMs: number;
@@ -50,7 +50,7 @@ export class LiveAggregation<S extends SeriesSchema> {
   readonly #unsubscribe: () => void;
 
   constructor(
-    source: LiveSeries<S>,
+    source: LiveSource<S>,
     sequence: Sequence,
     mapping: AggregateMap<S>,
   ) {
