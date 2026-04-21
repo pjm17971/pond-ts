@@ -1,8 +1,8 @@
-import type { LiveSeries } from './LiveSeries.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
 import type {
   AggregateMap,
   EventForSchema,
+  LiveSource,
   ScalarValue,
   SeriesSchema,
 } from './types.js';
@@ -46,9 +46,9 @@ type WindowEntry = {
 
 type UpdateListener = (value: Record<string, ScalarValue | undefined>) => void;
 
-export type TailReduceWindow = DurationInput | number;
+export type RollingWindow = DurationInput | number;
 
-export class TailReduce<S extends SeriesSchema> {
+export class Rolling<S extends SeriesSchema> {
   readonly #columns: ColumnSpec[];
   readonly #states: RollingReducerState[];
   readonly #entries: WindowEntry[];
@@ -61,8 +61,8 @@ export class TailReduce<S extends SeriesSchema> {
   readonly #unsubscribe: () => void;
 
   constructor(
-    source: LiveSeries<S>,
-    window: TailReduceWindow,
+    source: LiveSource<S>,
+    window: RollingWindow,
     mapping: AggregateMap<S>,
   ) {
     if (typeof window === 'number' && Number.isInteger(window) && window > 0) {

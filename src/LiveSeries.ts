@@ -1,18 +1,21 @@
 import { Event } from './Event.js';
 import { Interval } from './Interval.js';
 import { LiveAggregation } from './LiveAggregation.js';
+import { LiveView } from './LiveView.js';
 import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
-import { TailReduce, type TailReduceWindow } from './TailReduce.js';
+import { Rolling, type RollingWindow } from './Rolling.js';
 import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
 import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
+  EventDataForSchema,
   EventForSchema,
   FirstColKind,
   RowForSchema,
+  SelectSchema,
   SeriesSchema,
 } from './types.js';
 
@@ -261,12 +264,60 @@ export class LiveSeries<S extends SeriesSchema> {
     });
   }
 
+  filter(predicate: (event: EventForSchema<S>) => boolean): LiveView<S> {
+    return new LiveView(this, (event: EventForSchema<S>) =>
+      predicate(event) ? event : undefined,
+    );
+  }
+
+  map(fn: (event: EventForSchema<S>) => EventForSchema<S>): LiveView<S> {
+    return new LiveView(this, fn);
+  }
+
+  select<const Keys extends readonly (keyof EventDataForSchema<S>)[]>(
+    ...keys: Keys
+  ): LiveView<SelectSchema<S, Keys[number] & string>> {
+    const newSchema = Object.freeze([
+      this.schema[0]!,
+      ...this.schema.slice(1).filter((c) => keys.includes(c.name as any)),
+    ]) as unknown as SelectSchema<S, Keys[number] & string>;
+
+    return new LiveView(this, (event: any) => event.select(...keys), {
+      schema: newSchema,
+    });
+  }
+
+  window(size: RollingWindow): LiveView<S> {
+    if (typeof size === 'number' && Number.isInteger(size) && size > 0) {
+      const count = size;
+      return new LiveView(this, (event: EventForSchema<S>) => event, {
+        evict: (events: readonly EventForSchema<S>[]) =>
+          Math.max(0, events.length - count),
+      });
+    }
+    if (typeof size === 'string') {
+      const ms = parseDuration(size);
+      return new LiveView(this, (event: EventForSchema<S>) => event, {
+        evict: (events: readonly EventForSchema<S>[]) => {
+          if (events.length === 0) return 0;
+          const cutoff = events[events.length - 1]!.begin() - ms;
+          let i = 0;
+          while (i < events.length && events[i]!.begin() < cutoff) i++;
+          return i;
+        },
+      });
+    }
+    throw new TypeError(
+      'window must be a positive integer (event count) or duration string',
+    );
+  }
+
   aggregate(sequence: Sequence, mapping: AggregateMap<S>): LiveAggregation<S> {
     return new LiveAggregation(this, sequence, mapping);
   }
 
-  tail(window: TailReduceWindow, mapping: AggregateMap<S>): TailReduce<S> {
-    return new TailReduce(this, window, mapping);
+  rolling(window: RollingWindow, mapping: AggregateMap<S>): Rolling<S> {
+    return new Rolling(this, window, mapping);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;

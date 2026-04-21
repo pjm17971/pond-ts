@@ -418,88 +418,179 @@ of it.
 Completed:
 
 - [x] `LiveAggregation` — incremental bucketed aggregation over a `LiveSeries`
-- [x] `TailReduce` — sliding-window reduction (time-based or count-based) over
+- [x] `Rolling` — sliding-window reduction (time-based or count-based) over
       a `LiveSeries`
+- [x] `LiveSource<S>` interface — common contract for LiveSeries and LiveView
+- [x] `LiveView<S>` — derived view with `filter()`, `map()`, `select()`,
+      `window()`, composable with all live transforms via `LiveSource`
+- [x] `LiveAggregation` and `Rolling` accept any `LiveSource<S>`, not just
+      `LiveSeries<S>`
 
 Remaining:
 
-- [ ] stateless views (`filter`, `map`, `select`, etc.)
-- [ ] `LiveRolling` — per-event rolling output
-- [ ] `LiveSmooth` — running smoothing
-- [ ] pipeline chaining (output of one transform feeds the next)
+- [ ] `LiveAggregation` and `Rolling` implement `LiveSource` for chaining
+- [ ] per-event views: `diff`, `rate`, `pctChange` (stateless, prev→curr)
+- [ ] carry-forward views: `fill`, `cumulative` (small state per column)
 - [ ] docs page for live transforms
 
-### Stateless transforms: views, not copies
+### Batch → Live applicability
 
-`filter`, `map`, `select`, `rename`, and `collapse` return lightweight derived
-views that apply the transform lazily. No separate buffer — reads walk the
-source and apply the predicate. Views compose by stacking.
+Not every batch `TimeSeries` method needs a live equivalent. The live layer is
+about ingestion and incremental computation — when you need the full analytical
+toolkit, snapshot to `TimeSeries` and use the batch API.
+
+| Batch method      | Live?       | Notes                                                |
+| ----------------- | ----------- | ---------------------------------------------------- |
+| `filter(pred)`    | **done**    | LiveView                                             |
+| `map(fn)`         | **done**    | LiveView                                             |
+| `select(...cols)` | **done**    | LiveView, schema-narrowing                           |
+| `aggregate()`     | **done**    | LiveAggregation (bucketed)                           |
+| `diff(...cols)`   | **planned** | stateless view, needs previous event                 |
+| `rate(...cols)`   | **planned** | stateless view, delta / time gap                     |
+| `pctChange()`     | **planned** | stateless view, (curr-prev)/prev                     |
+| `fill(strategy)`  | **planned** | carry-forward state per column (hold, zero, literal) |
+| `cumulative()`    | **planned** | carry-forward state per column (sum, max, min)       |
+| `rename(mapping)` | skip        | achievable with `map()`                              |
+| `collapse()`      | skip        | achievable with `map()`                              |
+| `rolling()`       | covered     | `Rolling` as chainable source (see below)            |
+| `smooth()`        | covered     | EMA is a closure in `map()`; MA is rolling avg       |
+| `shift(col, n)`   | maybe       | needs lookback buffer, niche for live                |
+| `align()`         | no          | resampling assumes complete data                     |
+| `join()`          | no          | two-stream join is a different primitive             |
+| `groupBy()`       | no          | partitioning is a source-level concern               |
+| `within/trim`     | no          | temporal selection — snapshot then slice             |
+| `reduce()`        | no          | whole-series → scalar — that's `Rolling`             |
+
+### Chainable stateful transforms
+
+`LiveAggregation` emits closed buckets. `Rolling` emits per-event aggregate
+values. Both should implement `LiveSource<S>` so their output can feed further
+views:
 
 ```ts
-const pipeline = live
+live
   .filter((e) => e.get('host') === 'api-1')
-  .select('cpu', 'requests');
-// materializes lazily on .toTimeSeries()
+  .aggregate(Sequence.every('1m'), { value: 'avg' })
+  .filter((e) => (e.get('value') as number) > threshold)
+  .on('event', alertBucket);
 ```
 
-Views also expose `.on('event', fn)` so stateful transforms can subscribe to
-filtered streams.
+For `LiveAggregation`, the output events are interval-keyed (closed buckets).
+For `Rolling`, each source event produces a new time-keyed output event with
+the current sliding-window aggregate. This makes Rolling-as-source the live
+equivalent of `rolling()` — no separate `LiveRolling` class needed.
 
-### Stateful transforms: accumulators
+Similarly, `LiveSmooth` is not needed as a dedicated class: EMA is a stateful
+closure inside `map()`, and moving average is `Rolling`-as-source with
+`'avg'`.
 
-If a transform needs memory between events, it becomes its own live object.
+### Views
+
+`filter`, `map`, `select`, and `window` return `LiveView` — a derived view
+that subscribes to its source's event stream and forwards processed events.
+
+**Stateless views** (`filter`, `map`, `select`) apply a per-event transform.
+**Bounded views** (`window`) add eviction to keep the buffer within a time or
+count limit.
+
+Planned per-event views (`diff`, `rate`, `pctChange`) carry one value per
+column from the previous event. Planned carry-forward views (`fill`,
+`cumulative`) carry state that accumulates across events. Both fit the LiveView
+model — the `process` function closes over the state.
+
+### Accumulators
 
 **`LiveAggregation`**: maintains closed buckets (finalized), open bucket
 (partial), and watermark. A bucket closes when an event arrives past the
 boundary. `.closed()` returns finalized results; `.snapshot()` includes the
 open bucket's partial value. Uses `AggregateBucketState` from the reducer
-registry for incremental accumulation — each event touches only the open
-bucket's state, never re-scans closed buckets.
+registry for incremental accumulation.
 
-**`TailReduce`**: maintains a sliding-window reduction over the tail of a
-`LiveSeries`. Supports both time-based windows (`'5m'`) and count-based windows
-(`100`). Uses `RollingReducerState` from the reducer registry for incremental
-add/remove. Fires `update` on every source event with the current aggregate
-value.
+**`Rolling`**: maintains a sliding-window reduction. Supports both
+time-based windows (`'5m'`) and count-based windows (`100`). Uses
+`RollingReducerState` from the reducer registry for incremental add/remove.
+Fires `update` on every source event.
+
+| Transform             | Live behavior                          | Owns a buffer? | Chainable? |
+| --------------------- | -------------------------------------- | -------------- | ---------- |
+| `filter/map/select`   | Per-event transform                    | Yes (view)     | Yes        |
+| `window`              | Bounded view with eviction             | Yes (view)     | Yes        |
+| `diff/rate/pctChange` | Per-event with prev-event state        | Yes (view)     | Yes        |
+| `fill/cumulative`     | Per-event with carry-forward state     | Yes (view)     | Yes        |
+| `LiveAggregation`     | Accumulator per bucket + closed stream | Yes            | Planned    |
+| `Rolling`             | Sliding window + per-event output      | Yes            | Planned    |
+
+### LiveSource interface and LiveView
+
+`LiveSource<S>` is the common interface that all live objects expose for
+downstream consumers: `name`, `schema`, `length`, `at(index)`, and
+`on('event', fn)`. Both `LiveSeries` and `LiveView` satisfy it, so
+`LiveAggregation` and `Rolling` accept any `LiveSource<S>`.
+
+`LiveView<S>` wraps a source with a `process: (event) => event | undefined`
+function. If `process` returns `undefined`, the event is filtered out. This
+unifies filter (predicate → event or undefined) and map (transform → always
+returns event) in one class.
+
+Views maintain their own buffer of processed events for O(1) `at()` and
+`length`. The buffer is append-only — views do not automatically evict when the
+source does. If retention is needed on a view, compose with a second
+`LiveSeries` or dispose the view when done.
+
+**`select`** narrows the schema. The output `LiveView` has a different schema
+type from the input. The constructor accepts an optional output schema for this
+case; filter/map omit it (schema is inherited).
+
+**`window`** bounds the view by time or event count. Uses an eviction function
+that runs after each event is added. Time-based windows evict events whose
+timestamp is below `latest - duration`. Count-based windows keep the last N
+events. Unlike retention on `LiveSeries`, window is a query over the data, not a
+memory policy — you can keep a large source buffer but view a narrow window.
+
+Views compose by stacking:
 
 ```ts
-// Time-based: avg CPU over last 5 minutes
-const gauge = new TailReduce(live, '5m', { cpu: 'avg' });
-gauge.value(); // { cpu: 0.42 }
-gauge.on('update', (v) => renderGauge(v));
-
-// Count-based: sum of last 100 events
-const tail = new TailReduce(live, 100, { value: 'sum' });
+live.filter(pred).select('cpu', 'mem').window('5m').aggregate(seq, mapping);
 ```
 
-**`LiveRolling`**: each push produces a new rolling output event. Maintains a
-deque of recent events and evicts those outside the window.
-
-**`LiveSmooth`**: EMA needs only previous smoothed value. Moving average and
-LOESS use a sliding deque.
-
-| Transform                                       | Live behavior                          | Owns a buffer? |
-| ----------------------------------------------- | -------------------------------------- | -------------- |
-| `filter`, `map`, `select`, `rename`, `collapse` | Lazy view over source                  | No             |
-| `LiveAggregation`                               | Accumulator per bucket + closed output | Yes            |
-| `TailReduce`                                    | Sliding window + scalar output         | Yes            |
-| `LiveRolling`                                   | Sliding deque + output per event       | Yes            |
-| `LiveSmooth`                                    | Running state + output per event       | Yes            |
+Each view subscribes to its source's `'event'` stream and forwards processed
+events to its own subscribers.
 
 ### Composition
 
-Stateless and stateful compose naturally: filter before aggregate gates which
-events reach the accumulator. Multiple consumers fan out from one source with
-shared buffer but separate accumulators.
+Views, accumulators, and further views compose naturally:
 
-**Windowed snapshots**: `live.window('5m')` returns a lightweight view backed by
-the same buffer, materialized on `.toTimeSeries()`. Window boundary is relative
-to latest event timestamp, not wall-clock.
+```ts
+live
+  .filter(pred)
+  .select('cpu', 'mem')
+  .window('5m')
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' }) // planned chaining
+  .filter((e) => (e.get('cpu') as number) > threshold); // further view on output
+```
+
+Multiple consumers fan out from one source with shared buffer but separate
+state.
+
+**Windowed snapshots**: `live.window('5m')` returns a view backed by the same
+source, materialized on `.toTimeSeries()`. Window boundary is relative to
+latest event timestamp, not wall-clock.
+
+### Dropped from scope
+
+- **`LiveRolling`**: covered by `Rolling` implementing `LiveSource` — the
+  per-event output stream IS the rolling output.
+- **`LiveSmooth`**: EMA is a stateful closure in `map()`. Moving average is
+  `Rolling`-as-source with `'avg'`. LOESS is too expensive for per-event
+  streaming.
+- **`rename`/`collapse` views**: achievable with `map()`. Don't earn dedicated
+  API surface in the live layer.
 
 Definition of done:
 
 - [x] stateful transforms use existing reducer infrastructure incrementally
-- [ ] stateless and stateful transforms compose cleanly
+- [x] stateless and stateful transforms compose cleanly
+- [ ] stateful transforms implement `LiveSource` for full pipeline chaining
 - [ ] filtered/live aggregation pipelines are demonstrated in examples
 - [x] snapshot vs closed/finalized semantics are explicit where relevant
 
@@ -622,9 +713,10 @@ These hold across all new work:
   convention.
 - **Alignment is separate from aggregation.** `resample` composes them; it
   doesn't merge them.
-- **Stateless transforms are views, stateful transforms own buffers.** If an
-  operation needs memory between events, it gets its own object. If it doesn't,
-  it's a lazy lens over the source.
+- **Transforms are views or accumulators.** If an operation needs only per-event
+  or carry-forward state, it's a `LiveView`. If it needs a growing buffer
+  (buckets, sliding window), it's an accumulator. Both implement `LiveSource`
+  for chaining.
 - **Data is the clock.** Bucket close, watermark advance, and window eviction
   are all driven by event timestamps, not wall-clock timers.
 - **No background timers or implicit scheduling.** The caller owns the event

@@ -3,7 +3,8 @@ export { Event } from './Event.js';
 export { Interval } from './Interval.js';
 export { LiveAggregation } from './LiveAggregation.js';
 export { LiveSeries } from './LiveSeries.js';
-export { TailReduce } from './TailReduce.js';
+export { LiveView } from './LiveView.js';
+export { Rolling } from './Rolling.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
@@ -40,6 +41,7 @@ export type {
   JoinManySchema,
   PrefixedJoinManySchema,
   PrefixedJoinSchema,
+  LiveSource,
   JoinType,
   JoinSchema,
   NormalizedRowForSchema,
@@ -90,4 +92,4 @@ export type {
   OrderingMode,
   RetentionPolicy,
 } from './LiveSeries.js';
-export type { TailReduceWindow } from './TailReduce.js';
+export type { RollingWindow } from './Rolling.js';
