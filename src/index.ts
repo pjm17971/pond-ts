@@ -1,7 +1,9 @@
 export { BoundedSequence } from './BoundedSequence.js';
 export { Event } from './Event.js';
 export { Interval } from './Interval.js';
+export { LiveAggregation } from './LiveAggregation.js';
 export { LiveSeries } from './LiveSeries.js';
+export { TailReduce } from './TailReduce.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
@@ -88,3 +90,4 @@ export type {
   OrderingMode,
   RetentionPolicy,
 } from './LiveSeries.js';
+export type { TailReduceWindow } from './TailReduce.js';
