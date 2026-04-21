@@ -98,7 +98,7 @@ From the original audit, not yet addressed:
 
 ## Phase 2: Batch expansion
 
-Status: in progress.
+Status: complete.
 
 Goal: fill the most obvious product gaps in the batch analytics story.
 
@@ -222,6 +222,126 @@ Definition of done:
 - each method has both API docs and worked examples
 - type flow is preserved through all new methods
 - batch examples cover realistic host/service metrics workflows
+
+---
+
+## Phase 2.5: Columnar primitives
+
+Status: complete.
+
+Goal: fill the remaining analytical gaps that pandas users expect, without
+exposing a general "access neighboring events" API. Each operation is a named
+columnar primitive that the library implements internally by walking the event
+array — the user describes what they want, not how to iterate.
+
+Completed:
+
+- [x] `pctChange` — percentage change relative to previous value
+- [x] `cumulative` — running accumulation (sum, max, min, count, custom)
+- [x] `shift` — lag/lead column values by N events
+- [x] `bfill` strategy for `fill()` — backward fill (propagate next known value backward)
+- [x] built-in aggregator parity with original pondjs: `median`, `stdev`,
+      `percentile` (`p50`, `p95`, `p99`, etc.), `difference`, `keep`
+
+### Design notes
+
+**`pctChange`**: same shape as `diff`/`rate`. Computes `(curr - prev) / prev`
+for named numeric columns. First event gets `undefined` (no previous value).
+Purely value-relative — time gap doesn't matter.
+
+```ts
+const pct = series.pctChange('requests');
+const pct = series.pctChange(['cpu', 'mem']);
+const pct = series.pctChange('requests', { drop: true });
+```
+
+For period-over-period comparison (today vs yesterday, current vs one hour ago),
+the idiomatic approach is `shiftKeys` + `join` rather than a single-series
+`pctChange` — that's a separate composition pattern, not a primitive.
+
+**`cumulative`**: takes a mapping of column names to accumulation functions.
+Returns a series of the same length with running values. Supported built-ins:
+`sum`, `max`, `min`, `count`. Custom accumulators via function.
+
+```ts
+const running = series.cumulative({ requests: 'sum' });
+const peaks = series.cumulative({ cpu: 'max' });
+const mixed = series.cumulative({
+  requests: 'sum',
+  cpu: 'max',
+  errors: 'min',
+});
+```
+
+Non-accumulated columns pass through unchanged. Unlike `rolling` (fixed window),
+`cumulative` grows from the first event — every event sees all prior values.
+
+**`shift`**: moves column values forward (lag) or backward (lead) by N events.
+Vacated positions get `undefined`. Useful for "compare to N ticks ago" on
+regular-grid data, or as a building block for custom derived metrics.
+
+```ts
+const lagged = series.shift('value', 1); // lag by 1
+const lead = series.shift('value', -1); // lead by 1
+const lagged = series.shift(['cpu', 'mem'], 2);
+```
+
+For time-based shifting (e.g. "value 1 hour ago" on irregular data), the
+pattern is to `align` to a regular grid first, then `shift` by the
+corresponding number of events. A dedicated `shiftKeys(duration)` that offsets
+event timestamps (for join-based period comparison) may come later if the
+pattern proves common enough.
+
+**`bfill` for `fill()`**: adds a `'bfill'` strategy to the existing `fill()`
+method — the mirror of `'hold'` (forward fill). Walks the event array backward,
+propagating the next known value into preceding `undefined` gaps. Supports
+`limit` to cap consecutive fills, same as other strategies. Works in per-column
+mode too:
+
+```ts
+series.fill('bfill');
+series.fill('bfill', { limit: 3 });
+series.fill({ cpu: 'linear', host: 'bfill' });
+```
+
+Trailing `undefined` runs (no future value to propagate) are left unfilled,
+mirroring how `'hold'` leaves leading runs unfilled.
+
+**Aggregator parity**: the original pondjs shipped 12 built-in reducers. We have
+7 (`sum`, `avg`, `min`, `max`, `count`, `first`, `last`). The five missing ones:
+
+- **`median`** — middle value of the sorted bucket. Same as `percentile(50)` but
+  earns its own name for readability.
+- **`stdev`** — population standard deviation of bucket values.
+- **`percentile`** — q-th percentile. Expressed as `'p50'`, `'p95'`, `'p99'`,
+  etc. in reducer specs. Linear interpolation between adjacent ranks by default.
+- **`difference`** — range within a bucket (`max - min`). Useful for spread /
+  volatility measures.
+- **`keep`** — returns the value if all bucket values are identical, `undefined`
+  otherwise. Useful for preserving constant columns (e.g. `host`) through
+  aggregation.
+
+These extend the existing `AggregateFunction` union and work everywhere reducers
+are accepted: `aggregate()`, `reduce()`, `rolling()`, and `collapse()`.
+
+```ts
+series.aggregate(Sequence.every('10m'), {
+  latency: 'p95',
+  cpu: 'median',
+  host: 'keep',
+});
+
+series.reduce({ latency: 'stdev', spread: 'difference' });
+```
+
+Definition of done:
+
+- each method follows the `diff`/`rate` pattern (columns + options)
+- type flow is preserved — affected columns become optional number
+- tests cover empty series, single event, leading/trailing gaps, and
+  composition with groupBy
+- all 12 original pondjs reducers are available as built-in names
+- `percentile` patterns (`p50`, `p95`, `p99`) parse correctly in reducer specs
 
 ---
 
@@ -414,6 +534,7 @@ Definition of done:
 | ------------ | ------------------------------------------------------------ |
 | `0.1.x`      | Performance fixes, hardening, serialization, custom reducers |
 | `0.2.x`      | `groupBy`, `reduce`, `diff`/`rate`, `fill`                   |
+| `0.2.5`      | `pctChange`, `cumulative`, `shift`                           |
 | `0.3.x`      | `LiveSeries` core and subscriptions                          |
 | `0.4.x`      | Live views and live stateful transforms                      |
 | `0.5.x`      | React hooks                                                  |

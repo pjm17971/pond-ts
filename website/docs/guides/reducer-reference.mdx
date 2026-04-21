@@ -1,0 +1,210 @@
+---
+sidebar_position: 12
+---
+
+# Reducer Reference
+
+Pond ships 12 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.)
+and custom reducer functions. Every built-in works in `aggregate()`, `reduce()`, `rolling()`,
+and `collapse()`.
+
+## Numeric reducers
+
+These operate on numeric values only. Non-numeric and `undefined` values are filtered out
+before the reducer runs.
+
+### `sum`
+
+Total of all numeric values in the bucket.
+
+```ts
+series.aggregate(Sequence.every('5m'), { requests: 'sum' });
+```
+
+Returns `0` for an empty bucket (there are zero values to sum).
+
+### `avg`
+
+Arithmetic mean of numeric values.
+
+```ts
+series.reduce('cpu', 'avg');
+```
+
+Returns `undefined` for an empty bucket.
+
+### `min`
+
+Smallest numeric value.
+
+```ts
+series.aggregate(Sequence.every('1h'), { temperature: 'min' });
+```
+
+Returns `undefined` for an empty bucket.
+
+### `max`
+
+Largest numeric value.
+
+```ts
+series.aggregate(Sequence.every('1h'), { temperature: 'max' });
+```
+
+Returns `undefined` for an empty bucket.
+
+### `median`
+
+Middle value of the sorted numeric values. For even-length sets, linearly interpolates
+between the two middle values (equivalent to `p50`).
+
+```ts
+series.reduce('latency', 'median');
+```
+
+Returns `undefined` for an empty bucket.
+
+### `stdev`
+
+Population standard deviation. Measures how spread out the values are around the mean.
+
+```ts
+series.aggregate(Sequence.every('10m'), { latency: 'stdev' });
+```
+
+Returns `0` when all values are identical. Returns `undefined` for an empty bucket.
+
+### `difference`
+
+Range within the bucket: `max - min`. Useful for measuring volatility or stability within
+a time window.
+
+```ts
+series.aggregate(Sequence.every('10m'), { temperature: 'difference' });
+```
+
+Returns `0` for a single value. Returns `undefined` for an empty bucket.
+
+### `count`
+
+Number of defined (non-`undefined`) values. Works on any column type, not just numeric.
+
+```ts
+series.aggregate(Sequence.every('1h'), { errors: 'count' });
+```
+
+Returns `0` for an empty bucket.
+
+### Percentiles: `p0` through `p100`
+
+The `p` prefix followed by a number (0--100) computes that percentile with linear
+interpolation between adjacent ranks.
+
+```ts
+series.aggregate(Sequence.every('5m'), {
+  p50: { from: 'latency', using: 'p50', kind: 'number' },
+  p95: { from: 'latency', using: 'p95', kind: 'number' },
+  p99: { from: 'latency', using: 'p99', kind: 'number' },
+});
+```
+
+Shorthand when aggregating a single column:
+
+```ts
+series.reduce('latency', 'p95');
+```
+
+Fractional percentiles are supported: `'p99.9'`.
+
+`p0` returns the minimum, `p50` is equivalent to `median`, `p100` returns the maximum.
+
+Returns `undefined` for an empty bucket.
+
+## Any-type reducers
+
+These work on values of any column kind (number, string, boolean).
+
+### `first`
+
+First non-`undefined` value in the bucket (by event order).
+
+```ts
+series.aggregate(Sequence.every('1h'), { status: 'first' });
+```
+
+Returns `undefined` for an empty bucket.
+
+### `last`
+
+Last non-`undefined` value in the bucket.
+
+```ts
+series.aggregate(Sequence.every('1h'), { status: 'last' });
+```
+
+Returns `undefined` for an empty bucket.
+
+### `keep`
+
+Returns the value if every value in the bucket is identical; `undefined` otherwise.
+Useful for preserving constant metadata columns (like `host`) through aggregation.
+
+```ts
+const hourly = series.aggregate(Sequence.every('1h'), {
+  cpu: 'avg',
+  host: 'keep',
+});
+```
+
+If the series was already partitioned by `groupBy('host')`, `keep` will always return the
+host name since all events in each group share the same value.
+
+Returns `undefined` for an empty bucket or mixed values.
+
+## Custom reducers
+
+Supply a function wherever a built-in name is accepted. The function receives all values
+in the bucket (including `undefined` entries) and returns a scalar.
+
+```ts
+series.aggregate(Sequence.every('10m'), {
+  value: (values) => {
+    const nums = values.filter((v): v is number => typeof v === 'number');
+    return nums.length === 0 ? undefined : nums.reduce((a, b) => a + b, 0);
+  },
+});
+```
+
+Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`.
+
+## Empty-bucket behavior
+
+| Reducer      | Empty bucket |
+| ------------ | ------------ |
+| `count`      | `0`          |
+| `sum`        | `0`          |
+| `avg`        | `undefined`  |
+| `min`        | `undefined`  |
+| `max`        | `undefined`  |
+| `median`     | `undefined`  |
+| `stdev`      | `undefined`  |
+| `difference` | `undefined`  |
+| `first`      | `undefined`  |
+| `last`       | `undefined`  |
+| `keep`       | `undefined`  |
+| `p50`...     | `undefined`  |
+
+## Rolling window behavior
+
+All built-in reducers work with `rolling()`. Most use O(1) incremental add/remove:
+
+| Reducer                             | Rolling complexity                          |
+| ----------------------------------- | ------------------------------------------- |
+| `sum`, `avg`, `count`, `stdev`      | O(1) per event                              |
+| `min`, `max`                        | O(1) amortized (monotone deque)             |
+| `first`, `last`                     | O(1) amortized                              |
+| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove) |
+| `keep`                              | O(1) per event (value count map)            |
+
+For typical rolling windows (tens to hundreds of events), the sorted array approach
+is fast enough. For very large windows with median/percentile, consider a custom reducer.
