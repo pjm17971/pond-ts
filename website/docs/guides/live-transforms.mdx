@@ -136,7 +136,11 @@ const live = new LiveSeries({
   graceWindow: '10s',
 });
 
-const agg = new LiveAggregation(
+// Grace defaults from the source's graceWindow — no need to repeat it
+const agg = new LiveAggregation(live, Sequence.every('1m'), { cpu: 'avg' });
+
+// Or override with an explicit value
+const agg2 = new LiveAggregation(
   live,
   Sequence.every('1m'),
   { cpu: 'avg' },
@@ -144,9 +148,13 @@ const agg = new LiveAggregation(
 );
 ```
 
-With `grace: '5s'`, a bucket doesn't finalize until the data's watermark
-(highest timestamp seen) advances 5 seconds past the bucket's end. During that
-window:
+When the source is a `LiveSeries` with a `graceWindow`, `LiveAggregation`
+inherits that value as its default grace period. You can still override it with
+an explicit `grace` option. If the source has no grace window (e.g. strict
+ordering), the default is zero — buckets close immediately.
+
+With a grace period active, a bucket doesn't finalize until the data's watermark
+(highest timestamp seen) advances past `bucket.end + grace`. During that window:
 
 - Late events route to their correct bucket and update the partial aggregate
 - The `bucket` event fires with each update, reflecting the revised state
@@ -156,11 +164,9 @@ Once the grace window expires, the bucket closes normally and fires the `close`
 event with the final value. Events arriving after their bucket's grace window
 has expired are silently dropped.
 
-Without a `grace` option (the default), buckets close immediately when an event
-crosses the boundary — identical to the behavior before grace was introduced.
-
-**Tip:** pair `grace` on the aggregation with `ordering: 'reorder'` on the
-source `LiveSeries` so the source accepts late events instead of throwing.
+**Tip:** pair `ordering: 'reorder'` on the source `LiveSeries` with a
+`graceWindow` — the aggregation will automatically inherit the same tolerance
+for late events.
 
 ### As a LiveSource
 
