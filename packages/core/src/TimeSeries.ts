@@ -2920,6 +2920,25 @@ export class TimeSeries<S extends SeriesSchema> {
   get length(): number {
     return this.events.length;
   }
+
+  /** Example: `for (const event of series) { ... }`. Iterates events in order. */
+  [Symbol.iterator](): Iterator<EventForSchema<S>> {
+    let index = 0;
+    const events = this.events;
+    return {
+      next(): IteratorResult<EventForSchema<S>> {
+        if (index < events.length) {
+          return { value: events[index++]!, done: false };
+        }
+        return { value: undefined as any, done: true };
+      },
+    };
+  }
+
+  /** Example: `series.toArray()`. Returns a shallow copy of the event array. */
+  toArray(): EventForSchema<S>[] {
+    return this.events.slice();
+  }
 }
 
 function aggregateInternal<S extends SeriesSchema>(

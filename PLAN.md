@@ -555,9 +555,12 @@ unifies filter (predicate → event or undefined) and map (transform → always
 returns event) in one class.
 
 Views maintain their own buffer of processed events for O(1) `at()` and
-`length`. The buffer is append-only — views do not automatically evict when the
-source does. If retention is needed on a view, compose with a second
-`LiveSeries` or dispose the view when done.
+`length`. Views mirror evictions from their source: when a retention-capped
+`LiveSeries` evicts old events, downstream views (filter, map, etc.) remove
+corresponding events automatically. This prevents unbounded growth on
+filtered/mapped views of a retention-capped source. Detection uses the
+`EMITS_EVICT` symbol to safely identify sources that fire `'evict'` events
+(avoids duck-typing `on('evict')` which breaks on `LiveAggregation`).
 
 **`select`** narrows the schema. The output `LiveView` has a different schema
 type from the input. The constructor accepts an optional output schema for this
@@ -621,7 +624,7 @@ Definition of done:
 ## Phase 5: React integration
 
 Status: in progress. Monorepo restructure complete — `@pond-ts/react` package
-at `packages/react/`.
+at `packages/react/`. Hooks shipped at v0.4.2; usability fixes in progress.
 
 Goal: make Pond useful in frontend apps without forcing a framework-y runtime
 model into the core package.
@@ -631,22 +634,58 @@ Entry point: `@pond-ts/react` (separate workspace package)
 ### Hooks
 
 - [x] `useLiveSeries` — creates and owns a `LiveSeries` for component lifetime;
-  returns a stable `live` ref and a throttled `TimeSeries` snapshot
+      returns a stable `live` ref and a throttled `TimeSeries` snapshot
 - [x] `useTimeSeries` — memoized `TimeSeries.fromJSON(...)` for static/fetched
-  data; re-parses only when key changes
+      data; re-parses only when key changes
 - [x] `useSnapshot` — converts any `LiveSource` into a throttled `TimeSeries`
-  snapshot for rendering; works with `LiveSeries`, `LiveView`,
-  `LiveAggregation`, and `LiveRollingAggregation`
+      snapshot for rendering; works with `LiveSeries`, `LiveView`,
+      `LiveAggregation`, and `LiveRollingAggregation`
 - [x] `useWindow` — derived windowed view that updates as the source grows;
-  disposes the view on cleanup
+      disposes the view on cleanup
 - [x] `useDerived` — applies a batch transform to a snapshot, recomputing when
-  the input changes
+      the input changes
 - [x] `takeSnapshot` — utility: build a `TimeSeries` from any `LiveSource`
+
+### Usability fixes (from external testing)
+
+- [x] `Time.toDate()` — added missing convenience method
+- [x] `useWindow` StrictMode fix — view created in `useEffect`, not `useMemo`
+- [x] `TimeSeries[Symbol.iterator]` and `toArray()` — ergonomic iteration
+- [x] `useSnapshot` accepts `SnapshotSource<S>` structural type — avoids casts
+      when passing `LiveAggregation` or `LiveRollingAggregation`
+- [x] `LiveView` eviction mirroring — filtered/mapped views now mirror source
+      evictions (uses `EMITS_EVICT` symbol to safely detect evict-capable sources)
+- [x] `LiveAggregation<S, Out>` and `LiveRollingAggregation<S, Out>` — output
+      schema type parameter enables `event.get('col')` to narrow through
+      aggregation chains (e.g. `agg.at(0)?.get('cpu')` returns `number | undefined`
+      instead of `ScalarValue | undefined`)
+- [x] Schema-transform types already exported: `AggregateSchema`, `RollingSchema`,
+      `DiffSchema`, `SmoothSchema`, `SmoothAppendSchema`, `SelectSchema`,
+      `RenameSchema`, `CollapseSchema`
+- [x] `useLiveQuery` — bundles `useMemo` + `useSnapshot` into one call; return
+      shape matches `useLiveSeries`, cuts hook count roughly in half for dashboards
+      with multiple derived views
+- [x] `useLatest` — subscribes to a live source and returns only the most recent
+      event; lighter than a full `TimeSeries` snapshot for stat cards and gauges
+
+### Remaining
+
+- [ ] Document `rate()` / `diff()` / `pctChange()` behavior when `dt = 0` —
+      concurrent events (same timestamp) produce `undefined`. Workaround is to
+      filter per-producer first. A `rateOver({ every: '1s' })` variant that
+      normalizes to fixed wall-clock windows may be worth adding later.
+- [ ] `smooth('ema', { warmup: N })` or seeded EMA — first ~1/α samples are noisy
+      raw data. A `warmup` option that trims or a `seed` value that initializes
+      `ema_0` would avoid the manual `.slice()` workaround.
+- [ ] Dashboard guide doc fixes — show `useLiveQuery` as the idiomatic pattern
+      rather than manual `useMemo` + `useSnapshot`; document how derived views
+      interact with `LiveSeries` retention.
 
 **Render throttling** is critical. Raw data can arrive at hundreds of events per
 second. The `throttle` option caps how often the snapshot is recomputed.
 Stateless transforms are cheap enough to build inline during render; stateful
-transforms must be created once via `useMemo` on the `live` ref.
+transforms must be created once via `useMemo` on the `live` ref (or
+`useLiveQuery`).
 
 Requirements before starting:
 
@@ -654,7 +693,7 @@ Requirements before starting:
 
 Definition of done:
 
-- live data can flow from WebSocket-like sources into throttled React renders
+- [x] live data can flow from WebSocket-like sources into throttled React renders
 - hooks have examples that mirror likely product use
 - the docs explain when to use lazy views vs memoized derived data
 
@@ -734,6 +773,60 @@ Before moving from one major phase to the next, answer the relevant question:
 - After Phase 5: do common frontend use cases work without ad hoc glue?
 
 If the answer is no, stay in the phase and tighten the model before expanding.
+
+---
+
+## Deferred design decisions
+
+### Non-scalar reducer outputs (`distinct`, `topK`, `histogram`)
+
+A `'distinct'` reducer (unique values in a bucket) is a natural aggregation —
+"which hosts reported in this window?" — but it collides with a fundamental
+constraint: `CustomAggregateReducer` returns `ScalarValue | undefined`
+(`number | string | boolean`), and the natural output of `distinct` is
+`string[]`.
+
+The scalar-preserving workaround is a comma-joined string:
+
+```ts
+const distinct: CustomAggregateReducer = (values) =>
+  [...new Set(values.filter((v) => v !== undefined))].sort().join(',');
+```
+
+Read side: `event.get('host')?.split(',')`. Good enough for enum-ish columns
+(host names, regions, status codes) where values never contain the separator.
+
+But this is a hack. The real question is whether pond-ts should support
+non-scalar column values at all. Opening the door to `string[]` as a column
+value has cascading effects:
+
+- **Schema type system**: `ScalarKind` and `ScalarValue` are wired through
+  every type in `types.ts`. Adding an array kind means auditing every
+  conditional type, every `NormalizedValueForKind`, every JSON round-trip path.
+- **Serialization**: `toJSON()` / `fromJSON()` assume flat scalar cells.
+  Arrays would need a container encoding or a breaking format change.
+- **Aggregation composability**: what does `avg` mean on a `string[]` column?
+  Every reducer would need to either reject or define behavior for array inputs.
+- **Chart interop**: adapter helpers and downstream chart components assume
+  scalars. Arrays break the 1:1 column→axis mapping.
+
+Options, in ascending order of ambition:
+
+1. **Do nothing.** The comma-join workaround is ugly but finite. Document it.
+2. **Built-in `'distinct'` that returns a comma-joined string.** Same hack,
+   but blessed. `keep` already returns scalar-or-undefined; `distinct` would
+   return string-or-undefined. No type system changes.
+3. **Add `'array'` as a column kind.** `ScalarValue` becomes
+   `ScalarValue | ScalarValue[]`. Every conditional type gets a new branch.
+   JSON format adds array cell encoding. Unlocks `distinct`, `topK`,
+   `histogram` (as bucket edges + counts), and arbitrary custom reducers.
+4. **Separate "metadata" columns from "value" columns.** Array outputs go into
+   a parallel metadata channel that doesn't flow through aggregation, alignment,
+   or chart adapters. Keeps the core scalar path untouched but adds API surface.
+
+Recommendation: start with (2) — a blessed `'distinct'` that returns a string.
+Defer (3) until a second non-scalar reducer proves the need. The type system
+cost of (3) is real and should not be paid speculatively.
 
 ---
 

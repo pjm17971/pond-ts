@@ -13,9 +13,11 @@ import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
   DiffSchema,
+  EventDataForSchema,
   EventForSchema,
   LiveSource,
   NumericColumnNameForSchema,
+  RollingSchema,
   ScalarValue,
   SelectSchema,
   SeriesSchema,
@@ -41,9 +43,12 @@ type EventListener = (event: any) => void;
 
 export type RollingWindow = DurationInput | number;
 
-export class LiveRollingAggregation<S extends SeriesSchema> {
+export class LiveRollingAggregation<
+  S extends SeriesSchema,
+  Out extends SeriesSchema = SeriesSchema,
+> {
   readonly name: string;
-  readonly schema: SeriesSchema;
+  readonly schema: Out;
 
   readonly #columns: ColumnSpec[];
   readonly #states: RollingReducerState[];
@@ -100,7 +105,7 @@ export class LiveRollingAggregation<S extends SeriesSchema> {
         kind: c.kind,
         required: false,
       })),
-    ]) as unknown as SeriesSchema;
+    ]) as unknown as Out;
 
     this.#states = this.#columns.map((c) =>
       resolveReducer(c.reducer).rollingState(),
@@ -126,7 +131,7 @@ export class LiveRollingAggregation<S extends SeriesSchema> {
     return this.#outputEvents.length;
   }
 
-  at(index: number): any {
+  at(index: number): EventForSchema<Out> | undefined {
     if (index < 0) index = this.#outputEvents.length + index;
     return this.#outputEvents[index];
   }
@@ -161,79 +166,77 @@ export class LiveRollingAggregation<S extends SeriesSchema> {
 
   // ── View transforms ─────────────────────────────────────────
 
-  filter(predicate: (event: any) => boolean): LiveView<SeriesSchema> {
+  filter(predicate: (event: EventForSchema<Out>) => boolean): LiveView<Out> {
     return new LiveView(this as any, (event: any) =>
       predicate(event) ? event : undefined,
     );
   }
 
-  map(fn: (event: any) => any): LiveView<SeriesSchema> {
-    return new LiveView(this as any, fn);
+  map(fn: (event: EventForSchema<Out>) => EventForSchema<Out>): LiveView<Out> {
+    return new LiveView(this as any, fn as any);
   }
 
-  select<const Keys extends readonly string[]>(
+  select<const Keys extends readonly (keyof EventDataForSchema<Out>)[]>(
     ...keys: Keys
-  ): LiveView<SelectSchema<SeriesSchema, Keys[number] & string>> {
+  ): LiveView<SelectSchema<Out, Keys[number] & string>> {
     const newSchema = Object.freeze([
       this.schema[0]!,
-      ...this.schema.slice(1).filter((c) => keys.includes(c.name)),
-    ]) as unknown as SelectSchema<SeriesSchema, Keys[number] & string>;
+      ...this.schema.slice(1).filter((c) => keys.includes(c.name as any)),
+    ]) as unknown as SelectSchema<Out, Keys[number] & string>;
 
     return new LiveView(this as any, (event: any) => event.select(...keys), {
       schema: newSchema as any,
     }) as any;
   }
 
-  window(size: RollingWindow): LiveView<SeriesSchema> {
+  window(size: RollingWindow): LiveView<Out> {
     return new LiveView(this as any, (event: any) => event).window(size) as any;
   }
 
-  diff<const Target extends NumericColumnNameForSchema<SeriesSchema>>(
+  diff<const Target extends NumericColumnNameForSchema<Out>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LiveView<DiffSchema<SeriesSchema, Target>> {
+  ): LiveView<DiffSchema<Out, Target>> {
     return makeDiffView(this as any, 'diff', columns, options);
   }
 
-  rate<const Target extends NumericColumnNameForSchema<SeriesSchema>>(
+  rate<const Target extends NumericColumnNameForSchema<Out>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LiveView<DiffSchema<SeriesSchema, Target>> {
+  ): LiveView<DiffSchema<Out, Target>> {
     return makeDiffView(this as any, 'rate', columns, options);
   }
 
-  pctChange<const Target extends NumericColumnNameForSchema<SeriesSchema>>(
+  pctChange<const Target extends NumericColumnNameForSchema<Out>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LiveView<DiffSchema<SeriesSchema, Target>> {
+  ): LiveView<DiffSchema<Out, Target>> {
     return makeDiffView(this as any, 'pctChange', columns, options);
   }
 
   fill(
-    strategy: LiveFillStrategy | LiveFillMapping<SeriesSchema>,
+    strategy: LiveFillStrategy | LiveFillMapping<Out>,
     options?: { limit?: number },
-  ): LiveView<SeriesSchema> {
+  ): LiveView<Out> {
     return makeFillView(this as any, strategy, options);
   }
 
-  cumulative<
-    const Targets extends NumericColumnNameForSchema<SeriesSchema>,
-  >(spec: {
+  cumulative<const Targets extends NumericColumnNameForSchema<Out>>(spec: {
     [K in Targets]:
       | 'sum'
       | 'max'
       | 'min'
       | 'count'
       | ((acc: number, value: number) => number);
-  }): LiveView<DiffSchema<SeriesSchema, Targets>> {
+  }): LiveView<DiffSchema<Out, Targets>> {
     return makeCumulativeView(this as any, spec);
   }
 
-  aggregate(
+  aggregate<const M extends AggregateMap<Out>>(
     sequence: Sequence,
-    mapping: AggregateMap<SeriesSchema>,
-  ): LiveAggregation<SeriesSchema> {
-    return new LiveAggregation(this as any, sequence, mapping);
+    mapping: M,
+  ): LiveAggregation<Out> {
+    return new LiveAggregation(this as any, sequence, mapping as any);
   }
 
   dispose(): void {

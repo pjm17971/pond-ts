@@ -19,16 +19,19 @@ import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
 import type { Sequence } from './Sequence.js';
-import type {
-  AggregateMap,
-  DiffSchema,
-  EventDataForSchema,
-  EventForSchema,
-  FirstColKind,
-  NumericColumnNameForSchema,
-  RowForSchema,
-  SelectSchema,
-  SeriesSchema,
+import {
+  EMITS_EVICT,
+  type AggregateMap,
+  type AggregateSchema,
+  type DiffSchema,
+  type EventDataForSchema,
+  type EventForSchema,
+  type FirstColKind,
+  type NumericColumnNameForSchema,
+  type RollingSchema,
+  type RowForSchema,
+  type SelectSchema,
+  type SeriesSchema,
 } from './types.js';
 
 import type { DurationInput } from './utils/duration.js';
@@ -141,6 +144,7 @@ type EvictListener<S extends SeriesSchema> = (
 // ── LiveSeries ──────────────────────────────────────────────────
 
 export class LiveSeries<S extends SeriesSchema> {
+  readonly [EMITS_EVICT] = true as const;
   readonly name: string;
   readonly schema: S;
 
@@ -303,15 +307,18 @@ export class LiveSeries<S extends SeriesSchema> {
     );
   }
 
-  aggregate(sequence: Sequence, mapping: AggregateMap<S>): LiveAggregation<S> {
-    return new LiveAggregation(this, sequence, mapping);
+  aggregate<const M extends AggregateMap<S>>(
+    sequence: Sequence,
+    mapping: M,
+  ): LiveAggregation<S, AggregateSchema<S, M>> {
+    return new LiveAggregation(this, sequence, mapping as AggregateMap<S>);
   }
 
-  rolling(
+  rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
-    mapping: AggregateMap<S>,
-  ): LiveRollingAggregation<S> {
-    return new LiveRollingAggregation(this, window, mapping);
+    mapping: M,
+  ): LiveRollingAggregation<S, RollingSchema<S, M>> {
+    return new LiveRollingAggregation(this, window, mapping as AggregateMap<S>);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

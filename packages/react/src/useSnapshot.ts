@@ -9,27 +9,54 @@ export interface UseSnapshotOptions {
 }
 
 /**
- * Subscribe to any `LiveSource` and return a throttled `TimeSeries` snapshot.
+ * Structural type covering all pond-ts live objects (`LiveSeries`, `LiveView`,
+ * `LiveAggregation`, `LiveRollingAggregation`).
+ *
+ * Using a structural type instead of the nominal `LiveSource<S>` avoids casts
+ * when passing `LiveAggregation` (whose output schema differs from its input
+ * type parameter).
+ */
+export type SnapshotSource<S extends SeriesSchema = SeriesSchema> = {
+  readonly name: string;
+  readonly schema: S;
+  readonly length: number;
+  at(index: number): unknown;
+  on(type: 'event', fn: (...args: any[]) => void): () => void;
+};
+
+/**
+ * Subscribe to any live source and return a throttled `TimeSeries` snapshot.
  *
  * The snapshot updates at most once per `throttle` interval (default 100 ms).
- * Returns `null` when the source is empty.
+ * Returns `null` when the source is empty or `null`.
+ *
+ * Accepts `LiveSource`, `LiveAggregation`, `LiveRollingAggregation`, or any
+ * object with a compatible shape — no casts needed.
+ *
+ * Accepts `null` as a source so hooks like `useWindow` can pass a
+ * not-yet-created source without violating the Rules of Hooks.
  */
 export function useSnapshot<S extends SeriesSchema>(
-  source: LiveSource<S>,
+  source: SnapshotSource<S> | LiveSource<S> | null,
   options?: UseSnapshotOptions,
 ): TimeSeries<S> | null {
   const throttleMs = options?.throttle ?? 100;
   const [snapshot, setSnapshot] = useState<TimeSeries<S> | null>(() =>
-    takeSnapshot(source),
+    source ? (takeSnapshot(source as LiveSource<S>) as TimeSeries<S>) : null,
   );
 
-  // Track the latest source + throttle so the effect re-subscribes when they change.
+  // Track the latest source so the flush callback always reads current state.
   const sourceRef = useRef(source);
   sourceRef.current = source;
 
   useEffect(() => {
+    if (!source) {
+      setSnapshot(null);
+      return;
+    }
+
     // Re-snapshot on source change
-    setSnapshot(takeSnapshot(source));
+    setSnapshot(takeSnapshot(source as LiveSource<S>) as TimeSeries<S>);
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let pending = false;
@@ -37,12 +64,20 @@ export function useSnapshot<S extends SeriesSchema>(
     const flush = () => {
       timer = null;
       pending = false;
-      setSnapshot(takeSnapshot(sourceRef.current));
+      if (sourceRef.current) {
+        setSnapshot(
+          takeSnapshot(sourceRef.current as LiveSource<S>) as TimeSeries<S>,
+        );
+      }
     };
 
     const unsub = source.on('event', () => {
       if (throttleMs === 0) {
-        setSnapshot(takeSnapshot(sourceRef.current));
+        if (sourceRef.current) {
+          setSnapshot(
+            takeSnapshot(sourceRef.current as LiveSource<S>) as TimeSeries<S>,
+          );
+        }
         return;
       }
       if (!pending) {
