@@ -56,9 +56,7 @@ export function useSnapshot<S extends SeriesSchema>(
     }
 
     // Re-snapshot on source change
-    setSnapshot(
-      takeSnapshot(source as LiveSource<S>) as TimeSeries<S>,
-    );
+    setSnapshot(takeSnapshot(source as LiveSource<S>) as TimeSeries<S>);
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let pending = false;
