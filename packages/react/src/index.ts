@@ -9,4 +9,6 @@ export {
 } from './useSnapshot.js';
 export { useWindow } from './useWindow.js';
 export { useDerived } from './useDerived.js';
+export { useLiveQuery } from './useLiveQuery.js';
+export { useLatest } from './useLatest.js';
 export { takeSnapshot } from './takeSnapshot.js';
