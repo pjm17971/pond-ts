@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Sequence, TimeSeries, ValidationError } from '../src/index.js';
+import { Sequence, TimeSeries, ValidationError, top } from '../src/index.js';
 
 // A schema with a tag-like array column and a numeric column alongside.
 const schema = [
@@ -518,5 +518,175 @@ describe('array column composition', () => {
     const withAvg = s.arrayAggregate('samples', 'avg', { as: 'avg' });
     const avgs = withAvg.toArray().map((e) => e.get('avg'));
     expect(avgs).toEqual([20, 25, 30]);
+  });
+});
+
+describe('top reducer', () => {
+  const scalarSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'host', kind: 'string' },
+  ] as const;
+
+  function hostSeries() {
+    return new TimeSeries({
+      name: 'hosts',
+      schema: scalarSchema,
+      rows: [
+        [0, 'api-1'],
+        [1000, 'api-2'],
+        [2000, 'api-1'],
+        [3000, 'api-3'],
+        [4000, 'api-1'],
+        [5000, 'api-2'],
+        [6000, 'api-4'],
+      ],
+    });
+  }
+
+  it("top(n) helper returns the matching 'topN' string name", () => {
+    expect(top(3)).toBe('top3');
+    expect(top(10)).toBe('top10');
+  });
+
+  it("reduce: 'top3' returns the three most frequent values", () => {
+    // api-1 x3, api-2 x2, api-3 x1, api-4 x1 -> top 3 are api-1, api-2, then
+    // a tie between api-3 and api-4 broken by scalar ordering -> api-3.
+    expect(hostSeries().reduce('host', 'top3')).toEqual([
+      'api-1',
+      'api-2',
+      'api-3',
+    ]);
+  });
+
+  it('reduce: top() helper is interchangeable with the string form', () => {
+    expect(hostSeries().reduce('host', top(2))).toEqual(['api-1', 'api-2']);
+  });
+
+  it('reduce: N larger than unique count returns all unique values', () => {
+    // Only 4 unique, request 10 -> all 4 back, ordered by frequency.
+    expect(hostSeries().reduce('host', top(10))).toEqual([
+      'api-1',
+      'api-2',
+      'api-3',
+      'api-4',
+    ]);
+  });
+
+  it('reduce: empty series returns empty array', () => {
+    const empty = new TimeSeries({
+      name: 'e',
+      schema: scalarSchema,
+      rows: [],
+    });
+    expect(empty.reduce('host', top(3))).toEqual([]);
+  });
+
+  it("reduce: ignores 'top0' and 'top-1' as reducer names", () => {
+    // parseTopN rejects these, so the registry throws.
+    expect(() => hostSeries().reduce('host', 'top0' as any)).toThrow(
+      /unsupported aggregate reducer/,
+    );
+    expect(() => hostSeries().reduce('host', 'top-1' as any)).toThrow(
+      /unsupported aggregate reducer/,
+    );
+  });
+
+  it('aggregate: produces an array-kind output column', () => {
+    const s = new TimeSeries({
+      name: 'h',
+      schema: scalarSchema,
+      rows: [
+        [0, 'a'],
+        [500, 'a'],
+        [600, 'b'],
+        [1500, 'c'],
+        [1700, 'a'],
+        [1900, 'b'],
+      ],
+    });
+    const agg = s.aggregate(Sequence.every('1s'), { host: top(2) });
+    const hostCol = agg.schema.find((c) => c.name === 'host');
+    expect(hostCol?.kind).toBe('array');
+    // bucket [0,1s): a x2, b x1 -> [a, b]
+    expect(agg.at(0)!.get('host')).toEqual(['a', 'b']);
+    // bucket [1s,2s): a x1, b x1, c x1 -> three-way tie, scalar order
+    expect(agg.at(1)!.get('host')).toEqual(['a', 'b']);
+  });
+
+  it('rolling: updates incrementally as the window slides', () => {
+    const s = new TimeSeries({
+      name: 'h',
+      schema: scalarSchema,
+      rows: [
+        [0, 'a'],
+        [1000, 'a'],
+        [2000, 'b'],
+        [3000, 'b'],
+        [4000, 'b'],
+        [5000, 'c'],
+      ],
+    });
+    const rolled = s.rolling('3s', { host: top(1) });
+    // (−3s, 0]  -> [a]           -> a
+    expect(rolled.at(0)!.get('host')).toEqual(['a']);
+    // (−2s, 1s] -> [a, a]        -> a
+    expect(rolled.at(1)!.get('host')).toEqual(['a']);
+    // (−1s, 2s] -> [a, a, b]     -> a
+    expect(rolled.at(2)!.get('host')).toEqual(['a']);
+    // (0s, 3s]  -> [a, b, b]     -> b
+    expect(rolled.at(3)!.get('host')).toEqual(['b']);
+    // (1s, 4s]  -> [b, b, b]     -> b
+    expect(rolled.at(4)!.get('host')).toEqual(['b']);
+    // (2s, 5s]  -> [b, b, c]     -> b
+    expect(rolled.at(5)!.get('host')).toEqual(['b']);
+  });
+
+  it('arrayAggregate: top-N frequency across elements of each array', () => {
+    const s = new TimeSeries({
+      name: 'tags',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'tags', kind: 'array' },
+      ] as const,
+      rows: [
+        [0, ['a', 'b', 'a', 'c']],
+        [1000, ['b', 'b', 'a', 'd']],
+      ],
+    });
+    const topped = s.arrayAggregate('tags', top(2), { as: 'topTags' });
+    const col = topped.schema.find((c) => c.name === 'topTags');
+    expect(col?.kind).toBe('array');
+    // row 0: a x2, b x1, c x1 -> [a, b]
+    expect(topped.at(0)!.get('topTags')).toEqual(['a', 'b']);
+    // row 1: b x2, a x1, d x1 -> [b, a]
+    expect(topped.at(1)!.get('topTags')).toEqual(['b', 'a']);
+  });
+
+  it('tie-break is deterministic across shuffles of the same input', () => {
+    const schemaT = [
+      { name: 'time', kind: 'time' },
+      { name: 'v', kind: 'string' },
+    ] as const;
+    const a = new TimeSeries({
+      name: 'a',
+      schema: schemaT,
+      rows: [
+        [0, 'x'],
+        [1, 'y'],
+        [2, 'z'],
+      ],
+    });
+    const b = new TimeSeries({
+      name: 'b',
+      schema: schemaT,
+      rows: [
+        [0, 'z'],
+        [1, 'y'],
+        [2, 'x'],
+      ],
+    });
+    // All three values tie at count 1; tie-break by scalar order.
+    expect(a.reduce('v', top(2))).toEqual(['x', 'y']);
+    expect(b.reduce('v', top(2))).toEqual(['x', 'y']);
   });
 });

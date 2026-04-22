@@ -834,12 +834,19 @@ That observation dramatically reduces the blast radius:
 #### Built-in reducers that return arrays
 
 - **`unique`** — distinct non-undefined values, sorted. Works on any column
-  kind.
-- **`topK(n)`** — top N values by frequency. Probably a function factory:
-  `topK(3)` returns a reducer.
+  kind. **Shipped.**
+- **`top(n)`** — top N values by frequency, sorted by count descending with
+  deterministic scalar tie-break. Implemented as a string-pattern reducer
+  (`'top3'`, `'top10'`, …) parallel to `pNN`, plus a `top(n)` helper that
+  returns the typed string literal. Incremental bucket/rolling state via
+  a count map, so `rolling('5m', { host: top(3) })` is O(1) per update.
+  **Shipped.**
 - **`percentiles(...qs)`** — compute multiple quantiles in one pass:
-  `percentiles(50, 90, 99)` returns `number[]`. Avoids the current pattern of
-  three separate `p50` / `p90` / `p99` columns.
+  `percentiles(50, 90, 99)` returns `number[]`. Avoids three separate
+  `p50` / `p90` / `p99` columns. **Deferred** — the workaround (declaring
+  three output columns) is ergonomic enough and doesn't lose efficiency
+  (each `pNN` reducer already shares a sorted-array rolling state). Revisit
+  only if multi-quantile dashboards become a common pattern.
 
 #### Array column operators
 
@@ -905,9 +912,10 @@ Live `arrayAggregate` and `arrayExplode` need more thought (how
 - [x] Array column operators: `arrayContains`, `arrayContainsAll`,
       `arrayContainsAny`, `arrayAggregate`, `arrayExplode`. All append-mode
       operators (`arrayAggregate`, `arrayExplode`) accept `{ as }`.
-- [ ] `topK(n)` — top N values by frequency. Probably a function factory:
-      `topK(3)` returns a reducer.
-- [ ] `percentiles(...qs)` — compute multiple quantiles in one pass.
+- [x] `top(n)` — top N values by frequency with incremental bucket/rolling
+      state. Usable as `'top3'`, `top(3)`, or any `` `top${number}` ``.
+- [ ] `percentiles(...qs)` — multi-quantile reducer. Deferred; the
+      workaround of declaring three `pNN` columns is cheap and clear.
 - [ ] Live equivalents of array column operators (deferred until there's a
       concrete live dashboard need).
 

@@ -6,6 +6,7 @@ export type {
 
 import type { ReducerDef } from './types.js';
 import { parsePercentile, percentileReducer } from './percentile.js';
+import { parseTopN, topReducer } from './top.js';
 
 import { count } from './count.js';
 import { sum } from './sum.js';
@@ -19,6 +20,8 @@ import { stdev } from './stdev.js';
 import { difference } from './difference.js';
 import { keep } from './keep.js';
 import { unique } from './unique.js';
+
+export { top } from './top.js';
 
 const registry: Record<string, ReducerDef> = {
   count,
@@ -40,5 +43,7 @@ export function resolveReducer(operation: string): ReducerDef {
   if (r) return r;
   const q = parsePercentile(operation);
   if (q !== undefined) return percentileReducer(q);
+  const n = parseTopN(operation);
+  if (n !== undefined) return topReducer(n);
   throw new TypeError(`unsupported aggregate reducer: ${operation}`);
 }

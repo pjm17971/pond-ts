@@ -392,7 +392,8 @@ export type AggregateFunction =
   | 'difference'
   | 'keep'
   | 'unique'
-  | `p${number}`;
+  | `p${number}`
+  | `top${number}`;
 /**
  * Custom aggregate reducers receive every value in a bucket (including
  * `undefined`) and return a single result. The return type is widened to
@@ -413,7 +414,14 @@ type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
   ? AggregateReducer
   : Kind extends 'array'
     ? 'count' | 'first' | 'last' | 'keep' | CustomAggregateReducer
-    : 'count' | 'first' | 'last' | 'keep' | 'unique' | CustomAggregateReducer;
+    :
+        | 'count'
+        | 'first'
+        | 'last'
+        | 'keep'
+        | 'unique'
+        | `top${number}`
+        | CustomAggregateReducer;
 
 type AggregateMapEntries<S extends SeriesSchema> = {
   [C in ValueColumnsForSchema<S>[number] as C['name']]?: AggregateFunctionsForKind<
@@ -455,7 +463,7 @@ type AggregateKindForColumn<
 > = Op extends AggregateFunction
   ? Op extends 'sum' | 'avg' | 'count'
     ? 'number'
-    : Op extends 'unique'
+    : Op extends 'unique' | `top${number}`
       ? 'array'
       : Column['kind']
   : Column['kind'];
@@ -568,7 +576,7 @@ export type ArrayAggregateKind<
   ? ExplicitKind
   : Op extends NumericAggregateFunction
     ? 'number'
-    : Op extends 'unique'
+    : Op extends 'unique' | `top${number}`
       ? 'array'
       : 'string';
 
