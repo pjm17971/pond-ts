@@ -4,9 +4,11 @@ sidebar_position: 12
 
 # Reducer Reference
 
-Pond ships 12 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.)
-and custom reducer functions. Every built-in works in `aggregate()`, `reduce()`, `rolling()`,
-and `collapse()`.
+Pond ships 14 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.),
+top-N-by-frequency patterns (`top3`, `top10`, etc.), and custom reducer functions. Every
+built-in works in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`. The two
+array-producing reducers (`unique` and `top(n)`) also slot into
+[`arrayAggregate()`](./arrays#per-event-reduction-arrayaggregate) on array columns.
 
 ## Numeric reducers
 
@@ -161,6 +163,70 @@ host name since all events in each group share the same value.
 
 Returns `undefined` for an empty bucket or mixed values.
 
+## Array-producing reducers
+
+These two reducers output an array column (`kind: 'array'`) instead of a scalar. They
+drive most of the tagging / distinct-value workflows — see the
+[Array Columns guide](./arrays) for the full treatment.
+
+### `unique`
+
+Distinct non-`undefined` values, sorted. Works on any column kind.
+
+```ts
+series.aggregate(Sequence.every('1m'), {
+  host: 'unique', // host: 'string' -> host: 'array'
+});
+// bucket sees 'api-1','api-1','api-2' -> ['api-1', 'api-2']
+```
+
+If the source column is already `kind: 'array'`, `unique` flattens one level and takes
+the **set union** of elements across every array in the bucket:
+
+```ts
+tags.aggregate(Sequence.every('1m'), { tags: 'unique' });
+// bucket with rows [['5xx','timeout'], ['5xx'], ['retry']]
+// -> ['5xx', 'retry', 'timeout']
+```
+
+Ordering is deterministic (numbers &lt; strings &lt; booleans, JS default within a kind).
+
+Returns `[]` for an empty bucket.
+
+### `top(n)` / `` `top${number}` ``
+
+Top N values by frequency. Parsed from the string pattern `` `top${number}` `` (like `p${number}`);
+the `top(n)` helper returns the typed string literal.
+
+```ts
+import { top } from 'pond-ts';
+
+series.aggregate(Sequence.every('1m'), {
+  host: top(3), // the 3 most frequent hosts this minute
+  path: 'top5', // string form works identically
+});
+```
+
+Output is sorted by count descending. Ties break by scalar order (numbers &lt; strings &lt; booleans,
+JS default within a kind). If N exceeds the unique count, all unique values are returned.
+
+Like `unique`, `top(n)` flattens array-kind sources one level — it counts **elements**
+across every array in the bucket, not the arrays themselves:
+
+```ts
+tags.aggregate(Sequence.every('1m'), { tags: top(3) });
+// bucket with rows [['5xx','timeout'], ['5xx'], ['retry','5xx']]
+// element counts: 5xx=3, timeout=1, retry=1
+// -> ['5xx', 'retry', 'timeout']
+```
+
+Invalid names (`'top0'`, `'top-1'`) throw at resolve time.
+
+Rolling-window complexity is O(1) per add/remove (count map); final sort on snapshot is
+O(k log k) where k is the distinct value count.
+
+Returns `[]` for an empty bucket.
+
 ## Custom reducers
 
 Supply a function wherever a built-in name is accepted. The function receives all values
@@ -193,18 +259,21 @@ Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`
 | `last`       | `undefined`  |
 | `keep`       | `undefined`  |
 | `p50`...     | `undefined`  |
+| `unique`     | `[]`         |
+| `top3`...    | `[]`         |
 
 ## Rolling window behavior
 
 All built-in reducers work with `rolling()`. Most use O(1) incremental add/remove:
 
-| Reducer                             | Rolling complexity                          |
-| ----------------------------------- | ------------------------------------------- |
-| `sum`, `avg`, `count`, `stdev`      | O(1) per event                              |
-| `min`, `max`                        | O(1) amortized (monotone deque)             |
-| `first`, `last`                     | O(1) amortized                              |
-| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove) |
-| `keep`                              | O(1) per event (value count map)            |
+| Reducer                             | Rolling complexity                             |
+| ----------------------------------- | ---------------------------------------------- |
+| `sum`, `avg`, `count`, `stdev`      | O(1) per event                                 |
+| `min`, `max`                        | O(1) amortized (monotone deque)                |
+| `first`, `last`                     | O(1) amortized                                 |
+| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove)    |
+| `keep`, `unique`                    | O(1) per event (value count map)               |
+| `top(n)`                            | O(1) add/remove; O(k log k) snapshot sort      |
 
 For typical rolling windows (tens to hundreds of events), the sorted array approach
 is fast enough. For very large windows with median/percentile, consider a custom reducer.

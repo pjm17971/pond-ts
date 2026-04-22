@@ -13,6 +13,8 @@ const sidebars: SidebarsConfig = {
         'guides/alignment-and-aggregation',
         'guides/aggregation-playbook',
         'guides/rolling-and-smoothing',
+        'guides/arrays',
+        'guides/reducer-reference',
         'guides/json-ingest-and-timezones',
         'guides/live-series',
         'guides/live-transforms',
