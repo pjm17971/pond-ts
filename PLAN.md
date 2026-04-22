@@ -662,11 +662,30 @@ Entry point: `@pond-ts/react` (separate workspace package)
 - [x] Schema-transform types already exported: `AggregateSchema`, `RollingSchema`,
       `DiffSchema`, `SmoothSchema`, `SmoothAppendSchema`, `SelectSchema`,
       `RenameSchema`, `CollapseSchema`
+- [x] `useLiveQuery` — bundles `useMemo` + `useSnapshot` into one call; return
+      shape matches `useLiveSeries`, cuts hook count roughly in half for dashboards
+      with multiple derived views
+- [x] `useLatest` — subscribes to a live source and returns only the most recent
+      event; lighter than a full `TimeSeries` snapshot for stat cards and gauges
+
+### Remaining
+
+- [ ] Document `rate()` / `diff()` / `pctChange()` behavior when `dt = 0` —
+      concurrent events (same timestamp) produce `undefined`. Workaround is to
+      filter per-producer first. A `rateOver({ every: '1s' })` variant that
+      normalizes to fixed wall-clock windows may be worth adding later.
+- [ ] `smooth('ema', { warmup: N })` or seeded EMA — first ~1/α samples are noisy
+      raw data. A `warmup` option that trims or a `seed` value that initializes
+      `ema_0` would avoid the manual `.slice()` workaround.
+- [ ] Dashboard guide doc fixes — show `useLiveQuery` as the idiomatic pattern
+      rather than manual `useMemo` + `useSnapshot`; document how derived views
+      interact with `LiveSeries` retention.
 
 **Render throttling** is critical. Raw data can arrive at hundreds of events per
 second. The `throttle` option caps how often the snapshot is recomputed.
 Stateless transforms are cheap enough to build inline during render; stateful
-transforms must be created once via `useMemo` on the `live` ref.
+transforms must be created once via `useMemo` on the `live` ref (or
+`useLiveQuery`).
 
 Requirements before starting:
 
@@ -754,6 +773,60 @@ Before moving from one major phase to the next, answer the relevant question:
 - After Phase 5: do common frontend use cases work without ad hoc glue?
 
 If the answer is no, stay in the phase and tighten the model before expanding.
+
+---
+
+## Deferred design decisions
+
+### Non-scalar reducer outputs (`distinct`, `topK`, `histogram`)
+
+A `'distinct'` reducer (unique values in a bucket) is a natural aggregation —
+"which hosts reported in this window?" — but it collides with a fundamental
+constraint: `CustomAggregateReducer` returns `ScalarValue | undefined`
+(`number | string | boolean`), and the natural output of `distinct` is
+`string[]`.
+
+The scalar-preserving workaround is a comma-joined string:
+
+```ts
+const distinct: CustomAggregateReducer = (values) =>
+  [...new Set(values.filter((v) => v !== undefined))].sort().join(',');
+```
+
+Read side: `event.get('host')?.split(',')`. Good enough for enum-ish columns
+(host names, regions, status codes) where values never contain the separator.
+
+But this is a hack. The real question is whether pond-ts should support
+non-scalar column values at all. Opening the door to `string[]` as a column
+value has cascading effects:
+
+- **Schema type system**: `ScalarKind` and `ScalarValue` are wired through
+  every type in `types.ts`. Adding an array kind means auditing every
+  conditional type, every `NormalizedValueForKind`, every JSON round-trip path.
+- **Serialization**: `toJSON()` / `fromJSON()` assume flat scalar cells.
+  Arrays would need a container encoding or a breaking format change.
+- **Aggregation composability**: what does `avg` mean on a `string[]` column?
+  Every reducer would need to either reject or define behavior for array inputs.
+- **Chart interop**: adapter helpers and downstream chart components assume
+  scalars. Arrays break the 1:1 column→axis mapping.
+
+Options, in ascending order of ambition:
+
+1. **Do nothing.** The comma-join workaround is ugly but finite. Document it.
+2. **Built-in `'distinct'` that returns a comma-joined string.** Same hack,
+   but blessed. `keep` already returns scalar-or-undefined; `distinct` would
+   return string-or-undefined. No type system changes.
+3. **Add `'array'` as a column kind.** `ScalarValue` becomes
+   `ScalarValue | ScalarValue[]`. Every conditional type gets a new branch.
+   JSON format adds array cell encoding. Unlocks `distinct`, `topK`,
+   `histogram` (as bucket edges + counts), and arbitrary custom reducers.
+4. **Separate "metadata" columns from "value" columns.** Array outputs go into
+   a parallel metadata channel that doesn't flow through aggregation, alignment,
+   or chart adapters. Keeps the core scalar path untouched but adds API surface.
+
+Recommendation: start with (2) — a blessed `'distinct'` that returns a string.
+Defer (3) until a second non-scalar reducer proves the need. The type system
+cost of (3) is real and should not be paid speculatively.
 
 ---
 
