@@ -413,7 +413,14 @@ export type JoinConflictMode = 'error' | 'prefix';
 type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
   ? AggregateReducer
   : Kind extends 'array'
-    ? 'count' | 'first' | 'last' | 'keep' | CustomAggregateReducer
+    ?
+        | 'count'
+        | 'first'
+        | 'last'
+        | 'keep'
+        | 'unique'
+        | `top${number}`
+        | CustomAggregateReducer
     :
         | 'count'
         | 'first'

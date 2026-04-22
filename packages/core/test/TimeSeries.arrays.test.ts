@@ -158,6 +158,48 @@ describe('unique reducer (bucket aggregation)', () => {
     expect(rolled.at(3)!.get('host')).toEqual(['api-2', 'api-3']);
     expect(rolled.at(4)!.get('host')).toEqual(['api-1', 'api-3']);
   });
+
+  it('aggregate: flattens array-kind source columns (set union across arrays)', () => {
+    const s = new TimeSeries({
+      name: 'tags',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'tags', kind: 'array' },
+      ] as const,
+      rows: [
+        [0, ['a', 'b']],
+        [500, ['b', 'c']],
+        [1500, ['a', 'd']],
+      ],
+    });
+    const agg = s.aggregate(Sequence.every('1s'), { tags: 'unique' });
+    // bucket [0,1s): union of ['a','b'] + ['b','c'] -> ['a','b','c']
+    expect(agg.at(0)!.get('tags')).toEqual(['a', 'b', 'c']);
+    // bucket [1s,2s): ['a','d']
+    expect(agg.at(1)!.get('tags')).toEqual(['a', 'd']);
+  });
+
+  it('rolling: flattens array-kind source columns with correct eviction', () => {
+    const s = new TimeSeries({
+      name: 'tags',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'tags', kind: 'array' },
+      ] as const,
+      rows: [
+        [0, ['a', 'b']],
+        [1000, ['b', 'c']],
+        [2000, ['d']],
+      ],
+    });
+    // 1.5s trailing window: at each index the window spans (t-1500, t].
+    const rolled = s.rolling('1500ms', { tags: 'unique' });
+    expect(rolled.at(0)!.get('tags')).toEqual(['a', 'b']);
+    // (−500, 1000]: both rows -> ['a','b','c']
+    expect(rolled.at(1)!.get('tags')).toEqual(['a', 'b', 'c']);
+    // (500, 2000]: row[1] + row[2] -> ['b','c','d']
+    expect(rolled.at(2)!.get('tags')).toEqual(['b', 'c', 'd']);
+  });
 });
 
 describe('TimeSeries.arrayContains', () => {
@@ -688,5 +730,52 @@ describe('top reducer', () => {
     // All three values tie at count 1; tie-break by scalar order.
     expect(a.reduce('v', top(2))).toEqual(['x', 'y']);
     expect(b.reduce('v', top(2))).toEqual(['x', 'y']);
+  });
+
+  it('aggregate: flattens array-kind source columns (elements across all arrays)', () => {
+    const s = new TimeSeries({
+      name: 'tags',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'tags', kind: 'array' },
+      ] as const,
+      rows: [
+        [0, ['5xx', 'timeout']],
+        [500, ['5xx']],
+        [700, ['retry', '5xx']],
+        [1500, ['timeout']],
+      ],
+    });
+    const agg = s.aggregate(Sequence.every('1s'), { tags: top(2) });
+    // bucket [0,1s): 5xx x3, timeout x1, retry x1 -> [5xx, retry]
+    // (retry and timeout tie at 1; scalar order picks retry)
+    expect(agg.at(0)!.get('tags')).toEqual(['5xx', 'retry']);
+    expect(agg.at(1)!.get('tags')).toEqual(['timeout']);
+  });
+
+  it('rolling: flattens array-kind inputs with correct eviction counts', () => {
+    const s = new TimeSeries({
+      name: 'tags',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'tags', kind: 'array' },
+      ] as const,
+      rows: [
+        [0, ['a', 'a']],
+        [1000, ['b']],
+        [2000, ['b', 'c']],
+        [3000, ['a']],
+      ],
+    });
+    // 1500ms trailing window.
+    const rolled = s.rolling('1500ms', { tags: top(1) });
+    // (−1500, 0]: a x2 -> [a]
+    expect(rolled.at(0)!.get('tags')).toEqual(['a']);
+    // (−500, 1000]: a x2, b x1 -> [a]
+    expect(rolled.at(1)!.get('tags')).toEqual(['a']);
+    // (500, 2000]: b x2, c x1 -> [b]
+    expect(rolled.at(2)!.get('tags')).toEqual(['b']);
+    // (1500, 3000]: b x1, c x1, a x1 -> three-way tie, scalar order -> [a]
+    expect(rolled.at(3)!.get('tags')).toEqual(['a']);
   });
 });

@@ -39,6 +39,41 @@ function isScalar(v: ColumnValue | undefined): v is ScalarValue {
   );
 }
 
+function incrementCounts(
+  counts: Map<ScalarValue, number>,
+  v: ColumnValue | undefined,
+): void {
+  if (v === undefined) return;
+  if (isScalar(v)) {
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+    return;
+  }
+  for (const element of v) {
+    if (isScalar(element)) {
+      counts.set(element, (counts.get(element) ?? 0) + 1);
+    }
+  }
+}
+
+function decrementCounts(
+  counts: Map<ScalarValue, number>,
+  v: ColumnValue | undefined,
+): void {
+  if (v === undefined) return;
+  if (isScalar(v)) {
+    const next = (counts.get(v) ?? 0) - 1;
+    if (next <= 0) counts.delete(v);
+    else counts.set(v, next);
+    return;
+  }
+  for (const element of v) {
+    if (!isScalar(element)) continue;
+    const next = (counts.get(element) ?? 0) - 1;
+    if (next <= 0) counts.delete(element);
+    else counts.set(element, next);
+  }
+}
+
 /**
  * Materialize the top N values from a frequency map.
  * Order: frequency descending, ties broken by `compareScalars`.
@@ -62,6 +97,10 @@ function topFromCounts(
  * Factory: returns a `ReducerDef` that emits the top N values by
  * frequency, sorted by count descending with deterministic tie-break.
  * Used internally by `resolveReducer` when parsing a `'topN'` string name.
+ *
+ * Array-kind inputs are flattened one level so "top tags this minute"
+ * works when the source column is a tag-list array — elements are counted
+ * across all arrays in the bucket.
  */
 export function topReducer(n: number): ReducerDef {
   if (!Number.isInteger(n) || n <= 0) {
@@ -71,16 +110,14 @@ export function topReducer(n: number): ReducerDef {
     outputKind: 'array',
     reduce(defined) {
       const counts = new Map<ScalarValue, number>();
-      for (const v of defined) {
-        if (isScalar(v)) counts.set(v, (counts.get(v) ?? 0) + 1);
-      }
+      for (const v of defined) incrementCounts(counts, v);
       return topFromCounts(counts, n);
     },
     bucketState() {
       const counts = new Map<ScalarValue, number>();
       return {
         add(v) {
-          if (isScalar(v)) counts.set(v, (counts.get(v) ?? 0) + 1);
+          incrementCounts(counts, v);
         },
         snapshot() {
           return topFromCounts(counts, n);
@@ -91,14 +128,10 @@ export function topReducer(n: number): ReducerDef {
       const counts = new Map<ScalarValue, number>();
       return {
         add(_i, v) {
-          if (!isScalar(v)) return;
-          counts.set(v, (counts.get(v) ?? 0) + 1);
+          incrementCounts(counts, v);
         },
         remove(_i, v) {
-          if (!isScalar(v)) return;
-          const next = (counts.get(v) ?? 0) - 1;
-          if (next <= 0) counts.delete(v);
-          else counts.set(v, next);
+          decrementCounts(counts, v);
         },
         snapshot() {
           return topFromCounts(counts, n);

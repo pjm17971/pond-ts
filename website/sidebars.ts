@@ -21,7 +21,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Examples',
-      items: ['examples/cpu-metrics'],
+      items: ['examples/cpu-metrics', 'examples/error-rate-dashboard'],
     },
   ],
 };
