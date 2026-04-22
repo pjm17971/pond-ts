@@ -6,18 +6,21 @@ import {
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
-import type {
-  AggregateMap,
-  DiffSchema,
-  EventDataForSchema,
-  EventForSchema,
-  LiveSource,
-  NumericColumnNameForSchema,
-  RowForSchema,
-  ScalarValue,
-  SelectSchema,
-  SeriesSchema,
-  ValueColumnsForSchema,
+import {
+  EMITS_EVICT,
+  type AggregateMap,
+  type AggregateSchema,
+  type DiffSchema,
+  type EventDataForSchema,
+  type EventForSchema,
+  type LiveSource,
+  type NumericColumnNameForSchema,
+  type RollingSchema,
+  type RowForSchema,
+  type ScalarValue,
+  type SelectSchema,
+  type SeriesSchema,
+  type ValueColumnsForSchema,
 } from './types.js';
 
 export type LiveFillStrategy = 'hold' | 'zero';
@@ -32,6 +35,9 @@ import { parseDuration } from './utils/duration.js';
 import type { DurationInput } from './utils/duration.js';
 
 type EventListener<S extends SeriesSchema> = (event: EventForSchema<S>) => void;
+type EvictListener<S extends SeriesSchema> = (
+  evicted: readonly EventForSchema<S>[],
+) => void;
 
 type ViewOptions<S extends SeriesSchema> = {
   schema?: S;
@@ -39,6 +45,7 @@ type ViewOptions<S extends SeriesSchema> = {
 };
 
 export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
+  readonly [EMITS_EVICT] = true as const;
   readonly name: string;
   readonly schema: S;
 
@@ -48,6 +55,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     | ((events: readonly EventForSchema<S>[]) => number)
     | undefined;
   readonly #onEvent: Set<EventListener<S>>;
+  readonly #onEvict: Set<EvictListener<S>>;
   readonly #unsubscribe: () => void;
 
   constructor(
@@ -61,6 +69,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     this.#process = process;
     this.#evict = options?.evict;
     this.#onEvent = new Set();
+    this.#onEvict = new Set();
 
     for (let i = 0; i < source.length; i++) {
       const result = this.#process(source.at(i)!);
@@ -68,7 +77,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     }
     this.#applyEviction();
 
-    this.#unsubscribe = source.on('event', (event) => {
+    const eventUnsub = source.on('event', (event) => {
       const result = this.#process(event);
       if (result !== undefined) {
         this.#events.push(result);
@@ -76,6 +85,35 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
         for (const fn of this.#onEvent) fn(result);
       }
     });
+
+    // Mirror source eviction: when the source removes old events, remove
+    // view events that are at or before the latest evicted timestamp.
+    // This prevents unbounded growth on filtered/mapped views of a
+    // retention-capped LiveSeries.
+    //
+    // Only subscribe if the source actually emits 'evict' events (marked
+    // by the EMITS_EVICT symbol).  Duck-typing `source.on('evict', fn)`
+    // is unsafe because LiveAggregation's `on()` silently routes unknown
+    // event types to its update listener set.
+    let evictUnsub: (() => void) | undefined;
+    if (EMITS_EVICT in source) {
+      evictUnsub = (source as any).on('evict', (evicted: readonly any[]) => {
+        if (evicted.length === 0 || this.#events.length === 0) return;
+        const cutoff = evicted[evicted.length - 1]!.begin();
+        let i = 0;
+        while (i < this.#events.length && this.#events[i]!.begin() <= cutoff)
+          i++;
+        if (i > 0) {
+          const removed = this.#events.splice(0, i);
+          for (const fn of this.#onEvict) fn(removed as any);
+        }
+      });
+    }
+
+    this.#unsubscribe = () => {
+      eventUnsub();
+      evictUnsub?.();
+    };
   }
 
   get length(): number {
@@ -142,15 +180,18 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     );
   }
 
-  aggregate(sequence: Sequence, mapping: AggregateMap<S>): LiveAggregation<S> {
-    return new LiveAggregation(this, sequence, mapping);
+  aggregate<const M extends AggregateMap<S>>(
+    sequence: Sequence,
+    mapping: M,
+  ): LiveAggregation<S, AggregateSchema<S, M>> {
+    return new LiveAggregation(this, sequence, mapping as AggregateMap<S>);
   }
 
-  rolling(
+  rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
-    mapping: AggregateMap<S>,
-  ): LiveRollingAggregation<S> {
-    return new LiveRollingAggregation(this, window, mapping);
+    mapping: M,
+  ): LiveRollingAggregation<S, RollingSchema<S, M>> {
+    return new LiveRollingAggregation(this, window, mapping as AggregateMap<S>);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(
@@ -207,10 +248,16 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     });
   }
 
-  on(type: 'event', fn: EventListener<S>): () => void {
-    this.#onEvent.add(fn);
+  on(type: 'event', fn: EventListener<S>): () => void;
+  on(type: 'evict', fn: EvictListener<S>): () => void;
+  on(
+    type: 'event' | 'evict',
+    fn: EventListener<S> | EvictListener<S>,
+  ): () => void {
+    const set: Set<any> = type === 'event' ? this.#onEvent : this.#onEvict;
+    set.add(fn);
     return () => {
-      this.#onEvent.delete(fn);
+      set.delete(fn);
     };
   }
 

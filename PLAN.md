@@ -555,9 +555,12 @@ unifies filter (predicate → event or undefined) and map (transform → always
 returns event) in one class.
 
 Views maintain their own buffer of processed events for O(1) `at()` and
-`length`. The buffer is append-only — views do not automatically evict when the
-source does. If retention is needed on a view, compose with a second
-`LiveSeries` or dispose the view when done.
+`length`. Views mirror evictions from their source: when a retention-capped
+`LiveSeries` evicts old events, downstream views (filter, map, etc.) remove
+corresponding events automatically. This prevents unbounded growth on
+filtered/mapped views of a retention-capped source. Detection uses the
+`EMITS_EVICT` symbol to safely identify sources that fire `'evict'` events
+(avoids duck-typing `on('evict')` which breaks on `LiveAggregation`).
 
 **`select`** narrows the schema. The output `LiveView` has a different schema
 type from the input. The constructor accepts an optional output schema for this
@@ -621,7 +624,7 @@ Definition of done:
 ## Phase 5: React integration
 
 Status: in progress. Monorepo restructure complete — `@pond-ts/react` package
-at `packages/react/`.
+at `packages/react/`. Hooks shipped at v0.4.2; usability fixes in progress.
 
 Goal: make Pond useful in frontend apps without forcing a framework-y runtime
 model into the core package.
@@ -631,17 +634,34 @@ Entry point: `@pond-ts/react` (separate workspace package)
 ### Hooks
 
 - [x] `useLiveSeries` — creates and owns a `LiveSeries` for component lifetime;
-  returns a stable `live` ref and a throttled `TimeSeries` snapshot
+      returns a stable `live` ref and a throttled `TimeSeries` snapshot
 - [x] `useTimeSeries` — memoized `TimeSeries.fromJSON(...)` for static/fetched
-  data; re-parses only when key changes
+      data; re-parses only when key changes
 - [x] `useSnapshot` — converts any `LiveSource` into a throttled `TimeSeries`
-  snapshot for rendering; works with `LiveSeries`, `LiveView`,
-  `LiveAggregation`, and `LiveRollingAggregation`
+      snapshot for rendering; works with `LiveSeries`, `LiveView`,
+      `LiveAggregation`, and `LiveRollingAggregation`
 - [x] `useWindow` — derived windowed view that updates as the source grows;
-  disposes the view on cleanup
+      disposes the view on cleanup
 - [x] `useDerived` — applies a batch transform to a snapshot, recomputing when
-  the input changes
+      the input changes
 - [x] `takeSnapshot` — utility: build a `TimeSeries` from any `LiveSource`
+
+### Usability fixes (from external testing)
+
+- [x] `Time.toDate()` — added missing convenience method
+- [x] `useWindow` StrictMode fix — view created in `useEffect`, not `useMemo`
+- [x] `TimeSeries[Symbol.iterator]` and `toArray()` — ergonomic iteration
+- [x] `useSnapshot` accepts `SnapshotSource<S>` structural type — avoids casts
+      when passing `LiveAggregation` or `LiveRollingAggregation`
+- [x] `LiveView` eviction mirroring — filtered/mapped views now mirror source
+      evictions (uses `EMITS_EVICT` symbol to safely detect evict-capable sources)
+- [x] `LiveAggregation<S, Out>` and `LiveRollingAggregation<S, Out>` — output
+      schema type parameter enables `event.get('col')` to narrow through
+      aggregation chains (e.g. `agg.at(0)?.get('cpu')` returns `number | undefined`
+      instead of `ScalarValue | undefined`)
+- [x] Schema-transform types already exported: `AggregateSchema`, `RollingSchema`,
+      `DiffSchema`, `SmoothSchema`, `SmoothAppendSchema`, `SelectSchema`,
+      `RenameSchema`, `CollapseSchema`
 
 **Render throttling** is critical. Raw data can arrive at hundreds of events per
 second. The `throttle` option caps how often the snapshot is recomputed.
@@ -654,7 +674,7 @@ Requirements before starting:
 
 Definition of done:
 
-- live data can flow from WebSocket-like sources into throttled React renders
+- [x] live data can flow from WebSocket-like sources into throttled React renders
 - hooks have examples that mirror likely product use
 - the docs explain when to use lazy views vs memoized derived data
 

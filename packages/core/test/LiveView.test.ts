@@ -744,3 +744,102 @@ describe('edge cases', () => {
     view.dispose();
   });
 });
+
+// ── Eviction mirroring ────────────────────────────────────────
+
+describe('eviction mirroring', () => {
+  it('view mirrors evictions from a retention-capped LiveSeries', () => {
+    const live = new LiveSeries({
+      name: 'capped',
+      schema,
+      retention: { maxEvents: 3 },
+    });
+    const view = live.filter((e) => (e.get('value') as number) > 0);
+
+    // Fill to capacity
+    live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'c']);
+    expect(view.length).toBe(3);
+
+    // Push another — LiveSeries evicts the oldest, view should mirror
+    live.push([3000, 40, 'd']);
+    expect(live.length).toBe(3); // [1000, 2000, 3000]
+    expect(view.length).toBe(3); // mirrored eviction: [20, 30, 40]
+    expect(view.first()?.get('value')).toBe(20);
+  });
+
+  it('view fires evict listeners when mirroring', () => {
+    const live = new LiveSeries({
+      name: 'capped',
+      schema,
+      retention: { maxEvents: 2 },
+    });
+    const view = live.filter(() => true);
+
+    live.push([0, 10, 'a'], [1000, 20, 'b']);
+
+    const evicted: unknown[] = [];
+    view.on('evict', (removed) => {
+      evicted.push(...removed);
+    });
+
+    live.push([2000, 30, 'c']);
+    expect(evicted.length).toBe(1);
+    expect((evicted[0] as any).get('value')).toBe(10);
+  });
+
+  it('filtered view evicts only matching events', () => {
+    const live = new LiveSeries({
+      name: 'capped',
+      schema,
+      retention: { maxEvents: 3 },
+    });
+    // Only keep host='a' events
+    const view = live.filter((e) => e.get('host') === 'a');
+
+    live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'a']);
+    expect(view.length).toBe(2); // 10, 30
+
+    // Evict oldest (t=0, host=a) — view should drop it
+    live.push([3000, 40, 'b']);
+    expect(live.length).toBe(3); // [1000, 2000, 3000]
+    expect(view.length).toBe(1); // only t=2000 (host=a) remains
+    expect(view.first()?.get('value')).toBe(30);
+  });
+
+  it('chained views propagate eviction', () => {
+    const live = new LiveSeries({
+      name: 'capped',
+      schema,
+      retention: { maxEvents: 3 },
+    });
+    const v1 = live.filter(() => true);
+    const v2 = v1.map((e) => e);
+
+    live.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'c']);
+    expect(v2.length).toBe(3);
+
+    live.push([3000, 40, 'd']);
+    expect(v2.length).toBe(3);
+    expect(v2.first()?.get('value')).toBe(20);
+
+    v2.dispose();
+    v1.dispose();
+  });
+
+  it('does not subscribe to evict on LiveAggregation source', () => {
+    const live = makeLive();
+    live.push([0, 10, 'a'], [60_000, 20, 'b']);
+    const agg = live.aggregate(Sequence.every('1m'), { value: 'sum' });
+
+    // This should NOT throw — the EMITS_EVICT symbol prevents the
+    // broken duck-typing path that used to route to the update set
+    const view = new LiveView(agg as any, (e: any) => e);
+    expect(view.length).toBe(agg.closedCount);
+
+    // Push more data through — should not throw
+    live.push([120_000, 30, 'c']);
+
+    view.dispose();
+    agg.dispose();
+  });
+});

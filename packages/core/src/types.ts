@@ -9,6 +9,9 @@ import type { Interval } from './Interval.js';
 import type { Time } from './Time.js';
 import type { TimeRange } from './TimeRange.js';
 
+/** Marker symbol for sources that emit `'evict'` events. @internal */
+export const EMITS_EVICT: unique symbol = Symbol.for('pond-ts:emitsEvict');
+
 export type ScalarKind = 'number' | 'string' | 'boolean';
 export type ScalarValue = number | string | boolean;
 export type FirstColKind = 'time' | 'interval' | 'timeRange';
