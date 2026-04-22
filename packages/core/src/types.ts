@@ -12,8 +12,20 @@ import type { TimeRange } from './TimeRange.js';
 /** Marker symbol for sources that emit `'evict'` events. @internal */
 export const EMITS_EVICT: unique symbol = Symbol.for('pond-ts:emitsEvict');
 
-export type ScalarKind = 'number' | 'string' | 'boolean';
+export type ScalarKind = 'number' | 'string' | 'boolean' | 'array';
 export type ScalarValue = number | string | boolean;
+/**
+ * A read-only array of scalars. Array-kind columns carry values of this type.
+ * Currently populated by reducers that collapse a bucket into a list
+ * (e.g. `unique`). Inert with respect to numerical operators (`diff`, `rate`,
+ * `cumulative`, `rolling`) — those filter to `kind: 'number'` columns.
+ */
+export type ArrayValue = ReadonlyArray<ScalarValue>;
+/**
+ * Anything a value column cell may hold at runtime. Widens `ScalarValue`
+ * with `ArrayValue` for columns declared `kind: 'array'`.
+ */
+export type ColumnValue = ScalarValue | ArrayValue;
 export type FirstColKind = 'time' | 'interval' | 'timeRange';
 
 export type ColumnDef<Name extends string, Kind extends string> = {
@@ -46,7 +58,9 @@ export type ValueForKind<K extends string> = K extends 'time'
           ? string
           : K extends 'boolean'
             ? boolean
-            : never;
+            : K extends 'array'
+              ? ArrayValue
+              : never;
 
 export type RowForSchema<S extends readonly ColumnDef<string, string>[]> = {
   [I in keyof S]: S[I] extends ColumnDef<any, infer K>
@@ -88,7 +102,9 @@ export type JsonValueForKind<K extends string> = K extends 'time'
           ? string
           : K extends 'boolean'
             ? boolean
-            : never;
+            : K extends 'array'
+              ? ArrayValue
+              : never;
 
 export type JsonRowForSchema<S extends readonly ColumnDef<string, string>[]> = {
   [I in keyof S]: S[I] extends ColumnDef<any, infer K>
@@ -122,7 +138,9 @@ export type NormalizedValueForKind<K extends string> = K extends 'time'
           ? string
           : K extends 'boolean'
             ? boolean
-            : never;
+            : K extends 'array'
+              ? ArrayValue
+              : never;
 
 export type NormalizedRowForSchema<
   S extends readonly ColumnDef<string, string>[],
@@ -146,7 +164,7 @@ export type NormalizedObjectRowForSchema<S extends SeriesSchema> = Partial<{
 }>;
 
 export type NormalizedObjectRow = Readonly<
-  Record<string, EventKey | ScalarValue | undefined>
+  Record<string, EventKey | ColumnValue | undefined>
 >;
 
 type DataValueForColumn<C extends ColumnDef<string, string>> =
@@ -373,10 +391,18 @@ export type AggregateFunction =
   | 'stdev'
   | 'difference'
   | 'keep'
+  | 'unique'
   | `p${number}`;
+/**
+ * Custom aggregate reducers receive every value in a bucket (including
+ * `undefined`) and return a single result. The return type is widened to
+ * `ColumnValue` so reducers may emit an array — the resulting column's
+ * schema kind is inferred as `'array'` when the custom reducer output is
+ * declared via `AggregateOutputSpec.kind`.
+ */
 export type CustomAggregateReducer = (
-  values: ReadonlyArray<ScalarValue | undefined>,
-) => ScalarValue | undefined;
+  values: ReadonlyArray<ColumnValue | undefined>,
+) => ColumnValue | undefined;
 export type AggregateReducer = AggregateFunction | CustomAggregateReducer;
 export type RollingAlignment = 'trailing' | 'leading' | 'centered';
 export type SmoothMethod = 'ema' | 'movingAverage' | 'loess';
@@ -385,7 +411,9 @@ export type JoinConflictMode = 'error' | 'prefix';
 
 type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
   ? AggregateReducer
-  : 'count' | 'first' | 'last' | 'keep' | CustomAggregateReducer;
+  : Kind extends 'array'
+    ? 'count' | 'first' | 'last' | 'keep' | CustomAggregateReducer
+    : 'count' | 'first' | 'last' | 'keep' | 'unique' | CustomAggregateReducer;
 
 type AggregateMapEntries<S extends SeriesSchema> = {
   [C in ValueColumnsForSchema<S>[number] as C['name']]?: AggregateFunctionsForKind<
@@ -427,7 +455,9 @@ type AggregateKindForColumn<
 > = Op extends AggregateFunction
   ? Op extends 'sum' | 'avg' | 'count'
     ? 'number'
-    : Column['kind']
+    : Op extends 'unique'
+      ? 'array'
+      : Column['kind']
   : Column['kind'];
 
 type AggregateColumnForMap<
@@ -470,7 +500,7 @@ export type RollingSchema<S extends SeriesSchema, Mapping> = readonly [
   ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
 ];
 type ReduceResultForMap<S extends SeriesSchema, Mapping> = {
-  [K in keyof Mapping & string]: ScalarValue | undefined;
+  [K in keyof Mapping & string]: ColumnValue | undefined;
 };
 
 export type ReduceResult<S extends SeriesSchema, Mapping> = ReduceResultForMap<
@@ -482,6 +512,124 @@ export type NumericColumnNameForSchema<S extends SeriesSchema> = Extract<
   ValueColumnsForSchema<S>[number],
   ColumnDef<string, 'number'>
 >['name'];
+
+/**
+ * Names of value columns whose declared kind is `'array'`. Used as the
+ * parameter constraint on array-column operators (`includes`, `count`,
+ * `contains`, `explode`).
+ */
+export type ArrayColumnNameForSchema<S extends SeriesSchema> = Extract<
+  ValueColumnsForSchema<S>[number],
+  ColumnDef<string, 'array'>
+>['name'];
+
+type ReplaceColumnKind<
+  Columns extends readonly ValueColumn[],
+  Target extends string,
+  NewKind extends ScalarKind,
+> = Columns extends readonly [infer Head, ...infer Tail]
+  ? Head extends ValueColumn
+    ? Tail extends readonly ValueColumn[]
+      ? Head['name'] extends Target
+        ? [
+            ColumnDef<Head['name'], NewKind>,
+            ...ReplaceColumnKind<Tail, Target, NewKind>,
+          ]
+        : [Head, ...ReplaceColumnKind<Tail, Target, NewKind>]
+      : []
+    : []
+  : [];
+
+/**
+ * Aggregate functions that always produce a numeric result regardless of
+ * source column kind. Matches the reducer registry's `outputKind: 'number'`.
+ */
+type NumericAggregateFunction =
+  | 'sum'
+  | 'avg'
+  | 'count'
+  | 'min'
+  | 'max'
+  | 'median'
+  | 'stdev'
+  | 'difference'
+  | `p${number}`;
+
+/**
+ * Output column kind for `arrayAggregate(col, reducer, { kind? })`.
+ * Numeric reducers → `'number'`, `'unique'` → `'array'`, `'first'`/`'last'`/
+ * `'keep'` and custom functions → `'string'` unless the caller passes an
+ * explicit `kind`.
+ */
+export type ArrayAggregateKind<
+  Op extends AggregateReducer,
+  ExplicitKind extends ScalarKind | undefined = undefined,
+> = ExplicitKind extends ScalarKind
+  ? ExplicitKind
+  : Op extends NumericAggregateFunction
+    ? 'number'
+    : Op extends 'unique'
+      ? 'array'
+      : 'string';
+
+type AppendColumn<
+  S extends SeriesSchema,
+  Name extends string,
+  Kind extends ScalarKind,
+> = readonly [S[0], ...ValueColumnsForSchema<S>, ColumnDef<Name, Kind>];
+
+/**
+ * Schema for `arrayAggregate(col, reducer)` replacing the array column
+ * in place with the reducer's output kind.
+ */
+export type ArrayAggregateReplaceSchema<
+  S extends SeriesSchema,
+  Col extends ArrayColumnNameForSchema<S>,
+  Op extends AggregateReducer,
+  ExplicitKind extends ScalarKind | undefined = undefined,
+> = readonly [
+  S[0],
+  ...ReplaceColumnKind<
+    ValueColumnsForSchema<S>,
+    Col,
+    ArrayAggregateKind<Op, ExplicitKind>
+  >,
+];
+
+/**
+ * Schema for `arrayAggregate(col, reducer, { as })` — appends a new column
+ * carrying the reducer's output and keeps the source array column intact.
+ */
+export type ArrayAggregateAppendSchema<
+  S extends SeriesSchema,
+  Name extends string,
+  Op extends AggregateReducer,
+  ExplicitKind extends ScalarKind | undefined = undefined,
+> = AppendColumn<S, Name, ArrayAggregateKind<Op, ExplicitKind>>;
+
+/**
+ * Schema for `arrayExplode(col)` replacing the array column in place with
+ * a scalar column (default kind `'string'`).
+ */
+export type ArrayExplodeReplaceSchema<
+  S extends SeriesSchema,
+  Col extends ArrayColumnNameForSchema<S>,
+  OutputKind extends ScalarKind = 'string',
+> = readonly [
+  S[0],
+  ...ReplaceColumnKind<ValueColumnsForSchema<S>, Col, OutputKind>,
+];
+
+/**
+ * Schema for `arrayExplode(col, { as })` — appends a scalar column with the
+ * per-element value and keeps the source array column intact; each output
+ * event still carries the full array on that source column.
+ */
+export type ArrayExplodeAppendSchema<
+  S extends SeriesSchema,
+  Name extends string,
+  OutputKind extends ScalarKind = 'string',
+> = AppendColumn<S, Name, OutputKind>;
 
 type OptionalNumberColumn<Name extends string> = ColumnDef<Name, 'number'> & {
   readonly required: false;

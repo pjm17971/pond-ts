@@ -18,6 +18,7 @@ import { median } from './median.js';
 import { stdev } from './stdev.js';
 import { difference } from './difference.js';
 import { keep } from './keep.js';
+import { unique } from './unique.js';
 
 const registry: Record<string, ReducerDef> = {
   count,
@@ -31,6 +32,7 @@ const registry: Record<string, ReducerDef> = {
   stdev,
   difference,
   keep,
+  unique,
 };
 
 export function resolveReducer(operation: string): ReducerDef {

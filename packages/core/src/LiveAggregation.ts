@@ -23,7 +23,7 @@ import type {
   EventForSchema,
   LiveSource,
   NumericColumnNameForSchema,
-  ScalarValue,
+  ColumnValue,
   SelectSchema,
   SeriesSchema,
   ValueColumnsForSchema,
@@ -45,7 +45,7 @@ type PendingBucket = {
   states: AggregateBucketState[];
 };
 
-type ClosedEvent = Event<Interval, Record<string, ScalarValue | undefined>>;
+type ClosedEvent = Event<Interval, Record<string, ColumnValue | undefined>>;
 
 type BucketListener = (event: ClosedEvent) => void;
 type CloseListener = (event: ClosedEvent) => void;
@@ -104,8 +104,13 @@ export class LiveAggregation<
     )) {
       const col = colsByName.get(name);
       if (!col) throw new TypeError(`unknown column '${name}'`);
+      const outputKind = resolveReducer(reducer).outputKind;
       const kind =
-        resolveReducer(reducer).outputKind === 'number' ? 'number' : col.kind;
+        outputKind === 'number'
+          ? 'number'
+          : outputKind === 'array'
+            ? 'array'
+            : col.kind;
       this.#columns.push({ output: name, source: name, reducer, kind });
     }
 
@@ -294,7 +299,7 @@ export class LiveAggregation<
       this.#pending.set(bucket.start, pending);
     }
 
-    const data = event.data() as Record<string, ScalarValue | undefined>;
+    const data = event.data() as Record<string, ColumnValue | undefined>;
     for (let i = 0; i < this.#columns.length; i++) {
       pending.states[i]!.add(data[this.#columns[i]!.source]);
     }
@@ -305,7 +310,7 @@ export class LiveAggregation<
         start: pending.start,
         end: pending.end,
       });
-      const record: Record<string, ScalarValue | undefined> = {};
+      const record: Record<string, ColumnValue | undefined> = {};
       for (let i = 0; i < this.#columns.length; i++) {
         record[this.#columns[i]!.output] = pending.states[i]!.snapshot();
       }
@@ -336,7 +341,7 @@ export class LiveAggregation<
       start: bucket.start,
       end: bucket.end,
     });
-    const record: Record<string, ScalarValue | undefined> = {};
+    const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
       record[this.#columns[i]!.output] = bucket.states[i]!.snapshot();
     }
@@ -347,7 +352,7 @@ export class LiveAggregation<
 
   #buildSeries(includeOpen: boolean): TimeSeries<Out> {
     const rows: unknown[][] = this.#closedEvents.map((event) => {
-      const data = event.data() as Record<string, ScalarValue | undefined>;
+      const data = event.data() as Record<string, ColumnValue | undefined>;
       return [event.key(), ...this.#columns.map((c) => data[c.output])];
     });
 

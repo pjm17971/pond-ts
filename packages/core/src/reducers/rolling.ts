@@ -1,4 +1,4 @@
-import type { ScalarValue } from '../types.js';
+import type { ColumnValue } from '../types.js';
 import type { RollingReducerState } from './types.js';
 
 type RollingWindowEntry<T> = { index: number; value: T };
@@ -40,11 +40,11 @@ export function rollingMonotoneDeque(
 
 export function rollingOrderedEntries(
   pick: (
-    entries: RollingWindowEntry<ScalarValue>[],
+    entries: RollingWindowEntry<ColumnValue>[],
     head: number,
-  ) => ScalarValue | undefined,
+  ) => ColumnValue | undefined,
 ): RollingReducerState {
-  let entries: RollingWindowEntry<ScalarValue>[] = [];
+  let entries: RollingWindowEntry<ColumnValue>[] = [];
   let head = 0;
   return {
     add(index, value) {
@@ -65,8 +65,8 @@ export function rollingOrderedEntries(
 
 export function rollingSortedArray(): {
   sorted: number[];
-  add(index: number, value: ScalarValue | undefined): void;
-  remove(index: number, value: ScalarValue | undefined): void;
+  add(index: number, value: ColumnValue | undefined): void;
+  remove(index: number, value: ColumnValue | undefined): void;
 } {
   const sorted: number[] = [];
   function bisect(v: number): number {

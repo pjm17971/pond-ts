@@ -18,7 +18,7 @@ import type {
   LiveSource,
   NumericColumnNameForSchema,
   RollingSchema,
-  ScalarValue,
+  ColumnValue,
   SelectSchema,
   SeriesSchema,
 } from './types.js';
@@ -35,10 +35,10 @@ type ColumnSpec = {
 type WindowEntry = {
   index: number;
   timestamp: number;
-  values: (ScalarValue | undefined)[];
+  values: (ColumnValue | undefined)[];
 };
 
-type UpdateListener = (value: Record<string, ScalarValue | undefined>) => void;
+type UpdateListener = (value: Record<string, ColumnValue | undefined>) => void;
 type EventListener = (event: any) => void;
 
 export type RollingWindow = DurationInput | number;
@@ -93,8 +93,13 @@ export class LiveRollingAggregation<
     )) {
       const col = colsByName.get(name);
       if (!col) throw new TypeError(`unknown column '${name}'`);
+      const outputKind = resolveReducer(reducer).outputKind;
       const kind =
-        resolveReducer(reducer).outputKind === 'number' ? 'number' : col.kind;
+        outputKind === 'number'
+          ? 'number'
+          : outputKind === 'array'
+            ? 'array'
+            : col.kind;
       this.#columns.push({ source: name, reducer, kind });
     }
 
@@ -136,8 +141,8 @@ export class LiveRollingAggregation<
     return this.#outputEvents[index];
   }
 
-  value(): Record<string, ScalarValue | undefined> {
-    const result: Record<string, ScalarValue | undefined> = {};
+  value(): Record<string, ColumnValue | undefined> {
+    const result: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
       result[this.#columns[i]!.source] = this.#states[i]!.snapshot();
     }
@@ -246,7 +251,7 @@ export class LiveRollingAggregation<
   // ── Private ─────────────────────────────────────────────────
 
   #ingest(event: EventForSchema<S>): void {
-    const data = event.data() as Record<string, ScalarValue | undefined>;
+    const data = event.data() as Record<string, ColumnValue | undefined>;
     const values = this.#columns.map((c) => data[c.source]);
     const index = this.#nextIndex++;
     const entry: WindowEntry = {
@@ -262,7 +267,7 @@ export class LiveRollingAggregation<
 
     this.#evict(event.begin());
 
-    const record: Record<string, ScalarValue | undefined> = {};
+    const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
       record[this.#columns[i]!.source] = this.#states[i]!.snapshot();
     }
