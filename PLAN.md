@@ -778,55 +778,74 @@ If the answer is no, stay in the phase and tighten the model before expanding.
 
 ## Deferred design decisions
 
-### Non-scalar reducer outputs (`distinct`, `topK`, `histogram`)
+### Array column values (`unique`, `topK`, `percentiles`)
 
-A `'distinct'` reducer (unique values in a bucket) is a natural aggregation —
-"which hosts reported in this window?" — but it collides with a fundamental
-constraint: `CustomAggregateReducer` returns `ScalarValue | undefined`
-(`number | string | boolean`), and the natural output of `distinct` is
+**Decision: reducers may output arrays, but array columns are inert.**
+
+A `'unique'` reducer (distinct values in a bucket) is a natural aggregation —
+"which hosts reported in this window?" — but it collides with a constraint:
+`CustomAggregateReducer` returns `ScalarValue | undefined`
+(`number | string | boolean`), and the natural output of `unique` is
 `string[]`.
 
-The scalar-preserving workaround is a comma-joined string:
+The full-fat approach — making `ScalarValue[]` a first-class value everywhere —
+is expensive. Every conditional type, every reducer, `fill`, `align`, `diff`,
+`rate`, chart adapters, JSON round-trips — all need to handle or reject arrays.
 
-```ts
-const distinct: CustomAggregateReducer = (values) =>
-  [...new Set(values.filter((v) => v !== undefined))].sort().join(',');
-```
+But most array-valued use cases share a property: **the array is a reducer
+output, never an input to further numerical operations.** You never `avg` a tag
+list. You never `diff` a set of host names. The arrays are read-only results
+that pass through the pipeline untouched.
 
-Read side: `event.get('host')?.split(',')`. Good enough for enum-ish columns
-(host names, regions, status codes) where values never contain the separator.
+That observation dramatically reduces the blast radius:
 
-But this is a hack. The real question is whether pond-ts should support
-non-scalar column values at all. Opening the door to `string[]` as a column
-value has cascading effects:
+#### What changes
 
-- **Schema type system**: `ScalarKind` and `ScalarValue` are wired through
-  every type in `types.ts`. Adding an array kind means auditing every
-  conditional type, every `NormalizedValueForKind`, every JSON round-trip path.
-- **Serialization**: `toJSON()` / `fromJSON()` assume flat scalar cells.
-  Arrays would need a container encoding or a breaking format change.
-- **Aggregation composability**: what does `avg` mean on a `string[]` column?
-  Every reducer would need to either reject or define behavior for array inputs.
-- **Chart interop**: adapter helpers and downstream chart components assume
-  scalars. Arrays break the 1:1 column→axis mapping.
+- **New column kind `'array'`** with value type `ScalarValue[]`.
+  `NormalizedValueForKind<'array'>` → `ScalarValue[]`.
+- **Reducer registry** gains an `outputKind` that can be `'array'`. A reducer
+  like `'unique'` declares `outputKind: 'array'`; the output schema column gets
+  `kind: 'array'` automatically.
+- **`toJSON` / `fromJSON`** encode array cells as JSON arrays. No format break —
+  existing scalar cells are unchanged, and a cell that happens to be an array
+  serializes naturally.
+- **`CustomAggregateReducer`** return type widens to
+  `ScalarValue | ScalarValue[] | undefined`.
 
-Options, in ascending order of ambition:
+#### What stays the same (inert behavior)
 
-1. **Do nothing.** The comma-join workaround is ugly but finite. Document it.
-2. **Built-in `'distinct'` that returns a comma-joined string.** Same hack,
-   but blessed. `keep` already returns scalar-or-undefined; `distinct` would
-   return string-or-undefined. No type system changes.
-3. **Add `'array'` as a column kind.** `ScalarValue` becomes
-   `ScalarValue | ScalarValue[]`. Every conditional type gets a new branch.
-   JSON format adds array cell encoding. Unlocks `distinct`, `topK`,
-   `histogram` (as bucket edges + counts), and arbitrary custom reducers.
-4. **Separate "metadata" columns from "value" columns.** Array outputs go into
-   a parallel metadata channel that doesn't flow through aggregation, alignment,
-   or chart adapters. Keeps the core scalar path untouched but adds API surface.
+- **`NumericColumnNameForSchema`** already filters to `kind: 'number'` — so
+  `diff`, `rate`, `pctChange`, `cumulative`, `rolling` naturally skip array
+  columns with no code changes.
+- **`fill`** strategies (`hold`, `zero`, `linear`, `bfill`) don't apply — array
+  columns are skipped.
+- **`align`** interpolation doesn't apply — array columns pass through.
+- **`filter`, `map`, `select`, `rename`, `collapse`** operate at the event
+  level, not individual cell values — arrays pass through naturally.
+- **`aggregate` / `rolling`** on a column that is already `'array'` — only
+  reducers that accept array inputs would work (`first`, `last`, `keep`,
+  `count`). Numeric reducers reject or ignore.
 
-Recommendation: start with (2) — a blessed `'distinct'` that returns a string.
-Defer (3) until a second non-scalar reducer proves the need. The type system
-cost of (3) is real and should not be paid speculatively.
+#### Built-in reducers that return arrays
+
+- **`unique`** — distinct non-undefined values, sorted. Works on any column
+  kind.
+- **`topK(n)`** — top N values by frequency. Probably a function factory:
+  `topK(3)` returns a reducer.
+- **`percentiles(...qs)`** — compute multiple quantiles in one pass:
+  `percentiles(50, 90, 99)` returns `number[]`. Avoids the current pattern of
+  three separate `p50` / `p90` / `p99` columns.
+
+#### Implementation order
+
+1. Add `'array'` to `ScalarKind`, `ScalarValue`, `NormalizedValueForKind`.
+   Audit conditional types — most already branch on specific kinds and fall
+   through to `never` for unknowns, so `'array'` should be safe by default.
+2. Widen `CustomAggregateReducer` return type. Update reducer registry
+   `outputKind`.
+3. Ship `'unique'` as the first built-in. Validate the type flow end-to-end.
+4. JSON round-trip support for array cells.
+5. `topK` and `percentiles` follow if `unique` proves the pattern.
 
 ---
 
