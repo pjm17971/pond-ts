@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { LiveSeries } from 'pond-ts';
@@ -61,5 +62,26 @@ describe('useWindow', () => {
     });
 
     expect(result.current!.length).toBe(2);
+  });
+
+  it('survives React StrictMode double-mount', () => {
+    const live = new LiveSeries({ name: 'cpu', schema });
+    live.push(row(0, 0.3));
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.StrictMode, null, children);
+
+    const { result } = renderHook(
+      () => useWindow(live, '5m', { throttle: 0 }),
+      { wrapper },
+    );
+
+    // After StrictMode double-mount, the window should still work
+    act(() => {
+      live.push(row(1, 0.6));
+    });
+
+    expect(result.current).not.toBeNull();
+    expect(result.current!.length).toBeGreaterThanOrEqual(1);
   });
 });

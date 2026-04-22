@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import type { LiveSource, SeriesSchema, TimeSeries } from 'pond-ts';
 import type { RollingWindow } from 'pond-ts';
 import { useSnapshot, type UseSnapshotOptions } from './useSnapshot.js';
@@ -11,7 +11,8 @@ type Windowable<S extends SeriesSchema> = LiveSource<S> & {
 /**
  * Create a windowed view of a live source and return a throttled snapshot.
  *
- * The view is created once per `source`/`size` pair and disposed on cleanup.
+ * The view is created and disposed inside an effect, so it works correctly
+ * under React StrictMode's double-mount cycle.
  * Returns `null` when the window is empty.
  */
 export function useWindow<S extends SeriesSchema>(
@@ -19,15 +20,18 @@ export function useWindow<S extends SeriesSchema>(
   size: RollingWindow,
   options?: UseSnapshotOptions,
 ): TimeSeries<S> | null {
-  const view = useMemo(() => source.window(size), [source, size]);
+  const [view, setView] = useState<LiveSource<S> | null>(null);
 
   useEffect(() => {
+    const v = source.window(size);
+    setView(v);
+
     return () => {
-      if ('dispose' in view && typeof (view as any).dispose === 'function') {
-        (view as any).dispose();
+      if ('dispose' in v && typeof (v as any).dispose === 'function') {
+        (v as any).dispose();
       }
     };
-  }, [view]);
+  }, [source, size]);
 
   return useSnapshot(view, options);
 }

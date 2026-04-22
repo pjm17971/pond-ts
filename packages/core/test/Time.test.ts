@@ -35,6 +35,14 @@ describe('Time', () => {
     expect(time.trim(disjoint)).toBeUndefined();
   });
 
+  it('converts to a native Date via toDate()', () => {
+    const time = new Time(1735689600000);
+    const date = time.toDate();
+    expect(date).toBeInstanceOf(Date);
+    expect(date.getTime()).toBe(1735689600000);
+    expect(date.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+
   it('parses local and absolute timestamp strings with timezone awareness', () => {
     expect(
       Time.parse('2025-01-01T09:00', { timeZone: 'Europe/Madrid' }),

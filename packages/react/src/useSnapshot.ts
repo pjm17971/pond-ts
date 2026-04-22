@@ -12,22 +12,30 @@ export interface UseSnapshotOptions {
  * Subscribe to any `LiveSource` and return a throttled `TimeSeries` snapshot.
  *
  * The snapshot updates at most once per `throttle` interval (default 100 ms).
- * Returns `null` when the source is empty.
+ * Returns `null` when the source is empty or `null`.
+ *
+ * Accepts `null` as a source so hooks like `useWindow` can pass a
+ * not-yet-created source without violating the Rules of Hooks.
  */
 export function useSnapshot<S extends SeriesSchema>(
-  source: LiveSource<S>,
+  source: LiveSource<S> | null,
   options?: UseSnapshotOptions,
 ): TimeSeries<S> | null {
   const throttleMs = options?.throttle ?? 100;
   const [snapshot, setSnapshot] = useState<TimeSeries<S> | null>(() =>
-    takeSnapshot(source),
+    source ? takeSnapshot(source) : null,
   );
 
-  // Track the latest source + throttle so the effect re-subscribes when they change.
+  // Track the latest source so the flush callback always reads current state.
   const sourceRef = useRef(source);
   sourceRef.current = source;
 
   useEffect(() => {
+    if (!source) {
+      setSnapshot(null);
+      return;
+    }
+
     // Re-snapshot on source change
     setSnapshot(takeSnapshot(source));
 
@@ -37,12 +45,16 @@ export function useSnapshot<S extends SeriesSchema>(
     const flush = () => {
       timer = null;
       pending = false;
-      setSnapshot(takeSnapshot(sourceRef.current));
+      if (sourceRef.current) {
+        setSnapshot(takeSnapshot(sourceRef.current));
+      }
     };
 
     const unsub = source.on('event', () => {
       if (throttleMs === 0) {
-        setSnapshot(takeSnapshot(sourceRef.current));
+        if (sourceRef.current) {
+          setSnapshot(takeSnapshot(sourceRef.current));
+        }
         return;
       }
       if (!pending) {

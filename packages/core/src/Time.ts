@@ -39,6 +39,11 @@ export class Time implements EventKey {
     return this.timestamp;
   }
 
+  /** Example: `time.toDate()`. Returns a native `Date` for the key timestamp. */
+  toDate(): Date {
+    return new Date(this.timestamp);
+  }
+
   /** Example: `Number(time)`. Returns the primitive millisecond timestamp for numeric coercion. */
   valueOf(): number {
     return this.timestamp;
