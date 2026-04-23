@@ -137,6 +137,9 @@ describe('TimeSeries.baseline', () => {
       if (cpu == null || upper == null || lower == null) return false;
       return cpu > upper || cpu < lower;
     });
+    // The genuine spike must survive — pin the count so the "only the
+    // spike" claim can't silently pass by flagging nothing.
+    expect(flagged.length).toBeGreaterThan(0);
     for (let i = 0; i < flagged.length; i += 1) {
       expect(flagged.at(i)!.get('cpu')).toBe(0.95);
     }
@@ -160,9 +163,11 @@ describe('TimeSeries.baseline', () => {
     expect(upper.length).toBe(lower.length);
     expect(upper.length).toBeGreaterThan(0);
     expect(upper.length).toBeLessThan(b.length);
-    // For every emitted frame, upper is *strictly* above lower (sigma
-    // is positive and sd is non-zero wherever we emit — the zero-sd
-    // rows are dropped).
+    // For every emitted frame, upper is *strictly* above lower. Strict
+    // inequality holds because the `makeSteady` fixture has jitter — no
+    // rolling window inside it has sd===0 once warm-up passes. If a
+    // future fixture edit introduces a flat region, those rows would
+    // be dropped here (undefined band) before this assertion runs.
     for (let i = 0; i < upper.length; i += 1) {
       expect(upper[i]!.value).toBeGreaterThan(lower[i]!.value);
     }
