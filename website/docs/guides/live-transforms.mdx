@@ -227,6 +227,16 @@ render is safe. Types narrow per-entry: `'avg'` yields `number`,
 `'unique'` yields `ReadonlyArray<ScalarValue>`, `` `top${number}` ``
 yields an array, other reducers fall back to the source column kind.
 
+**Reference stability** (v0.5.6+): the returned record and each of
+its fields are reference-stable across renders as long as the
+underlying value is structurally unchanged. A new event push that
+leaves `host: 'unique'` with the same elements keeps
+`current.host` pointing at the same array, so
+`useMemo([current.host], …)` and `useEffect([current.host], …)`
+only re-run when the set actually changes. Per-field — if `cpu`
+shifts but `host` doesn't, `current.cpu` is a new number (as it
+should be) while `current.host` stays stable.
+
 ### Subscriptions
 
 ```ts
