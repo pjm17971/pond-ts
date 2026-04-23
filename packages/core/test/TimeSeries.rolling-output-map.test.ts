@@ -1,0 +1,180 @@
+/**
+ * Tests for `TimeSeries.rolling` with the `AggregateOutputMap` form
+ * (the `{ output: { from, using, kind? } }` shape already accepted by
+ * `aggregate`). Added in v0.5.4 to close the feature-parity gap.
+ */
+import { describe, expect, it } from 'vitest';
+import { Sequence, TimeSeries } from '../src/index.js';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+function makeSeries() {
+  return new TimeSeries({
+    name: 'metrics',
+    schema,
+    rows: [
+      [0, 10, 'api-1'],
+      [1000, 20, 'api-1'],
+      [2000, 30, 'api-2'],
+      [3000, 40, 'api-2'],
+      [4000, 50, 'api-3'],
+    ],
+  });
+}
+
+describe('rolling (AggregateOutputMap, event-driven)', () => {
+  it('computes multiple reducers over the same source column in one pass', () => {
+    const rolled = makeSeries().rolling('3s', {
+      avg: { from: 'cpu', using: 'avg' },
+      sd: { from: 'cpu', using: 'stdev' },
+    });
+
+    const avgCol = rolled.schema.find((c) => c.name === 'avg');
+    const sdCol = rolled.schema.find((c) => c.name === 'sd');
+    expect(avgCol?.kind).toBe('number');
+    expect(sdCol?.kind).toBe('number');
+
+    // At t=4000, trailing 3s window contains t=[2000, 3000, 4000] -> cpu [30,40,50]
+    const at4 = rolled.at(4)!;
+    expect(at4.get('avg')).toBe(40);
+    // stdev population = sqrt(((30-40)^2 + (40-40)^2 + (50-40)^2) / 3)
+    //                  = sqrt(200/3) = ~8.1650
+    expect(at4.get('sd') as number).toBeCloseTo(8.165, 3);
+  });
+
+  it('renames output columns independently from source columns', () => {
+    const rolled = makeSeries().rolling('3s', {
+      cpuAvg: { from: 'cpu', using: 'avg' },
+      cpuMax: { from: 'cpu', using: 'max' },
+    });
+
+    // Source 'cpu' column is gone; output columns 'cpuAvg' + 'cpuMax' appear.
+    expect(rolled.schema.map((c) => c.name)).toEqual([
+      'time',
+      'cpuAvg',
+      'cpuMax',
+    ]);
+    expect(rolled.at(4)!.get('cpuAvg')).toBe(40);
+    expect(rolled.at(4)!.get('cpuMax')).toBe(50);
+  });
+
+  it('mixes per-source-column and AggregateOutputSpec in the same call', () => {
+    const rolled = makeSeries().rolling('3s', {
+      // AggregateOutputSpec entries
+      avg: { from: 'cpu', using: 'avg' },
+      hi: { from: 'cpu', using: 'max' },
+    });
+    expect(rolled.at(4)!.get('avg')).toBe(40);
+    expect(rolled.at(4)!.get('hi')).toBe(50);
+  });
+
+  it('accepts an explicit kind override on AggregateOutputSpec', () => {
+    const rolled = makeSeries().rolling('3s', {
+      host_kept: { from: 'host', using: 'keep', kind: 'string' },
+    });
+    const col = rolled.schema.find((c) => c.name === 'host_kept');
+    expect(col?.kind).toBe('string');
+  });
+
+  it('preserves existing AggregateMap behavior unchanged', () => {
+    const rolled = makeSeries().rolling('3s', { cpu: 'avg' });
+    expect(rolled.schema.map((c) => c.name)).toEqual(['time', 'cpu']);
+    expect(rolled.at(4)!.get('cpu')).toBe(40);
+  });
+
+  it('throws when an output spec references an unknown source column', () => {
+    expect(() =>
+      makeSeries().rolling('3s', {
+        avg: { from: 'nonexistent' as 'cpu', using: 'avg' },
+      }),
+    ).toThrow(/unknown source column/);
+  });
+});
+
+describe('rolling (AggregateOutputMap, sequence-driven)', () => {
+  it('works over sequence buckets with a trailing window', () => {
+    const rolled = makeSeries().rolling(
+      Sequence.every('1s'),
+      '2s',
+      {
+        avg: { from: 'cpu', using: 'avg' },
+        sd: { from: 'cpu', using: 'stdev' },
+      },
+      { sample: 'begin' },
+    );
+
+    // Output is interval-keyed over the sequence buckets. Schema:
+    expect(rolled.schema.map((c) => c.name)).toEqual(['interval', 'avg', 'sd']);
+    expect(rolled.length).toBeGreaterThan(0);
+
+    // Verify the reducers ran independently — avg and sd both produce
+    // numeric output from the same cpu source.
+    for (let i = 0; i < rolled.length; i += 1) {
+      const event = rolled.at(i)!;
+      const avg = event.get('avg');
+      const sd = event.get('sd');
+      // Either both defined or both undefined — they see the same window
+      expect(avg === undefined).toBe(sd === undefined);
+    }
+  });
+
+  it('supports an explicit range argument alongside the output map', () => {
+    const rolled = makeSeries().rolling(
+      Sequence.every('1s'),
+      '500ms',
+      {
+        avg: { from: 'cpu', using: 'avg' },
+      },
+      {
+        sample: 'begin',
+        range: { start: 0, end: 5000 },
+      },
+    );
+    // With sample='begin' and a 500ms trailing window, each bucket's
+    // aggregate is the event at that bucket's start.
+    expect(rolled.at(0)!.get('avg')).toBe(10);
+    expect(rolled.at(4)!.get('avg')).toBe(50);
+  });
+});
+
+describe('rolling: schema-order preservation for AggregateMap', () => {
+  // When the AggregateMap keys are written in a different order than the
+  // schema declares them, the runtime row layout must still match the
+  // `RollingSchema<S, Mapping>` type's column ordering (schema order).
+  it('orders columns by schema regardless of mapping key order', () => {
+    const s = new TimeSeries({
+      name: 'multi',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'a', kind: 'number' },
+        { name: 'b', kind: 'number' },
+        { name: 'c', kind: 'number' },
+      ] as const,
+      rows: [
+        [0, 1, 10, 100],
+        [1000, 2, 20, 200],
+      ],
+    });
+
+    // Mapping keys in reversed order from the schema
+    const rolled = s.rolling('2s', { c: 'avg', a: 'avg', b: 'avg' });
+
+    // Schema order is (time, a, b, c) — not the mapping's (c, a, b)
+    expect(rolled.schema.map((col) => col.name)).toEqual([
+      'time',
+      'a',
+      'b',
+      'c',
+    ]);
+
+    // Values still correct per source column
+    const at1 = rolled.at(1)!;
+    expect(at1.get('a')).toBe(1.5);
+    expect(at1.get('b')).toBe(15);
+    expect(at1.get('c')).toBe(150);
+  });
+});

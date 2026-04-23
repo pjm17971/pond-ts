@@ -57,6 +57,39 @@ const mixed = series.rolling('5m', {
 });
 ```
 
+### Multiple reducers over the same source column
+
+For cases like "rolling avg **and** stdev of `cpu` in one pass" —
+handy for anomaly-detection bands on a chart — pass an
+`AggregateOutputMap` where each entry is `{ from, using, kind? }`.
+This is the same shape `aggregate(...)` accepts, and you can mix
+plain `{ col: reducer }` entries with spec entries in the same call:
+
+```ts
+const bands = series.rolling('1m', {
+  avg: { from: 'cpu', using: 'avg' },
+  sd: { from: 'cpu', using: 'stdev' },
+});
+
+// Feed a ±1.7σ band chart:
+bands.toArray().forEach((row) => {
+  const avg = row.get('avg') as number | undefined;
+  const sd = row.get('sd') as number | undefined;
+  if (avg !== undefined && sd !== undefined) {
+    drawBand({
+      t: row.begin(),
+      lower: avg - 1.7 * sd,
+      upper: avg + 1.7 * sd,
+    });
+  }
+});
+```
+
+Output column names come from the map's keys, not the source column —
+you can rename freely (`cpuAvg: { from: 'cpu', using: 'avg' }`). The
+`kind?` field is an override for cases where the output type can't be
+inferred from the reducer (e.g. a custom reducer returning a string).
+
 ## Smoothing
 
 Use `smooth(...)` for trend extraction or visualization-friendly derived values.

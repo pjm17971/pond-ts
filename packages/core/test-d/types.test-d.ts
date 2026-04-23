@@ -630,6 +630,46 @@ void rolledCpuOnSequenceHost;
 void rolledCpuOnSequenceHealthy;
 void rolledCpuOnSequenceTypedEvent;
 
+// `rolling` with `AggregateOutputMap` (multi-reducer-per-column) returns
+// `TimeSeries<SeriesSchema>` — same erased-schema pattern as
+// `aggregate` on an `AggregateOutputMap`, landed in v0.5.4 for parity.
+const rolledMultiCpu = cpuSeries.rolling('1m', {
+  cpuAvg: { from: 'cpu', using: 'avg' },
+  cpuSd: { from: 'cpu', using: 'stdev' },
+});
+const rolledMultiCpuEvent = rolledMultiCpu.first();
+if (!rolledMultiCpuEvent) {
+  throw new Error('missing rolled multi event');
+}
+// Payload values fall back to the broad `ColumnValue` union since the
+// schema is erased (same as `aggregate`'s output-map form).
+const rolledMultiCpuAvg:
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<string | number | boolean>
+  | undefined = rolledMultiCpuEvent.get('cpuAvg');
+const rolledMultiCpuSd:
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<string | number | boolean>
+  | undefined = rolledMultiCpuEvent.get('cpuSd');
+void rolledMultiCpuAvg;
+void rolledMultiCpuSd;
+
+// Same shape via the sequence-driven overload.
+const rolledMultiCpuOnSequence = cpuSeries.rolling(
+  Sequence.every('1m'),
+  '5m',
+  {
+    cpuAvg: { from: 'cpu', using: 'avg' },
+    cpuMax: { from: 'cpu', using: 'max' },
+  },
+  { range: new TimeRange({ start: 1735689600000, end: 1735689660000 }) },
+);
+void rolledMultiCpuOnSequence;
+
 const smoothedCpuSeries = cpuSeries.smooth('cpu', 'ema', { alpha: 0.5 });
 type SmoothedCpuSchema = SmoothSchema<typeof cpuSchema, 'cpu'>;
 const smoothedCpuEvent = smoothedCpuSeries.first();
