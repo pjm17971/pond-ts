@@ -162,3 +162,61 @@ const loess = series.smooth('cpu', 'loess', {
   output: 'cpuLoess',
 });
 ```
+
+## Outlier detection
+
+`outliers(col, opts)` flags events whose `col` value deviates from the
+rolling-window average by more than `sigma * rolling_stdev`. The return
+is a `TimeSeries<S>` — same schema as the input, filtered to the
+flagged events. Composes with every other operator, so bucketed counts
+and per-host breakdowns are one-liners:
+
+```ts
+const anomalies = series.outliers('cpu', {
+  window: '1m',
+  sigma: 2,
+});
+
+// Bucketed anomaly count per 15s, ready for a bar chart:
+const perBucket = anomalies.aggregate(Sequence.every('15s'), {
+  cpu: 'count',
+});
+
+// Per-host breakdown:
+const perHost = anomalies.groupBy('host');
+```
+
+Events where the rolling window hasn't established a meaningful
+baseline (stdev is `0` or undefined — flat window or pre-warmup) are
+not flagged. The `alignment` option threads through to the underlying
+rolling computation (default `'trailing'`; `'leading'` and
+`'centered'` also supported).
+
+## Chart-library interop
+
+For drawing — chart libraries like Recharts, Observable Plot, and d3
+conventionally take arrays of `{ ts, value }` points. `toPoints(col)`
+exports that shape for a single numeric column (filtering out
+`undefined` values):
+
+```ts
+const pts = series.toPoints('cpu');
+// => ReadonlyArray<{ ts: number; value: number }>
+<LineChart data={pts} />
+```
+
+The inverse — constructing a `TimeSeries` from chart-style points —
+is `TimeSeries.fromPoints`:
+
+```ts
+const ts = TimeSeries.fromPoints(pts, {
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const,
+});
+```
+
+The schema must have exactly two columns (time key + one value column).
+Useful for round-tripping derived data — e.g. flatten anomaly events
+into chart points, then round-trip back for bucketed counting.
