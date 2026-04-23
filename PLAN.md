@@ -18,6 +18,9 @@ What already exists today:
 - calendar-aware `Sequence` and `BoundedSequence`
 - npm packaging and automated release flow
 - a Docusaurus docs site plus generated API reference
+- PR review discipline — self-review + adversarial agent review with a
+  two-comment protocol (agent comment + author response comment) per
+  CLAUDE.md; `CHANGELOG.md` now tracks every release
 
 What is still not stable enough to build on aggressively:
 
@@ -685,14 +688,19 @@ Entry point: `@pond-ts/react` (separate workspace package)
       `sigma * rolling_stdev`. Collapses the 30-line manual pattern
       (rolling → avgByTs Map → filter loop) into one call. Shipped in
       v0.5.8.
-- [x] `baseline(col, { window, sigma, alignment?, names? })` — the
-      primitive `outliers()` should have been sugar over. Appends
+- [x] `baseline(col, { window, sigma, alignment?, names? })` — appends
       `avg` / `sd` / `upper` / `lower` columns to the source schema in
       one rolling pass; band-chart `toPoints('upper')` and
       outlier-filter `.filter(cpu > upper)` both read from the same
       intermediate. Replaces the dashboard's "call rolling for bands,
       call outliers for dots" two-pass pattern with one call. Shipped
-      in v0.5.9.
+      in v0.5.9. v0.5.10 followup: `upper` / `lower` collapse to
+      `undefined` when the rolling window is flat (`sd === 0`) so a
+      naive `value > upper || value < lower` filter doesn't flag every
+      non-equal point; matches `outliers()`. The two methods are now
+      documented as conceptually equivalent (not sugar — they're
+      independently implemented). First trial of the two-comment review
+      protocol landed through PR #47.
 - [x] `toPoints(col)` / `TimeSeries.fromPoints(points, { schema })` —
       chart-library interop. `toPoints` exports the flat
       `{ ts, value }[]` shape (filtering `undefined`); `fromPoints` is
