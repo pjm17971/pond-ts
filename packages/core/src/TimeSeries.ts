@@ -6,6 +6,7 @@ import type {
   ArrayExplodeAppendSchema,
   ArrayExplodeReplaceSchema,
   ArrayValue,
+  BaselineSchema,
   AggregateFunction,
   AggregateReducer,
   AggregateOutputMap,
@@ -3298,6 +3299,138 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
+   * Example: `series.baseline('cpu', { window: '1m', sigma: 2 })`.
+   * Appends rolling-baseline statistics as four new columns on every
+   * event: the rolling average (`avg`), rolling standard deviation
+   * (`sd`), and the band edges (`upper = avg + sigma * sd`,
+   * `lower = avg - sigma * sd`). The source schema is preserved
+   * intact, so downstream code can filter, render, and compose freely.
+   *
+   * This is the primitive behind band charts and outlier detection:
+   *
+   * ```ts
+   * const baseline = series.baseline('cpu', { window: '1m', sigma: 2 });
+   *
+   * // Band charts: each column is a ready-to-plot series.
+   * const upperBand = baseline.toPoints('upper');
+   * const lowerBand = baseline.toPoints('lower');
+   *
+   * // Anomaly detection: one filter, no extra rolling pass.
+   * const anomalies = baseline.filter((e) => {
+   *   const cpu = e.get('cpu');
+   *   const upper = e.get('upper');
+   *   const lower = e.get('lower');
+   *   return cpu != null && upper != null && lower != null
+   *     && (cpu > upper || cpu < lower);
+   * });
+   * ```
+   *
+   * The `sigma` option controls band width — `sigma: 2` is the common
+   * "95% envelope" for normally distributed data. Opening events where
+   * the rolling window lacks a meaningful baseline (sd is zero or
+   * undefined) get `undefined` for all four new columns, so filters
+   * that compare against them behave correctly via null-checks.
+   *
+   * Custom column names via the `names` option if the defaults would
+   * collide with source columns.
+   *
+   * Internally a single `rolling(window, { avg, sd })` pass over the
+   * source; band edges are derived arithmetically per event.
+   */
+  baseline<
+    const Col extends NumericColumnNameForSchema<S>,
+    const AvgName extends string = 'avg',
+    const SdName extends string = 'sd',
+    const UpperName extends string = 'upper',
+    const LowerName extends string = 'lower',
+  >(
+    col: Col,
+    options: {
+      window: DurationInput;
+      sigma: number;
+      alignment?: RollingAlignment;
+      names?: {
+        avg?: AvgName;
+        sd?: SdName;
+        upper?: UpperName;
+        lower?: LowerName;
+      };
+    },
+  ): TimeSeries<BaselineSchema<S, AvgName, SdName, UpperName, LowerName>> {
+    const { window, sigma, alignment } = options;
+    if (!Number.isFinite(sigma) || sigma <= 0) {
+      throw new TypeError('baseline sigma must be a positive finite number');
+    }
+    const avgName = (options.names?.avg ?? 'avg') as AvgName;
+    const sdName = (options.names?.sd ?? 'sd') as SdName;
+    const upperName = (options.names?.upper ?? 'upper') as UpperName;
+    const lowerName = (options.names?.lower ?? 'lower') as LowerName;
+
+    // Guard against name collisions with existing source columns.
+    const existing = new Set(this.schema.slice(1).map((c) => c.name));
+    for (const n of [avgName, sdName, upperName, lowerName]) {
+      if (existing.has(n)) {
+        throw new TypeError(
+          `baseline output column '${n}' collides with an existing schema column; use the 'names' option to rename`,
+        );
+      }
+    }
+
+    // Single rolling pass; output names match our output schema so we
+    // can read them back by name.
+    const rolling = this.rolling(
+      window,
+      {
+        [avgName]: { from: col as string, using: 'avg' as const },
+        [sdName]: { from: col as string, using: 'stdev' as const },
+      } as unknown as AggregateOutputMap<S>,
+      alignment !== undefined ? { alignment } : undefined,
+    ) as unknown as TimeSeries<SeriesSchema>;
+
+    const resultSchema = Object.freeze([
+      ...this.schema,
+      { name: avgName, kind: 'number' as const, required: false as const },
+      { name: sdName, kind: 'number' as const, required: false as const },
+      { name: upperName, kind: 'number' as const, required: false as const },
+      { name: lowerName, kind: 'number' as const, required: false as const },
+    ]) as unknown as BaselineSchema<S, AvgName, SdName, UpperName, LowerName>;
+
+    const resultRows = this.events.map((event, index) => {
+      const data = event.data() as Record<string, unknown>;
+      const rollEvent = rolling.at(index);
+      const rollData = (rollEvent?.data() ?? {}) as Record<string, unknown>;
+      const avg = rollData[avgName];
+      const sd = rollData[sdName];
+      const avgNum = typeof avg === 'number' ? avg : undefined;
+      const sdNum = typeof sd === 'number' ? sd : undefined;
+      const upperNum =
+        avgNum !== undefined && sdNum !== undefined
+          ? avgNum + sigma * sdNum
+          : undefined;
+      const lowerNum =
+        avgNum !== undefined && sdNum !== undefined
+          ? avgNum - sigma * sdNum
+          : undefined;
+      return Object.freeze([
+        event.key(),
+        ...this.schema.slice(1).map((c) => data[c.name]),
+        avgNum,
+        sdNum,
+        upperNum,
+        lowerNum,
+      ]);
+    });
+
+    return new TimeSeries({
+      name: this.name,
+      schema: resultSchema as unknown as SeriesSchema,
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    }) as unknown as TimeSeries<
+      BaselineSchema<S, AvgName, SdName, UpperName, LowerName>
+    >;
+  }
+
+  /**
    * Example: `series.outliers('cpu', { window: '1m', sigma: 2 })`.
    * Rolling-baseline outlier detection: returns the subset of events
    * whose value on `col` deviates from the trailing rolling average
@@ -3309,6 +3442,11 @@ export class TimeSeries<S extends SeriesSchema> {
    * Events before the rolling window has a meaningful baseline (stdev
    * is zero or undefined) are not flagged — can't detect deviation
    * against a flat or empty reference.
+   *
+   * Sugar over `baseline(col, { window, sigma }).filter(...)`. Reach
+   * for `baseline(...)` directly when you also want to render the
+   * `avg` / `upper` / `lower` columns — you'll do one rolling pass
+   * instead of two.
    *
    * Internally: computes `rolling(window, { avg, sd })` using the
    * output-map form, zips with the source events by index, and keeps

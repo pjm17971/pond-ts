@@ -16,6 +16,7 @@ export { ValidationError } from './errors.js';
 export type {
   AlignSchema,
   ArrayColumnNameForSchema,
+  BaselineSchema,
   AggregateFunction,
   AggregateReducer,
   AggregateOutputMap,
