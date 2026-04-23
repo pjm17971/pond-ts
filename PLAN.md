@@ -674,9 +674,11 @@ Entry point: `@pond-ts/react` (separate workspace package)
       concurrent events (same timestamp) produce `undefined`. Workaround is to
       filter per-producer first. A `rateOver({ every: '1s' })` variant that
       normalizes to fixed wall-clock windows may be worth adding later.
-- [ ] `smooth('ema', { warmup: N })` or seeded EMA — first ~1/α samples are noisy
-      raw data. A `warmup` option that trims or a `seed` value that initializes
-      `ema_0` would avoid the manual `.slice()` workaround.
+- [x] `smooth('ema', { warmup: N })` — drops the first `N` output rows so
+      callers don't have to write `.slice(N)` after every EMA call. Shipped
+      in v0.5.7. A `seed` variant that initializes the EMA with a specific
+      value (rather than trimming the output) is still open if the need
+      comes up.
 - [ ] Dashboard guide doc fixes — show `useLiveQuery` as the idiomatic pattern
       rather than manual `useMemo` + `useSnapshot`; document how derived views
       interact with `LiveSeries` retention.

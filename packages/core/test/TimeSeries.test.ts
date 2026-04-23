@@ -1472,6 +1472,126 @@ describe('TimeSeries', () => {
     expect(smoothed.at(2)?.get('status')).toBe('c');
   });
 
+  it('warmup drops the first N rows from the EMA output', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const ts = new TimeSeries({
+      name: 's',
+      schema,
+      rows: Array.from({ length: 10 }, (_, i) => [i * 1000, i] as const),
+    });
+
+    // Without warmup — first event is the raw value (EMA seed), EMA
+    // converges toward the source over time.
+    const full = ts.smooth('value', 'ema', { alpha: 0.5 });
+    expect(full.length).toBe(10);
+    expect(full.at(0)!.get('value')).toBe(0); // seed
+
+    // With warmup: 4 — drops the first 4 rows. The remaining rows
+    // have been through enough updates that the EMA has "warmed up".
+    const warm = ts.smooth('value', 'ema', { alpha: 0.5, warmup: 4 });
+    expect(warm.length).toBe(6);
+    expect(warm.first()!.begin()).toBe(4000);
+
+    // Same smoothed values — the warmup only trims the output, it
+    // doesn't change how the remaining values were computed.
+    for (let i = 0; i < warm.length; i += 1) {
+      expect(warm.at(i)!.get('value')).toBe(full.at(i + 4)!.get('value'));
+    }
+  });
+
+  it('warmup: 0 is a no-op (matches no-warmup behavior)', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const ts = new TimeSeries({
+      name: 's',
+      schema,
+      rows: [
+        [0, 1],
+        [1000, 2],
+        [2000, 3],
+      ],
+    });
+
+    const zero = ts.smooth('value', 'ema', { alpha: 0.5, warmup: 0 });
+    const none = ts.smooth('value', 'ema', { alpha: 0.5 });
+    expect(zero.length).toBe(none.length);
+    for (let i = 0; i < zero.length; i += 1) {
+      expect(zero.at(i)!.get('value')).toBe(none.at(i)!.get('value'));
+    }
+  });
+
+  it('warmup >= series length returns an empty series with the same schema', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const ts = new TimeSeries({
+      name: 's',
+      schema,
+      rows: [
+        [0, 1],
+        [1000, 2],
+      ],
+    });
+
+    const empty = ts.smooth('value', 'ema', { alpha: 0.5, warmup: 5 });
+    expect(empty.length).toBe(0);
+    // Smooth always marks the target column as optional (smoothing may
+    // produce undefined), so the schema is equal-up-to-required.
+    expect(empty.schema.map((c) => [c.name, c.kind])).toEqual(
+      ts.schema.map((c) => [c.name, c.kind]),
+    );
+  });
+
+  it('warmup works with the output option (keeps source, trims rows)', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const ts = new TimeSeries({
+      name: 's',
+      schema,
+      rows: Array.from({ length: 6 }, (_, i) => [i * 1000, i + 1] as const),
+    });
+
+    const smoothed = ts.smooth('value', 'ema', {
+      alpha: 0.4,
+      warmup: 2,
+      output: 'ema',
+    });
+    expect(smoothed.length).toBe(4);
+    // Source column preserved on every kept row.
+    expect(smoothed.first()!.get('value')).toBe(3);
+    expect(smoothed.first()!.get('ema')).toBeGreaterThan(0);
+  });
+
+  it('rejects invalid warmup values', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const ts = new TimeSeries({
+      name: 's',
+      schema,
+      rows: [[0, 1]],
+    });
+
+    expect(() => ts.smooth('value', 'ema', { alpha: 0.5, warmup: -1 })).toThrow(
+      /non-negative integer/,
+    );
+    expect(() =>
+      ts.smooth('value', 'ema', { alpha: 0.5, warmup: 2.5 }),
+    ).toThrow(/non-negative integer/);
+    expect(() =>
+      ts.smooth('value', 'ema', { alpha: 0.5, warmup: NaN }),
+    ).toThrow(/non-negative integer/);
+  });
+
   it('uses interval centers when smoothing moving averages', () => {
     const schema = [
       { name: 'interval', kind: 'interval' },

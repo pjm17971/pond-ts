@@ -125,6 +125,25 @@ const smoothed = series.smooth('cpu', 'ema', {
 });
 ```
 
+The first few events of an EMA output are noisy — the smoother starts
+with the first raw value as its seed and needs ~`1/alpha` samples to
+converge. Pass `warmup: N` to drop the first `N` rows from the output
+once the smoother has warmed up. The dropped rows still feed the
+smoother state, so the kept rows are computed against a warm EMA — it
+only trims the output, not the computation:
+
+```ts
+// alpha=0.3 converges in ~3-4 samples; ask for 4 warmup rows to trim.
+const smoothed = series.smooth('cpu', 'ema', {
+  alpha: 0.3,
+  warmup: 4,
+});
+// smoothed.length === series.length - 4 (or 0 if series is smaller)
+```
+
+`warmup: 0` is a no-op, and warmup values greater than the series
+length produce an empty series (same schema, no rows).
+
 ### Moving average
 
 ```ts
