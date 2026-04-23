@@ -2378,7 +2378,7 @@ export class TimeSeries<S extends SeriesSchema> {
     column: Target,
     method: SmoothMethod,
     options:
-      | { alpha: number; output?: Output }
+      | { alpha: number; warmup?: number; output?: Output }
       | { window: DurationInput; alignment?: RollingAlignment; output?: Output }
       | { span: number; output?: Output },
   ): TimeSeries<
@@ -2416,6 +2416,20 @@ export class TimeSeries<S extends SeriesSchema> {
         );
       }
 
+      // Optional warm-up: drop the first N output rows to hide the
+      // noisy initial convergence of the EMA. The smoother still
+      // processes those events so `previous` is correctly warmed up
+      // by the time we keep a row.
+      const warmup =
+        'warmup' in options && options.warmup !== undefined
+          ? options.warmup
+          : 0;
+      if (!Number.isInteger(warmup) || warmup < 0 || !Number.isFinite(warmup)) {
+        throw new TypeError(
+          'ema smoothing requires warmup to be a non-negative integer',
+        );
+      }
+
       let previous: number | undefined;
       const resultRows = this.events.map((event) => {
         const raw = event.get(column);
@@ -2447,10 +2461,12 @@ export class TimeSeries<S extends SeriesSchema> {
         ]);
       });
 
+      const keptRows = warmup > 0 ? resultRows.slice(warmup) : resultRows;
+
       return new TimeSeries({
         name: this.name,
         schema: resultSchema as unknown as SeriesSchema,
-        rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+        rows: keptRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
       }) as unknown as TimeSeries<
         Output extends string
           ? SmoothAppendSchema<S, Output>
