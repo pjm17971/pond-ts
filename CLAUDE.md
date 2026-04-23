@@ -55,3 +55,24 @@ From within `packages/core/`:
 ## Before opening a PR
 
 Run `npx prettier --write .` before committing. Unformatted code will fail review.
+
+## Publishing a release
+
+All packages publish together under one `v*` tag via the GitHub Actions
+workflow at `.github/workflows/release.yml`. npm publishes use OIDC
+Trusted Publisher — no stored tokens, nothing to configure locally.
+
+To cut a release from `main`:
+
+1. Bump the `version` field in **every** `packages/*/package.json`. Keep
+   them lock-step — the release tag covers the whole monorepo.
+2. If `@pond-ts/react`'s `dependencies.pond-ts` caret needs to widen to
+   the new minor (e.g. `^0.4.0` → `^0.5.0`), update it in the same pass.
+3. Commit with a message like `chore: bump to vX.Y.Z`.
+4. Tag the commit: `git tag vX.Y.Z`.
+5. Push both the branch and the tag: `git push origin main --follow-tags`.
+
+That's it. The `v*` tag push triggers `.github/workflows/release.yml`,
+which checks out the tag, runs `npm run verify`, then
+`npm publish --access public --provenance --workspaces` to publish every
+workspace package in one pass. Do not run `npm publish` locally.
