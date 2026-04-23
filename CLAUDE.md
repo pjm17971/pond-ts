@@ -94,6 +94,10 @@ merge.** Spawn a fresh code-review agent via the Agent tool with
 for an adversarial read. The agent has no context from the authoring
 session — that's the whole point.
 
+The agent posts its findings **directly to the PR as a comment** via
+`gh pr comment`. That comment, together with your response comment,
+becomes the durable review record attached to the PR.
+
 Example invocation:
 
 ```
@@ -121,13 +125,48 @@ Agent({
   — verify against the diff. If you see nothing concerning, say so
   explicitly; don't invent concerns to look thorough.
 
-  Report under 300 words.`,
+  Keep the review under 300 words. Post it as a PR comment by
+  running:
+
+  gh pr comment <N> --body "$(cat <<'EOF'
+  ## Adversarial review
+
+  <your findings here, grouped by category>
+  EOF
+  )"
+
+  Do not return the review as text — the PR comment is the
+  deliverable.`,
 })
 ```
 
-Take the agent's concerns seriously. Argue back in your reply only
-when you genuinely disagree — don't dismiss. If any concerns are
-valid, push a fix commit before merging.
+**Responding to the review.** After the agent's comment lands, read
+it and decide each concern on its merits. Fix genuine issues with a
+follow-up commit on the same branch. Then post a **second PR
+comment** that closes the loop — without it, the review is
+unresolved:
+
+```
+gh pr comment <N> --body "$(cat <<'EOF'
+## Review response
+
+Addressed in <sha>:
+- <concern> — <what changed>
+
+Not addressed — rationale:
+- <concern> — <why this is intentional / out of scope / already covered>
+EOF
+)"
+```
+
+Argue back only when you genuinely disagree — don't dismiss. The
+response comment is the record that every concern was considered,
+not just that the agent was run.
+
+**The two comments together are the review record.** Once both
+exist and genuine concerns have fix commits, agent-merge is
+acceptable for this project — the PR comments are the durable
+trail, not a human approval gate.
 
 **When the reviewer can be skipped:**
 
