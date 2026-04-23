@@ -7,9 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...HEAD
 
 ## [Unreleased]
+
+## [0.5.10] — 2026-04-24
+
+### Fixed
+
+- **`baseline()` emits `undefined` for `upper` / `lower` when the rolling
+  window is flat (`sd === 0`)** — matching `outliers()`'s behavior. Before,
+  a zero-width band would cause a naive `value > upper || value < lower`
+  filter to flag every non-equal point as anomalous inside a constant run.
+  The `avg` and `sd` columns still report their true values; only the band
+  edges collapse to `undefined`.
+
+### Changed
+
+- Internal: consolidated a duplicate `OptionalNumberCol` type alias into
+  the pre-existing `OptionalNumberColumn`. No surface change.
+- Docs: walked back an over-claim in `outliers()`'s docstring. It was
+  documented as "sugar over `baseline().filter()`" but is implemented
+  independently. Now says the two are conceptually equivalent.
 
 ## [0.5.9] — 2026-04-23
 
@@ -21,9 +40,9 @@ type-level changes; patch bumps are strictly additive.
   charts read `toPoints('upper')` / `toPoints('lower')` directly; outlier
   filters compare against `upper` / `lower`. Replaces the band-plus-outliers
   two-pass pattern with one call. Custom column names via `{ names }` if the
-  defaults collide. `outliers()` is now documented as sugar over
-  `baseline().filter()`.
+  defaults collide.
 
+[0.5.10]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/pjm17971/pond-ts/compare/v0.5.8...v0.5.9
 
 ## [0.5.8] — 2026-04-23
@@ -95,7 +114,7 @@ type-level changes; patch bumps are strictly additive.
   ```ts
   series.rolling('1m', {
     avg: { from: 'cpu', using: 'avg' },
-    sd:  { from: 'cpu', using: 'stdev' },
+    sd: { from: 'cpu', using: 'stdev' },
   });
   ```
   Two new overloads on both window-only and sequence-driven forms.
@@ -132,7 +151,7 @@ type-level changes; patch bumps are strictly additive.
 - **`TimeSeries.reduce` per-entry type narrowing.** Numeric reducers
   (`sum`/`avg`/`count`/`median`/`stdev`/`difference`/`pNN`) narrow to
   `number | undefined`; `unique`/`top${N}` narrow to `ReadonlyArray<…> |
-  undefined`; `first`/`last`/`keep` preserve the source column kind. Custom
+undefined`; `first`/`last`/`keep` preserve the source column kind. Custom
   reducer functions and `AggregateOutputSpec` entries keep the wide
   `ColumnValue | undefined` fallback. Narrowing lives in the new
   `types-reduce.ts` — same file-split pattern used later for the output-map

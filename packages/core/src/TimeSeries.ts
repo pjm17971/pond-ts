@@ -3326,10 +3326,14 @@ export class TimeSeries<S extends SeriesSchema> {
    * ```
    *
    * The `sigma` option controls band width — `sigma: 2` is the common
-   * "95% envelope" for normally distributed data. Opening events where
-   * the rolling window lacks a meaningful baseline (sd is zero or
-   * undefined) get `undefined` for all four new columns, so filters
-   * that compare against them behave correctly via null-checks.
+   * "95% envelope" for normally distributed data. Opening events
+   * before the rolling window has a meaningful baseline get
+   * `undefined` for all four new columns. Inside the warm-up region,
+   * events where `sd === 0` (a flat window) keep the `avg` / `sd`
+   * values but emit `undefined` for `upper` / `lower` — a zero-width
+   * band would flag every non-equal point as anomalous, which is not
+   * the primitive callers want. Filters that compare against the
+   * band should null-check `upper` / `lower`.
    *
    * Custom column names via the `names` option if the defaults would
    * collide with source columns.
@@ -3403,14 +3407,14 @@ export class TimeSeries<S extends SeriesSchema> {
       const sd = rollData[sdName];
       const avgNum = typeof avg === 'number' ? avg : undefined;
       const sdNum = typeof sd === 'number' ? sd : undefined;
-      const upperNum =
-        avgNum !== undefined && sdNum !== undefined
-          ? avgNum + sigma * sdNum
-          : undefined;
-      const lowerNum =
-        avgNum !== undefined && sdNum !== undefined
-          ? avgNum - sigma * sdNum
-          : undefined;
+      // sd === 0 means a flat rolling window — there is no meaningful
+      // deviation against it. Matching outliers(), we emit undefined
+      // bands so `value > upper || value < lower` doesn't flag every
+      // non-equal point as anomalous.
+      const bandValid =
+        avgNum !== undefined && sdNum !== undefined && sdNum > 0;
+      const upperNum = bandValid ? avgNum + sigma * sdNum : undefined;
+      const lowerNum = bandValid ? avgNum - sigma * sdNum : undefined;
       return Object.freeze([
         event.key(),
         ...this.schema.slice(1).map((c) => data[c.name]),
@@ -3443,10 +3447,12 @@ export class TimeSeries<S extends SeriesSchema> {
    * is zero or undefined) are not flagged — can't detect deviation
    * against a flat or empty reference.
    *
-   * Sugar over `baseline(col, { window, sigma }).filter(...)`. Reach
-   * for `baseline(...)` directly when you also want to render the
-   * `avg` / `upper` / `lower` columns — you'll do one rolling pass
-   * instead of two.
+   * Conceptually equivalent to `baseline(col, { window, sigma })`
+   * followed by a `|value - avg| > sigma * sd` filter — both share
+   * the same flat-window skip behavior. Implemented independently
+   * (one rolling pass, no intermediate schema), so reach for
+   * `baseline(...)` directly when you also want to render the
+   * `avg` / `upper` / `lower` columns.
    *
    * Internally: computes `rolling(window, { avg, sd })` using the
    * output-map form, zips with the source events by index, and keeps
