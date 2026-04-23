@@ -435,9 +435,21 @@ The batch path with explicit `{ range }` gives you a uniform grid
 uniform grid from a live feed, snapshot periodically via
 `toTimeSeries()` and aggregate on the snapshot.
 
+### The open bucket isn't reachable via `.at()` / `.length`
+
+`LiveAggregation` implements `LiveSource`, so `.length` and `.at(i)`
+exist — but they expose only **closed** buckets. A freshly pushed event
+that hasn't yet crossed a bucket boundary is in an open bucket that's
+not indexable. For the current partial value use `agg.snapshot().last()`
+or subscribe to the `'bucket'` event.
+See [Live Transforms → Reading the current value](./live-transforms#reading-the-current-value)
+for the full breakdown.
+
 ## See also
 
 - [Reducer Reference](./reducer-reference) — full details on `unique`,
   `top(n)`, and every other built-in.
 - [Error-Rate Dashboard](../examples/error-rate-dashboard) — a full
   scenario composing every array operator.
+- [Live Transforms](./live-transforms) — when to reach for live
+  aggregates vs batch-on-snapshot.

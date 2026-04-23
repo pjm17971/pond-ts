@@ -97,6 +97,57 @@ const agg = live
   .aggregate(Sequence.every('1m'), { cpu: 'avg' });
 ```
 
+### Reading the current value
+
+This is a common first stumble: `LiveAggregation` implements
+`LiveSource<S>`, so `.length` and `.at(index)` are available — but they
+expose **only closed buckets**. The in-progress bucket is _not_ reachable
+through index-style access. Reach for `.at(0)` / `.at(agg.length - 1)`
+right after a few pushes and you'll get `undefined` until the first
+bucket closes.
+
+For the current partial value you have three paths, from lightest to
+heaviest:
+
+```ts
+// 1. 'bucket' event — fires on every contributing push with the
+//    provisional bucket. Zero allocation on the happy path.
+agg.on('bucket', (event) => {
+  renderLiveValue(event.get('cpu'));
+});
+
+// 2. snapshot() — returns a TimeSeries that includes the open bucket
+//    as its last row. Good for "render on a tick" dashboards.
+const snap = agg.snapshot();
+const currentCpu = snap.last()?.get('cpu');
+
+// 3. Snapshot the source and run batch aggregate. Every bucket in
+//    `{ range }` is populated immediately, no waiting for closure.
+const batch = live
+  .toTimeSeries()
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' }, { range });
+const currentCpu = batch.last()?.get('cpu');
+```
+
+**When to use which**:
+
+| Need                                                     | Use                                                          |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| Alert / export / store **finalized** minute totals       | `agg.on('close', ...)` or `agg.closed()`                     |
+| Live UI that tracks the **current** bucket as it grows   | `agg.on('bucket', ...)` or `agg.snapshot()`                  |
+| Dashboard render with a **uniform grid** incl. empty buckets | `live.toTimeSeries().aggregate(seq, m, { range })`       |
+| Cheap one-shot read of the current partial value         | `agg.snapshot().last()`                                      |
+
+The batch path (`live.toTimeSeries().aggregate(...)`) re-validates events
+on each call, so it's not free — but for typical dashboard cadences
+(seconds to tens of seconds) the cost is negligible, and you get batch
+semantics for free: every bucket in the range appears, the partial
+trailing bucket included. If the reducer you want is array-producing
+(`unique`, `top(n)`) and you need a uniform grid of per-minute values
+with an `undefined` / empty bucket on quiet minutes, the batch path is
+the right call — live `LiveAggregation` only materializes buckets when
+an event lands in them.
+
 ### Subscriptions
 
 ```ts
@@ -186,8 +237,11 @@ alerts.on('event', (bucket) => {
 });
 ```
 
-- `agg.length` — number of closed buckets
-- `agg.at(i)` — access the i-th closed bucket event
+- `agg.length` — number of **closed** buckets (does not include the
+  open bucket)
+- `agg.at(i)` — access the i-th **closed** bucket event; the in-progress
+  bucket is not reachable this way. Reach for `agg.snapshot().last()`
+  or the `'bucket'` event if you want the partial current value.
 - `agg.on('event', fn)` — fires on bucket close (same as `on('close')`)
 
 ## LiveRollingAggregation: sliding-window reduction

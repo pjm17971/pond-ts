@@ -203,7 +203,7 @@ errorStream.on('close', (bucket) => {
 });
 ```
 
-Three semantics to remember in the live layer:
+Four semantics to remember in the live layer:
 
 1. **Buckets only materialize if an event lands in them.** An all-clean
    minute 2 will *not* emit a closed bucket — use the batch path
@@ -217,6 +217,16 @@ Three semantics to remember in the live layer:
    buckets (safe for alert pipelines). `snapshot()` includes the
    currently-open bucket so the current minute can render
    incrementally in the UI.
+4. **The open bucket isn't reachable via `.at()` or `.length`.**
+   `LiveAggregation` implements `LiveSource`, but those accessors only
+   see _closed_ buckets — right after a few pushes and before the first
+   bucket closes, they'll report an empty series. To read the current
+   partial value, reach for `agg.snapshot().last()` or the `'bucket'`
+   event (see the
+   [Live Transforms guide → Reading the current value](../guides/live-transforms#reading-the-current-value)).
+   If you want every bucket populated immediately, snapshot the source
+   and run batch aggregate:
+   `live.toTimeSeries().aggregate(seq, mapping, { range })`.
 
 ## Putting it all together
 
