@@ -19,14 +19,22 @@ no `as` casts at the call site:
 const result = series.reduce({
   cpu: 'avg', //   -> number | undefined
   latency: 'p95', //   -> number | undefined
-  host: 'unique', //   -> ReadonlyArray<ScalarValue> | undefined
-  paths: 'top3', //   -> ReadonlyArray<ScalarValue> | undefined
-  status: 'last', //   -> string | undefined  (source column kind)
+  host: 'unique', //   -> ReadonlyArray<string> | undefined   (source: kind 'string')
+  values: 'unique', //   -> ReadonlyArray<number> | undefined   (source: kind 'number')
+  paths: 'top3', //   -> ReadonlyArray<string> | undefined
+  status: 'last', //   -> string | undefined   (source column kind)
 });
 
 const avgCpu: number | undefined = result.cpu;
-const hosts: ReadonlyArray<string | number | boolean> | undefined = result.host;
+const hosts: ReadonlyArray<string> | undefined = result.host;
 ```
+
+**Array-output reducers thread source column kind through.** `'unique'` and any
+`top${number}` on a `kind: 'string'` column narrow to `ReadonlyArray<string>`, on a
+`kind: 'number'` column to `ReadonlyArray<number>`, on a `kind: 'boolean'` column to
+`ReadonlyArray<boolean>`. Array-kind source columns fall back to the wide
+`ReadonlyArray<ScalarValue>` union because tracking element kind on an array column is out
+of scope for the schema.
 
 Custom reducer functions and `AggregateOutputSpec` entries (`{ from, using, kind? }`) fall
 back to `ColumnValue | undefined` because their output kind is set at runtime and the type

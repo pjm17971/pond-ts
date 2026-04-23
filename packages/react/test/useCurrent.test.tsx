@@ -82,7 +82,9 @@ describe('useCurrent', () => {
 
   it('narrows the return type so no casts are needed', () => {
     // Compile-time check: the result fields should narrow to their reducer
-    // output kinds. If this ever regresses the `satisfies` clause fails.
+    // output kinds AND thread through the source column kind.
+    // 'host' is declared kind: 'string', so `unique` narrows to
+    // `ReadonlyArray<string>` — not the wide scalar union.
     const live = new LiveSeries({ name: 'cpu', schema });
     live.push(row(0, 0.5, 'api-1'));
 
@@ -92,7 +94,7 @@ describe('useCurrent', () => {
 
     const typed: {
       cpu: number | undefined;
-      host: ReadonlyArray<string | number | boolean> | undefined;
+      host: ReadonlyArray<string> | undefined;
     } = result.current;
     expect(typed.cpu).toBe(0.5);
     expect(typed.host).toEqual(['api-1']);

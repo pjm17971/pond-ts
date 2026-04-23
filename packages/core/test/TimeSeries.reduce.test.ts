@@ -178,19 +178,32 @@ describe('TimeSeries.reduce', () => {
       expect(p50).toBe(25);
     });
 
-    it('unique returns a ReadonlyArray (no cast needed)', () => {
+    it('unique narrows to ReadonlyArray<sourceKind> — no cast needed', () => {
       const s = makeSeries();
-      const hosts: ReadonlyArray<string | number | boolean> | undefined =
-        s.reduce({ status: 'unique' }).status;
+      // 'status' is declared `kind: 'string'`, so `unique` narrows to
+      // `ReadonlyArray<string> | undefined`, not the wide scalar union.
+      const hosts: ReadonlyArray<string> | undefined = s.reduce({
+        status: 'unique',
+      }).status;
+      const values: ReadonlyArray<number> | undefined = s.reduce({
+        value: 'unique',
+      }).value;
       expect(hosts).toEqual(['ok', 'warn']);
+      expect(values).toEqual([10, 20, 30, 40]);
     });
 
-    it('top${N} returns a ReadonlyArray (no cast needed)', () => {
+    it('top${N} narrows to ReadonlyArray<sourceKind> — no cast needed', () => {
       const s = makeSeries();
-      const top: ReadonlyArray<string | number | boolean> | undefined =
-        s.reduce({ status: 'top2' }).status;
+      const top: ReadonlyArray<string> | undefined = s.reduce({
+        status: 'top2',
+      }).status;
+      const topNumeric: ReadonlyArray<number> | undefined = s.reduce({
+        value: 'top2',
+      }).value;
       // 'ok' x3, 'warn' x1 -> ['ok', 'warn']
       expect(top).toEqual(['ok', 'warn']);
+      // All values appear exactly once; top 2 by scalar order.
+      expect(topNumeric).toEqual([10, 20]);
     });
 
     it('first / last / keep preserve the source column kind', () => {

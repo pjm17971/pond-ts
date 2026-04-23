@@ -39,6 +39,10 @@ type ColumnByName<S extends SeriesSchema, Name extends string> = Extract<
  * - Numeric-output reducers (`'sum'`, `'avg'`, `'count'`, `'median'`,
  *   `'stdev'`, `'difference'`, any `p${number}`) → `number | undefined`.
  * - Array-output reducers (`'unique'`, any `top${number}`) →
+ *   `ReadonlyArray<T> | undefined`, where `T` is the source column's
+ *   element type — `ReadonlyArray<string>` for a `kind: 'string'`
+ *   column, `ReadonlyArray<number>` for `kind: 'number'`, etc.
+ *   Array-kind source columns fall back to the wide
  *   `ReadonlyArray<ScalarValue> | undefined`.
  * - Source-preserving reducers (`'first'`, `'last'`, `'keep'`) → the
  *   source column's value type (`number`, `string`, or `boolean` —
@@ -60,7 +64,15 @@ export type ReduceResult<S extends SeriesSchema, Mapping> = {
     | `p${number}`
     ? number | undefined
     : Mapping[K] extends 'unique' | `top${number}`
-      ? ReadonlyArray<string | number | boolean> | undefined
+      ? K extends ValueColumnsForSchema<S>[number]['name']
+        ? ColumnByName<S, K>['kind'] extends 'number'
+          ? ReadonlyArray<number> | undefined
+          : ColumnByName<S, K>['kind'] extends 'string'
+            ? ReadonlyArray<string> | undefined
+            : ColumnByName<S, K>['kind'] extends 'boolean'
+              ? ReadonlyArray<boolean> | undefined
+              : ReadonlyArray<string | number | boolean> | undefined
+        : ReadonlyArray<string | number | boolean> | undefined
       : Mapping[K] extends 'first' | 'last' | 'keep'
         ? K extends ValueColumnsForSchema<S>[number]['name']
           ? ColumnByName<S, K>['kind'] extends 'number'
