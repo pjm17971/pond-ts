@@ -1,0 +1,295 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+`pond-ts` and `@pond-ts/react` release together under a single `v*` tag, so this
+file covers both packages. Pre-1.0: minor bumps may include new features and
+type-level changes; patch bumps are strictly additive.
+
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...HEAD
+
+## [Unreleased]
+
+## [0.5.9] — 2026-04-23
+
+### Added
+
+- **`TimeSeries.baseline(col, opts)`** — rolling-stats primitive. Runs one
+  rolling pass and appends four optional number columns (`avg`, `sd`,
+  `upper = avg + σ·sd`, `lower = avg - σ·sd`) to the source schema. Band
+  charts read `toPoints('upper')` / `toPoints('lower')` directly; outlier
+  filters compare against `upper` / `lower`. Replaces the band-plus-outliers
+  two-pass pattern with one call. Custom column names via `{ names }` if the
+  defaults collide. `outliers()` is now documented as sugar over
+  `baseline().filter()`.
+
+[0.5.9]: https://github.com/pjm17971/pond-ts/compare/v0.5.8...v0.5.9
+
+## [0.5.8] — 2026-04-23
+
+### Added
+
+- **`TimeSeries.outliers(col, { window, sigma, alignment? })`** —
+  rolling-baseline outlier detection. Returns `TimeSeries<S>` filtered to
+  events whose value deviates from the trailing rolling average by more than
+  `sigma · rolling_stdev`. Composes directly with aggregate, groupBy, etc.
+- **`TimeSeries.prototype.toPoints(col)`** — flat `{ ts, value }[]` export
+  matching conventional chart-library shape (Recharts, Observable Plot, d3).
+  Filters `undefined` values; returns a frozen array.
+- **`TimeSeries.fromPoints(points, { schema, name? })`** — inverse
+  constructor for round-tripping chart-style points back into pond-native
+  operations. Schema must have exactly two columns.
+
+[0.5.8]: https://github.com/pjm17971/pond-ts/compare/v0.5.7...v0.5.8
+
+## [0.5.7] — 2026-04-23
+
+### Added
+
+- **`smooth('ema', { warmup: N })`** — drops the first `N` output rows so
+  callers don't have to write `.slice(N)` after every EMA call. The smoother
+  still processes those events, so kept rows are computed against a warm EMA.
+  `warmup: 0` is a no-op; warmup ≥ series length returns an empty series.
+
+[0.5.7]: https://github.com/pjm17971/pond-ts/compare/v0.5.6...v0.5.7
+
+## [0.5.6] — 2026-04-23
+
+### Added
+
+- **`useCurrent` reference stability** — the returned record and each of its
+  fields are reference-stable across renders when structurally unchanged. A
+  no-op push (same aggregate values) hands back the previous references;
+  downstream `useMemo([current.host], ...)` only re-runs when that specific
+  field changes. Scalar fields compare via `===`; array fields compare length
+  then elementwise.
+
+[0.5.6]: https://github.com/pjm17971/pond-ts/compare/v0.5.5...v0.5.6
+
+## [0.5.5] — 2026-04-23
+
+### Added
+
+- **Narrow return types for `rolling` + `aggregate` output-map overloads.**
+  `rolling(w, { avg: { from: 'cpu', using: 'avg' }, ... })` now returns
+  `TimeSeries<RollingOutputMapSchema<S, M>>` — `e.get('avg')` narrows to
+  `number | undefined` instead of `ColumnValue | undefined`, and `e.key()`
+  preserves the source's first-column kind. Same fix on `aggregate`'s
+  output-map overload.
+
+### Fixed
+
+- `min` / `max` were missing from the numeric-reducer list in `ReduceResult`
+  (v0.5.2 regression). Both reducers have `outputKind: 'number'` at runtime;
+  the type now agrees. `reduce({ cpu: 'max' })` narrows to `number | undefined`.
+
+[0.5.5]: https://github.com/pjm17971/pond-ts/compare/v0.5.4...v0.5.5
+
+## [0.5.4] — 2026-04-23
+
+### Added
+
+- **`rolling` accepts `AggregateOutputMap`** — feature parity with
+  `aggregate`. Multi-reducer-per-column now works in one pass:
+  ```ts
+  series.rolling('1m', {
+    avg: { from: 'cpu', using: 'avg' },
+    sd:  { from: 'cpu', using: 'stdev' },
+  });
+  ```
+  Two new overloads on both window-only and sequence-driven forms.
+
+### Changed
+
+- `rolling`'s internal column walker now routes through the shared
+  `normalizeAggregateColumns` helper. Schema-column order is preserved for
+  `AggregateMap` inputs so the runtime layout continues to match
+  `RollingSchema<S, M>`.
+
+[0.5.4]: https://github.com/pjm17971/pond-ts/compare/v0.5.3...v0.5.4
+
+## [0.5.3] — 2026-04-23
+
+### Added
+
+- **Source-kind narrowing on array-output reducers in `ReduceResult`.**
+  `unique` and `` `top${number}` `` now narrow their output to
+  `ReadonlyArray<T>` where `T` is the source column's element type:
+  ```ts
+  series.reduce({ host: 'unique' }).host;
+  //    ^ ReadonlyArray<string> | undefined (was ReadonlyArray<ScalarValue>)
+  ```
+  Array-kind source columns fall back to the wide `ReadonlyArray<ScalarValue>`
+  union since element kind isn't schema-visible.
+
+[0.5.3]: https://github.com/pjm17971/pond-ts/compare/v0.5.2...v0.5.3
+
+## [0.5.2] — 2026-04-23
+
+### Added
+
+- **`TimeSeries.reduce` per-entry type narrowing.** Numeric reducers
+  (`sum`/`avg`/`count`/`median`/`stdev`/`difference`/`pNN`) narrow to
+  `number | undefined`; `unique`/`top${N}` narrow to `ReadonlyArray<…> |
+  undefined`; `first`/`last`/`keep` preserve the source column kind. Custom
+  reducer functions and `AggregateOutputSpec` entries keep the wide
+  `ColumnValue | undefined` fallback. Narrowing lives in the new
+  `types-reduce.ts` — same file-split pattern used later for the output-map
+  narrowing.
+
+### Changed
+
+- `useCurrent` now aliases `ReduceResult<S, Mapping>` directly; the hook's
+  duplicated narrowing logic is gone.
+
+[0.5.2]: https://github.com/pjm17971/pond-ts/compare/v0.5.1...v0.5.2
+
+## [0.5.1] — 2026-04-23
+
+### Added
+
+- **`TimeSeries.tail(duration?)`** — trailing temporal slice, the
+  counterpart to `Array.slice(-n)`. Called with no argument, returns the
+  whole series. Composes with every other `TimeSeries` method.
+- **`useCurrent` hook (`@pond-ts/react`)** — subscribes to a live source and
+  returns the current value of a reducer mapping. Signature:
+  `useCurrent(source, mapping, { tail?, throttle? })`. Stable-shape record
+  even while the source is empty, so destructuring on first render is safe.
+
+[0.5.1]: https://github.com/pjm17971/pond-ts/compare/v0.5.0...v0.5.1
+
+## [0.5.0] — 2026-04-23
+
+### Added
+
+- **First-class `'array'` column kind.** New `ArrayValue = ReadonlyArray<ScalarValue>`
+  and `ColumnValue = ScalarValue | ArrayValue` types. Array columns are inert
+  with respect to numerical operators (`diff`, `rate`, `cumulative`,
+  `rolling`-over-numbers skip them automatically via `NumericColumnNameForSchema`).
+- **`unique` reducer** — distinct sorted values; works in `reduce`,
+  `aggregate`, and `rolling`. Flattens array-kind sources one level (set union
+  across arrays in a bucket).
+- **`top(n)` reducer** — top N values by frequency with deterministic
+  tie-break. String-pattern dispatch (`'top3'`, `'top10'`) parallel to `pNN`,
+  plus a `top(n)` helper that returns the typed string literal. Incremental
+  bucket + rolling state via a count map. Also flattens array-kind sources.
+- **Five array-prefixed operators on `TimeSeries`**:
+  - `arrayContains(col, value)` — has this one
+  - `arrayContainsAll(col, values)` — has every one (AND / subset)
+  - `arrayContainsAny(col, values)` — has at least one (OR / intersection)
+  - `arrayAggregate(col, reducer, { as?, kind? })` — per-event reduction
+    reusing the full reducer registry (count, sum, avg, unique, custom, etc.).
+    Replace in place or append via `as`.
+  - `arrayExplode(col, { as?, kind? })` — fan each event out into one event
+    per array element. Replace the array column or keep it alongside a scalar
+    sibling.
+- **LiveSeries accepts `kind: 'array'`** on its schema with array cells
+  frozen on push.
+- **JSON round-trip** for array cells works unchanged (toJSON / fromJSON
+  pass arrays through naturally).
+- **Docs**: new `guides/arrays.mdx` reference page;
+  `examples/error-rate-dashboard.mdx` scenario walkthrough backed 1:1 by an
+  E2E test; `reducer-reference.mdx` expanded with concrete input/output
+  examples for `unique` and `top(n)`.
+
+### Changed
+
+- **`reduce()` / `ReduceResult` / `CustomAggregateReducer` return types** widened
+  from `ScalarValue | undefined` to `ColumnValue | undefined`. Narrowed
+  annotations (`: number | undefined`) keep working; only callers with
+  explicit `: ScalarValue | undefined` annotations need to widen.
+  (v0.5.2 narrows these further per-entry.)
+
+[0.5.0]: https://github.com/pjm17971/pond-ts/compare/v0.4.3...v0.5.0
+
+## [0.4.3] — 2026-04-22
+
+### Added
+
+- `useLiveQuery` and `useLatest` hooks in `@pond-ts/react`.
+
+### Fixed
+
+- LiveView eviction mirroring (uses `EMITS_EVICT` symbol to safely detect
+  evict-capable sources; avoids duck-typing that broke on `LiveAggregation`).
+- Type narrowing through `LiveAggregation` / `LiveRollingAggregation` via
+  `Out` type parameter.
+- `Time.toDate()` convenience method.
+- `useWindow` under React StrictMode (view creation moved to `useEffect`).
+- `TimeSeries[Symbol.iterator]` and `toArray()` for ergonomic iteration.
+- `useSnapshot` accepts `SnapshotSource<S>` structural type (no casts for
+  `LiveAggregation` input).
+
+[0.4.3]: https://github.com/pjm17971/pond-ts/compare/v0.4.2...v0.4.3
+
+## [0.4.2] — 2026-04-21
+
+### Changed
+
+- First release using npm OIDC Trusted Publisher (no stored tokens).
+
+[0.4.2]: https://github.com/pjm17971/pond-ts/compare/v0.4.1...v0.4.2
+
+## [0.4.1] — 2026-04-21
+
+Administrative — no behavioral changes.
+
+[0.4.1]: https://github.com/pjm17971/pond-ts/compare/v0.4.0...v0.4.1
+
+## [0.4.0] — 2026-04-21
+
+### Added
+
+- **`@pond-ts/react` package** — React hooks for live series
+  (`useLiveSeries`, `useTimeSeries`, `useSnapshot`, `useWindow`, `useDerived`,
+  `takeSnapshot`). Monorepo restructure completed.
+- **LiveView + LiveSource composition** — `filter`, `map`, `select`,
+  `window` views that compose with `LiveAggregation` / `LiveRollingAggregation`
+  via a shared `LiveSource<S>` interface.
+- **Live per-event and carry-forward transforms** — `diff`, `rate`,
+  `pctChange`, `fill`, `cumulative` available as LiveView variants.
+- **Grace period on `LiveAggregation`** — delays bucket closing so
+  out-of-order events within a window accumulate into their correct bucket.
+  Defaults from source `LiveSeries`'s `graceWindow`.
+- **Streaming dashboard example** with E2E tests.
+- **Benchmark suite** comparing `pond-ts` vs `pondjs`.
+
+[0.4.0]: https://github.com/pjm17971/pond-ts/compare/v0.3.0...v0.4.0
+
+## [0.3.0] — 2026-04-21
+
+### Added
+
+- **`LiveSeries`** — mutable, append-optimized streaming buffer sharing the
+  same schema type as `TimeSeries`. Retention policies (`maxEvents`,
+  `maxAge`, `maxBytes`). Synchronous subscriptions (`event`, `batch`,
+  `evict`). Ordering modes (`strict`, `drop`, `reorder`).
+- **`LiveAggregation`** — incremental bucketed aggregation over a
+  `LiveSource`.
+- **`LiveRollingAggregation`** — sliding-window reduction over a
+  `LiveSource`.
+
+[0.3.0]: https://github.com/pjm17971/pond-ts/compare/v0.2.0...v0.3.0
+
+## [0.2.0] — 2026-04-16
+
+### Added
+
+- **Phase 2 batch expansion**: `reduce`, `groupBy`, `diff`, `rate`, `fill`.
+- **Phase 2.5 columnar primitives**: `pctChange`, `cumulative`, `shift`,
+  `bfill` fill strategy.
+- **Aggregator parity with pondjs**: `median`, `stdev`, `percentile`
+  (`pNN`), `difference`, `keep`.
+
+[0.2.0]: https://github.com/pjm17971/pond-ts/compare/v0.1.4...v0.2.0
+
+## [0.1.x] — 2026-04-16
+
+Phase 0 (core performance) and Phase 1 (batch hardening) releases. Five
+critical O(N²) hot paths optimized (172× aggregate, 182× rolling, 15×
+movingAverage, 7.5× loess, 819× includesKey, 134× alignLinearAt).
+`toJSON`/`fromJSON` round-trip, custom aggregate reducers, edge-case
+coverage across every analytical primitive.
+
+See [tag history](https://github.com/pjm17971/pond-ts/tags) for details.
