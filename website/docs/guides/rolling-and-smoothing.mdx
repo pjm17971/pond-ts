@@ -163,13 +163,68 @@ const loess = series.smooth('cpu', 'loess', {
 });
 ```
 
+## Rolling baseline
+
+`baseline(col, opts)` is the primitive behind band charts and outlier
+detection. It runs one rolling pass and appends four columns to the
+source schema: `avg`, `sd`, `upper = avg + sigma*sd`, and
+`lower = avg - sigma*sd`. Downstream code reads whichever it needs —
+band charts grab `upper`/`lower`, outlier filters compare `cpu`
+against both, regression work uses `avg`/`sd` directly.
+
+```ts
+const baseline = series.baseline('cpu', { window: '1m', sigma: 2 });
+// baseline.schema: [time, cpu, host, avg, sd, upper, lower]
+
+// Band chart: two series, ready to plot.
+const upperBand = baseline.toPoints('upper');
+const lowerBand = baseline.toPoints('lower');
+
+// Outliers: one filter, same rolling pass.
+const anomalies = baseline.filter((e) => {
+  const cpu = e.get('cpu');
+  const upper = e.get('upper');
+  const lower = e.get('lower');
+  return (
+    cpu != null &&
+    upper != null &&
+    lower != null &&
+    (cpu > upper || cpu < lower)
+  );
+});
+```
+
+Opening events where the rolling window hasn't built a meaningful
+baseline (sd is `0` or `undefined`) get `undefined` for all four new
+columns. Filter predicates that compare against them behave correctly
+via null checks, and `toPoints` drops them from the output.
+
+If the default column names (`avg`, `sd`, `upper`, `lower`) collide
+with source columns, pass a `names` override:
+
+```ts
+series.baseline('cpu', {
+  window: '1m',
+  sigma: 2,
+  names: { avg: 'cpuAvg', sd: 'cpuSd', upper: 'cpuHi', lower: 'cpuLo' },
+});
+```
+
 ## Outlier detection
 
-`outliers(col, opts)` flags events whose `col` value deviates from the
-rolling-window average by more than `sigma * rolling_stdev`. The return
-is a `TimeSeries<S>` — same schema as the input, filtered to the
-flagged events. Composes with every other operator, so bucketed counts
-and per-host breakdowns are one-liners:
+`outliers(col, opts)` is a sugar over `baseline(col, opts).filter(...)`:
+it returns just the events whose value fell outside the band, same
+schema as the source. Use `outliers()` when you only need the anomalies
+(no band rendering); use `baseline()` when you need the baseline stats
+for charting too — you'll do one rolling pass either way, just less
+typing with `outliers()`.
+
+```ts
+const anomalies = series.outliers('cpu', { window: '1m', sigma: 2 });
+```
+
+Composes with every other operator, so bucketed counts and per-host
+breakdowns are one-liners:
 
 ```ts
 const anomalies = series.outliers('cpu', {

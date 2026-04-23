@@ -685,6 +685,14 @@ Entry point: `@pond-ts/react` (separate workspace package)
       `sigma * rolling_stdev`. Collapses the 30-line manual pattern
       (rolling → avgByTs Map → filter loop) into one call. Shipped in
       v0.5.8.
+- [x] `baseline(col, { window, sigma, alignment?, names? })` — the
+      primitive `outliers()` should have been sugar over. Appends
+      `avg` / `sd` / `upper` / `lower` columns to the source schema in
+      one rolling pass; band-chart `toPoints('upper')` and
+      outlier-filter `.filter(cpu > upper)` both read from the same
+      intermediate. Replaces the dashboard's "call rolling for bands,
+      call outliers for dots" two-pass pattern with one call. Shipped
+      in v0.5.9.
 - [x] `toPoints(col)` / `TimeSeries.fromPoints(points, { schema })` —
       chart-library interop. `toPoints` exports the flat
       `{ ts, value }[]` shape (filtering `undefined`); `fromPoints` is

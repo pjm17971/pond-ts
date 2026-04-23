@@ -590,6 +590,32 @@ type AppendColumn<
   Kind extends ScalarKind,
 > = readonly [S[0], ...ValueColumnsForSchema<S>, ColumnDef<Name, Kind>];
 
+type OptionalNumberCol<Name extends string> = ColumnDef<Name, 'number'> & {
+  readonly required: false;
+};
+
+/**
+ * Schema for `baseline(col, { sigma, ... })`: source schema preserved,
+ * plus four optional number columns — the rolling average, standard
+ * deviation, and the `avg ± sigma * sd` band edges. All four are
+ * `required: false` because the rolling window may not have a baseline
+ * yet in the opening events.
+ */
+export type BaselineSchema<
+  S extends SeriesSchema,
+  AvgName extends string = 'avg',
+  SdName extends string = 'sd',
+  UpperName extends string = 'upper',
+  LowerName extends string = 'lower',
+> = readonly [
+  S[0],
+  ...ValueColumnsForSchema<S>,
+  OptionalNumberCol<AvgName>,
+  OptionalNumberCol<SdName>,
+  OptionalNumberCol<UpperName>,
+  OptionalNumberCol<LowerName>,
+];
+
 /**
  * Schema for `arrayAggregate(col, reducer)` replacing the array column
  * in place with the reducer's output kind.
