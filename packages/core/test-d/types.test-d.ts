@@ -1012,15 +1012,35 @@ void reduceSum;
 void reduceCount;
 void reduceP95;
 
-// `unique` narrows to `ReadonlyArray<string | number | boolean> | undefined`.
-const reduceUnique: ReadonlyArray<string | number | boolean> | undefined =
+// `unique` narrows to `ReadonlyArray<T>` where T is the source column's
+// element type — not the wide scalar union.
+const reduceUniqueHosts: ReadonlyArray<string> | undefined =
   reduceSeries.reduce({ host: 'unique' }).host;
-void reduceUnique;
+const reduceUniqueCpu: ReadonlyArray<number> | undefined = reduceSeries.reduce({
+  cpu: 'unique',
+}).cpu;
+const reduceUniqueHealthy: ReadonlyArray<boolean> | undefined =
+  reduceSeries.reduce({ healthy: 'unique' }).healthy;
+void reduceUniqueHosts;
+void reduceUniqueCpu;
+void reduceUniqueHealthy;
 
-// `top${N}` (helper + literal form) narrow to the same array type.
-const reduceTopLiteral: ReadonlyArray<string | number | boolean> | undefined =
-  reduceSeries.reduce({ host: 'top3' }).host;
-void reduceTopLiteral;
+// `top${N}` (helper + literal form) mirrors the same source-kind
+// narrowing.
+const reduceTopHosts: ReadonlyArray<string> | undefined = reduceSeries.reduce({
+  host: 'top3',
+}).host;
+const reduceTopCpu: ReadonlyArray<number> | undefined = reduceSeries.reduce({
+  cpu: 'top5',
+}).cpu;
+void reduceTopHosts;
+void reduceTopCpu;
+
+// The narrow type is assignable to the wide one — code written against
+// v0.5.2's `ReadonlyArray<ScalarValue>` assertion keeps compiling.
+const reduceUniqueWide: ReadonlyArray<string | number | boolean> | undefined =
+  reduceSeries.reduce({ host: 'unique' }).host;
+void reduceUniqueWide;
 
 // `first` / `last` / `keep` preserve the source column kind.
 const reduceFirstNumber: number | undefined = reduceSeries.reduce({
