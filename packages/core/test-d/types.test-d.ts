@@ -630,35 +630,46 @@ void rolledCpuOnSequenceHost;
 void rolledCpuOnSequenceHealthy;
 void rolledCpuOnSequenceTypedEvent;
 
-// `rolling` with `AggregateOutputMap` (multi-reducer-per-column) returns
-// `TimeSeries<SeriesSchema>` — same erased-schema pattern as
-// `aggregate` on an `AggregateOutputMap`, landed in v0.5.4 for parity.
+// `rolling` with `AggregateOutputMap` (multi-reducer-per-column).
+// v0.5.4 landed the runtime parity; v0.5.5 threads per-spec narrowing
+// through so callers don't have to `as`-cast.
 const rolledMultiCpu = cpuSeries.rolling('1m', {
   cpuAvg: { from: 'cpu', using: 'avg' },
   cpuSd: { from: 'cpu', using: 'stdev' },
+  hosts: { from: 'host', using: 'unique' },
+  lastHost: { from: 'host', using: 'last' },
 });
 const rolledMultiCpuEvent = rolledMultiCpu.first();
 if (!rolledMultiCpuEvent) {
   throw new Error('missing rolled multi event');
 }
-// Payload values fall back to the broad `ColumnValue` union since the
-// schema is erased (same as `aggregate`'s output-map form).
-const rolledMultiCpuAvg:
-  | string
-  | number
-  | boolean
-  | ReadonlyArray<string | number | boolean>
-  | undefined = rolledMultiCpuEvent.get('cpuAvg');
-const rolledMultiCpuSd:
-  | string
-  | number
-  | boolean
-  | ReadonlyArray<string | number | boolean>
-  | undefined = rolledMultiCpuEvent.get('cpuSd');
+
+// Payload values narrow per-spec:
+// - 'avg' / 'stdev'   -> number | undefined
+// - 'unique' on string -> ReadonlyArray<ScalarValue> | undefined
+//   (the output schema tracks kind='array'; element-level narrowing
+//    to ReadonlyArray<string> requires bypassing NormalizedValueForKind
+//    and is only available today on `reduce(...)`'s ReduceResult — see
+//    v0.5.3. For rolling's output-map path, the ArrayValue union is the
+//    best we can do without a bigger schema-layer change.)
+// - 'last' on string   -> string | undefined
+const rolledMultiCpuAvg: number | undefined = rolledMultiCpuEvent.get('cpuAvg');
+const rolledMultiCpuSd: number | undefined = rolledMultiCpuEvent.get('cpuSd');
+const rolledMultiHosts: ReadonlyArray<string | number | boolean> | undefined =
+  rolledMultiCpuEvent.get('hosts');
+const rolledMultiLastHost: string | undefined =
+  rolledMultiCpuEvent.get('lastHost');
 void rolledMultiCpuAvg;
 void rolledMultiCpuSd;
+void rolledMultiHosts;
+void rolledMultiLastHost;
 
-// Same shape via the sequence-driven overload.
+// First-column kind preserved: Time key for a Time-keyed source.
+const rolledMultiKey: Time = rolledMultiCpuEvent.key();
+void rolledMultiKey;
+
+// Same narrowing via the sequence-driven overload; first column is
+// `Interval` (sequence output).
 const rolledMultiCpuOnSequence = cpuSeries.rolling(
   Sequence.every('1m'),
   '5m',
@@ -668,7 +679,33 @@ const rolledMultiCpuOnSequence = cpuSeries.rolling(
   },
   { range: new TimeRange({ start: 1735689600000, end: 1735689660000 }) },
 );
-void rolledMultiCpuOnSequence;
+const rolledMultiSeqEvent = rolledMultiCpuOnSequence.first();
+if (!rolledMultiSeqEvent) {
+  throw new Error('missing rolled multi sequence event');
+}
+const rolledMultiSeqKey: Interval = rolledMultiSeqEvent.key();
+const rolledMultiSeqAvg: number | undefined = rolledMultiSeqEvent.get('cpuAvg');
+const rolledMultiSeqMax: number | undefined = rolledMultiSeqEvent.get('cpuMax');
+void rolledMultiSeqKey;
+void rolledMultiSeqAvg;
+void rolledMultiSeqMax;
+
+// `aggregate` with `AggregateOutputMap` narrows the same way (parity
+// fix landed in v0.5.5 alongside the rolling fix).
+const aggregatedOutputMap = cpuSeries.aggregate(Sequence.every('1m'), {
+  cpu_avg: { from: 'cpu', using: 'avg' },
+  host_last: { from: 'host', using: 'last' },
+});
+const aggregatedOutputEvent = aggregatedOutputMap.first();
+if (!aggregatedOutputEvent) {
+  throw new Error('missing aggregated output-map event');
+}
+const aggregatedOutputAvg: number | undefined =
+  aggregatedOutputEvent.get('cpu_avg');
+const aggregatedOutputLast: string | undefined =
+  aggregatedOutputEvent.get('host_last');
+void aggregatedOutputAvg;
+void aggregatedOutputLast;
 
 const smoothedCpuSeries = cpuSeries.smooth('cpu', 'ema', { alpha: 0.5 });
 type SmoothedCpuSchema = SmoothSchema<typeof cpuSchema, 'cpu'>;

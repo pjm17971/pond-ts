@@ -40,10 +40,76 @@ describe('rolling (AggregateOutputMap, event-driven)', () => {
 
     // At t=4000, trailing 3s window contains t=[2000, 3000, 4000] -> cpu [30,40,50]
     const at4 = rolled.at(4)!;
-    expect(at4.get('avg')).toBe(40);
+
+    // Narrow return types — no `as number | undefined` casts needed
+    // (was `ColumnValue | undefined` pre-v0.5.5).
+    const avg: number | undefined = at4.get('avg');
+    const sd: number | undefined = at4.get('sd');
+    expect(avg).toBe(40);
     // stdev population = sqrt(((30-40)^2 + (40-40)^2 + (50-40)^2) / 3)
     //                  = sqrt(200/3) = ~8.1650
-    expect(at4.get('sd') as number).toBeCloseTo(8.165, 3);
+    expect(sd!).toBeCloseTo(8.165, 3);
+  });
+
+  it('narrows unique / top / first / last through the output spec', () => {
+    const rolled = makeSeries().rolling('3s', {
+      hostsSeen: { from: 'host', using: 'unique' },
+      topHost: { from: 'host', using: 'top1' },
+      firstHost: { from: 'host', using: 'first' },
+    });
+
+    const at4 = rolled.at(4)!;
+
+    // Source-preserving reducers narrow to the source column's element
+    // type — first/last/keep on a string column → string | undefined.
+    const firstHost: string | undefined = at4.get('firstHost');
+
+    // Array-producing reducers (unique / top${N}) narrow to ArrayValue
+    // (kind-level). Further narrowing to ReadonlyArray<string>
+    // specifically requires bypassing the schema pipeline and is only
+    // available on `reduce(...)` today. Worked example kept loose here.
+    const hostsSeen: ReadonlyArray<string | number | boolean> | undefined =
+      at4.get('hostsSeen');
+    const topHost: ReadonlyArray<string | number | boolean> | undefined =
+      at4.get('topHost');
+
+    // At t=4000, trailing 3s window: events at t∈(1000, 4000] -> hosts
+    // api-2, api-2, api-3
+    expect(hostsSeen).toEqual(['api-2', 'api-3']);
+    expect(topHost?.length).toBe(1);
+    expect(topHost![0]).toBe('api-2'); // api-2 x2 > api-3 x1
+    expect(firstHost).toBe('api-2');
+  });
+
+  it("preserves the source's first-column kind (Time, not the union)", () => {
+    const rolled = makeSeries().rolling('3s', {
+      avg: { from: 'cpu', using: 'avg' },
+    });
+
+    // `.key()` should return `Time` (not the `Time | TimeRange | Interval`
+    // union that the erased-schema overload used to produce).
+    const key = rolled.at(0)!.key();
+    expect(typeof key.begin()).toBe('number');
+    // Using a Time-only method confirms the type at compile time —
+    // `.toDate()` exists on Time specifically.
+    expect(key.toDate()).toBeInstanceOf(Date);
+  });
+
+  it('respects an explicit `kind` override on the output spec', () => {
+    const rolled = makeSeries().rolling('3s', {
+      // Explicit kind should win over reducer inference
+      customField: {
+        from: 'cpu',
+        using: (values) =>
+          values.filter((v): v is number => typeof v === 'number').length,
+        kind: 'number',
+      },
+    });
+
+    const col = rolled.schema.find((c) => c.name === 'customField');
+    expect(col?.kind).toBe('number');
+    const n: number | undefined = rolled.at(4)!.get('customField');
+    expect(n).toBeGreaterThan(0);
   });
 
   it('renames output columns independently from source columns', () => {

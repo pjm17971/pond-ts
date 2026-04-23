@@ -33,6 +33,12 @@ import type {
   PrefixedJoinSchema,
   ReduceResult,
   RenameMap,
+} from './types.js';
+import type {
+  AggregateOutputMapResultSchema,
+  RollingOutputMapSchema,
+} from './types-aggregate.js';
+import type {
   RenameSchema,
   RollingAlignment,
   RollingSchema,
@@ -1377,7 +1383,7 @@ export class TimeSeries<S extends SeriesSchema> {
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
-  ): TimeSeries<SeriesSchema>;
+  ): TimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
   aggregate(
     sequence: SequenceLike,
     mapping: AggregateMap<S> | AggregateOutputMap<S>,
@@ -2019,7 +2025,7 @@ export class TimeSeries<S extends SeriesSchema> {
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
-  ): TimeSeries<SeriesSchema>;
+  ): TimeSeries<RollingOutputMapSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -2039,7 +2045,7 @@ export class TimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): TimeSeries<SeriesSchema>;
+  ): TimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
   rolling(
     sequenceOrWindow: SequenceLike | DurationInput,
     windowOrMapping: DurationInput | AggregateMap<S> | AggregateOutputMap<S>,
