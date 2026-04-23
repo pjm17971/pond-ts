@@ -68,9 +68,13 @@ To cut a release from `main`:
    them lock-step — the release tag covers the whole monorepo.
 2. If `@pond-ts/react`'s `dependencies.pond-ts` caret needs to widen to
    the new minor (e.g. `^0.4.0` → `^0.5.0`), update it in the same pass.
-3. Commit with a message like `chore: bump to vX.Y.Z`.
-4. Tag the commit: `git tag vX.Y.Z`.
-5. Push the branch, then push the tag:
+3. **Add a `CHANGELOG.md` entry** under a new `## [X.Y.Z] — YYYY-MM-DD`
+   heading, and update the compare-link footnotes. Group notes under
+   `Added` / `Changed` / `Fixed` / `Deprecated`. Consumers upgrading
+   between versions rely on this; skipping it compounds every release.
+4. Commit with a message like `chore: bump to vX.Y.Z`.
+5. Tag the commit: `git tag vX.Y.Z`.
+6. Push the branch, then push the tag:
    ```
    git push origin main
    git push origin vX.Y.Z
