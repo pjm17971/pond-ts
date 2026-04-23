@@ -590,10 +590,6 @@ type AppendColumn<
   Kind extends ScalarKind,
 > = readonly [S[0], ...ValueColumnsForSchema<S>, ColumnDef<Name, Kind>];
 
-type OptionalNumberCol<Name extends string> = ColumnDef<Name, 'number'> & {
-  readonly required: false;
-};
-
 /**
  * Schema for `baseline(col, { sigma, ... })`: source schema preserved,
  * plus four optional number columns — the rolling average, standard
@@ -610,10 +606,10 @@ export type BaselineSchema<
 > = readonly [
   S[0],
   ...ValueColumnsForSchema<S>,
-  OptionalNumberCol<AvgName>,
-  OptionalNumberCol<SdName>,
-  OptionalNumberCol<UpperName>,
-  OptionalNumberCol<LowerName>,
+  OptionalNumberColumn<AvgName>,
+  OptionalNumberColumn<SdName>,
+  OptionalNumberColumn<UpperName>,
+  OptionalNumberColumn<LowerName>,
 ];
 
 /**
