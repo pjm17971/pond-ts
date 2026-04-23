@@ -2015,6 +2015,11 @@ export class TimeSeries<S extends SeriesSchema> {
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
   ): TimeSeries<RollingSchema<S, Mapping>>;
+  rolling<const Mapping extends AggregateOutputMap<S>>(
+    window: DurationInput,
+    mapping: Mapping,
+    options?: { alignment?: RollingAlignment },
+  ): TimeSeries<SeriesSchema>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -2025,11 +2030,22 @@ export class TimeSeries<S extends SeriesSchema> {
       range?: TemporalLike;
     },
   ): TimeSeries<AggregateSchema<S, Mapping>>;
-  rolling<const Mapping extends AggregateMap<S>>(
+  rolling<const Mapping extends AggregateOutputMap<S>>(
+    sequence: SequenceLike,
+    window: DurationInput,
+    mapping: Mapping,
+    options?: {
+      alignment?: RollingAlignment;
+      sample?: AlignSample;
+      range?: TemporalLike;
+    },
+  ): TimeSeries<SeriesSchema>;
+  rolling(
     sequenceOrWindow: SequenceLike | DurationInput,
-    windowOrMapping: DurationInput | Mapping,
+    windowOrMapping: DurationInput | AggregateMap<S> | AggregateOutputMap<S>,
     mappingOrOptions?:
-      | Mapping
+      | AggregateMap<S>
+      | AggregateOutputMap<S>
       | {
           alignment?: RollingAlignment;
           sample?: AlignSample;
@@ -2040,38 +2056,8 @@ export class TimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     } = {},
-  ):
-    | TimeSeries<RollingSchema<S, Mapping>>
-    | TimeSeries<AggregateSchema<S, Mapping>> {
-    const buildResultColumns = () =>
-      this.schema
-        .slice(1)
-        .filter((column) => column.name in (mapping as Record<string, unknown>))
-        .map((column) => {
-          const operation = mapping[
-            column.name as keyof Mapping
-          ] as AggregateReducer;
-          let resolvedKind: ScalarKind;
-          if (typeof operation === 'string') {
-            const builtIn = resolveReducer(operation);
-            if (builtIn.outputKind === 'number') {
-              resolvedKind = 'number';
-            } else if (builtIn.outputKind === 'array') {
-              resolvedKind = 'array';
-            } else {
-              resolvedKind = column.kind as ScalarKind;
-            }
-          } else {
-            resolvedKind = column.kind as ScalarKind;
-          }
-          return {
-            name: column.name,
-            kind: resolvedKind,
-            required: false as const,
-          };
-        });
-
-    let mapping: Mapping;
+  ): TimeSeries<SeriesSchema> {
+    let mapping: AggregateMap<S> | AggregateOutputMap<S>;
     let options: {
       alignment?: RollingAlignment;
       sample?: AlignSample;
@@ -2086,15 +2072,45 @@ export class TimeSeries<S extends SeriesSchema> {
     ) {
       sequence = sequenceOrWindow;
       window = windowOrMapping as DurationInput;
-      mapping = mappingOrOptions as Mapping;
+      mapping = mappingOrOptions as AggregateMap<S> | AggregateOutputMap<S>;
       options = maybeOptions;
     } else {
       window = sequenceOrWindow;
-      mapping = windowOrMapping as Mapping;
+      mapping = windowOrMapping as AggregateMap<S> | AggregateOutputMap<S>;
       options =
         (mappingOrOptions as { alignment?: RollingAlignment } | undefined) ??
         {};
     }
+
+    // Normalize both mapping shapes (`AggregateMap` and `AggregateOutputMap`)
+    // into a uniform spec list of `{ output, source, reducer, kind }`. Source
+    // and output names can differ, which is how `AggregateOutputMap` expresses
+    // "multiple reducers keyed off the same source column."
+    //
+    // For `AggregateMap` inputs (where output === source === schema column),
+    // reorder by schema-column order so the runtime row layout lines up with
+    // the `RollingSchema<S, Mapping>` type's column inference. For
+    // `AggregateOutputMap` inputs the schema is erased to `SeriesSchema`, so
+    // insertion order is the natural ordering — consistent with `aggregate`.
+    const isOutputMap = Object.values(mapping as Record<string, unknown>).some(
+      (v) => isAggregateOutputSpec<S>(v),
+    );
+    let columnSpecs = normalizeAggregateColumns(this.schema, mapping);
+    if (!isOutputMap) {
+      const schemaOrder = new Map(
+        this.schema.slice(1).map((col, index) => [col.name, index] as const),
+      );
+      columnSpecs = [...columnSpecs].sort(
+        (a, b) =>
+          (schemaOrder.get(a.output) ?? 0) - (schemaOrder.get(b.output) ?? 0),
+      );
+    }
+
+    const resultColumnDefs = columnSpecs.map((spec) => ({
+      name: spec.output,
+      kind: spec.kind,
+      required: false as const,
+    }));
 
     const windowMs = parseDuration(window);
     const alignment = options.alignment ?? 'trailing';
@@ -2116,15 +2132,15 @@ export class TimeSeries<S extends SeriesSchema> {
       const range = options.range ?? this.timeRange();
       const resultSchema = Object.freeze([
         { name: 'interval', kind: 'interval' as const },
-        ...buildResultColumns(),
-      ]) as unknown as AggregateSchema<S, Mapping>;
+        ...resultColumnDefs,
+      ]) as unknown as SeriesSchema;
 
       if (!range) {
         return new TimeSeries({
           name: this.name,
-          schema: resultSchema as unknown as SeriesSchema,
+          schema: resultSchema,
           rows: [],
-        }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
+        });
       }
 
       const buckets = toBoundedSequence(sequence, range, sample).intervals();
@@ -2133,15 +2149,12 @@ export class TimeSeries<S extends SeriesSchema> {
         const contributors = this.events.filter((candidate) =>
           anchorInWindow(candidate.begin(), anchor),
         );
-        const aggregated = resultSchema.slice(1).map((column) => {
-          const reducer = mapping[
-            column.name as keyof Mapping
-          ] as AggregateReducer;
+        const aggregated = columnSpecs.map((spec) => {
           const values = contributors.map((candidate) => {
             const data = candidate.data();
-            return data[column.name as keyof typeof data];
+            return data[spec.source as keyof typeof data];
           }) as ReadonlyArray<ColumnValue | undefined>;
-          return applyAggregateReducer(reducer, values);
+          return applyAggregateReducer(spec.reducer, values);
         });
 
         return Object.freeze([bucket, ...aggregated]);
@@ -2149,22 +2162,20 @@ export class TimeSeries<S extends SeriesSchema> {
 
       return new TimeSeries({
         name: this.name,
-        schema: resultSchema as unknown as SeriesSchema,
+        schema: resultSchema,
         rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
-      }) as unknown as TimeSeries<AggregateSchema<S, Mapping>>;
+      });
     }
 
-    const resultColumns = buildResultColumns();
     const resultSchema = Object.freeze([
       this.schema[0],
-      ...resultColumns,
-    ]) as unknown as RollingSchema<S, Mapping>;
-    const reducerStates = resultColumns.map((column) => {
-      const reducer = mapping[column.name as keyof Mapping] as AggregateReducer;
-      return isBuiltInAggregateReducer(reducer)
-        ? createRollingReducerState(reducer)
-        : null;
-    });
+      ...resultColumnDefs,
+    ]) as unknown as SeriesSchema;
+    const reducerStates = columnSpecs.map((spec) =>
+      isBuiltInAggregateReducer(spec.reducer)
+        ? createRollingReducerState(spec.reducer)
+        : null,
+    );
     const beginTimes = this.events.map((event) => event.begin());
     const resultRows: TimeSeriesInput<SeriesSchema>['rows'][number][] =
       new Array(this.events.length);
@@ -2176,10 +2187,10 @@ export class TimeSeries<S extends SeriesSchema> {
       for (let i = 0; i < reducerStates.length; i++) {
         const state = reducerStates[i];
         if (state) {
-          const column = resultColumns[i]!;
+          const spec = columnSpecs[i]!;
           state.add(
             index,
-            data[column.name as keyof typeof data] as ColumnValue | undefined,
+            data[spec.source as keyof typeof data] as ColumnValue | undefined,
           );
         }
       }
@@ -2190,28 +2201,25 @@ export class TimeSeries<S extends SeriesSchema> {
       for (let i = 0; i < reducerStates.length; i++) {
         const state = reducerStates[i];
         if (state) {
-          const column = resultColumns[i]!;
+          const spec = columnSpecs[i]!;
           state.remove(
             index,
-            data[column.name as keyof typeof data] as ColumnValue | undefined,
+            data[spec.source as keyof typeof data] as ColumnValue | undefined,
           );
         }
       }
     };
     const snapshotWindow = (): (ColumnValue | undefined)[] =>
-      resultColumns.map((column, i) => {
+      columnSpecs.map((spec, i) => {
         const state = reducerStates[i];
         if (state) return state.snapshot();
-        const reducer = mapping[
-          column.name as keyof Mapping
-        ] as AggregateReducer;
         const values = this.events
           .slice(windowStart, windowEnd)
           .map((event) => {
             const data = event.data();
-            return data[column.name as keyof typeof data];
+            return data[spec.source as keyof typeof data];
           }) as ReadonlyArray<ColumnValue | undefined>;
-        return applyAggregateReducer(reducer, values);
+        return applyAggregateReducer(spec.reducer, values);
       });
 
     if (alignment === 'trailing') {
@@ -2335,9 +2343,9 @@ export class TimeSeries<S extends SeriesSchema> {
 
     return new TimeSeries({
       name: this.name,
-      schema: resultSchema as unknown as SeriesSchema,
+      schema: resultSchema,
       rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
-    }) as unknown as TimeSeries<RollingSchema<S, Mapping>>;
+    });
   }
 
   /**
