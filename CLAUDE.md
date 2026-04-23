@@ -70,7 +70,13 @@ To cut a release from `main`:
    the new minor (e.g. `^0.4.0` → `^0.5.0`), update it in the same pass.
 3. Commit with a message like `chore: bump to vX.Y.Z`.
 4. Tag the commit: `git tag vX.Y.Z`.
-5. Push both the branch and the tag: `git push origin main --follow-tags`.
+5. Push the branch, then push the tag:
+   ```
+   git push origin main
+   git push origin vX.Y.Z
+   ```
+   `--follow-tags` only pushes annotated tags; lightweight tags (the
+   default with bare `git tag`) need an explicit push.
 
 That's it. The `v*` tag push triggers `.github/workflows/release.yml`,
 which checks out the tag, runs `npm run verify`, then
