@@ -356,14 +356,14 @@ Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`
 
 All built-in reducers work with `rolling()`. Most use O(1) incremental add/remove:
 
-| Reducer                             | Rolling complexity                             |
-| ----------------------------------- | ---------------------------------------------- |
-| `sum`, `avg`, `count`, `stdev`      | O(1) per event                                 |
-| `min`, `max`                        | O(1) amortized (monotone deque)                |
-| `first`, `last`                     | O(1) amortized                                 |
-| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove)    |
-| `keep`, `unique`                    | O(1) per event (value count map)               |
-| `top(n)`                            | O(1) add/remove; O(k log k) snapshot sort      |
+| Reducer                             | Rolling complexity                          |
+| ----------------------------------- | ------------------------------------------- |
+| `sum`, `avg`, `count`, `stdev`      | O(1) per event                              |
+| `min`, `max`                        | O(1) amortized (monotone deque)             |
+| `first`, `last`                     | O(1) amortized                              |
+| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove) |
+| `keep`, `unique`                    | O(1) per event (value count map)            |
+| `top(n)`                            | O(1) add/remove; O(k log k) snapshot sort   |
 
 For typical rolling windows (tens to hundreds of events), the sorted array approach
 is fast enough. For very large windows with median/percentile, consider a custom reducer.

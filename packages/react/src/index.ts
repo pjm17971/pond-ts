@@ -11,4 +11,5 @@ export { useWindow } from './useWindow.js';
 export { useDerived } from './useDerived.js';
 export { useLiveQuery } from './useLiveQuery.js';
 export { useLatest } from './useLatest.js';
+export { useCurrent, type UseCurrentOptions } from './useCurrent.js';
 export { takeSnapshot } from './takeSnapshot.js';

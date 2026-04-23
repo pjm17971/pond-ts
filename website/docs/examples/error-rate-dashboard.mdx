@@ -89,11 +89,11 @@ The output schema is:
 
 And the three buckets look like:
 
-| Minute | p95 latency | hosts                                | paths                     | top tags                      |
-| -----: | ----------- | ------------------------------------ | ------------------------- | ----------------------------- |
-|      0 | `80`        | `['api-1']`                          | `['/checkout']`           | `['5xx']`                     |
-|      1 | `2580`      | `['api-1','api-2','api-3','api-4']`  | `['/checkout','/cart']`   | `['5xx','retry','timeout']`   |
-|      2 | `undefined` | `[]`                                 | `[]`                      | `[]`                          |
+| Minute | p95 latency | hosts                               | paths                   | top tags                    |
+| -----: | ----------- | ----------------------------------- | ----------------------- | --------------------------- |
+|      0 | `80`        | `['api-1']`                         | `['/checkout']`         | `['5xx']`                   |
+|      1 | `2580`      | `['api-1','api-2','api-3','api-4']` | `['/checkout','/cart']` | `['5xx','retry','timeout']` |
+|      2 | `undefined` | `[]`                                | `[]`                    | `[]`                        |
 
 Two things worth noticing:
 
@@ -169,7 +169,7 @@ const fanned = perMinute.arrayExplode('host', { as: 'focusHost' });
 ## Live variant
 
 The same composition works on a `LiveSeries`. Filter with a plain
-`.filter()` (live variants of the array-* predicates are still on the
+`.filter()` (live variants of the array-\* predicates are still on the
 plan), then `.aggregate()` — the return value is a `LiveAggregation`
 that fires `'close'` every time a bucket is finalized.
 
@@ -206,7 +206,7 @@ errorStream.on('close', (bucket) => {
 Four semantics to remember in the live layer:
 
 1. **Buckets only materialize if an event lands in them.** An all-clean
-   minute 2 will *not* emit a closed bucket — use the batch path
+   minute 2 will _not_ emit a closed bucket — use the batch path
    (`toTimeSeries()` + explicit `{ range }`) when you need a uniform
    grid.
 2. **`'close'` fires when the watermark crosses a bucket's end.** The
@@ -272,6 +272,45 @@ The same primitives carry from the batch snapshot to the live pipeline
 to the alert handler. No custom reducer plumbing, no ad-hoc tag
 flattening — the array-column operators plus the existing reducer
 registry cover it.
+
+## The "right now" stat card
+
+For the top-of-dashboard summary — "what's happening this moment" — a
+bucketed aggregate is overkill. Pair `tail` with `reduce`:
+
+```ts
+const summary = live
+  .toTimeSeries()
+  .arrayContainsAny('tags', ERROR_TAGS)
+  .tail('30s')
+  .reduce({
+    latency_ms: 'p95',
+    host: 'unique',
+    tags: top(5),
+  });
+// summary:
+//   { latency_ms: number | undefined,
+//     host:       ArrayValue | undefined,
+//     tags:       ArrayValue | undefined }
+```
+
+In React this is a single hook call via
+[`useCurrent`](../guides/live-transforms#in-react-usecurrent):
+
+```tsx
+const { latency_ms, host, tags } = useCurrent(
+  live.filter(isErrorEvent),
+  { latency_ms: 'p95', host: 'unique', tags: top(5) },
+  { tail: '30s', throttle: 500 },
+);
+```
+
+`useCurrent` returns a stable-shape record even when the source is
+empty, so the stat card can destructure directly without null-checks.
+See the
+[Live Transforms → Reading the current value](../guides/live-transforms#reading-the-current-value)
+guide for when to reach for `useCurrent` vs `LiveAggregation` vs batch
+`aggregate({ range })`.
 
 ## What gets tested
 

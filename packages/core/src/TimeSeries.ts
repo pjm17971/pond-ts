@@ -2812,6 +2812,31 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
+   * Example: `series.tail('30s')`.
+   * Returns the trailing portion of the series covering the supplied
+   * duration, measured backward from the last event's `begin()`. Events
+   * whose `begin()` is strictly greater than `lastBegin - duration` are
+   * kept. If the series is empty, or the argument is omitted, the series
+   * is returned unchanged — `tail()` with no argument is the identity.
+   *
+   * This is the temporal counterpart to `Array.slice(-n)`, and composes
+   * naturally with `reduce` to express "current" state:
+   *
+   * ```ts
+   * series.tail('30s').reduce({ cpu: 'avg', host: 'unique' });
+   * // => { cpu: number | undefined, host: ArrayValue | undefined }
+   * ```
+   */
+  tail(duration?: DurationInput): TimeSeries<S> {
+    if (duration === undefined) return this;
+    if (this.events.length === 0) return this;
+    const durationMs = parseDuration(duration);
+    const lastBegin = this.events[this.events.length - 1]!.begin();
+    const cutoff = lastBegin - durationMs;
+    return this.filter((event) => event.begin() > cutoff);
+  }
+
+  /**
    * Example: `series.within(start, end)`.
    * Returns the portion of the series fully contained by the supplied inclusive temporal range.
    *

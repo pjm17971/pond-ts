@@ -8,7 +8,7 @@ Most time-series columns hold a scalar per event: one temperature reading,
 one latency number. **Array columns** hold a short list per event — a tag
 list, a set of hosts that reported, a small sample buffer. Pond treats
 them as a first-class kind with dedicated operators, but keeps them
-*inert* with respect to numerical math — `diff`, `rate`, `cumulative`,
+_inert_ with respect to numerical math — `diff`, `rate`, `cumulative`,
 and `rolling`-over-numbers skip array columns entirely.
 
 This page is a reference of every array-column operator with a minimal
@@ -204,12 +204,10 @@ Any `(values) => result` function works. The input is the single array
 (typed as `ReadonlyArray<ScalarValue | undefined>`).
 
 ```ts
-series.arrayAggregate(
-  'tags',
-  (values) =>
-    (values as readonly (string | undefined)[])
-      .filter((v): v is string => typeof v === 'string')
-      .join(','),
+series.arrayAggregate('tags', (values) =>
+  (values as readonly (string | undefined)[])
+    .filter((v): v is string => typeof v === 'string')
+    .join(','),
 );
 // tags: ['web','east'] -> 'web,east'
 ```

@@ -131,12 +131,12 @@ const currentCpu = batch.last()?.get('cpu');
 
 **When to use which**:
 
-| Need                                                     | Use                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------ |
-| Alert / export / store **finalized** minute totals       | `agg.on('close', ...)` or `agg.closed()`                     |
-| Live UI that tracks the **current** bucket as it grows   | `agg.on('bucket', ...)` or `agg.snapshot()`                  |
-| Dashboard render with a **uniform grid** incl. empty buckets | `live.toTimeSeries().aggregate(seq, m, { range })`       |
-| Cheap one-shot read of the current partial value         | `agg.snapshot().last()`                                      |
+| Need                                                         | Use                                                |
+| ------------------------------------------------------------ | -------------------------------------------------- |
+| Alert / export / store **finalized** minute totals           | `agg.on('close', ...)` or `agg.closed()`           |
+| Live UI that tracks the **current** bucket as it grows       | `agg.on('bucket', ...)` or `agg.snapshot()`        |
+| Dashboard render with a **uniform grid** incl. empty buckets | `live.toTimeSeries().aggregate(seq, m, { range })` |
+| Cheap one-shot read of the current partial value             | `agg.snapshot().last()`                            |
 
 The batch path (`live.toTimeSeries().aggregate(...)`) re-validates events
 on each call, so it's not free — but for typical dashboard cadences
@@ -147,6 +147,75 @@ trailing bucket included. If the reducer you want is array-producing
 with an `undefined` / empty bucket on quiet minutes, the batch path is
 the right call — live `LiveAggregation` only materializes buckets when
 an event lands in them.
+
+#### `tail + reduce` for "current state" without bucketing
+
+Sometimes you don't want a bucketed time series at all — you want a
+single record summarizing the source's current or recent state. `tail`
+gives you a trailing slice; `reduce` collapses a series to one record:
+
+```ts
+// "Current" — whole series, one record
+const state = live.toTimeSeries().reduce({
+  cpu: 'avg',
+  host: 'unique',
+});
+// => { cpu: number | undefined; host: ArrayValue | undefined }
+
+// "Recent" — trailing 30s, one record
+const recent = live.toTimeSeries().tail('30s').reduce({
+  cpu: 'p95',
+  host: 'top3',
+});
+```
+
+`tail(duration)` is the temporal counterpart to `Array.slice(-n)`: it
+keeps events whose `begin()` is strictly greater than
+`lastEvent.begin() - duration`. Called with no argument it's the
+identity (whole series), and it composes with every other `TimeSeries`
+method, not just `reduce` — plot the last 30s, aggregate just the last
+hour, etc.
+
+Use this shape for stat cards, alert decisions, and the top-of-dashboard
+"right now" readout — anywhere a bucketed grid would be overkill.
+
+#### In React: `useCurrent`
+
+`@pond-ts/react` ships a thin wrapper that combines the subscription,
+the `tail`, and the `reduce` into one hook:
+
+```tsx
+import { useCurrent } from '@pond-ts/react';
+
+function StatCards({ live }) {
+  const { cpu, host } = useCurrent(live, {
+    cpu: 'avg',
+    host: 'unique',
+  });
+  // cpu:  number | undefined
+  // host: ReadonlyArray<string | number | boolean> | undefined
+
+  const recent = useCurrent(
+    live,
+    { cpu: 'p95' },
+    { tail: '30s', throttle: 200 },
+  );
+
+  return (
+    <>
+      <Stat label="CPU (all)" value={cpu} />
+      <Stat label="CPU p95 (30s)" value={recent.cpu} />
+      <Stat label="Hosts seen" value={host?.join(', ') ?? '—'} />
+    </>
+  );
+}
+```
+
+`useCurrent` returns a stable-shape record even when the source is
+empty (every mapped field is `undefined`), so destructuring on first
+render is safe. Types narrow per-entry: `'avg'` yields `number`,
+`'unique'` yields `ReadonlyArray<ScalarValue>`, `` `top${number}` ``
+yields an array, other reducers fall back to the source column kind.
 
 ### Subscriptions
 
