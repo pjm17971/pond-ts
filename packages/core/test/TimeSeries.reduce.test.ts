@@ -160,4 +160,62 @@ describe('TimeSeries.reduce', () => {
       expect(ts.reduce('value', 'max')).toBe(42);
     });
   });
+
+  // These tests pin the per-entry narrowing landed in v0.5.2. If
+  // `ReduceResult` regresses to the loose `ColumnValue | undefined`
+  // shape, the typed assignments below will fail at build time —
+  // the assertions also cover runtime values for completeness.
+  describe('per-entry narrowing', () => {
+    it('numeric reducers return a plain number (no cast needed)', () => {
+      const s = makeSeries();
+      const avg: number | undefined = s.reduce({ value: 'avg' }).value;
+      const sum: number | undefined = s.reduce({ value: 'sum' }).value;
+      const count: number | undefined = s.reduce({ status: 'count' }).status;
+      const p50: number | undefined = s.reduce({ value: 'p50' }).value;
+      expect(avg).toBe(25);
+      expect(sum).toBe(100);
+      expect(count).toBe(4);
+      expect(p50).toBe(25);
+    });
+
+    it('unique returns a ReadonlyArray (no cast needed)', () => {
+      const s = makeSeries();
+      const hosts: ReadonlyArray<string | number | boolean> | undefined =
+        s.reduce({ status: 'unique' }).status;
+      expect(hosts).toEqual(['ok', 'warn']);
+    });
+
+    it('top${N} returns a ReadonlyArray (no cast needed)', () => {
+      const s = makeSeries();
+      const top: ReadonlyArray<string | number | boolean> | undefined =
+        s.reduce({ status: 'top2' }).status;
+      // 'ok' x3, 'warn' x1 -> ['ok', 'warn']
+      expect(top).toEqual(['ok', 'warn']);
+    });
+
+    it('first / last / keep preserve the source column kind', () => {
+      const s = makeSeries();
+      const first: number | undefined = s.reduce({ value: 'first' }).value;
+      const last: string | undefined = s.reduce({ status: 'last' }).status;
+      const keep: string | undefined = s.reduce({ status: 'keep' }).status;
+      expect(first).toBe(10);
+      expect(last).toBe('ok');
+      // Not all statuses match, so keep returns undefined
+      expect(keep).toBeUndefined();
+    });
+
+    it('multiple fields narrow independently in the same call', () => {
+      const s = makeSeries();
+      const result = s.reduce({
+        value: 'avg',
+        status: 'unique',
+      });
+      // Typed assignments verify each field narrows independently.
+      const avg: number | undefined = result.value;
+      const hosts: ReadonlyArray<string | number | boolean> | undefined =
+        result.status;
+      expect(avg).toBe(25);
+      expect(hosts).toEqual(['ok', 'warn']);
+    });
+  });
 });

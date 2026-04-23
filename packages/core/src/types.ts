@@ -514,14 +514,11 @@ export type RollingSchema<S extends SeriesSchema, Mapping> = readonly [
   S[0],
   ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
 ];
-type ReduceResultForMap<S extends SeriesSchema, Mapping> = {
-  [K in keyof Mapping & string]: ColumnValue | undefined;
-};
-
-export type ReduceResult<S extends SeriesSchema, Mapping> = ReduceResultForMap<
-  S,
-  Mapping
->;
+// `ReduceResult` / `ReduceResultForMap` live in `./types-reduce.ts`.
+// Moved out of this file so the narrow conditional type doesn't interact
+// with the overload-compatibility checker on `arrayAggregate` /
+// `arrayExplode` (TS2394 when both live in the same compilation unit).
+export type { ReduceResult } from './types-reduce.js';
 
 export type NumericColumnNameForSchema<S extends SeriesSchema> = Extract<
   ValueColumnsForSchema<S>[number],

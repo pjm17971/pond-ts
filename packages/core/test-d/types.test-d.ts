@@ -978,3 +978,76 @@ new TimeSeries({
   // @ts-expect-error - wrong row shape (missing label)
   rows: [[Date.now(), 1]],
 });
+
+// ── `reduce(mapping)` per-entry narrowing ───────────────────────────────
+//
+// Regression guard for the narrow `ReduceResult` lifted in v0.5.2. The
+// dashboard paper-cut was that numeric reducers returned
+// `ColumnValue | undefined`, forcing an `as number | undefined` cast.
+// These assignments must keep compiling — they're the whole point.
+const reduceSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+  { name: 'healthy', kind: 'boolean' },
+] as const;
+
+const reduceSeries = new TimeSeries({
+  name: 'reduce-narrowing',
+  schema: reduceSchema,
+  rows: [[Date.now(), 0.5, 'api-1', true]],
+});
+
+// Numeric reducers narrow to `number | undefined`.
+const reduceAvg: number | undefined = reduceSeries.reduce({ cpu: 'avg' }).cpu;
+const reduceSum: number | undefined = reduceSeries.reduce({ cpu: 'sum' }).cpu;
+const reduceCount: number | undefined = reduceSeries.reduce({
+  host: 'count',
+}).host;
+const reduceP95: number | undefined = reduceSeries.reduce({
+  cpu: 'p95',
+}).cpu;
+void reduceAvg;
+void reduceSum;
+void reduceCount;
+void reduceP95;
+
+// `unique` narrows to `ReadonlyArray<string | number | boolean> | undefined`.
+const reduceUnique: ReadonlyArray<string | number | boolean> | undefined =
+  reduceSeries.reduce({ host: 'unique' }).host;
+void reduceUnique;
+
+// `top${N}` (helper + literal form) narrow to the same array type.
+const reduceTopLiteral: ReadonlyArray<string | number | boolean> | undefined =
+  reduceSeries.reduce({ host: 'top3' }).host;
+void reduceTopLiteral;
+
+// `first` / `last` / `keep` preserve the source column kind.
+const reduceFirstNumber: number | undefined = reduceSeries.reduce({
+  cpu: 'first',
+}).cpu;
+const reduceLastString: string | undefined = reduceSeries.reduce({
+  host: 'last',
+}).host;
+const reduceKeepBool: boolean | undefined = reduceSeries.reduce({
+  healthy: 'keep',
+}).healthy;
+void reduceFirstNumber;
+void reduceLastString;
+void reduceKeepBool;
+
+// Custom reducer functions fall back to `ColumnValue | undefined`.
+const reduceCustom = reduceSeries.reduce({
+  cpu: (values) => {
+    const nums = values.filter((v): v is number => typeof v === 'number');
+    return nums.length === 0 ? undefined : nums[0];
+  },
+}).cpu;
+// Must be assignable to the wide fallback:
+const reduceCustomWide:
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<string | number | boolean>
+  | undefined = reduceCustom;
+void reduceCustomWide;
