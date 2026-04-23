@@ -10,6 +10,28 @@ built-in works in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`. The 
 array-producing reducers (`unique` and `top(n)`) also slot into
 [`arrayAggregate()`](./arrays#per-event-reduction-arrayaggregate) on array columns.
 
+## Type narrowing on `reduce(mapping)`
+
+`TimeSeries.reduce(mapping)` narrows each output field to the reducer's actual value type —
+no `as` casts at the call site:
+
+```ts
+const result = series.reduce({
+  cpu: 'avg', //   -> number | undefined
+  latency: 'p95', //   -> number | undefined
+  host: 'unique', //   -> ReadonlyArray<ScalarValue> | undefined
+  paths: 'top3', //   -> ReadonlyArray<ScalarValue> | undefined
+  status: 'last', //   -> string | undefined  (source column kind)
+});
+
+const avgCpu: number | undefined = result.cpu;
+const hosts: ReadonlyArray<string | number | boolean> | undefined = result.host;
+```
+
+Custom reducer functions and `AggregateOutputSpec` entries (`{ from, using, kind? }`) fall
+back to `ColumnValue | undefined` because their output kind is set at runtime and the type
+system can't see through it.
+
 ## Numeric reducers
 
 These operate on numeric values only. Non-numeric and `undefined` values are filtered out

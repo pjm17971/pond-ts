@@ -160,7 +160,8 @@ const state = live.toTimeSeries().reduce({
   cpu: 'avg',
   host: 'unique',
 });
-// => { cpu: number | undefined; host: ArrayValue | undefined }
+// => { cpu: number | undefined;
+//      host: ReadonlyArray<ScalarValue> | undefined }
 
 // "Recent" — trailing 30s, one record
 const recent = live.toTimeSeries().tail('30s').reduce({
@@ -168,6 +169,13 @@ const recent = live.toTimeSeries().tail('30s').reduce({
   host: 'top3',
 });
 ```
+
+Fields narrow per-entry from the reducer name: numeric reducers
+(`'sum'`, `'avg'`, `'count'`, `'median'`, `'stdev'`, `'difference'`,
+any `p${number}`) yield `number | undefined`; `'unique'` and any
+`top${number}` yield `ReadonlyArray<ScalarValue> | undefined`;
+`'first'` / `'last'` / `'keep'` preserve the source column kind. No
+`as`-casts needed at the call site.
 
 `tail(duration)` is the temporal counterpart to `Array.slice(-n)`: it
 keeps events whose `begin()` is strictly greater than

@@ -1,49 +1,16 @@
 import { useMemo } from 'react';
 import type {
   AggregateMap,
-  AggregateReducer,
-  ColumnValue,
   DurationInput,
   LiveSource,
-  NormalizedValueForKind,
-  ScalarKind,
+  ReduceResult,
   SeriesSchema,
-  ValueColumnsForSchema,
 } from 'pond-ts';
 import {
   useSnapshot,
   type SnapshotSource,
   type UseSnapshotOptions,
 } from './useSnapshot.js';
-
-/**
- * Narrowed per-entry output for `useCurrent`. Derives each field's value
- * type from the source column kind and the reducer name so callers don't
- * have to `as`-cast. Numeric reducers (`'sum'`, `'avg'`, `'count'`) emit
- * `number`; `'unique'` and `` `top${number}` `` emit
- * `ReadonlyArray<ScalarValue>`; other reducers (including custom
- * functions) fall back to the source column kind.
- */
-type CurrentResult<S extends SeriesSchema, Mapping> = {
-  [K in keyof Mapping & string]:
-    | NormalizedValueForKind<
-        K extends ValueColumnsForSchema<S>[number]['name']
-          ? Mapping[K] extends 'sum' | 'avg' | 'count'
-            ? 'number'
-            : Mapping[K] extends 'unique' | `top${number}`
-              ? 'array'
-              : CurrentColumnKind<S, K>
-          : ScalarKind
-      >
-    | undefined;
-};
-
-type CurrentColumnKind<S extends SeriesSchema, K extends string> =
-  Extract<ValueColumnsForSchema<S>[number], { name: K }> extends {
-    kind: infer Kind extends ScalarKind;
-  }
-    ? Kind
-    : ScalarKind;
 
 export interface UseCurrentOptions extends UseSnapshotOptions {
   /**
@@ -58,19 +25,20 @@ export interface UseCurrentOptions extends UseSnapshotOptions {
  * Subscribe to a live source and return the current value of a reducer
  * mapping, updated on a throttle. Equivalent to
  * `useSnapshot(src).tail(tail).reduce(mapping)` but with one subscription,
- * one memo, and narrow per-entry types.
+ * one memo, and narrow per-entry types inherited from
+ * `TimeSeries.reduce`.
  *
  * ```ts
  * const current = useCurrent(live, { cpu: 'avg', host: 'unique' });
- * //   ^ { cpu: number | undefined; host: ReadonlyArray<ScalarValue> | undefined }
+ * //   ^ { cpu: number | undefined;
+ * //       host: ReadonlyArray<ScalarValue> | undefined }
  *
  * const recent = useCurrent(live, { cpu: 'p95' }, { tail: '30s' });
  * ```
  *
- * Returns an empty-result object (every mapped field set to the
- * reducer's empty-bucket value) while the source has no events — the
- * shape of the return is stable regardless of source state, so
- * destructuring is always safe.
+ * Returns a stable-shape object while the source has no events (every
+ * mapped field is `undefined`), so destructuring on first render is
+ * safe.
  */
 export function useCurrent<
   S extends SeriesSchema,
@@ -79,7 +47,7 @@ export function useCurrent<
   source: SnapshotSource<S> | LiveSource<S> | null,
   mapping: Mapping,
   options?: UseCurrentOptions,
-): CurrentResult<S, Mapping> {
+): ReduceResult<S, Mapping> {
   const snap = useSnapshot(source, options);
   const tailOpt = options?.tail;
 
@@ -87,24 +55,11 @@ export function useCurrent<
     if (!snap) {
       // Stable empty-shape result so destructuring never explodes on
       // first render.
-      const empty: Record<string, ColumnValue | undefined> = {};
+      const empty: Record<string, unknown> = {};
       for (const key of Object.keys(mapping)) empty[key] = undefined;
-      return empty as CurrentResult<S, Mapping>;
+      return empty as ReduceResult<S, Mapping>;
     }
     const scoped = tailOpt !== undefined ? snap.tail(tailOpt) : snap;
-    return scoped.reduce(
-      mapping as AggregateMap<
-        typeof scoped extends { schema: infer T }
-          ? T extends SeriesSchema
-            ? T
-            : SeriesSchema
-          : SeriesSchema
-      >,
-    ) as unknown as CurrentResult<S, Mapping>;
+    return scoped.reduce(mapping) as ReduceResult<S, Mapping>;
   }, [snap, tailOpt, mapping]);
 }
-
-// Silence unused-type-param warnings for `AggregateReducer` re-export
-// compatibility: kept in the signature surface for future extensions
-// (custom reducers with typed output kind).
-export type _UseCurrentReducerHint = AggregateReducer;
