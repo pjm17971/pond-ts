@@ -58,6 +58,8 @@ export type ReduceResult<S extends SeriesSchema, Mapping> = {
     | 'sum'
     | 'avg'
     | 'count'
+    | 'min'
+    | 'max'
     | 'median'
     | 'stdev'
     | 'difference'

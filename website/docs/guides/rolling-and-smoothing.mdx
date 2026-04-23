@@ -90,6 +90,19 @@ you can rename freely (`cpuAvg: { from: 'cpu', using: 'avg' }`). The
 `kind?` field is an override for cases where the output type can't be
 inferred from the reducer (e.g. a custom reducer returning a string).
 
+**Return types narrow per-spec** as of v0.5.5: numeric reducers give
+`number | undefined`, source-preserving reducers (`first` / `last` /
+`keep`) give the source column's type, and the source's first-column
+kind is preserved — a `Time`-keyed input stays `Time`-keyed on
+output. `unique` and `top${N}` narrow to `ArrayValue | undefined`
+(kind-level); element-level narrowing to
+`ReadonlyArray<string>` is only available on `reduce(...)` today —
+use a cast (or reach for `reduce` on a `tail`-sliced snapshot) if you
+need that extra step.
+
+The same narrowing applies to `aggregate(...)` when called with the
+`AggregateOutputMap` shape — both now thread the spec through.
+
 ## Smoothing
 
 Use `smooth(...)` for trend extraction or visualization-friendly derived values.
