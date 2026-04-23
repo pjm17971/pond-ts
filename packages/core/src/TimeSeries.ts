@@ -1,5 +1,11 @@
 import type {
   AlignSchema,
+  ArrayAggregateAppendSchema,
+  ArrayAggregateReplaceSchema,
+  ArrayColumnNameForSchema,
+  ArrayExplodeAppendSchema,
+  ArrayExplodeReplaceSchema,
+  ArrayValue,
   AggregateFunction,
   AggregateReducer,
   AggregateOutputMap,
@@ -30,8 +36,10 @@ import type {
   RenameSchema,
   RollingAlignment,
   RollingSchema,
+  ColumnValue,
   CustomAggregateReducer,
   DiffSchema,
+  ScalarKind,
   ScalarValue,
   SmoothMethod,
   SmoothAppendSchema,
@@ -42,6 +50,7 @@ import type {
   TimeSeriesJsonInput,
   TimeSeriesInput,
   TimeRangeKeyedSchema,
+  ValueColumn,
   ValueColumnsForSchema,
 } from './types.js';
 import { BoundedSequence } from './BoundedSequence.js';
@@ -575,10 +584,10 @@ function bucketOverlapsHalfOpen(bucket: Interval, event: EventKey): boolean {
 
 function aggregateValues(
   operation: AggregateFunction,
-  values: ReadonlyArray<ScalarValue | undefined>,
-): ScalarValue | undefined {
+  values: ReadonlyArray<ColumnValue | undefined>,
+): ColumnValue | undefined {
   const defined = values.filter(
-    (value): value is ScalarValue => value !== undefined,
+    (value): value is ColumnValue => value !== undefined,
   );
   const numeric = defined.filter(
     (value): value is number => typeof value === 'number',
@@ -594,8 +603,8 @@ function isBuiltInAggregateReducer(
 
 function applyAggregateReducer(
   reducer: AggregateReducer,
-  values: ReadonlyArray<ScalarValue | undefined>,
-): ScalarValue | undefined {
+  values: ReadonlyArray<ColumnValue | undefined>,
+): ColumnValue | undefined {
   return isBuiltInAggregateReducer(reducer)
     ? aggregateValues(reducer, values)
     : (reducer as CustomAggregateReducer)(values);
@@ -605,7 +614,7 @@ type AggregateColumnSpec = {
   output: string;
   source: string;
   reducer: AggregateReducer;
-  kind: 'number' | 'string' | 'boolean';
+  kind: ScalarKind;
 };
 
 function isAggregateOutputSpec<S extends SeriesSchema>(
@@ -639,10 +648,11 @@ function normalizeAggregateColumns<S extends SeriesSchema>(
     if (
       sourceColumn.kind !== 'number' &&
       sourceColumn.kind !== 'string' &&
-      sourceColumn.kind !== 'boolean'
+      sourceColumn.kind !== 'boolean' &&
+      sourceColumn.kind !== 'array'
     ) {
       throw new TypeError(
-        `aggregate source column '${sourceName}' must be a scalar value column`,
+        `aggregate source column '${sourceName}' must be a value column`,
       );
     }
     const reducer = isAggregateOutputSpec<S>(raw) ? raw.using : raw;
@@ -652,12 +662,21 @@ function normalizeAggregateColumns<S extends SeriesSchema>(
       );
     }
     const explicitKind = isAggregateOutputSpec<S>(raw) ? raw.kind : undefined;
-    const resolvedKind =
-      explicitKind ??
-      (typeof reducer === 'string' &&
-      resolveReducer(reducer).outputKind === 'number'
-        ? 'number'
-        : sourceColumn.kind);
+    let resolvedKind: ScalarKind;
+    if (explicitKind !== undefined) {
+      resolvedKind = explicitKind;
+    } else if (typeof reducer === 'string') {
+      const builtIn = resolveReducer(reducer);
+      if (builtIn.outputKind === 'number') {
+        resolvedKind = 'number';
+      } else if (builtIn.outputKind === 'array') {
+        resolvedKind = 'array';
+      } else {
+        resolvedKind = sourceColumn.kind;
+      }
+    } else {
+      resolvedKind = sourceColumn.kind;
+    }
     normalized.push({
       output: outputName,
       source: sourceName,
@@ -673,6 +692,25 @@ function createAggregateBucketState(
   operation: AggregateFunction,
 ): AggregateBucketState {
   return resolveReducer(operation).bucketState();
+}
+
+/**
+ * Resolve the output column kind for an `arrayAggregate` call. Numeric
+ * reducers always emit `'number'`; `'unique'` emits `'array'`; everything
+ * else (including custom reducers) falls back to `'string'` unless the
+ * caller supplies an explicit `kind`.
+ */
+function resolveArrayAggregateKind(
+  reducer: AggregateReducer,
+  explicitKind: ScalarKind | undefined,
+): ScalarKind {
+  if (explicitKind !== undefined) return explicitKind;
+  if (typeof reducer === 'string') {
+    const def = resolveReducer(reducer);
+    if (def.outputKind === 'number') return 'number';
+    if (def.outputKind === 'array') return 'array';
+  }
+  return 'string';
 }
 
 function createRollingReducerState(
@@ -1363,7 +1401,7 @@ export class TimeSeries<S extends SeriesSchema> {
   reduce(
     column: ValueColumnsForSchema<S>[number]['name'],
     reducer: AggregateReducer,
-  ): ScalarValue | undefined;
+  ): ColumnValue | undefined;
   reduce<const Mapping extends AggregateMap<S>>(
     mapping: Mapping,
   ): ReduceResult<S, Mapping>;
@@ -1376,22 +1414,22 @@ export class TimeSeries<S extends SeriesSchema> {
       | AggregateMap<S>
       | AggregateOutputMap<S>,
     reducer?: AggregateReducer,
-  ): ScalarValue | undefined | Record<string, ScalarValue | undefined> {
+  ): ColumnValue | undefined | Record<string, ColumnValue | undefined> {
     if (typeof columnOrMapping === 'string') {
       const values = this.events.map((event) => {
         const data = event.data();
         return data[columnOrMapping as keyof typeof data];
-      }) as ReadonlyArray<ScalarValue | undefined>;
+      }) as ReadonlyArray<ColumnValue | undefined>;
       return applyAggregateReducer(reducer!, values);
     }
 
     const columns = normalizeAggregateColumns(this.schema, columnOrMapping);
-    const result: Record<string, ScalarValue | undefined> = {};
+    const result: Record<string, ColumnValue | undefined> = {};
     for (const col of columns) {
       const values = this.events.map((event) => {
         const data = event.data();
         return data[col.source as keyof typeof data];
-      }) as ReadonlyArray<ScalarValue | undefined>;
+      }) as ReadonlyArray<ColumnValue | undefined>;
       result[col.output] = applyAggregateReducer(col.reducer, values);
     }
     return result;
@@ -2013,14 +2051,22 @@ export class TimeSeries<S extends SeriesSchema> {
           const operation = mapping[
             column.name as keyof Mapping
           ] as AggregateReducer;
+          let resolvedKind: ScalarKind;
+          if (typeof operation === 'string') {
+            const builtIn = resolveReducer(operation);
+            if (builtIn.outputKind === 'number') {
+              resolvedKind = 'number';
+            } else if (builtIn.outputKind === 'array') {
+              resolvedKind = 'array';
+            } else {
+              resolvedKind = column.kind as ScalarKind;
+            }
+          } else {
+            resolvedKind = column.kind as ScalarKind;
+          }
           return {
             name: column.name,
-            kind:
-              operation === 'sum' ||
-              operation === 'avg' ||
-              operation === 'count'
-                ? 'number'
-                : column.kind,
+            kind: resolvedKind,
             required: false as const,
           };
         });
@@ -2094,7 +2140,7 @@ export class TimeSeries<S extends SeriesSchema> {
           const values = contributors.map((candidate) => {
             const data = candidate.data();
             return data[column.name as keyof typeof data];
-          }) as ReadonlyArray<ScalarValue | undefined>;
+          }) as ReadonlyArray<ColumnValue | undefined>;
           return applyAggregateReducer(reducer, values);
         });
 
@@ -2133,7 +2179,7 @@ export class TimeSeries<S extends SeriesSchema> {
           const column = resultColumns[i]!;
           state.add(
             index,
-            data[column.name as keyof typeof data] as ScalarValue | undefined,
+            data[column.name as keyof typeof data] as ColumnValue | undefined,
           );
         }
       }
@@ -2147,12 +2193,12 @@ export class TimeSeries<S extends SeriesSchema> {
           const column = resultColumns[i]!;
           state.remove(
             index,
-            data[column.name as keyof typeof data] as ScalarValue | undefined,
+            data[column.name as keyof typeof data] as ColumnValue | undefined,
           );
         }
       }
     };
-    const snapshotWindow = (): (ScalarValue | undefined)[] =>
+    const snapshotWindow = (): (ColumnValue | undefined)[] =>
       resultColumns.map((column, i) => {
         const state = reducerStates[i];
         if (state) return state.snapshot();
@@ -2164,7 +2210,7 @@ export class TimeSeries<S extends SeriesSchema> {
           .map((event) => {
             const data = event.data();
             return data[column.name as keyof typeof data];
-          }) as ReadonlyArray<ScalarValue | undefined>;
+          }) as ReadonlyArray<ColumnValue | undefined>;
         return applyAggregateReducer(reducer, values);
       });
 
@@ -2916,6 +2962,240 @@ export class TimeSeries<S extends SeriesSchema> {
     >;
   }
 
+  /**
+   * Example: `series.arrayContains("tags", "critical")`.
+   * Keeps events whose array column `col` contains `value`. Events with an
+   * `undefined` value are dropped. Use on array-kind columns produced by
+   * reducers like `"unique"`, or on tag-style columns where each event
+   * carries a list of scalars.
+   */
+  arrayContains<const Col extends ArrayColumnNameForSchema<S> & string>(
+    col: Col,
+    value: ScalarValue,
+  ): TimeSeries<S> {
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.filter((event) => {
+        const data = event.data();
+        const arr = data[col as keyof typeof data] as ArrayValue | undefined;
+        return Array.isArray(arr) && arr.includes(value);
+      }),
+    );
+  }
+
+  /**
+   * Example: `series.arrayContainsAll("tags", ["web", "east"])`.
+   * Keeps events whose array column `col` contains _every_ value in
+   * `values` (subset / set-containment AND). `values` of length 0 keeps
+   * every event with a defined array on `col`. Events with an `undefined`
+   * array are dropped.
+   */
+  arrayContainsAll<const Col extends ArrayColumnNameForSchema<S> & string>(
+    col: Col,
+    values: readonly ScalarValue[],
+  ): TimeSeries<S> {
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.filter((event) => {
+        const data = event.data();
+        const arr = data[col as keyof typeof data] as ArrayValue | undefined;
+        if (!Array.isArray(arr)) return false;
+        for (const needle of values) {
+          if (!arr.includes(needle)) return false;
+        }
+        return true;
+      }),
+    );
+  }
+
+  /**
+   * Example: `series.arrayContainsAny("tags", ["critical", "warning"])`.
+   * Keeps events whose array column `col` contains _at least one_ value in
+   * `values` (set-intersection OR). `values` of length 0 always returns
+   * an empty series. Events with an `undefined` array are dropped.
+   */
+  arrayContainsAny<const Col extends ArrayColumnNameForSchema<S> & string>(
+    col: Col,
+    values: readonly ScalarValue[],
+  ): TimeSeries<S> {
+    return TimeSeries.#fromTrustedEvents(
+      this.name,
+      this.schema,
+      this.events.filter((event) => {
+        const data = event.data();
+        const arr = data[col as keyof typeof data] as ArrayValue | undefined;
+        if (!Array.isArray(arr)) return false;
+        for (const needle of values) {
+          if (arr.includes(needle)) return true;
+        }
+        return false;
+      }),
+    );
+  }
+
+  /**
+   * Example: `series.arrayAggregate("tags", "count")`.
+   * Per-event reduction of an array column. Feeds each event's array into
+   * the reducer as if it were a bucket, reusing the built-in reducer
+   * registry (`count`, `sum`, `avg`, `min`, `max`, `median`, `stdev`,
+   * `difference`, `pNN`, `first`, `last`, `keep`, `unique`) and any custom
+   * `(values) => result` function. Output kind is inferred:
+   *
+   * - numeric reducers (`count`, `sum`, `avg`, `min`, `max`, `median`,
+   *   `stdev`, `difference`, `pNN`) → `"number"`
+   * - `"unique"` → `"array"` (dedupes within the event's array)
+   * - `"first"` / `"last"` / `"keep"` / custom → `"string"` by default;
+   *   override with `{ kind: "..." }`
+   *
+   * Without `as`, the source column is replaced in place. With
+   * `{ as: "name" }`, a new column is appended and the source array column
+   * is preserved.
+   *
+   * Example: `series.arrayAggregate("tags", "count", { as: "tagCount" })`.
+   */
+  arrayAggregate<
+    const Col extends ArrayColumnNameForSchema<S> & string,
+    const Op extends AggregateReducer,
+    const ExplicitKind extends ScalarKind | undefined = undefined,
+  >(
+    col: Col,
+    reducer: Op,
+    options?: { kind?: ExplicitKind },
+  ): TimeSeries<ArrayAggregateReplaceSchema<S, Col, Op, ExplicitKind>>;
+  arrayAggregate<
+    const Col extends ArrayColumnNameForSchema<S> & string,
+    const Op extends AggregateReducer,
+    const Name extends string,
+    const ExplicitKind extends ScalarKind | undefined = undefined,
+  >(
+    col: Col,
+    reducer: Op,
+    options: { as: Name; kind?: ExplicitKind },
+  ): TimeSeries<ArrayAggregateAppendSchema<S, Name, Op, ExplicitKind>>;
+  arrayAggregate(
+    col: string,
+    reducer: AggregateReducer,
+    options?: { as?: string; kind?: ScalarKind },
+  ): TimeSeries<SeriesSchema> {
+    const outputName = options?.as ?? col;
+    const appendMode = options?.as !== undefined && options.as !== col;
+    const outputKind = resolveArrayAggregateKind(reducer, options?.kind);
+
+    const outputColumn: ValueColumn = {
+      name: outputName,
+      kind: outputKind,
+      required: false,
+    } as ValueColumn;
+
+    const resultSchema = Object.freeze(
+      appendMode
+        ? [...this.schema, outputColumn]
+        : this.schema.map((column) =>
+            column.name === col ? outputColumn : column,
+          ),
+    ) as unknown as SeriesSchema;
+
+    const resultRows = this.events.map((event) => {
+      const data = event.data();
+      const arr = data[col as keyof typeof data] as ArrayValue | undefined;
+      const reduced = Array.isArray(arr)
+        ? applyAggregateReducer(reducer, arr as ReadonlyArray<ColumnValue>)
+        : undefined;
+      return Object.freeze(
+        (resultSchema as readonly ValueColumn[]).map((column, index) => {
+          if (index === 0) return event.key();
+          if (appendMode && column.name === outputName) return reduced;
+          if (!appendMode && column.name === col) return reduced;
+          return data[column.name as keyof typeof data];
+        }),
+      );
+    });
+
+    return new TimeSeries({
+      name: this.name,
+      schema: resultSchema,
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    });
+  }
+
+  /**
+   * Example: `series.arrayExplode("tags")`.
+   * Fans each event out into one event per element of the array column
+   * `col`. Events with an empty or `undefined` array are dropped. Emitted
+   * events share the source event's key, so the result may contain events
+   * with duplicate timestamps.
+   *
+   * Without `as`, the array column is replaced by a scalar column of the
+   * chosen `kind` (default `"string"`).
+   *
+   * Example: `series.arrayExplode("tags", { as: "tag" })`.
+   * With `as`, a new scalar column is appended carrying the per-element
+   * value and the source array column is kept intact (every fanned-out
+   * event still carries the full array on `col`).
+   */
+  arrayExplode<
+    const Col extends ArrayColumnNameForSchema<S> & string,
+    const OutputKind extends ScalarKind = 'string',
+  >(
+    col: Col,
+    options?: { kind?: OutputKind },
+  ): TimeSeries<ArrayExplodeReplaceSchema<S, Col, OutputKind>>;
+  arrayExplode<
+    const Col extends ArrayColumnNameForSchema<S> & string,
+    const Name extends string,
+    const OutputKind extends ScalarKind = 'string',
+  >(
+    col: Col,
+    options: { as: Name; kind?: OutputKind },
+  ): TimeSeries<ArrayExplodeAppendSchema<S, Name, OutputKind>>;
+  arrayExplode(
+    col: string,
+    options?: { as?: string; kind?: ScalarKind },
+  ): TimeSeries<SeriesSchema> {
+    const outputKind: ScalarKind = options?.kind ?? 'string';
+    const outputName = options?.as ?? col;
+    const appendMode = options?.as !== undefined && options.as !== col;
+
+    const outputColumn: ValueColumn = {
+      name: outputName,
+      kind: outputKind,
+      required: false,
+    } as ValueColumn;
+
+    const resultSchema = Object.freeze(
+      appendMode
+        ? [...this.schema, outputColumn]
+        : this.schema.map((column) =>
+            column.name === col ? outputColumn : column,
+          ),
+    ) as unknown as SeriesSchema;
+
+    const resultRows: unknown[][] = [];
+    for (const event of this.events) {
+      const data = event.data();
+      const arr = data[col as keyof typeof data] as ArrayValue | undefined;
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      for (const element of arr) {
+        resultRows.push(
+          (resultSchema as readonly ValueColumn[]).map((column, index) => {
+            if (index === 0) return event.key();
+            if (appendMode && column.name === outputName) return element;
+            if (!appendMode && column.name === col) return element;
+            return data[column.name as keyof typeof data];
+          }),
+        );
+      }
+    }
+
+    return new TimeSeries({
+      name: this.name,
+      schema: resultSchema,
+      rows: resultRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    });
+  }
+
   /** Example: `series.length`. Returns the number of events in the series. */
   get length(): number {
     return this.events.length;
@@ -3000,7 +3280,7 @@ function aggregateInternal<S extends SeriesSchema>(
             const column = columns[index]!;
             states[index]!.add(
               data[column.source as keyof typeof data] as
-                | ScalarValue
+                | ColumnValue
                 | undefined,
             );
           }
@@ -3020,7 +3300,7 @@ function aggregateInternal<S extends SeriesSchema>(
         const values = contributors.map((event) => {
           const data = event.data();
           return data[column.source as keyof typeof data];
-        }) as ReadonlyArray<ScalarValue | undefined>;
+        }) as ReadonlyArray<ColumnValue | undefined>;
         return applyAggregateReducer(column.reducer, values);
       });
       return Object.freeze([bucket, ...aggregated]);
@@ -3041,7 +3321,7 @@ function aggregateInternal<S extends SeriesSchema>(
       const values = contributors.map((event) => {
         const data = event.data();
         return data[column.source as keyof typeof data];
-      }) as ReadonlyArray<ScalarValue | undefined>;
+      }) as ReadonlyArray<ColumnValue | undefined>;
       return applyAggregateReducer(column.reducer, values);
     });
     return Object.freeze([bucket, ...aggregated]);

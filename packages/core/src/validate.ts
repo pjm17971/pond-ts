@@ -97,6 +97,26 @@ function assertCellKind(
       }
       return;
     }
+    case 'array': {
+      if (!Array.isArray(value)) {
+        throw new ValidationError(
+          `row ${row} col ${col}: expected array of scalars`,
+        );
+      }
+      for (let i = 0; i < value.length; i += 1) {
+        const element = value[i];
+        const ok =
+          (typeof element === 'number' && Number.isFinite(element)) ||
+          typeof element === 'string' ||
+          typeof element === 'boolean';
+        if (!ok) {
+          throw new ValidationError(
+            `row ${row} col ${col}: array element ${i} must be a finite number, string, or boolean`,
+          );
+        }
+      }
+      return;
+    }
     default:
       throw new ValidationError(
         `row ${row} col ${col}: unknown kind '${kind}'`,
@@ -153,7 +173,12 @@ export function validateAndNormalize<S extends SeriesSchema>(
 
   for (let col = 1; col < schema.length; col += 1) {
     const kind = schema[col]!.kind;
-    if (kind !== 'number' && kind !== 'string' && kind !== 'boolean') {
+    if (
+      kind !== 'number' &&
+      kind !== 'string' &&
+      kind !== 'boolean' &&
+      kind !== 'array'
+    ) {
       throw new ValidationError(
         `column ${col} has unsupported value kind '${kind}'`,
       );
@@ -189,7 +214,14 @@ export function validateAndNormalize<S extends SeriesSchema>(
       }
 
       assertCellKind(def.kind, value, rowIndex, col);
-      data[def.name] = value;
+      // Array cells are frozen (after a shallow copy) so downstream consumers
+      // can safely treat them as immutable without callers losing control of
+      // the input array.
+      if (def.kind === 'array' && Array.isArray(value)) {
+        data[def.name] = Object.freeze(value.slice());
+      } else {
+        data[def.name] = value;
+      }
     }
 
     return new Event(normalizedKey, data) as unknown as EventForSchema<S>;

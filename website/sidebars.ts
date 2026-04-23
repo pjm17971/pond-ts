@@ -13,6 +13,8 @@ const sidebars: SidebarsConfig = {
         'guides/alignment-and-aggregation',
         'guides/aggregation-playbook',
         'guides/rolling-and-smoothing',
+        'guides/arrays',
+        'guides/reducer-reference',
         'guides/json-ingest-and-timezones',
         'guides/live-series',
         'guides/live-transforms',
@@ -21,7 +23,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Examples',
-      items: ['examples/cpu-metrics'],
+      items: ['examples/cpu-metrics', 'examples/error-rate-dashboard'],
     },
   ],
 };

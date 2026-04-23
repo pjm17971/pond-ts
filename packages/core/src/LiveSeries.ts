@@ -56,7 +56,12 @@ function validateSchema(schema: SeriesSchema): void {
   }
   for (let col = 1; col < schema.length; col++) {
     const kind = schema[col]!.kind;
-    if (kind !== 'number' && kind !== 'string' && kind !== 'boolean') {
+    if (
+      kind !== 'number' &&
+      kind !== 'string' &&
+      kind !== 'boolean' &&
+      kind !== 'array'
+    ) {
       throw new ValidationError(
         `column ${col} has unsupported value kind '${kind}'`,
       );
@@ -96,6 +101,22 @@ function assertCellKind(kind: string, value: unknown, name: string): void {
     case 'boolean':
       if (typeof value !== 'boolean')
         throw new ValidationError(`'${name}': expected boolean`);
+      return;
+    case 'array':
+      if (!Array.isArray(value))
+        throw new ValidationError(`'${name}': expected array of scalars`);
+      for (let i = 0; i < value.length; i += 1) {
+        const el = value[i];
+        const ok =
+          (typeof el === 'number' && Number.isFinite(el)) ||
+          typeof el === 'string' ||
+          typeof el === 'boolean';
+        if (!ok) {
+          throw new ValidationError(
+            `'${name}': array element ${i} must be a finite number, string, or boolean`,
+          );
+        }
+      }
       return;
   }
 }
@@ -404,7 +425,13 @@ export class LiveSeries<S extends SeriesSchema> {
         continue;
       }
       assertCellKind(def.kind, value, def.name);
-      data[def.name] = value;
+      // Freeze a shallow copy of array cells so downstream consumers can
+      // treat them as immutable (matches the batch `validate.ts` path).
+      if (def.kind === 'array' && Array.isArray(value)) {
+        data[def.name] = Object.freeze(value.slice());
+      } else {
+        data[def.name] = value;
+      }
     }
 
     return new Event(key, data) as unknown as EventForSchema<S>;

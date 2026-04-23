@@ -11,9 +11,11 @@ export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
 export { TimeSeries } from './TimeSeries.js';
+export { top } from './reducers/index.js';
 export { ValidationError } from './errors.js';
 export type {
   AlignSchema,
+  ArrayColumnNameForSchema,
   AggregateFunction,
   AggregateReducer,
   AggregateOutputMap,
@@ -22,6 +24,11 @@ export type {
   AggregateSchema,
   ColumnDef,
   CollapseData,
+  ArrayAggregateAppendSchema,
+  ArrayAggregateKind,
+  ArrayAggregateReplaceSchema,
+  ArrayExplodeAppendSchema,
+  ArrayExplodeReplaceSchema,
   CollapseSchema,
   EventDataForSchema,
   EventForSchema,
@@ -56,6 +63,8 @@ export type {
   RenameSchema,
   RekeySchema,
   RowForSchema,
+  ArrayValue,
+  ColumnValue,
   ScalarKind,
   ScalarValue,
   CustomAggregateReducer,

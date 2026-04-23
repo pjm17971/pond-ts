@@ -1,4 +1,4 @@
-import type { ScalarValue } from '../types.js';
+import type { ColumnValue } from '../types.js';
 import type { ReducerDef } from './types.js';
 
 export const keep: ReducerDef = {
@@ -12,7 +12,7 @@ export const keep: ReducerDef = {
     return ref;
   },
   bucketState() {
-    let ref: ScalarValue | undefined;
+    let ref: ColumnValue | undefined;
     let hasDefined = false;
     let allSame = true;
     return {
@@ -29,7 +29,7 @@ export const keep: ReducerDef = {
     };
   },
   rollingState() {
-    const counts = new Map<ScalarValue, number>();
+    const counts = new Map<ColumnValue, number>();
     return {
       add(_i, v) {
         if (v === undefined) return;

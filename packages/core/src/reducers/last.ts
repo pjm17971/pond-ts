@@ -1,4 +1,4 @@
-import type { ScalarValue } from '../types.js';
+import type { ColumnValue } from '../types.js';
 import type { ReducerDef } from './types.js';
 import { rollingOrderedEntries } from './rolling.js';
 
@@ -8,7 +8,7 @@ export const last: ReducerDef = {
     return defined[defined.length - 1];
   },
   bucketState() {
-    let val: ScalarValue | undefined;
+    let val: ColumnValue | undefined;
     return {
       add(v) {
         if (v !== undefined) val = v;

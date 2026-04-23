@@ -780,6 +780,11 @@ If the answer is no, stay in the phase and tighten the model before expanding.
 
 ### Array column values (`unique`, `topK`, `percentiles`)
 
+**Status: shipped.** `unique` reducer and the four array column operators
+(`includes`, `count`, `containsAll`, `explode`) landed on branch
+`feat/array-columns`. The sections below describe the design; see the
+implementation checklist at the bottom for what's done and what's still open.
+
 **Decision: reducers may output arrays, but array columns are inert.**
 
 A `'unique'` reducer (distinct values in a bucket) is a natural aggregation —
@@ -829,23 +834,90 @@ That observation dramatically reduces the blast radius:
 #### Built-in reducers that return arrays
 
 - **`unique`** — distinct non-undefined values, sorted. Works on any column
-  kind.
-- **`topK(n)`** — top N values by frequency. Probably a function factory:
-  `topK(3)` returns a reducer.
+  kind. **Shipped.**
+- **`top(n)`** — top N values by frequency, sorted by count descending with
+  deterministic scalar tie-break. Implemented as a string-pattern reducer
+  (`'top3'`, `'top10'`, …) parallel to `pNN`, plus a `top(n)` helper that
+  returns the typed string literal. Incremental bucket/rolling state via
+  a count map, so `rolling('5m', { host: top(3) })` is O(1) per update.
+  **Shipped.**
 - **`percentiles(...qs)`** — compute multiple quantiles in one pass:
-  `percentiles(50, 90, 99)` returns `number[]`. Avoids the current pattern of
-  three separate `p50` / `p90` / `p99` columns.
+  `percentiles(50, 90, 99)` returns `number[]`. Avoids three separate
+  `p50` / `p90` / `p99` columns. **Deferred** — the workaround (declaring
+  three output columns) is ergonomic enough and doesn't lose efficiency
+  (each `pNN` reducer already shares a sorted-array rolling state). Revisit
+  only if multi-quantile dashboards become a common pattern.
 
-#### Implementation order
+#### Array column operators
 
-1. Add `'array'` to `ScalarKind`, `ScalarValue`, `NormalizedValueForKind`.
-   Audit conditional types — most already branch on specific kinds and fall
-   through to `never` for unknowns, so `'array'` should be safe by default.
-2. Widen `CustomAggregateReducer` return type. Update reducer registry
-   `outputKind`.
-3. Ship `'unique'` as the first built-in. Validate the type flow end-to-end.
-4. JSON round-trip support for array cells.
-5. `topK` and `percentiles` follow if `unique` proves the pattern.
+Once array columns exist, a small set of operators makes them useful for
+tagging workflows (e.g. "which hosts reported?", "does this bucket include
+host X?"). All operators are prefixed `array*` so they read clearly and
+don't collide with existing scalar / temporal methods (e.g. temporal
+`contains(range)`).
+
+**Filters** (same schema, predicate-only):
+
+- **`arrayContains(col, value)`** — keep events where the array column
+  contains `value`. Common pattern: "show only buckets that saw host
+  `api-1`."
+- **`arrayContainsAll(col, values)`** — keep events where the array
+  contains _every_ value in `values` (AND / subset).
+- **`arrayContainsAny(col, values)`** — keep events where the array
+  contains _at least one_ value in `values` (OR / intersection non-empty).
+
+**Per-event reduction** — reuses the existing reducer registry:
+
+- **`arrayAggregate(col, reducer, options?)`** — feed each event's array
+  to a reducer (`count`, `sum`, `avg`, `min`, `max`, `median`, `stdev`,
+  `difference`, `pNN`, `first`, `last`, `keep`, `unique`, or a custom
+  function) as if it were a bucket of values. This unifies "count the
+  array length" with "average a sample list" with "dedupe within the
+  array" under one method. Output kind is inferred from the reducer
+  (`outputKind: 'number'` → `number`, `'array'` → `array`, `'source'`
+  falls back to `'string'` unless overridden with `{ kind }`). Without
+  `as`, the source column is replaced in place; with `{ as: "name" }` a
+  new column is appended and the source array is preserved.
+  Custom reducer contract matches `CustomAggregateReducer`:
+  `(values: ReadonlyArray<ColumnValue | undefined>) => ColumnValue | undefined`.
+
+**Flatten**:
+
+- **`arrayExplode(col, options?)`** — fan each event out into one event
+  per element of the array. Default replaces the array column with a
+  scalar column of kind `kind` (default `'string'`, overridable).
+  With `{ as: "name" }` the array column is preserved and a new scalar
+  column `name` carries the per-element value; the source array is
+  repeated on each fanned-out event. Events with empty or `undefined`
+  arrays are dropped. The resulting series may contain events with
+  duplicate timestamps.
+
+All five are batch `TimeSeries` methods. Live equivalents (`LiveView`
+variants of `arrayContains` / `arrayContainsAll` / `arrayContainsAny`)
+are deferred but straightforward — they'd be stateless predicate views.
+Live `arrayAggregate` and `arrayExplode` need more thought (how
+`arrayExplode` interacts with eviction is the hard case).
+
+#### Implementation checklist
+
+- [x] Add `'array'` to `ScalarKind`, `ScalarValue`, `NormalizedValueForKind`.
+      New types: `ArrayValue = ReadonlyArray<ScalarValue>` and
+      `ColumnValue = ScalarValue | ArrayValue`.
+- [x] Widen `CustomAggregateReducer` return type to `ColumnValue | undefined`.
+      `ReducerDef.outputKind` gains `'array'`.
+- [x] Ship `unique` as the first built-in (outputKind: `'array'`). Works in
+      `reduce`, `aggregate`, and `rolling` contexts.
+- [x] JSON round-trip support for array cells (passes through unchanged;
+      validate enforces element kinds on read).
+- [x] Array column operators: `arrayContains`, `arrayContainsAll`,
+      `arrayContainsAny`, `arrayAggregate`, `arrayExplode`. All append-mode
+      operators (`arrayAggregate`, `arrayExplode`) accept `{ as }`.
+- [x] `top(n)` — top N values by frequency with incremental bucket/rolling
+      state. Usable as `'top3'`, `top(3)`, or any `` `top${number}` ``.
+- [ ] `percentiles(...qs)` — multi-quantile reducer. Deferred; the
+      workaround of declaring three `pNN` columns is cheap and clear.
+- [ ] Live equivalents of array column operators (deferred until there's a
+      concrete live dashboard need).
 
 ---
 

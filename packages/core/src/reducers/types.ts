@@ -1,4 +1,4 @@
-import type { ScalarValue } from '../types.js';
+import type { ColumnValue } from '../types.js';
 
 /**
  * Incremental state for a single column within one aggregation bucket.
@@ -7,8 +7,8 @@ import type { ScalarValue } from '../types.js';
  * consuming the state.
  */
 export type AggregateBucketState = {
-  add(value: ScalarValue | undefined): void;
-  snapshot(): ScalarValue | undefined;
+  add(value: ColumnValue | undefined): void;
+  snapshot(): ColumnValue | undefined;
 };
 
 /**
@@ -18,9 +18,9 @@ export type AggregateBucketState = {
  * increasing event counter used to identify which value to evict.
  */
 export type RollingReducerState = {
-  add(index: number, value: ScalarValue | undefined): void;
-  remove(index: number, value: ScalarValue | undefined): void;
-  snapshot(): ScalarValue | undefined;
+  add(index: number, value: ColumnValue | undefined): void;
+  remove(index: number, value: ColumnValue | undefined): void;
+  snapshot(): ColumnValue | undefined;
 };
 
 /**
@@ -39,13 +39,14 @@ export type RollingReducerState = {
  *   by `TimeSeries.rolling()` where events both enter and leave the
  *   window. Must support `add`, `remove`, and `snapshot`.
  *
- * `outputKind` tells the aggregate schema builder whether the reducer
- * always produces a number (`'number'`) or preserves the source column
- * type (`'source'`). Numeric reducers like sum and avg use `'number'`;
- * type-agnostic reducers like first, last, and keep use `'source'`.
+ * `outputKind` tells the aggregate schema builder what kind the reducer
+ * produces: `'number'` for reducers that always emit a number (sum, avg),
+ * `'source'` to preserve the source column kind (first, last, keep), or
+ * `'array'` for reducers that collapse a bucket into a list of values
+ * (unique).
  */
 export type ReducerDef = {
-  outputKind: 'number' | 'source';
+  outputKind: 'number' | 'source' | 'array';
 
   /**
    * Batch reduce over a complete value array. `defined` contains all
@@ -54,9 +55,9 @@ export type ReducerDef = {
    * not need to filter themselves.
    */
   reduce(
-    defined: ReadonlyArray<ScalarValue>,
+    defined: ReadonlyArray<ColumnValue>,
     numeric: ReadonlyArray<number>,
-  ): ScalarValue | undefined;
+  ): ColumnValue | undefined;
 
   /** Return a fresh incremental state for one aggregation bucket. */
   bucketState(): AggregateBucketState;

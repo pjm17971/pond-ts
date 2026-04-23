@@ -4,9 +4,11 @@ sidebar_position: 12
 
 # Reducer Reference
 
-Pond ships 12 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.)
-and custom reducer functions. Every built-in works in `aggregate()`, `reduce()`, `rolling()`,
-and `collapse()`.
+Pond ships 14 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.),
+top-N-by-frequency patterns (`top3`, `top10`, etc.), and custom reducer functions. Every
+built-in works in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`. The two
+array-producing reducers (`unique` and `top(n)`) also slot into
+[`arrayAggregate()`](./arrays#per-event-reduction-arrayaggregate) on array columns.
 
 ## Numeric reducers
 
@@ -161,6 +163,160 @@ host name since all events in each group share the same value.
 
 Returns `undefined` for an empty bucket or mixed values.
 
+## Array-producing reducers
+
+These two reducers output an array column (`kind: 'array'`) instead of a scalar. They
+drive most of the tagging / distinct-value workflows — see the
+[Array Columns guide](./arrays) for the full treatment.
+
+### `unique`
+
+Distinct non-`undefined` values, sorted. Works on any column kind.
+
+**On a scalar source column.** Produces one array per bucket containing every distinct
+value seen, sorted deterministically (numbers &lt; strings &lt; booleans, JS default within
+a kind).
+
+```ts
+const hosts = new TimeSeries({
+  name: 'hosts',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'host', kind: 'string' },
+  ] as const,
+  rows: [
+    // bucket [0s, 3s) ─────────────────
+    [0, 'api-1'],
+    [1000, 'api-1'],
+    [2000, 'api-2'],
+    // bucket [3s, 6s) ─────────────────
+    [3500, 'api-3'],
+    [4000, 'api-1'],
+    [5500, 'api-1'],
+  ],
+});
+
+const agg = hosts.aggregate(Sequence.every('3s'), {
+  host: 'unique', // 'string' -> 'array'
+});
+
+// agg.at(0)!.get('host')  =>  ['api-1', 'api-2']
+// agg.at(1)!.get('host')  =>  ['api-1', 'api-3']
+```
+
+**On an array-kind source column.** `unique` flattens one level and takes the **set union**
+of elements across every array in the bucket.
+
+```ts
+const tagged = new TimeSeries({
+  name: 'tagged',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'tags', kind: 'array' },
+  ] as const,
+  rows: [
+    // bucket [0s, 3s) ─────────────────
+    [0, ['5xx', 'timeout']],
+    [500, ['5xx']],
+    [1000, ['retry']],
+    // bucket [3s, 6s) ─────────────────
+    [3500, ['timeout']],
+    [4000, []], // empty arrays contribute nothing
+  ],
+});
+
+const agg = tagged.aggregate(Sequence.every('3s'), {
+  tags: 'unique',
+});
+
+// agg.at(0)!.get('tags')  =>  ['5xx', 'retry', 'timeout']
+//   union of ['5xx','timeout'] + ['5xx'] + ['retry'] = {5xx, timeout, retry}
+// agg.at(1)!.get('tags')  =>  ['timeout']
+```
+
+Returns `[]` for an empty bucket.
+
+### `top(n)` / `` `top${number}` ``
+
+Top N values by frequency, sorted by count descending. Ties break by scalar order
+(numbers &lt; strings &lt; booleans, JS default within a kind). If N exceeds the unique
+count, all unique values are returned. Parsed from the string pattern
+`` `top${number}` `` (like `p${number}`); the `top(n)` helper returns the typed string
+literal — either form is accepted.
+
+**On a scalar source column.** Counts occurrences in the bucket and keeps the most
+frequent N.
+
+```ts
+import { top } from 'pond-ts';
+
+const hosts = new TimeSeries({
+  name: 'hosts',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'host', kind: 'string' },
+  ] as const,
+  rows: [
+    // bucket [0s, 3s) ─────────────────
+    [0, 'api-1'],
+    [500, 'api-2'],
+    [1000, 'api-1'],
+    [1500, 'api-3'],
+    [2500, 'api-1'],
+    // bucket [3s, 6s) ─────────────────
+    [3500, 'api-4'],
+    [4000, 'api-4'],
+    [4500, 'api-2'],
+  ],
+});
+
+const agg = hosts.aggregate(Sequence.every('3s'), {
+  host: top(2), // 'string' -> 'array', top 2 most frequent
+});
+
+// agg.at(0)!.get('host')  =>  ['api-1', 'api-2']
+//   counts: api-1=3, api-2=1, api-3=1. api-1 wins outright;
+//   api-2 beats api-3 on the tie-break (scalar order).
+// agg.at(1)!.get('host')  =>  ['api-4', 'api-2']
+//   counts: api-4=2, api-2=1.
+```
+
+The string form is interchangeable: `{ host: 'top2' }` does the same thing.
+
+**On an array-kind source column.** Counts **elements across every array** in the bucket,
+not the arrays themselves.
+
+```ts
+const tagged = new TimeSeries({
+  name: 'tagged',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'tags', kind: 'array' },
+  ] as const,
+  rows: [
+    [0, ['5xx', 'timeout']],
+    [500, ['5xx']],
+    [1000, ['retry', '5xx']],
+    [1500, ['timeout']],
+  ],
+});
+
+const agg = tagged.aggregate(Sequence.every('3s'), {
+  tags: top(3),
+});
+
+// agg.at(0)!.get('tags')  =>  ['5xx', 'timeout', 'retry']
+//   flattened elements: 5xx, timeout, 5xx, retry, 5xx, timeout
+//   counts: 5xx=3, timeout=2, retry=1 — already three unique, all kept.
+```
+
+Invalid names (`'top0'`, `'top-1'`) throw at resolve time.
+
+Rolling-window complexity is O(1) per add/remove (count map); final sort on snapshot is
+O(k log k) where k is the distinct value count.
+
+Returns `[]` for an empty bucket.
+
 ## Custom reducers
 
 Supply a function wherever a built-in name is accepted. The function receives all values
@@ -193,18 +349,21 @@ Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`
 | `last`       | `undefined`  |
 | `keep`       | `undefined`  |
 | `p50`...     | `undefined`  |
+| `unique`     | `[]`         |
+| `top3`...    | `[]`         |
 
 ## Rolling window behavior
 
 All built-in reducers work with `rolling()`. Most use O(1) incremental add/remove:
 
-| Reducer                             | Rolling complexity                          |
-| ----------------------------------- | ------------------------------------------- |
-| `sum`, `avg`, `count`, `stdev`      | O(1) per event                              |
-| `min`, `max`                        | O(1) amortized (monotone deque)             |
-| `first`, `last`                     | O(1) amortized                              |
-| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove) |
-| `keep`                              | O(1) per event (value count map)            |
+| Reducer                             | Rolling complexity                             |
+| ----------------------------------- | ---------------------------------------------- |
+| `sum`, `avg`, `count`, `stdev`      | O(1) per event                                 |
+| `min`, `max`                        | O(1) amortized (monotone deque)                |
+| `first`, `last`                     | O(1) amortized                                 |
+| `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove)    |
+| `keep`, `unique`                    | O(1) per event (value count map)               |
+| `top(n)`                            | O(1) add/remove; O(k log k) snapshot sort      |
 
 For typical rolling windows (tens to hundreds of events), the sorted array approach
 is fast enough. For very large windows with median/percentile, consider a custom reducer.

@@ -526,10 +526,22 @@ const renamedAggregatedCpuEvent = renamedAggregatedCpuSeries.first();
 if (!renamedAggregatedCpuEvent) {
   throw new Error('missing renamed aggregated event');
 }
-const renamedAggregatedCpuAvg: string | number | boolean | undefined =
-  renamedAggregatedCpuEvent.get('cpu_avg');
-const renamedAggregatedHostLast: string | number | boolean | undefined =
-  renamedAggregatedCpuEvent.get('host_last');
+// `AggregateOutputMap` (renamed-output) erases the schema to `SeriesSchema`,
+// so payload cells resolve to the full `ColumnValue` union — which now
+// includes `ArrayValue` for array-kind columns produced by `unique`-like
+// reducers.
+const renamedAggregatedCpuAvg:
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<string | number | boolean>
+  | undefined = renamedAggregatedCpuEvent.get('cpu_avg');
+const renamedAggregatedHostLast:
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<string | number | boolean>
+  | undefined = renamedAggregatedCpuEvent.get('host_last');
 void renamedAggregatedCpuAvg;
 void renamedAggregatedHostLast;
 
