@@ -679,6 +679,16 @@ Entry point: `@pond-ts/react` (separate workspace package)
       in v0.5.7. A `seed` variant that initializes the EMA with a specific
       value (rather than trimming the output) is still open if the need
       comes up.
+- [x] `outliers(col, { window, sigma, alignment? })` — rolling-baseline
+      anomaly detection as a first-class operator. Returns `TimeSeries<S>`
+      filtered to events deviating from the rolling avg by more than
+      `sigma * rolling_stdev`. Collapses the 30-line manual pattern
+      (rolling → avgByTs Map → filter loop) into one call. Shipped in
+      v0.5.8.
+- [x] `toPoints(col)` / `TimeSeries.fromPoints(points, { schema })` —
+      chart-library interop. `toPoints` exports the flat
+      `{ ts, value }[]` shape (filtering `undefined`); `fromPoints` is
+      the inverse constructor. Shipped in v0.5.8.
 - [ ] Dashboard guide doc fixes — show `useLiveQuery` as the idiomatic pattern
       rather than manual `useMemo` + `useSnapshot`; document how derived views
       interact with `LiveSeries` retention.

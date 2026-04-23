@@ -3274,6 +3274,121 @@ export class TimeSeries<S extends SeriesSchema> {
   toArray(): EventForSchema<S>[] {
     return this.events.slice();
   }
+
+  /**
+   * Example: `series.toPoints('cpu')`.
+   * Flat `{ ts, value }[]` export for a single numeric column — the
+   * conventional shape for most time-series chart libraries (Recharts,
+   * Observable Plot, d3, etc.).
+   *
+   * Events whose `col` is `undefined` are dropped (no point emitted).
+   * `ts` is `event.begin()` — for `Time` keys this is the timestamp,
+   * for `TimeRange` / `Interval` keys this is the interval start.
+   */
+  toPoints<const Col extends NumericColumnNameForSchema<S>>(
+    col: Col,
+  ): ReadonlyArray<{ ts: number; value: number }> {
+    const out: { ts: number; value: number }[] = [];
+    for (const event of this.events) {
+      const value = event.get(col);
+      if (typeof value !== 'number') continue;
+      out.push({ ts: event.begin(), value });
+    }
+    return Object.freeze(out);
+  }
+
+  /**
+   * Example: `series.outliers('cpu', { window: '1m', sigma: 2 })`.
+   * Rolling-baseline outlier detection: returns the subset of events
+   * whose value on `col` deviates from the trailing rolling average
+   * by more than `sigma * rolling_stdev`. Same schema as the input,
+   * so the result composes with every other `TimeSeries` method —
+   * `.aggregate(seq, { col: 'count' })` for bucketed anomaly counts,
+   * `.groupBy('host')` for per-host outlier lists, etc.
+   *
+   * Events before the rolling window has a meaningful baseline (stdev
+   * is zero or undefined) are not flagged — can't detect deviation
+   * against a flat or empty reference.
+   *
+   * Internally: computes `rolling(window, { avg, sd })` using the
+   * output-map form, zips with the source events by index, and keeps
+   * events where `|value - avg| > sigma * sd`.
+   */
+  outliers<const Col extends NumericColumnNameForSchema<S>>(
+    col: Col,
+    options: {
+      window: DurationInput;
+      sigma: number;
+      alignment?: RollingAlignment;
+    },
+  ): TimeSeries<S> {
+    const { window, sigma, alignment } = options;
+    if (!Number.isFinite(sigma) || sigma <= 0) {
+      throw new TypeError('outliers sigma must be a positive finite number');
+    }
+    // Internal names chosen so the rolling output can't collide with
+    // any user column — the output-map form accepts any distinct keys.
+    const ROLL_AVG = '__pond_outliers_avg__';
+    const ROLL_SD = '__pond_outliers_sd__';
+    const rollingMapping = {
+      [ROLL_AVG]: { from: col as string, using: 'avg' as const },
+      [ROLL_SD]: { from: col as string, using: 'stdev' as const },
+    } as unknown as AggregateOutputMap<S>;
+    const rollingOptions = alignment !== undefined ? { alignment } : undefined;
+    const rolling = this.rolling(
+      window,
+      rollingMapping,
+      rollingOptions,
+    ) as unknown as TimeSeries<SeriesSchema>;
+
+    const kept: EventForSchema<S>[] = [];
+    for (let i = 0; i < this.events.length; i += 1) {
+      const src = this.events[i]!;
+      const rollEvent = rolling.at(i);
+      if (!rollEvent) continue;
+      const data = rollEvent.data() as Record<string, unknown>;
+      const avg = data[ROLL_AVG];
+      const sd = data[ROLL_SD];
+      if (typeof avg !== 'number' || typeof sd !== 'number') continue;
+      if (sd === 0) continue; // flat window — nothing to deviate from
+      const raw = src.get(col);
+      if (typeof raw !== 'number') continue;
+      if (Math.abs(raw - avg) > sigma * sd) {
+        kept.push(src);
+      }
+    }
+    return TimeSeries.#fromTrustedEvents(this.name, this.schema, kept);
+  }
+
+  /**
+   * Example: `TimeSeries.fromPoints(pts, { schema: [...] })`.
+   * Construct a two-column `TimeSeries` from a flat `{ ts, value }[]`
+   * array — the inverse of `toPoints(col)`. The schema must have
+   * exactly two columns: a time-kind first column and one value
+   * column. Each point's `ts` becomes the time key; `value` goes
+   * into the named value column.
+   *
+   * Useful for round-tripping chart data back into pond-native
+   * operations — e.g. bucketing a flat list of anomaly points via
+   * `aggregate(Sequence.every('15s'), { cpu: 'count' })`.
+   */
+  static fromPoints<S extends SeriesSchema>(
+    points: ReadonlyArray<{ ts: TimestampInput; value: ScalarValue }>,
+    options: { schema: S; name?: string },
+  ): TimeSeries<S> {
+    if (options.schema.length !== 2) {
+      throw new TypeError(
+        'TimeSeries.fromPoints expects a schema with exactly two columns: a time key and one value column',
+      );
+    }
+    return new TimeSeries({
+      name: options.name ?? 'points',
+      schema: options.schema,
+      rows: points.map(
+        (p) => [p.ts, p.value] as unknown,
+      ) as unknown as TimeSeriesInput<S>['rows'],
+    });
+  }
 }
 
 function aggregateInternal<S extends SeriesSchema>(
