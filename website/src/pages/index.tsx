@@ -27,13 +27,13 @@ function HomepageHeader(): ReactNode {
         <div className={styles.buttons}>
           <Link
             className="button button--primary button--lg"
-            to="/docs/getting-started"
+            to="/docs/start-here/getting-started"
           >
             Get started
           </Link>
           <Link
             className="button button--outline button--primary button--lg"
-            to="/docs/examples/cpu-metrics"
+            to="/docs/recipes/cpu-metrics"
           >
             Explore an example
           </Link>

@@ -13,7 +13,7 @@ and `rolling`-over-numbers skip array columns entirely.
 
 This page is a reference of every array-column operator with a minimal
 example. For a full scenario that composes them, see
-[Error-Rate Dashboard](../examples/error-rate-dashboard).
+[Error-Rate Dashboard](../../recipes/error-rate-dashboard).
 
 ## When you'd want one
 
@@ -75,7 +75,7 @@ const perMinute = events.aggregate(Sequence.every('1m'), {
 ```
 
 Both reducers work in `reduce()`, `aggregate()`, and `rolling()`; see
-[Reducer Reference](./reducer-reference) for the full treatment.
+[Reducer Reference](../transforms/reducer-reference) for the full treatment.
 
 ## Filter operators
 
@@ -184,7 +184,7 @@ series.arrayAggregate('tags', top(2));
 // tags: ['b','b','a','d'] -> ['b','a']
 ```
 
-See [Reducer Reference](./reducer-reference#top) for tie-break rules.
+See [Reducer Reference](../transforms/reducer-reference#topn--topnumber) for tie-break rules.
 
 ### First / last element
 
@@ -440,14 +440,14 @@ exist — but they expose only **closed** buckets. A freshly pushed event
 that hasn't yet crossed a bucket boundary is in an open bucket that's
 not indexable. For the current partial value use `agg.snapshot().last()`
 or subscribe to the `'bucket'` event.
-See [Live Transforms → Reading the current value](./live-transforms#reading-the-current-value)
+See [Live Transforms → Reading the current value](../live/live-transforms#reading-the-current-value)
 for the full breakdown.
 
 ## See also
 
-- [Reducer Reference](./reducer-reference) — full details on `unique`,
+- [Reducer Reference](../transforms/reducer-reference) — full details on `unique`,
   `top(n)`, and every other built-in.
-- [Error-Rate Dashboard](../examples/error-rate-dashboard) — a full
+- [Error-Rate Dashboard](../../recipes/error-rate-dashboard) — a full
   scenario composing every array operator.
-- [Live Transforms](./live-transforms) — when to reach for live
+- [Live Transforms](../live/live-transforms) — when to reach for live
   aggregates vs batch-on-snapshot.

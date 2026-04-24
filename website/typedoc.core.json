@@ -1,0 +1,15 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["../packages/core/src/index.ts"],
+  "tsconfig": "../packages/core/tsconfig.json",
+  "out": "static/generated-api/core",
+  "name": "pond-ts API Reference (core)",
+  "readme": "none",
+  "cleanOutputDir": true,
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "lightHighlightTheme": "github-light",
+  "darkHighlightTheme": "github-light",
+  "customCss": "typedoc/custom.css",
+  "customJs": "typedoc/custom.js"
+}
