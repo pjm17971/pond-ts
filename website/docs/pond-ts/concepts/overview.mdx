@@ -2,72 +2,376 @@
 sidebar_position: 3
 ---
 
-# Core Concepts
+# Concepts
 
-## Temporal keys
+pond-ts is a time series library with four primitives. Once these click,
+the rest of the API reads as composable operations over them:
 
-Every `Event` in Pond has an explicit temporal key.
+- **`Event`** — one temporal key plus a typed payload.
+- **`TimeSeries`** — an ordered, immutable collection of events sharing a
+  schema.
+- **Temporal keys** — `Time`, `TimeRange`, `Interval`.
+- **`Sequence`** — a grid definition that turns a time axis into
+  bucketed spans.
 
-### `Time`
+Everything else — `aggregate`, `rolling`, `smooth`, `reduce`, the whole
+`LiveSeries` side — operates on these. Read this page top-to-bottom
+once; then the transform pages assume the vocabulary.
 
-A point in time.
+## Mental model
 
-Use it when each event happens at a single timestamp.
+Think of a `TimeSeries` as a spreadsheet with one special column:
 
-### `TimeRange`
+```
+┌──────────────────────┬───────┬──────────┬─────────┐
+│  time                │  cpu  │ requests │  host   │
+│  (temporal key)      │  num  │   num    │   str   │   ← schema
+├──────────────────────┼───────┼──────────┼─────────┤
+│  00:00  ─┐           │ 0.31  │   120    │ api-1   │
+│  00:01   │ ordered    │ 0.44  │   135    │ api-1   │
+│  00:02   │ immutable  │ 0.52  │   141    │ api-1   │
+│  00:03   │            │ 0.48  │   128    │ api-1   │
+│  00:04  ─┘           │ 0.63  │   166    │ api-1   │
+└──────────────────────┴───────┴──────────┴─────────┘
+```
 
-An unlabeled temporal extent.
+Rows are events, columns are typed, and the first column is always
+a temporal key. The schema drives construction, type inference across
+every transform, and aggregation mappings.
 
-Use it when each event covers a range but you do not need a bucket label.
-
-### `Interval`
-
-A labeled temporal extent.
-
-Use it for sequence buckets, reporting windows, and aligned series.
+The rest of the library is operations you do to that spreadsheet:
+filter rows, add columns, roll up buckets, smooth a column,
+aggregate over sequences, reduce the whole thing to scalars.
 
 ## Event
 
 An `Event` is:
 
-- one temporal key
-- one typed payload object
+- one **temporal key** (a `Time`, `TimeRange`, or `Interval`)
+- one **typed payload** — a plain object keyed by column name
 
-It is immutable. Methods like `set`, `merge`, `select`, and `rename` return new events.
+Events are immutable. Methods like `set`, `merge`, `select`, and
+`rename` return new events.
+
+```ts
+import { Event, Time } from 'pond-ts';
+
+const e = new Event(new Time(Date.parse('2025-01-01T00:00:00Z')), {
+  cpu: 0.31,
+  host: 'api-1',
+});
+
+e.get('cpu'); // 0.31 — type: number (narrowed from schema)
+e.begin(); // 1735689600000 — milliseconds since epoch
+```
+
+You rarely construct individual `Event`s in application code — usually
+you build a `TimeSeries` from rows and the library makes the `Event`s
+for you.
 
 ## TimeSeries
 
-A `TimeSeries` is an ordered immutable collection of events that share one schema.
+A `TimeSeries<S>` is an ordered, immutable collection of events that
+share the schema `S`. `S` is a `readonly` tuple of column definitions:
 
-That schema drives:
+```ts
+import { TimeSeries } from 'pond-ts';
 
-- construction
-- type inference
-- transforms
-- aggregation mapping
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
 
-## Sequence and BoundedSequence
+const cpu = new TimeSeries({
+  name: 'cpu',
+  schema,
+  rows: [
+    [Date.parse('2025-01-01T00:00:00Z'), 0.31, 'api-1'],
+    [Date.parse('2025-01-01T00:01:00Z'), 0.44, 'api-1'],
+    [Date.parse('2025-01-01T00:02:00Z'), 0.52, 'api-1'],
+  ],
+});
 
-### `Sequence`
+cpu.length; // 3
+cpu.at(0)!.get('cpu'); // 0.31 — narrows to number
+cpu.at(0)!.get('host'); // 'api-1' — narrows to string
+```
 
-An unbounded grid definition.
+The `as const` on `schema` is load-bearing. Without it, TypeScript
+widens the tuple to `{name: string, kind: string}[]` and you lose the
+per-column type narrowing on `.get()`.
 
-Examples:
+### Schemas drive everything
 
-- every minute
-- every hour
-- every calendar day in a time zone
+A transform's output schema is derived from its input schema, so
+`.get()` stays narrow:
+
+```ts
+const smoothed = cpu.smooth('cpu', 'ema', {
+  alpha: 0.35,
+  output: 'cpuTrend',
+});
+// smoothed.schema gains a cpuTrend number column:
+//   [{ time, time }, { cpu, number }, { host, string }, { cpuTrend, number }]
+
+smoothed.at(0)?.get('cpuTrend'); // number | undefined
+```
+
+Aggregations, reductions, rolling windows, smoothings — each narrows
+its output type based on reducer / operator kind. See
+[Transforms](../transforms/alignment-and-aggregation) for the details.
+
+### Column kinds
+
+pond-ts supports four value kinds for cells:
+
+| Kind        | Runtime type            | Example      |
+| ----------- | ----------------------- | ------------ |
+| `'number'`  | `number`                | `0.31`       |
+| `'string'`  | `string`                | `'api-1'`    |
+| `'boolean'` | `boolean`               | `true`       |
+| `'array'`   | `ReadonlyArray<scalar>` | `['a', 'b']` |
+
+Array columns are inert for numerical operators (`diff`, `rate`,
+`rolling` over numbers) — they pass through untouched. See
+[Array columns](../data-shapes/arrays) for details and the
+reducers that produce them.
+
+## Temporal keys
+
+Every event has exactly one temporal key. Which one is a modeling
+choice — it encodes how the event sits on the timeline.
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+Timeline ─────────────────────────────────────────────────────▶
+
+Time              ●                     One instant.
+                  └─▶ 00:02
+
+TimeRange         [────────]            An extent, no label.
+                  └─▶ 00:02–00:04
+
+Interval (5m)     ├────────┤ "00:00"    An extent *with* a bucket
+                  └─▶ 00:00–00:05        label — picks up its
+                                         identity from the sequence
+                                         that produced it.
+```
+
+:::
+
+### `Time`
+
+An instant. Use this for point-in-time measurements: one request
+latency, one CPU sample, one stock tick.
+
+```ts
+import { Time } from 'pond-ts';
+
+new Time(1735689600000); // ms since epoch
+new Time(new Date('2025-01-01T00:00:00Z'));
+new Time(Date.parse('2025-01-01T00:00:00Z'));
+```
+
+`Time` takes `number | Date`. When starting from an ISO string, use
+`Date.parse(...)` or `new Date(...)` explicitly — the library doesn't
+guess at string formats.
+
+### `TimeRange`
+
+An unlabeled extent between two timestamps. Use this when the event
+covers a span — a session, a request duration, an outage window — but
+doesn't need a bucket identity.
+
+```ts
+import { TimeRange } from 'pond-ts';
+
+new TimeRange({
+  start: Date.parse('2025-01-01T00:02:00Z'),
+  end: Date.parse('2025-01-01T00:04:00Z'),
+});
+```
+
+### `Interval`
+
+A labeled extent. Produced by `Sequence` bucketing and aligned
+aggregations. The label — the `index` — lets an aligned series round-
+trip through JSON and keeps bucket identity stable across transforms.
+
+You rarely construct `Interval`s directly; `aggregate(seq, mapping)`
+and `align(seq, ...)` produce them.
+
+## Sequence
+
+A `Sequence` defines a grid over the time axis. You pass it to
+`aggregate` or `align` to bucket or resample events onto fixed spans.
+
+```ts
+import { Sequence } from 'pond-ts';
+
+const minutely = Sequence.every('1m');
+const calendarDaily = Sequence.calendar('day', {
+  timeZone: 'America/New_York',
+});
+```
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+events (Time-keyed)  ● ● ●   ●  ●   ● ●  ●    ●   ●    ● ● ●
+Timeline ──────────────────────────────────────────────────────▶
+                    00:00    00:05    00:10    00:15    00:20
+
+Sequence.every('5m')
+                    [─────────)[─────────)[─────────)[─────────)
+                    "00:00"    "00:05"    "00:10"    "00:15"
+
+aggregate(seq, {cpu: 'avg'}) —► one Interval-keyed event per bucket
+                    ├─avg 1─┤  ├─avg 2─┤  ├─avg 3─┤  ├─avg 4─┤
+```
+
+Buckets are half-open: `[start, end)`. An event at exactly the
+boundary lands in the _later_ bucket.
+:::
+
+```ts
+const buckets = cpu.aggregate(minutely, {
+  cpu: 'avg',
+  host: 'last',
+});
+// buckets.at(0)?.key() is an Interval, not a Time
+// buckets.at(0)?.get('cpu') is number | undefined
+```
+
+`Sequence.every(duration)` is fixed-step (millisecond-exact);
+`Sequence.calendar('day' | 'week' | 'month', { timeZone })` steps by
+local calendar boundaries and is what you want when month or day
+lengths matter. See
+[Aggregation playbook](../transforms/aggregation-playbook) for
+worked examples.
 
 ### `BoundedSequence`
 
-An explicit finite interval list.
+An explicit finite list of intervals. Use it when the buckets aren't
+regular — business quarters, predefined report ranges, or boundaries
+known from outside the data.
 
-Use it when you already know the exact bucket boundaries you want.
+```ts
+import { BoundedSequence, Interval } from 'pond-ts';
 
-## Vocabulary
+const parse = Date.parse;
+const quarters = new BoundedSequence([
+  new Interval({
+    value: 'Q1',
+    start: parse('2025-01-01'),
+    end: parse('2025-04-01'),
+  }),
+  new Interval({
+    value: 'Q2',
+    start: parse('2025-04-01'),
+    end: parse('2025-07-01'),
+  }),
+  new Interval({
+    value: 'Q3',
+    start: parse('2025-07-01'),
+    end: parse('2025-10-01'),
+  }),
+  new Interval({
+    value: 'Q4',
+    start: parse('2025-10-01'),
+    end: parse('2026-01-01'),
+  }),
+]);
+```
 
-These selection terms are intentionally distinct:
+`aggregate` and `align` both accept `Sequence | BoundedSequence`.
 
-- `within(...)`: fully contained
-- `overlapping(...)`: intersects without modifying keys
-- `trim(...)`: intersects and clips key extents
+## Selection vocabulary
+
+Three temporal-selection methods with deliberately distinct semantics
+— if you pick the wrong one the result is quiet data corruption, so
+the names are chosen to force a choice.
+
+```ts
+const range = new TimeRange({
+  start: Date.parse('2025-01-01T00:02:00Z'),
+  end: Date.parse('2025-01-01T00:05:00Z'),
+});
+
+cpu.within(range); // keep events fully contained
+cpu.overlapping(range); // keep events that intersect
+cpu.trim(range); // intersect and clip key extents
+```
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+query range                          [═════════════════]
+                                     02:00             05:00
+
+events on timeline:
+  a) Time @ 01:59                ●                           (outside)
+  b) Time @ 03:00                        ●                   (inside)
+  c) TimeRange 01:30–02:30        [──────]                   (straddles start)
+  d) TimeRange 03:00–04:00             [────]                (contained)
+  e) TimeRange 04:30–05:30                  [──────]         (straddles end)
+
+within(range)      → b, d
+overlapping(range) → b, c, d, e
+trim(range)        → b (unchanged), c (clipped to 02:00–02:30),
+                     d (unchanged), e (clipped to 04:30–05:00)
+```
+
+:::
+
+- **`within`** preserves event keys exactly; events are kept or
+  dropped wholesale.
+- **`overlapping`** preserves event keys exactly; straddling events
+  are included in full.
+- **`trim`** clips straddling events' key extents to the query range,
+  creating new events with new keys.
+
+If you're composing a chart visible-range filter, you usually want
+`trim` so the rendered data doesn't leak outside the axis. If you're
+running analytics over a closed window, you usually want `within`.
+
+## What pond-ts isn't
+
+Honest scope is more useful than breathless value prop. pond-ts is:
+
+- **Not a database.** It holds data in memory; durable storage is
+  outside the library. Round-trip to JSON for persistence or wire
+  transfer.
+- **Not a query engine.** No planner, no optimizer, no cost
+  estimation. Methods compose in the order you write them.
+- **Not a full streaming system.** `LiveSeries` tolerates moderate
+  reorder via grace windows at ingest and for bucketed aggregation,
+  but downstream live transforms assume in-order arrival. For the
+  full streaming story (watermarks, triggers, out-of-order
+  correctness through every operator), see Akidau's
+  [Streaming 101](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/)
+  /
+  [102](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/).
+- **Not a chart library.** `toPoints(col)` gives you the flat
+  `{ts, value}[]` shape every chart library wants; the actual
+  rendering is yours.
+
+Built-in numerical smoothing (EMA, LOESS, moving average, box),
+temporal joins, rolling windows, calendar-aware sequences, and
+typed reducers — those are the things pond-ts is trying to do
+exceptionally well.
+
+## Where to go next
+
+- [**Alignment and aggregation**](../transforms/alignment-and-aggregation)
+  — resampling, bucketing, and the aggregation playbook
+- [**Rolling and smoothing**](../transforms/rolling-and-smoothing)
+  — sliding-window reductions, EMA / LOESS / moving average
+- [**Array columns**](../data-shapes/arrays) — when reducers produce
+  collections
+- [**Live series**](../live/live-series) — stream-style ingest
