@@ -83,15 +83,15 @@ const config: Config = {
           items: [
             {
               label: 'Getting Started',
-              to: '/docs/getting-started',
+              to: '/docs/start-here/getting-started',
             },
             {
-              label: 'Core Concepts',
-              to: '/docs/core-concepts',
+              label: 'pond-ts (core)',
+              to: '/docs/pond-ts',
             },
             {
               label: 'API Reference',
-              to: '/docs/api-reference',
+              to: '/api',
             },
           ],
         },

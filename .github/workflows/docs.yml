@@ -1,9 +1,10 @@
 name: Docs
 
 on:
+  # Docs publish only on release tags so the live site always reflects
+  # the latest *published* version on npm, not in-flight work on main.
+  # Use workflow_dispatch for a preview deploy off an unreleased commit.
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:

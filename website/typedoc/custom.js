@@ -14,8 +14,8 @@ const toolbarLinks = document.getElementById('tsd-toolbar-links');
 if (toolbarLinks && !toolbarLinks.dataset.pondEnhanced) {
   const links = [
     { label: 'Pond', href: `${siteBase}/` },
-    { label: 'Docs', href: `${siteBase}/docs/getting-started` },
-    { label: 'Examples', href: `${siteBase}/docs/examples/cpu-metrics` },
+    { label: 'Docs', href: `${siteBase}/docs/start-here/getting-started` },
+    { label: 'Recipes', href: `${siteBase}/docs/recipes/cpu-metrics` },
     { label: 'GitHub', href: 'https://github.com/pjm17971/pond-ts' },
   ];
 

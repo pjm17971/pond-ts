@@ -8,7 +8,7 @@ Pond ships 14 built-in reducers plus support for percentile patterns (`p50`, `p9
 top-N-by-frequency patterns (`top3`, `top10`, etc.), and custom reducer functions. Every
 built-in works in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`. The two
 array-producing reducers (`unique` and `top(n)`) also slot into
-[`arrayAggregate()`](./arrays#per-event-reduction-arrayaggregate) on array columns.
+[`arrayAggregate()`](../data-shapes/arrays#per-event-reduction-arrayaggregate) on array columns.
 
 ## Type narrowing on `reduce(mapping)`
 
@@ -197,7 +197,7 @@ Returns `undefined` for an empty bucket or mixed values.
 
 These two reducers output an array column (`kind: 'array'`) instead of a scalar. They
 drive most of the tagging / distinct-value workflows — see the
-[Array Columns guide](./arrays) for the full treatment.
+[Array Columns guide](../data-shapes/arrays) for the full treatment.
 
 ### `unique`
 

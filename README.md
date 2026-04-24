@@ -30,7 +30,7 @@ with no regressions. The advantage grows with data size.
 | **Serialization** | 4x              | Simpler internal representation               |
 | **Event access**  | 23x             | Array indexing vs ImmutableJS `get()`         |
 
-See the [full benchmark results](website/docs/guides/benchmarks.mdx) for detailed numbers.
+See the [full benchmark results](website/docs/reference/benchmarks.mdx) for detailed numbers.
 Run locally: `npm run build && node packages/core/bench/vs-pondjs.cjs`
 
 ## Install

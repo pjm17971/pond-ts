@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build:api": "typedoc --options typedoc.json",
+    "build:api": "npm run build:api:core && npm run build:api:react",
+    "build:api:core": "typedoc --options typedoc.core.json",
+    "build:api:react": "typedoc --options typedoc.react.json",
     "docusaurus": "docusaurus",
     "prestart": "npm run build:api",
     "start": "docusaurus start",

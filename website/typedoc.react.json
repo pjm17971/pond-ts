@@ -1,9 +1,9 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["../packages/core/src/index.ts"],
-  "tsconfig": "../packages/core/tsconfig.json",
-  "out": "static/generated-api",
-  "name": "Pond API Reference",
+  "entryPoints": ["../packages/react/src/index.ts"],
+  "tsconfig": "../packages/react/tsconfig.json",
+  "out": "static/generated-api/react",
+  "name": "@pond-ts/react API Reference",
   "readme": "none",
   "cleanOutputDir": true,
   "excludePrivate": true,

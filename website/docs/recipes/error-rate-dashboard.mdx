@@ -223,7 +223,7 @@ Four semantics to remember in the live layer:
    bucket closes, they'll report an empty series. To read the current
    partial value, reach for `agg.snapshot().last()` or the `'bucket'`
    event (see the
-   [Live Transforms guide → Reading the current value](../guides/live-transforms#reading-the-current-value)).
+   [Live Transforms guide → Reading the current value](../pond-ts/live/live-transforms#reading-the-current-value)).
    If you want every bucket populated immediately, snapshot the source
    and run batch aggregate:
    `live.toTimeSeries().aggregate(seq, mapping, { range })`.
@@ -295,7 +295,7 @@ const summary = live
 ```
 
 In React this is a single hook call via
-[`useCurrent`](../guides/live-transforms#in-react-usecurrent):
+[`useCurrent`](../pond-ts/live/live-transforms#in-react-usecurrent):
 
 ```tsx
 const { latency_ms, host, tags } = useCurrent(
@@ -308,7 +308,7 @@ const { latency_ms, host, tags } = useCurrent(
 `useCurrent` returns a stable-shape record even when the source is
 empty, so the stat card can destructure directly without null-checks.
 See the
-[Live Transforms → Reading the current value](../guides/live-transforms#reading-the-current-value)
+[Live Transforms → Reading the current value](../pond-ts/live/live-transforms#reading-the-current-value)
 guide for when to reach for `useCurrent` vs `LiveAggregation` vs batch
 `aggregate({ range })`.
 
