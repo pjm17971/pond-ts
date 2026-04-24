@@ -150,6 +150,21 @@ export type LiveSeriesOptions<S extends SeriesSchema> = {
   name: string;
   schema: S;
   ordering?: OrderingMode;
+  /**
+   * Maximum age (relative to the latest event) at which an out-of-order
+   * event is still accepted when `ordering: 'reorder'`. Events older
+   * than this are rejected at ingest.
+   *
+   * Scope: enforced at ingest and honored by `LiveAggregation` bucket
+   * closure. `rolling()` / `window()` views over a live source do not
+   * re-flow late events through historical windows — each reordered
+   * arrival is a fresh event at its insertion point, nothing more. See
+   * the Live section of the docs for the full late-event scope.
+   *
+   * When used together with `retention.maxAge`, `graceWindow` must be
+   * ≤ `maxAge`. Otherwise a late event could be accepted within grace
+   * and then immediately evicted by retention.
+   */
   graceWindow?: DurationInput;
   retention?: RetentionPolicy;
 };
@@ -201,6 +216,23 @@ export class LiveSeries<S extends SeriesSchema> {
     this.#maxEvents = ret.maxEvents ?? Infinity;
     this.#maxAgeMs = ret.maxAge ? parseDuration(ret.maxAge) : Infinity;
     this.#maxBytes = ret.maxBytes ?? Infinity;
+
+    // A late event accepted within grace but older than maxAge would be
+    // evicted the moment retention ran — the grace contract would be a
+    // lie. Reject the inconsistent config at construction so the caller
+    // fixes whichever half they actually meant. This leaves the common
+    // grace ≤ maxAge case untouched.
+    if (
+      options.graceWindow !== undefined &&
+      ret.maxAge !== undefined &&
+      this.#graceWindowMs > this.#maxAgeMs
+    ) {
+      throw new ValidationError(
+        `graceWindow (${this.#graceWindowMs}ms) cannot exceed retention.maxAge ` +
+          `(${this.#maxAgeMs}ms) — a late event accepted within grace would be ` +
+          `evicted immediately by retention`,
+      );
+    }
 
     this.#events = [];
     this.#byteEstimate = 0;
