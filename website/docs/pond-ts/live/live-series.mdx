@@ -4,10 +4,34 @@ sidebar_position: 13
 
 # LiveSeries
 
-`LiveSeries` is a mutable, append-optimized buffer that shares the same schema
-type system as `TimeSeries`. Use it when data arrives incrementally — from
-WebSockets, message queues, polling loops, or any streaming source — and you
-need to maintain a rolling window of recent events.
+`LiveSeries` is a mutable, append-optimized buffer that shares the same
+schema type system as [`TimeSeries`](../concepts/overview#timeseries).
+Use it when data arrives incrementally — from WebSockets, message queues,
+polling loops, or any streaming source — and you need to maintain a
+rolling window of recent events.
+
+pond-ts is batch-first: `LiveSeries` is a bounded in-order buffer with
+an opt-in grace window for moderate reordering at ingest, not a full
+streaming engine. For the specifics of what that does and doesn't
+cover once data leaves the buffer, see
+[Live Transforms → Late-event scope](./live-transforms#late-event-scope).
+
+If you're coming from pandas: there's no direct equivalent — pandas
+doesn't model live data. The closest analogue is a bounded deque you
+periodically `.toTimeSeries()` on and run batch methods against; that
+"snapshot-then-batch" is the pandas-shaped escape hatch from the live
+side.
+
+If you're coming from pondjs: `LiveSeries` takes over `Pond`'s
+live-collection role, with retention baked in instead of bolted on.
+
+| pondjs                   | pond-ts                                        |
+| ------------------------ | ---------------------------------------------- |
+| `Pond` (live store)      | `LiveSeries`                                   |
+| `Aggregator`             | `LiveAggregation`                              |
+| custom rolling processor | `LiveRollingAggregation`                       |
+| manual eviction on push  | `retention: { maxEvents / maxAge / maxBytes }` |
+| `Pipeline` for live      | method chain on `LiveSeries` / `LiveView`      |
 
 ## Creating a LiveSeries
 

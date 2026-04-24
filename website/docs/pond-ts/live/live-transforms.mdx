@@ -4,10 +4,20 @@ sidebar_position: 14
 
 # Live Transforms
 
-Live transforms build incremental processing pipelines on top of `LiveSeries`.
-Events flow through a chain of views and accumulators, each subscribing to its
-upstream source and emitting results to downstream consumers. Everything is
-synchronous and driven by data — no background timers, no implicit scheduling.
+Live transforms build incremental processing pipelines on top of
+[`LiveSeries`](./live-series). Events flow through a chain of views and
+accumulators, each subscribing to its upstream source and emitting
+results to downstream consumers. Everything is synchronous and driven
+by data — no background timers, no implicit scheduling.
+
+The same vocabulary as batch
+[`TimeSeries`](../concepts/overview#timeseries): `filter`, `map`,
+`select`, `window`, `aggregate`, `rolling`, `diff`, `rate`,
+`pctChange`, `fill`, `cumulative`. Each method exists in two flavors
+— batch over an immutable snapshot, live over an incoming stream —
+with the same shape of output. If you learned the vocabulary in
+[Transforms](../transforms/alignment-and-aggregation), most of this
+page will read as "the same thing, but incremental."
 
 ## LiveView: filter, map, select, window
 
@@ -40,6 +50,11 @@ const cpuOnly = live.select('cpu');
 const last5m = live.window('5m'); // time-based
 const last100 = live.window(100); // count-based
 ```
+
+Under `ordering: 'reorder'`, `window()` eviction is not re-applied
+when a late event is inserted — a late event can temporarily sit
+"outside" the declared window until the next prune. See
+[Late-event scope](#late-event-scope) for the full picture.
 
 Views maintain their own event buffer and implement the `LiveSource` interface,
 so they compose by stacking:
@@ -191,6 +206,13 @@ Use this shape for stat cards, alert decisions, and the top-of-dashboard
 
 #### In React: `useCurrent`
 
+:::tip[React users]
+`@pond-ts/react` packages the `subscribe + tail + reduce` dance into a
+single hook — this subsection is a forward reference. When the
+[@pond-ts/react](../../react) section lands with full per-hook prose,
+the example below will move there and this page will link to it.
+:::
+
 `@pond-ts/react` ships a thin wrapper that combines the subscription,
 the `tail`, and the `reduce` into one hook:
 
@@ -308,6 +330,44 @@ has expired are silently dropped.
 `graceWindow` — the aggregation will automatically inherit the same tolerance
 for late events.
 
+### Late-event scope \{#late-event-scope\}
+
+`graceWindow` works at exactly two boundaries in the live pipeline:
+
+- **`LiveSeries` ingest** — rejects events older than
+  `latest − graceWindow` under `ordering: 'reorder'`. Guarantees the
+  buffer's temporal extent covers any event it accepts.
+- **`LiveAggregation` bucket closure** — buckets stay open until the
+  watermark passes `bucket.end + grace`, so late events within the
+  grace window land in the correct bucket.
+
+**That's it.** Downstream live transforms **do not** re-flow late
+events through historical state:
+
+- `LiveRollingAggregation` treats a late insertion as a new output
+  event at its insertion point. It does _not_ re-scan historical
+  windows to include the late event in their totals.
+- `LiveView.window()` doesn't re-apply eviction when an event is
+  reordered in — a late event can temporarily sit "outside the
+  window" until the next prune.
+- Subscribers' `'event'` callback fires identically for on-time and
+  reordered insertions; there is no "this was late" payload.
+- React hooks (`@pond-ts/react`) inherit the above.
+
+If you need late-event correctness propagated through every operator
+— a late event at t=T triggering recomputation of every window and
+aggregation that covers t=T — pond-ts is not the right tool. Reach
+for a streaming engine with watermarks, triggers, and retraction. See
+Akidau's
+[Streaming 102](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/)
+for what full late-event propagation looks like in that class of
+system.
+
+For the common "moderate reorder at ingest, bucketed aggregation for
+dashboards" case, the two supported boundaries are sufficient — and
+the retention guard (`graceWindow ≤ retention.maxAge`) is enforced
+at construction to prevent the accept-then-evict race.
+
 ### As a LiveSource
 
 `LiveAggregation` satisfies the `LiveSource` interface. Its output events are
@@ -337,6 +397,14 @@ alerts.on('event', (bucket) => {
 
 `LiveRollingAggregation` maintains a sliding-window aggregate that updates on every source
 event. It supports time-based and count-based windows:
+
+:::note[Heads up on late events]
+Under `ordering: 'reorder'`, a late event becomes a new output event
+at its insertion point — this method does **not** re-scan historical
+windows to include it. See
+[Late-event scope](#late-event-scope) for the full story and the set
+of guarantees that hold at each point in the pipeline.
+:::
 
 ```ts
 const rolling = live.rolling('5m', { cpu: 'avg' });
