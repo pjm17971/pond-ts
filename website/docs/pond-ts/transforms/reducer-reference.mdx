@@ -4,11 +4,36 @@ sidebar_position: 12
 
 # Reducer Reference
 
-Pond ships 14 built-in reducers plus support for percentile patterns (`p50`, `p95`, etc.),
-top-N-by-frequency patterns (`top3`, `top10`, etc.), and custom reducer functions. Every
-built-in works in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`. The two
-array-producing reducers (`unique` and `top(n)`) also slot into
-[`arrayAggregate()`](../data-shapes/arrays#per-event-reduction-arrayaggregate) on array columns.
+pond-ts ships 14 built-in reducers, plus percentile patterns (`p50`,
+`p95`, …) and top-N-by-frequency patterns (`top3`, `top10`, …). Every
+built-in works in `aggregate()`, `reduce()`, `rolling()`, and
+`collapse()`. The two array-producing reducers (`unique` and `top(n)`)
+also slot into
+[`arrayAggregate()`](../data-shapes/arrays#per-event-reduction-arrayaggregate).
+
+## Choosing a reducer
+
+Quick guide — skip ahead to the detailed sections when you know what
+you want:
+
+| You want…                                              | Reducer                                               |
+| ------------------------------------------------------ | ----------------------------------------------------- |
+| Running total or counter                               | [`sum`](#sum), [`count`](#count)                      |
+| Central tendency                                       | [`avg`](#avg), [`median`](#median)                    |
+| Spread / volatility                                    | [`stdev`](#stdev), [`difference`](#difference)        |
+| Extremes                                               | [`min`](#min), [`max`](#max)                          |
+| Tail behavior                                          | [`p95`, `p99`, `p99.9`](#percentiles-p0-through-p100) |
+| First or last seen                                     | [`first`](#first), [`last`](#last)                    |
+| Constant metadata column (e.g. `host` after bucketing) | [`keep`](#keep)                                       |
+| Distinct values in a bucket                            | [`unique`](#unique)                                   |
+| Most-frequent values                                   | [`top(n)`](#topn--topnumber)                          |
+| None of the above                                      | [Custom reducer function](#custom-reducers)           |
+
+Pandas analogues in order: `.sum()`, `.count()`, `.mean()`,
+`.median()`, `.std()`, `.max() − .min()`, `.min()`, `.max()`,
+`.quantile(0.95)`, `.first()`, `.last()`, a value that matches
+`.nunique() == 1`, `.unique()`, `.value_counts().head(n)`, and any
+lambda you want.
 
 ## Type narrowing on `reduce(mapping)`
 

@@ -4,40 +4,110 @@ sidebar_position: 11
 
 # Rolling Windows and Smoothing
 
+Sliding-window computations over ordered events. Two primitives:
+
+- **`rolling(...)`** — emit a new series where each event's value is a
+  reducer over a window around that event.
+- **`smooth(...)`** — numerical trend extraction: EMA, moving average,
+  LOESS, box.
+
+Plus two higher-level helpers built on top of `rolling`:
+
+- **`baseline(col, opts)`** — append `avg` / `sd` / `upper` / `lower`
+  columns for band charts and outlier detection.
+- **`outliers(col, opts)`** — return just the events outside the band.
+
+Coming from pandas? `rolling` ≈ `.rolling(window).agg(mapping)`.
+`smooth('ema', ...)` ≈ `.ewm(alpha=...).mean()`.
+
 ## Rolling windows
 
-Use `rolling(...)` for windowed calculations over ordered events.
+The core idea: for each event in the series, look at a window of
+nearby events and compute a reducer. What "nearby" means is the
+**window alignment** — trailing, centered, or leading. Pick the one
+that matches the question you're answering.
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+source events on timeline  ● ● ● ● ● ● ● ● ● ● ● ● ● ● ● ●
+                           ─────────────────────────▶
+                                       ^ anchor event (i=7)
+
+alignment: 'trailing' (default)
+window covers [anchor − duration, anchor]
+                           ├───────────┤
+                           │   ●─────● │ anchor
+                           ├───window──┤
+
+alignment: 'centered'
+window covers [anchor − d/2, anchor + d/2]
+                                   ├─────┼─────┤
+                                   │●─●──●─●──●│
+                                   ├─────anchor┤
+
+alignment: 'leading'
+window covers [anchor, anchor + duration]
+                                         ├───────────┤
+                                         │ anchor ● ●│
+                                         ├───window──┤
+```
+
+Trailing is "what's the average of what I've seen so far"; centered is
+"smoothed around now"; leading is "average of what's coming next."
+:::
+
+### Two output shapes
+
+Pick the one that matches your output cadence:
 
 ```ts
-const rolling = series.rolling('5m', {
-  cpu: 'avg',
-  requests: 'sum',
+// Per-event rolling: one output event per source event, same key type.
+cpu.rolling('5m', { cpu: 'avg' });
+
+// Grid-anchored rolling: one output event per Sequence point.
+cpu.rolling(Sequence.every('1m'), '5m', { cpu: 'avg' });
+```
+
+The per-event form is the common one. Use the grid form when you want
+a fixed output cadence independent of where source events land.
+
+```ts
+cpu.rolling('5m', { cpu: 'avg' }, { alignment: 'centered' });
+```
+
+Opening events — where the window would extend beyond the series'
+ends — emit `undefined` under trailing and centered. Under leading,
+trailing events emit `undefined` instead.
+
+### Mapping shapes
+
+Same two forms as [`aggregate`](./alignment-and-aggregation#mapping-shapes):
+
+```ts
+// Shorthand — same column in, same column out
+cpu.rolling('5m', { cpu: 'avg' });
+
+// Explicit — rename or multi-reducer-per-column
+cpu.rolling('5m', {
+  avg: { from: 'cpu', using: 'avg' },
+  sd: { from: 'cpu', using: 'stdev' },
+  peak: { from: 'cpu', using: 'max' },
 });
 ```
 
-This keeps the original key type and computes derived values at each event anchor.
-
-You can also compute rolling values on a sequence grid:
-
-```ts
-const rolledOnGrid = series.rolling(Sequence.every('1m'), '5m', {
-  cpu: 'avg',
-});
-```
-
-Supported alignments:
-
-- `trailing`
-- `leading`
-- `centered`
+The explicit form is how you get a band chart in one pass — `avg` and
+`sd` from the same source column without running `rolling` twice. See
+the [`baseline()`](#baseline) helper below, which is sugar over this
+pattern.
 
 ### Custom reducers
 
-Rolling windows accept the same custom reducer functions as `aggregate(...)`. The
-reducer contract is `(values: ReadonlyArray<ScalarValue | undefined>) => ScalarValue | undefined`.
+Same contract as `aggregate`:
 
 ```ts
-const rolled = series.rolling('5m', {
+cpu.rolling('5m', {
   cpu: (values) => {
     const nums = values.filter((v): v is number => typeof v === 'number');
     return nums.length === 0
@@ -47,109 +117,64 @@ const rolled = series.rolling('5m', {
 });
 ```
 
-You can mix built-in and custom reducers in the same mapping:
+Mix built-in and custom reducers in the same mapping.
 
-```ts
-const mixed = series.rolling('5m', {
-  cpu: 'avg',
-  status: (values) =>
-    values.filter((v): v is string => typeof v === 'string').join(','),
-});
-```
+### Rolling complexity
 
-### Multiple reducers over the same source column
-
-For cases like "rolling avg **and** stdev of `cpu` in one pass" —
-handy for anomaly-detection bands on a chart — pass an
-`AggregateOutputMap` where each entry is `{ from, using, kind? }`.
-This is the same shape `aggregate(...)` accepts, and you can mix
-plain `{ col: reducer }` entries with spec entries in the same call:
-
-```ts
-const bands = series.rolling('1m', {
-  avg: { from: 'cpu', using: 'avg' },
-  sd: { from: 'cpu', using: 'stdev' },
-});
-
-// Feed a ±1.7σ band chart:
-bands.toArray().forEach((row) => {
-  const avg = row.get('avg') as number | undefined;
-  const sd = row.get('sd') as number | undefined;
-  if (avg !== undefined && sd !== undefined) {
-    drawBand({
-      t: row.begin(),
-      lower: avg - 1.7 * sd,
-      upper: avg + 1.7 * sd,
-    });
-  }
-});
-```
-
-Output column names come from the map's keys, not the source column —
-you can rename freely (`cpuAvg: { from: 'cpu', using: 'avg' }`). The
-`kind?` field is an override for cases where the output type can't be
-inferred from the reducer (e.g. a custom reducer returning a string).
-
-**Return types narrow per-spec** as of v0.5.5: numeric reducers give
-`number | undefined`, source-preserving reducers (`first` / `last` /
-`keep`) give the source column's type, and the source's first-column
-kind is preserved — a `Time`-keyed input stays `Time`-keyed on
-output. `unique` and `top${N}` narrow to `ArrayValue | undefined`
-(kind-level); element-level narrowing to
-`ReadonlyArray<string>` is only available on `reduce(...)` today —
-use a cast (or reach for `reduce` on a `tail`-sliced snapshot) if you
-need that extra step.
-
-The same narrowing applies to `aggregate(...)` when called with the
-`AggregateOutputMap` shape — both now thread the spec through.
+Most built-in reducers are O(1) per event via incremental add/remove.
+Median and percentiles are O(N) per event (sorted-array maintenance).
+See the [Reducer Reference](./reducer-reference#rolling-window-behavior)
+table for the full list.
 
 ## Smoothing
 
-Use `smooth(...)` for trend extraction or visualization-friendly derived values.
+Three methods for numeric trend extraction:
 
-### Choosing a method
+- **`'ema'`** — exponential moving average. Lightest weight;
+  streaming-friendly. Needs `~1/alpha` samples to converge.
+- **`'movingAverage'`** — windowed arithmetic mean. Explicit window
+  duration; trailing / leading / centered alignment like `rolling`.
+- **`'loess'`** — locally-weighted regression. Slower but better shape
+  fidelity for offline smoothing.
 
-- Use `ema` when you want the lightest-weight smoother and a good default for
-  streaming-style trend lines.
-- Use `movingAverage` when you want explicit windowed smoothing with predictable
-  trailing, leading, or centered behavior.
-- Use `loess` when shape fidelity matters more than speed and you want a more
-  flexible offline smoother.
+:::note[Choosing a smoother]
+EMA is the default for dashboards — cheap, reactive, one parameter.
+Moving average is the right choice when you want predictable lag
+(centered) or strict "average of last N minutes" semantics (trailing).
+LOESS is for offline analysis where smoothness matters more than
+speed.
+:::
 
 ### EMA
 
 ```ts
-const smoothed = series.smooth('cpu', 'ema', {
-  alpha: 0.2,
-  output: 'cpuTrend',
+const smoothed = cpu.smooth('cpu', 'ema', {
+  alpha: 0.3,
+  output: 'cpuTrend', // new column; `cpu` passes through unchanged
 });
+// smoothed.schema gains { cpuTrend, number (optional) }
 ```
 
-The first few events of an EMA output are noisy — the smoother starts
-with the first raw value as its seed and needs ~`1/alpha` samples to
-converge. Pass `warmup: N` to drop the first `N` rows from the output
-once the smoother has warmed up. The dropped rows still feed the
-smoother state, so the kept rows are computed against a warm EMA — it
-only trims the output, not the computation:
+The first ~`1/alpha` rows are noisy — the smoother seeds on the first
+raw value and converges over that many samples. Use `warmup: N` to
+drop the first `N` output rows once converged (kept rows still computed
+against the warmed state — `warmup` trims the output, not the
+computation):
 
 ```ts
-// alpha=0.3 converges in ~3-4 samples; ask for 4 warmup rows to trim.
-const smoothed = series.smooth('cpu', 'ema', {
-  alpha: 0.3,
-  warmup: 4,
-});
-// smoothed.length === series.length - 4 (or 0 if series is smaller)
+cpu.smooth('cpu', 'ema', { alpha: 0.3, warmup: 4 });
+// length === source.length − 4
 ```
 
-`warmup: 0` is a no-op, and warmup values greater than the series
-length produce an empty series (same schema, no rows).
+`warmup: 0` is a no-op; `warmup >= series.length` returns an empty
+series with the same schema.
 
 ### Moving average
 
 ```ts
-const averaged = series.smooth('cpu', 'movingAverage', {
+cpu.smooth('cpu', 'movingAverage', {
   window: '5m',
-  alignment: 'centered',
+  alignment: 'centered', // 'trailing' | 'leading' | 'centered'
   output: 'cpuAvg',
 });
 ```
@@ -157,82 +182,80 @@ const averaged = series.smooth('cpu', 'movingAverage', {
 ### LOESS
 
 ```ts
-const loess = series.smooth('cpu', 'loess', {
-  span: 0.75,
+cpu.smooth('cpu', 'loess', {
+  span: 0.25, // fraction of series — smaller = more local
   output: 'cpuLoess',
 });
 ```
 
-## Rolling baseline
+### Output column
 
-`baseline(col, opts)` is the primitive behind band charts and outlier
-detection. It runs one rolling pass and appends four columns to the
-source schema: `avg`, `sd`, `upper = avg + sigma*sd`, and
-`lower = avg - sigma*sd`. Downstream code reads whichever it needs —
-band charts grab `upper`/`lower`, outlier filters compare `cpu`
-against both, regression work uses `avg`/`sd` directly.
+All smoothers take an optional `output` parameter:
+
+- **Omitted** — the target column is replaced in place.
+- **String** — a new column is appended; the source column passes
+  through unchanged. Useful when you want both the raw and smoothed
+  series for a band chart or overlay plot.
+
+## `baseline(col, opts)` \{#baseline\}
+
+Sugar for "rolling avg + sd + upper/lower band in one pass." Appends
+four optional number columns to the source schema:
 
 ```ts
-const baseline = series.baseline('cpu', { window: '1m', sigma: 2 });
-// baseline.schema: [time, cpu, host, avg, sd, upper, lower]
+const base = cpu.baseline('cpu', { window: '1m', sigma: 2 });
+// base.schema: [time, cpu, requests, host, avg, sd, upper, lower]
 
-// Band chart: two series, ready to plot.
-const upperBand = baseline.toPoints('upper');
-const lowerBand = baseline.toPoints('lower');
+const upperBand = base.toPoints('upper'); // chart-ready { ts, value }[]
+const lowerBand = base.toPoints('lower');
 
-// Outliers: one filter, same rolling pass.
-const anomalies = baseline.filter((e) => {
-  const cpu = e.get('cpu');
-  const upper = e.get('upper');
-  const lower = e.get('lower');
-  return (
-    cpu != null &&
-    upper != null &&
-    lower != null &&
-    (cpu > upper || cpu < lower)
-  );
+const anomalies = base.filter((e) => {
+  const v = e.get('cpu');
+  const lo = e.get('lower');
+  const hi = e.get('upper');
+  return v != null && lo != null && hi != null && (v > hi || v < lo);
 });
 ```
 
-Opening events where the rolling window hasn't built a meaningful
-baseline (sd is `0` or `undefined`) get `undefined` for all four new
-columns. Filter predicates that compare against them behave correctly
-via null checks, and `toPoints` drops them from the output.
+### Warm-up and flat windows
 
-If the default column names (`avg`, `sd`, `upper`, `lower`) collide
-with source columns, pass a `names` override:
+- Before the rolling window has enough samples for a meaningful
+  baseline, `avg` and `sd` are `undefined`; `upper` and `lower` follow.
+- When the rolling window is flat (every sample identical), `sd === 0`.
+  `avg` and `sd` still report their real values, but `upper` and
+  `lower` collapse to `undefined` — a zero-width band would flag every
+  non-equal point as anomalous, which is usually the opposite of what
+  you want.
+
+Filters that null-check `upper` / `lower` will do the right thing
+through warm-up and flat-window regions.
+
+### Custom column names
+
+If the defaults (`avg`, `sd`, `upper`, `lower`) would collide with
+source columns:
 
 ```ts
-series.baseline('cpu', {
+cpu.baseline('cpu', {
   window: '1m',
   sigma: 2,
   names: { avg: 'cpuAvg', sd: 'cpuSd', upper: 'cpuHi', lower: 'cpuLo' },
 });
 ```
 
-## Outlier detection
+Collisions throw at construction, so the rename is mandatory, not
+optional.
 
-`outliers(col, opts)` is a sugar over `baseline(col, opts).filter(...)`:
-it returns just the events whose value fell outside the band, same
-schema as the source. Use `outliers()` when you only need the anomalies
-(no band rendering); use `baseline()` when you need the baseline stats
-for charting too — you'll do one rolling pass either way, just less
-typing with `outliers()`.
+## `outliers(col, opts)` \{#outliers\}
 
-```ts
-const anomalies = series.outliers('cpu', { window: '1m', sigma: 2 });
-```
-
-Composes with every other operator, so bucketed counts and per-host
-breakdowns are one-liners:
+Just the anomalies. Same schema as the source, filtered to events
+outside the baseline's `avg ± sigma * sd` band.
 
 ```ts
-const anomalies = series.outliers('cpu', {
-  window: '1m',
-  sigma: 2,
-});
+const anomalies = cpu.outliers('cpu', { window: '1m', sigma: 2 });
+// anomalies.length ≤ cpu.length, same schema as cpu
 
-// Bucketed anomaly count per 15s, ready for a bar chart:
+// Bucketed anomaly count per 15s for a bar chart:
 const perBucket = anomalies.aggregate(Sequence.every('15s'), {
   cpu: 'count',
 });
@@ -241,37 +264,25 @@ const perBucket = anomalies.aggregate(Sequence.every('15s'), {
 const perHost = anomalies.groupBy('host');
 ```
 
-Events where the rolling window hasn't established a meaningful
-baseline (stdev is `0` or undefined — flat window or pre-warmup) are
-not flagged. The `alignment` option threads through to the underlying
-rolling computation (default `'trailing'`; `'leading'` and
-`'centered'` also supported).
+Conceptually equivalent to `baseline(col, opts).filter(...)`;
+implemented independently (one rolling pass either way). Reach for
+`baseline()` directly when you want to render the band too — you get
+the `avg` / `upper` / `lower` columns on the same pass.
 
-## Chart-library interop
+Events where the rolling window is flat (`sd === 0`) or still warming
+up are not flagged — `outliers` and `baseline`'s filter semantics
+agree here.
 
-For drawing — chart libraries like Recharts, Observable Plot, and d3
-conventionally take arrays of `{ ts, value }` points. `toPoints(col)`
-exports that shape for a single numeric column (filtering out
-`undefined` values):
+## Chart interop
+
+For drawing, extract a column as `{ ts, value }[]`:
 
 ```ts
-const pts = series.toPoints('cpu');
-// => ReadonlyArray<{ ts: number; value: number }>
+const pts = cpu.rolling('5m', { cpu: 'avg' }).toPoints('cpu');
+// ReadonlyArray<{ ts: number; value: number }>
 <LineChart data={pts} />
 ```
 
-The inverse — constructing a `TimeSeries` from chart-style points —
-is `TimeSeries.fromPoints`:
-
-```ts
-const ts = TimeSeries.fromPoints(pts, {
-  schema: [
-    { name: 'time', kind: 'time' },
-    { name: 'cpu', kind: 'number' },
-  ] as const,
-});
-```
-
-The schema must have exactly two columns (time key + one value column).
-Useful for round-tripping derived data — e.g. flatten anomaly events
-into chart points, then round-trip back for bucketed counting.
+See the [Concepts overview](../concepts/overview#getting-data-in-and-out)
+for the full set of data-shape bridges (`toPoints`, `fromPoints`,
+`toJSON`).

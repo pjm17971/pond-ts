@@ -2,65 +2,295 @@
 sidebar_position: 10
 ---
 
-# Alignment and Aggregation
+# Align and Aggregate
 
-## Aligning onto a grid
+Two grid-over-timeline operations. Both take a [`Sequence`](../concepts/overview#sequence)
+and produce an interval-keyed `TimeSeries`. The difference is what they
+do with the source events:
 
-Use `align(...)` to sample a series on a sequence grid and produce an interval-keyed view.
+- **`align(seq)`** — **resample** onto the grid. Every grid point gets
+  one output event whose value is interpolated or held from the
+  surrounding source.
+- **`aggregate(seq, mapping)`** — **reduce into buckets**. Every bucket
+  gets one output event whose value is the reducer applied to all
+  source events falling into that bucket.
 
-```ts
-import { Sequence } from 'pond-ts';
+If you're coming from pandas:
 
-const aligned = series.align(Sequence.every('1m'), {
-  method: 'hold',
-});
+- `aggregate` ≈ `.resample(rule).agg(mapping)`
+- `align(method: 'hold')` ≈ `.asfreq().ffill()`
+- `align(method: 'linear')` ≈ `.asfreq().interpolate('time')`
+
+If you're coming from pondjs: `aggregate` is the same primitive, just
+typed. The grab-bag of `Pipeline` processors (`collapse`, `merge`,
+`combine`, `fill`) that surrounded it is now split across this page,
+[Aggregation playbook](./aggregation-playbook), and plain `TimeSeries`
+methods. `align` is new; pondjs typically held values forward via a
+custom processor.
+
+## Mental picture
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+source events (Time-keyed) ● ●   ●    ●  ●      ● ● ●
+Timeline ─────────────────────────────────────────────▶
+                         00:00      00:05      00:10
+
+Sequence.every('5m')
+                         ├─────────┤├─────────┤├─────────┤
+                         "00:00"    "00:05"    "00:10"
+
+─ align(seq, {method: 'hold'}) ─────────────────────────
+one output per grid point, value held from last ≤ source
+                         ○          ○          ○
+                         v0         v2         v4
+                     (last value    (last value  ...)
+                      before 00:00)  before 00:05)
+
+─ aggregate(seq, {cpu: 'avg'}) ─────────────────────────
+one output per bucket, reducer over all events inside
+                         ├─avg1─┤   ├─avg2─┤   ├─avg3─┤
+                         (2 evts)   (3 evts)   (3 evts)
 ```
 
-### Alignment methods
+:::
 
-- `hold`: carry forward the latest known value
-- `linear`: interpolate numeric values for time-keyed series
+Both output an interval-keyed series, so they compose with every
+downstream transform.
 
-### Sampling
+## `aggregate(seq, mapping, options?)`
 
-Sequence sampling supports:
-
-- `begin`
-- `center`
-
-## Aggregating into buckets
-
-Use `aggregate(...)` to reduce source events into interval buckets.
+The workhorse. Buckets a series onto a sequence grid and reduces each
+bucket with a per-column mapping.
 
 ```ts
-const aggregated = series.aggregate(Sequence.every('5m'), {
+import { Sequence, TimeSeries } from 'pond-ts';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'requests', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+const cpu = new TimeSeries({
+  name: 'cpu',
+  schema,
+  rows: Array.from({ length: 100 }, (_, i) => [
+    i * 1000,
+    0.3 + Math.random() * 0.4,
+    Math.round(100 + Math.random() * 50),
+    'api-1',
+  ]),
+});
+
+const fiveSec = cpu.aggregate(Sequence.every('5s'), {
+  cpu: 'avg', // mean of cpu in each bucket
+  requests: 'sum', // total requests
+  host: 'last', // last observed host
+});
+// fiveSec.schema[0].kind === 'interval'
+// fiveSec.at(0)!.get('cpu')        -> number | undefined
+// fiveSec.at(0)!.get('requests')   -> number | undefined
+// fiveSec.at(0)!.get('host')       -> 'api-1' | undefined
+```
+
+### Mapping shapes
+
+Two forms. Mix them in one call:
+
+```ts
+cpu.aggregate(Sequence.every('5s'), {
+  // shorthand: "avg of the cpu column, same name"
   cpu: 'avg',
-  requests: 'sum',
-  host: 'last',
-});
 
-const renamed = series.aggregate(Sequence.every('5m'), {
-  cpu_avg: { from: 'cpu', using: 'avg' },
+  // explicit: { output, from, using, kind? }
+  cpu_p95: { from: 'cpu', using: 'p95' },
+
+  // same source, multiple reducers — renamed outputs
+  requests_total: { from: 'requests', using: 'sum' },
+  requests_peak: { from: 'requests', using: 'max' },
 });
 ```
 
-Supported built-in reducers:
+Use the explicit form when you want to rename the output, run multiple
+reducers over the same source column, or use a custom reducer whose
+output kind differs from the source.
 
-- `sum`
-- `avg`
-- `min`
-- `max`
-- `count`
-- `first`
-- `last`
+### Custom reducers
 
-You can also pass custom reducer functions in the mapping. See the
-[Aggregation Playbook](./aggregation-playbook) for reducer contracts and examples.
+Reducers are `(values: ReadonlyArray<ColumnValue | undefined>) => ColumnValue | undefined`.
+Filter the `undefined`s yourself if needed; the input is the raw bucket.
 
-## Bucket semantics
+Two shapes:
 
-Sequence bucketing uses half-open intervals:
+```ts
+// Same column in, same column out — use the shorthand key.
+cpu.aggregate(Sequence.every('5s'), {
+  cpu: (values) => {
+    const nums = values.filter((v): v is number => typeof v === 'number');
+    if (nums.length === 0) return undefined;
+    const sorted = [...nums].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length * 0.999)];
+  },
+});
 
-- `[begin, end)`
+// Renamed output — wrap the custom function in the explicit spec.
+cpu.aggregate(Sequence.every('5s'), {
+  cpu_p99_9: {
+    from: 'cpu',
+    using: (values) => {
+      const nums = values.filter((v): v is number => typeof v === 'number');
+      if (nums.length === 0) return undefined;
+      const sorted = [...nums].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length * 0.999)];
+    },
+    kind: 'number',
+  },
+});
+```
 
-That means a point event at the exact bucket end belongs to the next bucket, not the current one.
+Custom reducers also work in `reduce()`, `rolling()`, and `collapse()`.
+See [Reducer Reference](./reducer-reference) for the full catalog of
+built-ins and their empty-bucket behavior.
+
+### Bucket membership
+
+Buckets are half-open: `[begin, end)`. An event at exactly the boundary
+lands in the _later_ bucket. For `TimeRange`- or `Interval`-keyed
+source events, the event contributes to every bucket it overlaps under
+half-open overlap rules.
+
+### Range
+
+By default `aggregate` covers the series' own time extent. To pin the
+output to a specific range (padding with empty buckets at the edges),
+pass `options.range`:
+
+```ts
+cpu.aggregate(
+  Sequence.every('5s'),
+  { cpu: 'avg' },
+  {
+    range: new TimeRange({ start: 0, end: 60_000 }),
+  },
+);
+```
+
+Empty buckets behave per the [Reducer Reference](./reducer-reference#empty-bucket-behavior)
+— `count` and `sum` emit `0`; most others emit `undefined`.
+
+## `align(seq, options?)`
+
+Resamples the source onto a sequence grid. Output is one event per
+grid point, same column schema as the input (no reducer mapping).
+
+```ts
+const aligned = cpu.align(Sequence.every('5s'), {
+  method: 'hold', // 'hold' | 'linear'
+  sample: 'begin', // 'begin' | 'center'
+});
+// aligned.length === the number of grid points covering the range
+// aligned.schema[0].kind === 'interval'
+```
+
+### Methods
+
+- **`'hold'`** (default) — carry forward the last source value at or
+  before each grid point. Works for every column kind.
+- **`'linear'`** — linearly interpolate numeric values by time between
+  the two nearest source events. **Time-keyed sources only** —
+  `align(seq, { method: 'linear' })` throws on `TimeRange`- or
+  `Interval`-keyed input. Non-numeric columns on a valid time-keyed
+  source fall back to `'hold'` behavior.
+
+### Samples
+
+- **`'begin'`** (default) — each output event's value is taken at the
+  bucket's start.
+- **`'center'`** — each output event's value is taken at the bucket's
+  midpoint.
+
+### Range
+
+Like `aggregate`, default range is the source extent. Pass
+`options.range` to pin explicitly.
+
+## When to pick which
+
+You want `aggregate` when:
+
+- You need one value per bucket computed from many source events
+  (averages, sums, counts, percentiles).
+- You want to know "how many events landed in each window?"
+- You want the result to compose with `reduce()` or
+  [`rolling()`](./rolling-and-smoothing) over buckets.
+
+You want `align` when:
+
+- You need one value per grid point for a chart or downstream join.
+- Your source is sparse and you just need "the value at time X."
+- You don't want the reducer semantics (and the empty-bucket
+  undefined story that comes with it).
+
+For many dashboards the pipeline is:
+
+```ts
+const display = cpu
+  // bucket down to the display resolution with a meaningful reducer
+  .aggregate(Sequence.every('1m'), { cpu: 'avg' })
+  // fill any buckets the source didn't cover
+  .fill('hold');
+```
+
+## End-to-end worked pipeline
+
+Raw events → bucketed → gap-filled → rolling statistics → baseline
+bands → chart-ready points. This is the shape of most live dashboards.
+
+```ts
+import { Sequence, TimeSeries } from 'pond-ts';
+
+// Raw events: irregular per-second samples, some missing windows.
+const raw = new TimeSeries({
+  name: 'cpu',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const,
+  rows: Array.from({ length: 300 }, (_, i) => [
+    i * 1000 + Math.random() * 400,
+    0.3 + 0.2 * Math.sin(i / 10) + Math.random() * 0.08,
+  ]),
+});
+
+const chart = raw
+  // 1. Bucket into a regular display cadence.
+  .aggregate(Sequence.every('10s'), { cpu: 'avg' })
+  // 2. Fill any empty buckets (linear interpolation for a smooth line).
+  .fill({ cpu: 'linear' })
+  // 3. Rolling baseline: appends avg / sd / upper / lower columns.
+  .baseline('cpu', { window: '1m', sigma: 2 });
+
+// 4. Chart-ready { ts, value }[] for each band.
+const line = chart.toPoints('cpu');
+const upperBand = chart.toPoints('upper');
+const lowerBand = chart.toPoints('lower');
+```
+
+Each step adds one concept; every intermediate is itself a
+`TimeSeries<S>` you can inspect, filter, or compose further. See the
+[Recipes](../../recipes) section for full worked dashboards using
+patterns like this one.
+
+## Where to go next
+
+- [**Rolling and smoothing**](./rolling-and-smoothing) — sliding-window
+  reductions, EMA / LOESS / moving average, `baseline` / `outliers`.
+- [**Aggregation playbook**](./aggregation-playbook) — `reduce`,
+  `groupBy`, per-event transforms (`diff`, `rate`, `pctChange`,
+  `cumulative`, `shift`), and [`fill`](./aggregation-playbook#fill).
+- [**Reducer reference**](./reducer-reference) — full catalog of
+  built-ins, empty-bucket behavior, and rolling complexity.
