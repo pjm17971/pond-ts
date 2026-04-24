@@ -4,77 +4,395 @@ sidebar_position: 12
 
 # JSON Ingest and Time Zones
 
-## JSON ingest
+[Concepts → Getting data in and out](../concepts/overview#getting-data-in-and-out)
+introduced `toJSON` / `fromJSON` as the wire-format bridge. This page
+is the detailed reference — the shape of the JSON payload, the
+timestamp-parsing rules, and the one genuinely tricky corner
+(wall-clock strings and time zones).
 
-Use `TimeSeries.fromJSON(...)` when your source data comes from APIs, JSON files, or external systems.
+This page covers:
+
+- [**The JSON shape**](#the-json-shape) — what `toJSON` emits and
+  what `fromJSON` accepts.
+- [**`fromJSON`**](#fromjson) — options, timestamp parsing, wall-clock
+  strings.
+- [**`toJSON`**](#tojson) — array and object row formats.
+- [**Round-trip fidelity**](#round-trip-fidelity) — what's preserved.
+- [**Calendar-aware sequences**](#calendar-aware-sequences) — the
+  timezone-sensitive sibling to `Sequence.every`.
+- [**Pitfalls**](#pitfalls).
+
+If you're coming from pandas: `TimeSeries.fromJSON` ≈
+`pd.read_json(..., convert_dates=True, date_format='iso')`; `toJSON` ≈
+`.to_json(orient='records'|'values', date_format='iso')`;
+`parse.timeZone` ≈ `.tz_localize(...)` on a naive `DatetimeIndex`.
+
+## The JSON shape
+
+A JSON-serialized `TimeSeries` is just:
+
+```json
+{
+  "name": "cpu",
+  "schema": [
+    { "name": "time", "kind": "time" },
+    { "name": "cpu", "kind": "number" },
+    { "name": "host", "kind": "string" }
+  ],
+  "rows": [
+    [1735689600000, 0.31, "api-1"],
+    [1735689660000, 0.44, "api-1"]
+  ]
+}
+```
+
+Three fields: the series name, the schema (same tuple you'd pass to
+the constructor), and the rows. By default rows are arrays — one per
+event, positional by schema column. The alternative is object rows
+keyed by column name (see [toJSON](#tojson) below).
+
+The temporal key column always comes first. Its serialized form
+depends on its kind:
+
+| Kind          | JSON shape                                                         |
+| ------------- | ------------------------------------------------------------------ |
+| `'time'`      | `number` (ms since epoch) or ISO string (`"2025-01-01T00:00:00Z"`) |
+| `'timerange'` | `[startMs, endMs]` or `{ start, end }`                             |
+| `'interval'`  | `[label, startMs, endMs]` or `{ value, start, end }`               |
+
+Everything else is the obvious thing — numbers become numbers, strings
+become strings, arrays become arrays, `undefined` is serialized as
+`null` (and parsed back to `undefined` on ingest).
+
+:::note[Coming from pondjs?]
+pondjs serialized `TimeRangeEvent` as a nested shape —
+`[[startMs, endMs], data]` — with the temporal key wrapped inside the
+event payload. pond-ts flattens: the timerange key is the first
+positional element (or the `timerange` key on an object row), and
+payload columns follow. A legacy pondjs JSON payload needs a small
+remap before it round-trips through `TimeSeries.fromJSON`.
+:::
+
+## `fromJSON`
+
+Two-argument-free constructor: pass the parsed JSON and get back a
+typed `TimeSeries`.
 
 ```ts
 import { TimeSeries } from 'pond-ts';
 
 const schema = [
   { name: 'time', kind: 'time' },
-  { name: 'value', kind: 'number' },
-  { name: 'status', kind: 'string', required: false },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
 ] as const;
 
-const series = TimeSeries.fromJSON({
+const cpu = TimeSeries.fromJSON({
   name: 'cpu',
   schema,
   rows: [
-    ['2025-01-01T09:00', 0.42, 'ok'],
-    ['2025-01-01T10:00', 0.51, null],
+    [1735689600000, 0.31, 'api-1'],
+    [1735689660000, 0.44, 'api-1'],
+  ],
+});
+```
+
+In React, when the server emits a full pond-ts payload, the client is
+one line:
+
+```ts
+const payload = await (await fetch('/api/cpu')).json();
+const cpu = TimeSeries.fromJSON(payload);
+```
+
+When the server emits just the rows, supply the schema on the client:
+
+```ts
+const rows = await (await fetch('/api/cpu/rows')).json();
+const cpu = TimeSeries.fromJSON({ name: 'cpu', schema, rows });
+```
+
+### Timestamp inputs
+
+`fromJSON` accepts two timestamp formats per event key, and they can
+mix freely:
+
+- **Number** — milliseconds since the Unix epoch, UTC. No ambiguity.
+- **ISO string** — parsed by the same rules as `Date.parse`. If the
+  string carries an offset (`Z`, `+02:00`), the offset is used as-is.
+  If it doesn't (a **wall-clock string** like `'2025-01-01T09:00'`),
+  you must supply `parse.timeZone` or the library doesn't know what
+  wall you mean.
+
+### Wall-clock strings: `parse.timeZone`
+
+The common case for analytics data: timestamps were emitted in local
+time and never carried a zone offset.
+
+```ts
+const ts = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    // "2025-01-01 at 09:00 Madrid local" → 08:00:00 UTC.
+    ['2025-01-01T09:00', 0.42, 'api-1'],
+    ['2025-01-01T10:00', 0.51, 'api-1'],
   ],
   parse: { timeZone: 'Europe/Madrid' },
 });
+
+ts.at(0)!.begin();
+// 1735714800000 — i.e. 2025-01-01T08:00:00Z
 ```
 
-## JSON export
+### Does this input need `parse.timeZone`?
 
-Use `series.toJSON()` to serialize back into the same JSON-friendly shape.
+| Input shape                   | Example                    | `parse.timeZone`?                  |
+| ----------------------------- | -------------------------- | ---------------------------------- |
+| Number (ms since epoch)       | `1735689600000`            | Ignored — UTC by definition.       |
+| String with offset (`Z`)      | `'2025-01-01T09:00Z'`      | Ignored — offset is authoritative. |
+| String with offset (`±hh:mm`) | `'2025-01-01T09:00+01:00'` | Ignored — offset is authoritative. |
+| Wall-clock string (no offset) | `'2025-01-01T09:00'`       | **Required.** Throws without it.   |
+
+If your upstream data source is a spreadsheet, a log scraper, or a
+database export without a zone column, you're almost certainly in the
+wall-clock row — pass `parse.timeZone` once per `fromJSON` call.
+
+### Object rows
+
+If your JSON source uses keyed objects instead of positional arrays,
+`fromJSON` accepts that shape too:
 
 ```ts
-const payload = series.toJSON();
-
-const objectRows = series.toJSON({
-  rowFormat: 'object',
+const ts = TimeSeries.fromJSON({
+  name: 'windows',
+  schema: [
+    { name: 'interval', kind: 'interval' },
+    { name: 'value', kind: 'number' },
+    { name: 'active', kind: 'boolean' },
+  ] as const,
+  rows: [
+    {
+      interval: { value: 'a', start: '2025-01-01', end: '2025-01-02' },
+      value: 1,
+      active: true,
+    },
+  ],
+  parse: { timeZone: 'UTC' },
 });
 ```
 
-`toJSON()` emits numeric timestamps and uses `null` for missing payload values so
-the result can round-trip through `TimeSeries.fromJSON(...)` without ambiguity.
+Object rows and array rows can't mix within a single `rows` array. The
+library picks the format based on the first row.
 
-For normalized in-memory export helpers, use:
+### Missing values
+
+`null` in a cell becomes `undefined` on the event; a column marked
+`required: false` in the schema accepts both `null` and a missing
+key (in object rows):
+
+```ts
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'status', kind: 'string', required: false },
+] as const;
+
+TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T00:00Z', 0.42, 'ok'],
+    ['2025-01-01T00:01Z', 0.51, null], // status is undefined
+  ],
+});
+```
+
+Columns without `required: false` reject `null` at validation time —
+if a cell is sometimes-present, make it optional in the schema.
+
+## `toJSON`
+
+Serializes back to the JSON-friendly shape.
+
+```ts
+const payload = series.toJSON();
+// { name, schema, rows: [[ts, v, ...], ...] }
+
+JSON.stringify(payload);
+// One string; round-trips via TimeSeries.fromJSON(JSON.parse(...)).
+```
+
+### Array vs object rows
+
+Default is array rows (smaller on the wire, faster to parse). Request
+object rows when readability matters more than size:
+
+```ts
+const compact = series.toJSON();
+// rows: [[1735689600000, 0.31, "api-1"], ...]
+
+const keyed = series.toJSON({ rowFormat: 'object' });
+// rows: [{ time: 1735689600000, cpu: 0.31, host: "api-1" }, ...]
+```
+
+Both formats round-trip through `fromJSON` with the same output.
+
+### In-memory normalized exports
+
+When you want rows in a richer in-memory form — preserving `Time` /
+`TimeRange` / `Interval` as objects instead of numbers/tuples — use
+the non-JSON exporters:
 
 ```ts
 const rows = series.toRows();
+// ReadonlyArray of [key, ...values] tuples with *object* keys
+
 const objects = series.toObjects();
+// ReadonlyArray of { [colName]: value } objects with *object* keys
 ```
 
-Those retain `Time`, `TimeRange`, and `Interval` key objects instead of
-converting them into JSON-friendly numbers or tuples.
+Both are faster than `toJSON` (no JSON-shape conversion) and are the
+right choice for passing data to in-process consumers (tests, other
+library code, React components). They do **not** round-trip via
+`fromJSON`; use `toJSON` for wire-format serialization.
 
-## Why `parse.timeZone` matters
+## Round-trip fidelity
 
-Ambiguous local timestamps like `2025-01-01T09:00` need a time zone context.
+`series.toJSON()` → `JSON.stringify` → `JSON.parse` →
+`TimeSeries.fromJSON(...)` preserves:
 
-Without one, the data is harder to interpret consistently across environments.
+- Series `name`
+- Every column name + kind
+- Every row value, including `undefined` (as `null` on the wire)
+- Event order
+- Key objects (`Time` / `TimeRange` / `Interval`) with exact timestamps
+
+It does **not** preserve:
+
+- Schema `required: true | false` flags that differ from validation
+  defaults — declare them explicitly on both sides if you need that
+  narrowing to survive.
+- Comments, whitespace, or any non-payload metadata you might be
+  tempted to attach.
+
+If the two ends of a round-trip share the same `schema` tuple (as
+`const`), TypeScript's type-narrowing on `.get()` is preserved through
+the round-trip at the type level. If one end imports a different
+schema, the narrowing is only as good as what both ends import.
 
 ## Calendar-aware sequences
 
-Use `Sequence.calendar(...)` when reporting periods should follow local calendar boundaries instead of fixed millisecond steps.
+For timezone-sensitive bucketing, `Sequence.every(duration)` is
+millisecond-exact — great for sub-hour buckets, wrong for days and
+months (which have non-constant duration across DST and calendar
+boundaries). Use `Sequence.calendar` instead:
 
 ```ts
 import { Sequence } from 'pond-ts';
 
-const localDays = Sequence.calendar('day', {
+// Fixed 24h steps — wrong around DST.
+const fixedDaily = Sequence.every('1d');
+
+// Local calendar days in New York — boundaries honor DST transitions.
+const localDaily = Sequence.calendar('day', {
+  timeZone: 'America/New_York',
+});
+
+// Weeks starting Monday in Europe/London:
+const weekly = Sequence.calendar('week', {
+  timeZone: 'Europe/London',
+  weekStartsOn: 1, // 1=Mon, 7=Sun (ISO-8601)
+});
+
+// Months (variable length):
+const monthly = Sequence.calendar('month', {
   timeZone: 'America/New_York',
 });
 ```
 
-Supported calendar units:
+Supported units: `'day'`, `'week'`, `'month'`. Pass to `aggregate` or
+`align` exactly like a fixed-step sequence.
 
-- `day`
-- `week`
-- `month`
+### When it matters
 
-This is especially useful around DST boundaries and local reporting windows.
+- **Daily and monthly reports** — a "daily" bucket in fixed-step is
+  24 hours, but local calendar days around a DST transition are 23 or
+  25 hours. Reports bucketed by local calendar boundaries need
+  `calendar`.
+- **Cross-month rollups** — 30 days is not February; 31 days is not
+  April. Month buckets must honor the calendar, not a fixed stride.
+- **Week-starting conventions** — ISO Monday vs US Sunday vs retail
+  Saturday. `weekStartsOn` sets the anchor.
+
+Hour-or-smaller buckets: use `Sequence.every` — the fixed-step
+primitive is correct and cheaper.
+
+## Pitfalls
+
+### Wall-clock strings without `parse.timeZone`
+
+```ts
+TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [['2025-01-01T09:00', 0.42]],
+  // no parse.timeZone
+});
+// Throws — ambiguous local string; needs a zone context.
+```
+
+Either add `parse.timeZone` or switch to an offset-qualified string
+(`'2025-01-01T09:00Z'`) or a number (`Date.parse('2025-01-01T09:00Z')`).
+
+### Mixed timestamp formats
+
+Mixing number and ISO-string timestamps within one `rows` array is
+legal at the type level — both normalize to ms-since-epoch internally
+— but it's almost always a symptom of an upstream bug. Two specific
+risks worth naming:
+
+- **Silent zone drift.** A run of ISO strings marked with `Z` followed
+  by a run of bare-wall-clock strings will produce events that look
+  ordered but are actually offset by the local-vs-UTC delta of the
+  wall-clock rows' zone. Catch this upstream, not here.
+- **Numbers are always UTC.** If you mix numbers and wall-clock strings
+  with `parse.timeZone`, the numbers don't pick up the zone — they
+  stay UTC while the strings get resolved in the specified zone. If
+  the upstream emits both, something is already wrong in the producer.
+
+Test `fromJSON` with a consistent input format in production and
+normalize upstream before shipping the payload over the wire.
+
+### `Sequence.every('1M')` for months
+
+`every` only accepts durations with a fixed millisecond value — hours,
+minutes, seconds, and whole days. Months are not fixed-duration and
+aren't accepted. Use `Sequence.calendar('month', { timeZone })`.
+
+### Object-row JSON from non-pond-ts sources
+
+If you're parsing JSON emitted by a non-pond-ts system, object rows
+may use different key names than your schema. Map them first:
+
+```ts
+const theirRows: Array<{ ts: number; cpu_pct: number }> = externalData;
+
+const ours = theirRows.map((r) => ({
+  time: r.ts,
+  cpu: r.cpu_pct,
+}));
+
+TimeSeries.fromJSON({ name: 'cpu', schema, rows: ours });
+```
+
+Library isn't trying to guess remaps.
+
+## See also
+
+- [Concepts → Getting data in and out](../concepts/overview#getting-data-in-and-out)
+  — the bigger picture on `toPoints` / `fromPoints` / JSON.
+- [Array columns](./arrays) — array cells serialize as JSON arrays
+  and round-trip without special handling.
+- [Transforms → Align and Aggregate](../transforms/alignment-and-aggregation)
+  — where `Sequence.calendar(...)` gets used.
