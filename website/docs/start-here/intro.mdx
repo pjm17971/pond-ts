@@ -95,9 +95,11 @@ const live = new LiveSeries({
 live.push([Date.now(), 0.45, 128, 'api-1']);
 // ...driven by whatever your data source is.
 
-// 3. React to events inline, with full schema narrowing in callbacks.
+// 3. React to events inline. `e.get('cpu')` narrows to number |
+//    undefined straight from the schema — no `as number` casts.
 live.on('event', (e) => {
-  if ((e.get('cpu') as number) > 0.9) {
+  const cpu = e.get('cpu');
+  if (cpu !== undefined && cpu > 0.9) {
     console.warn(`High CPU on ${e.get('host')}`);
   }
 });
