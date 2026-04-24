@@ -73,13 +73,21 @@ transform pages cross-reference the analogue inline.
 
 :::note[Coming from pondjs?]
 
-| pondjs                  | pond-ts                                  |
-| ----------------------- | ---------------------------------------- |
-| `Collection`            | `TimeSeries`                             |
-| `IndexedEvent`          | `Event<Interval>`                        |
-| `TimeRangeEvent`        | `Event<TimeRange>`                       |
-| `Pipeline` + processors | method chain on `TimeSeries`             |
-| `Pond` / `Aggregator`   | batch `aggregate()` or `LiveAggregation` |
+| pondjs                   | pond-ts                                                |
+| ------------------------ | ------------------------------------------------------ |
+| `TimeSeries` (sorted)    | `TimeSeries` (1:1)                                     |
+| `Collection` (unordered) | `TimeSeries` — pond-ts only exposes the sorted variant |
+| `IndexedEvent`           | `Event<Interval>`                                      |
+| `TimeRangeEvent`         | `Event<TimeRange>`                                     |
+| `Pipeline` + processors  | method chain on `TimeSeries`                           |
+| `Pond` / `Aggregator`    | batch `aggregate()` or `LiveAggregation`               |
+
+pond-ts deliberately drops the `Collection` / `TimeSeries` distinction.
+pondjs used `Collection` as the unordered base type and also as the
+bucket output of aggregation, which let you apply `Collection`-ops to
+buckets recursively. pond-ts collapses this: a bucket _is_ a smaller
+`TimeSeries`, so anything that works on the whole series works on a
+bucket — same API, no second primitive to learn.
 
 Full migration guide is stubbed under Reference; for the common cases
 the rename table above covers ~80% of what you'll search for.
