@@ -52,6 +52,9 @@ const sidebars: SidebarsConfig = {
       label: '@pond-ts/react',
       link: { type: 'doc', id: 'react/react-index' },
       items: [
+        'react/concepts',
+        'react/hooks',
+        'react/patterns',
         {
           type: 'link',
           label: 'API reference (react)',

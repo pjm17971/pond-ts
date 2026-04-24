@@ -1,0 +1,303 @@
+---
+title: Patterns
+sidebar_position: 4
+---
+
+# Patterns
+
+End-to-end patterns for `@pond-ts/react`. Assumes you've read
+[Concepts](./concepts) and skimmed [Hooks](./hooks).
+
+## One source, many charts
+
+The typical dashboard: one live source owned at the top of the tree,
+read by multiple children with per-chart views.
+
+```tsx
+import { useLiveSeries, useLiveQuery, useCurrent } from '@pond-ts/react';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+function Dashboard() {
+  const [live, snap] = useLiveSeries({
+    name: 'metrics',
+    schema,
+    retention: { maxAge: '1h' },
+  });
+
+  // Push from your data source (WebSocket, polling, etc.)
+  useEffect(() => {
+    const ws = new WebSocket('/api/metrics');
+    ws.onmessage = (e) => {
+      const { ts, cpu, host } = JSON.parse(e.data);
+      live.push([ts, cpu, host]);
+    };
+    return () => ws.close();
+  }, [live]);
+
+  if (snap === null) return <Skeleton />;
+
+  return (
+    <>
+      <StatBar live={live} />
+      <ChartPerHost live={live} host="api-1" />
+      <ChartPerHost live={live} host="api-2" />
+      <RollingBand live={live} />
+    </>
+  );
+}
+```
+
+Each child subscribes to the same `live` source — no prop-drilling
+snapshots, no parent re-render when a child throttles differently.
+
+### Per-host charts
+
+```tsx
+function ChartPerHost({
+  live,
+  host,
+}: {
+  live: LiveSeries<Schema>;
+  host: string;
+}) {
+  const [, snap] = useLiveQuery(
+    () => live.filter((e) => e.get('host') === host),
+    [live, host],
+  );
+
+  return snap && <Chart points={snap.toPoints('cpu')} label={host} />;
+}
+```
+
+The view is memoized against `[live, host]`, so changing `host`
+rebuilds the filter view but a sibling changing its own props doesn't
+rebuild ours.
+
+### Stat bar
+
+```tsx
+function StatBar({ live }: { live: LiveSeries<Schema> }) {
+  const { cpu, host } = useCurrent(live, {
+    cpu: 'avg',
+    host: 'unique',
+  });
+  const recent = useCurrent(live, { cpu: 'p95' }, { tail: '30s' });
+
+  return (
+    <header>
+      <Stat label="Avg CPU" value={cpu} />
+      <Stat label="p95 CPU (30s)" value={recent.cpu} />
+      <Stat label="Hosts" value={host?.join(', ') ?? '—'} />
+    </header>
+  );
+}
+```
+
+Three reducer reads against the same source; each is independently
+throttled; each stat renders only when its own values change (thanks
+to per-field reference stability on `useCurrent`).
+
+### Rolling band chart
+
+Snapshot the live source, then run `baseline` on the snapshot — you get
+`avg`, `sd`, `upper`, `lower` columns on one pass, with the
+[`sd === 0` flat-window handling](../pond-ts/transforms/rolling-and-smoothing#baseline)
+for free.
+
+```tsx
+function RollingBand({ live }: { live: LiveSeries<Schema> }) {
+  const snap = useSnapshot(live);
+  const baseline = useDerived(snap, (s) =>
+    s.baseline('cpu', { window: '5m', sigma: 2 }),
+  );
+  if (!baseline) return null;
+
+  return (
+    <BandChart
+      center={baseline.toPoints('avg')}
+      upper={baseline.toPoints('upper')}
+      lower={baseline.toPoints('lower')}
+    />
+  );
+}
+```
+
+`useDerived` memoizes the baseline computation against the snapshot
+identity — it only recomputes when the snapshot actually changes
+(which is throttled at the `useSnapshot` layer).
+
+## Throttling strategy
+
+Default throttle is 100 ms. When to change:
+
+| Scenario                                | Throttle        |
+| --------------------------------------- | --------------- |
+| Status readout, stat card               | 200–500ms       |
+| Standard line chart                     | 100ms (default) |
+| Animation-heavy (tooltip, cursor-track) | 16ms (~60fps)   |
+| Background refresh / off-screen chart   | 1000ms          |
+| Tests / SSR / deterministic rendering   | 0 (immediate)   |
+
+Within one component, different hooks can have different throttles:
+the stat bar at 500 ms, the main chart at 100 ms, the hover overlay
+at 16 ms. They all subscribe to the same source; React batches the
+renders.
+
+## Retention + hooks
+
+Retention is a property of the source, not the hook. Set it once at
+construction and every hook downstream inherits:
+
+```tsx
+const [live, snap] = useLiveSeries({
+  name: 'metrics',
+  schema,
+  retention: { maxAge: '10m' },
+});
+```
+
+Hooks that wrap the source (`useWindow`, `useLiveQuery`) operate on
+the retained view — a `useWindow(live, '5m')` over a `10m`-retention
+source gives you the intersection (never more than 10 m of source
+events visible; never more than 5 m in the windowed view).
+
+The `'evict'` event fires when retention runs — subscribe outside the
+hook if you need to react:
+
+```tsx
+useEffect(() => {
+  const unsub = live.on('evict', (events) => {
+    metrics.increment('events.evicted', events.length);
+  });
+  return unsub;
+}, [live]);
+```
+
+## Cleanup
+
+- **Source hooks** — no explicit cleanup. The live object is GC'd
+  when the component unmounts.
+- **Snapshot hooks** — unsubscribe from the source on unmount,
+  automatically.
+- **`useWindow`** — disposes the underlying `LiveView.window()` on
+  unmount or when `size` changes.
+- **`useLiveQuery`** — rebuilds the view when deps change; the old
+  view's `dispose()` is called if available.
+
+If you construct pond-ts live objects outside a hook (e.g. in a
+`useEffect`), call `.dispose()` manually in the cleanup:
+
+```tsx
+useEffect(() => {
+  const agg = new LiveAggregation(live, Sequence.every('1m'), { cpu: 'avg' });
+  const unsub = agg.on('close', (e) => log(e));
+  return () => {
+    unsub();
+    agg.dispose();
+  };
+}, [live]);
+```
+
+## Testing
+
+The `@pond-ts/react` test suite uses `@testing-library/react` +
+`happy-dom`. Same setup works for consumers.
+
+```tsx
+import { act, render } from '@testing-library/react';
+import { useLiveSeries } from '@pond-ts/react';
+
+it('renders on push', () => {
+  let liveRef: LiveSeries<Schema> | null = null;
+
+  function Fixture() {
+    const [live, snap] = useLiveSeries(
+      {
+        name: 't',
+        schema,
+        // throttle 0 so renders are synchronous in tests:
+      },
+      { throttle: 0 },
+    );
+    liveRef = live;
+    return <span data-testid="len">{snap?.length ?? 0}</span>;
+  }
+
+  const { getByTestId } = render(<Fixture />);
+  expect(getByTestId('len').textContent).toBe('0');
+
+  act(() => {
+    liveRef!.push([1000, 0.5, 'a']);
+  });
+
+  expect(getByTestId('len').textContent).toBe('1');
+});
+```
+
+Setting `throttle: 0` is the key — the default 100 ms makes tests
+flake if they don't wait for the throttle window.
+
+## SSR / Next.js / Remix
+
+The hooks are client-only today: `useLiveSeries` returns an empty
+series on the first server render, and subsequent mounts create the
+live object. If you need SSR'd initial data, pass it through
+`useTimeSeries` instead (pure batch, no subscriptions), then hydrate
+into a `useLiveSeries` on mount:
+
+```tsx
+function ServerHydratedChart({ initial }: { initial: JsonPayload }) {
+  const initialSeries = useTimeSeries(initial);
+  const [live] = useLiveSeries({ name: initial.name, schema });
+
+  useEffect(() => {
+    for (const event of initialSeries.events()) {
+      live.push(event);
+    }
+  }, [live, initialSeries]);
+
+  const snap = useSnapshot(live);
+  return snap && <Chart points={snap.toPoints('cpu')} />;
+}
+```
+
+No server-side `LiveSeries` needed; the server just emits JSON.
+
+## Production considerations (not yet built in)
+
+Three things the library doesn't bake in yet; if you hit one, roll it
+yourself and tell us what you needed:
+
+- **Error boundaries.** `live.push(...)` throws on schema violations
+  (see [LiveSeries → ordering modes](../pond-ts/live/live-series#ordering-modes)).
+  Hooks don't catch those — wrap your dashboard in a React error
+  boundary if you want a fallback UI rather than a crashed tree.
+- **Context-shared sources.** The patterns above pass `live` via props.
+  For deeper trees, hoist into a `React.Context` yourself —
+  `useLiveSeries` at a provider, consumers call their own hooks
+  against the shared `live` instance. There's no first-party provider
+  yet.
+- **Next.js / Remix hydration mismatches.** `useLiveSeries` returns an
+  empty series on the server and a fresh live object on the client.
+  If your SSR'd markup reflects a specific event count and the client
+  mounts before any pushes arrive, the initial hydration matches
+  — but any client-side push before hydration completes will produce
+  a warning. The [SSR pattern](#ssr--nextjs--remix) above avoids this
+  by feeding server-provided data through `useTimeSeries` instead.
+
+All three are candidates for future library-side fixes; none is
+fundamentally blocking today.
+
+## Where to go next
+
+- [Concepts](./concepts) — the mental model these patterns assume.
+- [Hooks](./hooks) — per-hook reference.
+- [Recipes](../recipes) — full worked dashboards (CPU metrics, error
+  rates, streaming).
+- [API reference (react)](pathname:///generated-api/react/) — every
+  signature and type.
