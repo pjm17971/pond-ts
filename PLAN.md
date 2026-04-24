@@ -413,7 +413,8 @@ Definition of done:
 
 ## Phase 4: Live composition
 
-Status: complete.
+Status: core primitives complete; late-event propagation through live
+transforms is a known scope gap (see below).
 
 Goal: validate the live composition model before building UI integrations on top
 of it.
@@ -432,12 +433,62 @@ Completed:
       (`name`, `schema`, `length`, `at()`, `on('event')`)
 - [x] Grace period for `LiveAggregation` — delays bucket closing so
       out-of-order events within the window accumulate into their correct bucket
+- [x] `LiveSeries` rejects `graceWindow > retention.maxAge` at construction
+      (v0.5.11) — a late event accepted within grace but older than `maxAge`
+      would be evicted immediately by retention; the grace contract was a lie
+      in that config.
 
 Remaining:
 
 - [x] per-event views: `diff`, `rate`, `pctChange` (stateless, prev→curr)
 - [x] carry-forward views: `fill`, `cumulative` (small state per column)
 - [x] docs page for live transforms
+
+### Known scope gap: late-event propagation
+
+`graceWindow` is honored at two boundaries and nowhere else:
+
+- ✅ `LiveSeries` ingest — rejects events older than `latest - grace`
+- ✅ `LiveAggregation` bucket closure — buckets stay open until
+  `watermark - grace`, so late events within grace land in the correct bucket
+
+But a late event accepted at ingest does **not** re-flow through downstream
+live transforms:
+
+- ❌ `LiveRollingAggregation` — a reordered insertion becomes a fresh output
+  event at its insertion point; the method does not re-scan historical
+  windows to include the late event
+- ❌ `LiveView.window()` — eviction is not re-applied when an event is
+  reordered into the view; a late event "outside the window" sticks around
+- ❌ Subscriber notifications — the `event` callback fires identically for
+  on-time and out-of-order arrivals; there is no "this was late" payload
+  for downstream transforms to key off of
+- ❌ React hooks inherit all of the above
+
+Fixing this is a real project, not a small patch. It would likely require
+either a new event payload shape (`{ event, kind: 'append' | 'reorder' }`)
+or a full patch-event model, and each stateful live transform would need
+a recompute path. See Akidau's
+[Streaming 102](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/)
+for the broader picture of what full late-event correctness looks like.
+
+For now, document the scope honestly: `LiveSeries` tolerates moderate
+late-event reordering for ingest and bucketed aggregation; stateful live
+transforms assume in-order arrival. Callers who need late-event correctness
+through rolling windows should batch their work into `TimeSeries` and use
+the batch API.
+
+Concrete next steps when this work begins:
+
+- [ ] Add a discriminated `event` payload: `{ event, position: 'append' | number }`
+      so downstream transforms know an insertion was reordered and at what
+      index
+- [ ] Plumb the reorder signal into `LiveRollingAggregation`; decide whether
+      to recompute all windows overlapping the insertion, or mark them stale
+      and defer until next observer read
+- [ ] Do the same for `LiveView.window()` eviction re-evaluation
+- [ ] Test matrix: `graceWindow + retention`, `graceWindow + rolling`,
+      `graceWindow + window view`, `graceWindow + nested transforms`
 
 ### Batch → Live applicability
 
