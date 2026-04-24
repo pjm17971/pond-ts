@@ -15,6 +15,7 @@ cleanup.
 React 18 or 19.
 
 ```tsx
+import { useEffect } from 'react';
 import { useLiveSeries, useCurrent } from '@pond-ts/react';
 
 const schema = [
@@ -28,6 +29,18 @@ function Dashboard() {
     schema,
     retention: { maxAge: '10m' },
   });
+
+  // The thing you came here for: pipe events from a WebSocket (or any
+  // push-style source) into the LiveSeries. Hooks below re-render as
+  // pushes arrive, throttled.
+  useEffect(() => {
+    const ws = new WebSocket('/api/metrics');
+    ws.onmessage = (e) => {
+      const { ts, cpu } = JSON.parse(e.data);
+      live.push([ts, cpu]);
+    };
+    return () => ws.close();
+  }, [live]);
 
   const { cpu } = useCurrent(live, { cpu: 'avg' });
 
@@ -66,5 +79,6 @@ function Dashboard() {
 | Latest single event             | `useLatest`     |
 
 Pandas has nothing analogous — React state management for time series
-is a different problem than in-memory data analysis. pondjs users: this
-is new; the library never shipped React bindings.
+is a different problem than in-memory data analysis. pondjs users: the
+`subscribe + rerender` plumbing you wrote by hand around `Pond` is what
+these hooks replace; the library never shipped React bindings.

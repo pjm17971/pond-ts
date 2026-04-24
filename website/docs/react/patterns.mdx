@@ -104,44 +104,32 @@ to per-field reference stability on `useCurrent`).
 
 ### Rolling band chart
 
+Snapshot the live source, then run `baseline` on the snapshot — you get
+`avg`, `sd`, `upper`, `lower` columns on one pass, with the
+[`sd === 0` flat-window handling](../pond-ts/transforms/rolling-and-smoothing#baseline)
+for free.
+
 ```tsx
 function RollingBand({ live }: { live: LiveSeries<Schema> }) {
-  const [, snap] = useLiveQuery(
-    () =>
-      live.rolling('5m', {
-        avg: { from: 'cpu', using: 'avg' },
-        sd: { from: 'cpu', using: 'stdev' },
-      }),
-    [live],
+  const snap = useSnapshot(live);
+  const baseline = useDerived(snap, (s) =>
+    s.baseline('cpu', { window: '5m', sigma: 2 }),
   );
+  if (!baseline) return null;
 
-  if (!snap) return null;
-
-  const sigma = 2;
-  const avgPts = snap.toPoints('avg');
-  const upperPts = snap
-    .map((e) => {
-      const a = e.get('avg');
-      const s = e.get('sd');
-      return e.set('upper', a != null && s != null ? a + sigma * s : undefined);
-    })
-    .toPoints('upper');
-
-  return <BandChart center={avgPts} upper={upperPts} />;
+  return (
+    <BandChart
+      center={baseline.toPoints('avg')}
+      upper={baseline.toPoints('upper')}
+      lower={baseline.toPoints('lower')}
+    />
+  );
 }
 ```
 
-For full band-chart semantics (`upper` and `lower` columns with
-`sd === 0` handling), use the batch
-[`baseline`](../pond-ts/transforms/rolling-and-smoothing#baseline)
-helper on a snapshot:
-
-```tsx
-const [, snap] = useLiveQuery(() => live.rolling('5m', { cpu: 'avg' }), [live]);
-const baseline = useDerived(snap, (s) =>
-  s.baseline('cpu', { window: '5m', sigma: 2 }),
-);
-```
+`useDerived` memoizes the baseline computation against the snapshot
+identity — it only recomputes when the snapshot actually changes
+(which is throttled at the `useSnapshot` layer).
 
 ## Throttling strategy
 
@@ -279,6 +267,31 @@ function ServerHydratedChart({ initial }: { initial: JsonPayload }) {
 ```
 
 No server-side `LiveSeries` needed; the server just emits JSON.
+
+## Production considerations (not yet built in)
+
+Three things the library doesn't bake in yet; if you hit one, roll it
+yourself and tell us what you needed:
+
+- **Error boundaries.** `live.push(...)` throws on schema violations
+  (see [LiveSeries → ordering modes](../pond-ts/live/live-series#ordering-modes)).
+  Hooks don't catch those — wrap your dashboard in a React error
+  boundary if you want a fallback UI rather than a crashed tree.
+- **Context-shared sources.** The patterns above pass `live` via props.
+  For deeper trees, hoist into a `React.Context` yourself —
+  `useLiveSeries` at a provider, consumers call their own hooks
+  against the shared `live` instance. There's no first-party provider
+  yet.
+- **Next.js / Remix hydration mismatches.** `useLiveSeries` returns an
+  empty series on the server and a fresh live object on the client.
+  If your SSR'd markup reflects a specific event count and the client
+  mounts before any pushes arrive, the initial hydration matches
+  — but any client-side push before hydration completes will produce
+  a warning. The [SSR pattern](#ssr--nextjs--remix) above avoids this
+  by feeding server-provided data through `useTimeSeries` instead.
+
+All three are candidates for future library-side fixes; none is
+fundamentally blocking today.
 
 ## Where to go next
 
