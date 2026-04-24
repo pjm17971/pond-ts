@@ -6,14 +6,21 @@ sidebar_position: 17
 
 Most time-series columns hold a scalar per event: one temperature reading,
 one latency number. **Array columns** hold a short list per event — a tag
-list, a set of hosts that reported, a small sample buffer. Pond treats
-them as a first-class kind with dedicated operators, but keeps them
-_inert_ with respect to numerical math — `diff`, `rate`, `cumulative`,
-and `rolling`-over-numbers skip array columns entirely.
+list, a set of hosts that reported, a small sample buffer. pond-ts treats
+them as a first-class kind (`kind: 'array'`) with dedicated operators, but
+keeps them _inert_ with respect to numerical math — `diff`, `rate`,
+`cumulative`, and `rolling`-over-numbers all skip array columns.
 
-This page is a reference of every array-column operator with a minimal
-example. For a full scenario that composes them, see
+The [Concepts page](../concepts/overview#column-kinds) introduces
+`kind: 'array'`. This page is the reference for the operators that
+actually work with them. For a full worked scenario composing every
+array operator, see
 [Error-Rate Dashboard](../../recipes/error-rate-dashboard).
+
+Coming from pandas: pandas has `object` columns that happen to hold
+lists, but no type-enforced "array of scalars" kind and no dedicated
+set-membership operators (`arrayContains` / `arrayContainsAll` /
+`arrayContainsAny` / `arrayExplode` / `arrayAggregate`).
 
 ## When you'd want one
 
