@@ -7,9 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...HEAD
 
 ## [Unreleased]
+
+## [0.5.11] — 2026-04-24
+
+### Fixed
+
+- **`LiveSeries` rejects `graceWindow > retention.maxAge` at construction.**
+  A late event accepted within grace but older than `maxAge` would be evicted
+  immediately by retention — the grace contract would be meaningless. The
+  guard only fires when both options are set explicitly; default behavior is
+  unchanged. `LiveAggregation` bucket closure (which inherits grace from the
+  source) still behaves as before.
+
+### Changed
+
+- Docs: clarified `graceWindow`'s scope in the `LiveSeriesOptions`
+  docstring. Enforced at ingest and honored by `LiveAggregation` bucket
+  closure; `rolling()` / `window()` live views do not re-flow late events
+  through historical windows. Matches the actual pipeline behavior; full
+  late-event propagation through live transforms is explicitly out of
+  scope (see Akidau's Streaming 102 for the larger story).
 
 ## [0.5.10] — 2026-04-24
 
@@ -42,6 +62,7 @@ type-level changes; patch bumps are strictly additive.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
+[0.5.11]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/pjm17971/pond-ts/compare/v0.5.8...v0.5.9
 

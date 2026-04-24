@@ -43,6 +43,74 @@ describe('LiveSeries construction', () => {
     ).not.toThrow();
   });
 
+  it('rejects graceWindow that exceeds retention.maxAge', () => {
+    // A late event accepted within a 30s grace would be evicted
+    // immediately by a 10s retention window — the grace promise would
+    // be empty. Fail at construction so the caller picks consistent
+    // values.
+    expect(() =>
+      makeLive({
+        ordering: 'reorder',
+        graceWindow: '30s',
+        retention: { maxAge: '10s' },
+      }),
+    ).toThrow(/graceWindow.*cannot exceed retention\.maxAge/);
+  });
+
+  it('accepts graceWindow without retention.maxAge (guard must not fire on partial config)', () => {
+    expect(() =>
+      makeLive({ ordering: 'reorder', graceWindow: '10s' }),
+    ).not.toThrow();
+    expect(() =>
+      makeLive({
+        ordering: 'reorder',
+        graceWindow: '10s',
+        retention: { maxEvents: 100 },
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts graceWindow equal to or less than retention.maxAge', () => {
+    expect(() =>
+      makeLive({
+        ordering: 'reorder',
+        graceWindow: '10s',
+        retention: { maxAge: '10s' },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      makeLive({
+        ordering: 'reorder',
+        graceWindow: '5s',
+        retention: { maxAge: '1m' },
+      }),
+    ).not.toThrow();
+  });
+
+  it('grace + retention.maxAge preserve late events within grace', () => {
+    // End-to-end: a late event accepted within grace must survive
+    // retention pruning. Without the construction guard this test
+    // would still pass for grace ≤ maxAge, but it pins the composition
+    // and would fail if anyone widened retention to use maxAge only
+    // without grace-awareness in the future.
+    const live = makeLive({
+      ordering: 'reorder',
+      graceWindow: '5s',
+      retention: { maxAge: '30s' },
+    });
+    live.push([30000, 1, 'a']); // latest = 30000
+    live.push([26000, 2, 'b']); // 4s late, within grace
+    expect(live.length).toBe(2);
+    // Push enough to trigger retention — latest advances, old events evicted.
+    live.push([60000, 3, 'c']); // cutoff = 30000; a@30000 stays, b@26000 evicted
+    expect(live.length).toBe(2);
+    expect(live.first()!.begin()).toBe(30000);
+    expect(live.last()!.begin()).toBe(60000);
+    // The key guarantee: at no point was b accepted *and then* evicted
+    // in the same push — it lived between its insert and the later
+    // `c` push, not for zero time.
+  });
+
   it('rejects invalid schema', () => {
     expect(
       () => new LiveSeries({ name: 'bad', schema: [] as any, rows: [] }),
