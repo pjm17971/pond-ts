@@ -4,8 +4,13 @@ sidebar_position: 3
 
 # Concepts
 
-pond-ts is a time series library with four primitives. Once these click,
-the rest of the API reads as composable operations over them:
+pond-ts is a batch-first, in-memory TypeScript time series library. Batch
+transforms over schema-typed events; a lenient live-side for streaming-
+shaped ingest. Not a database, not a query engine, not a full streaming
+system — see [What pond-ts isn't](#what-pond-ts-isnt) for the detailed
+scope.
+
+Four primitives carry the whole API:
 
 - **`Event`** — one temporal key plus a typed payload.
 - **`TimeSeries`** — an ordered, immutable collection of events sharing a
@@ -17,6 +22,68 @@ the rest of the API reads as composable operations over them:
 Everything else — `aggregate`, `rolling`, `smooth`, `reduce`, the whole
 `LiveSeries` side — operates on these. Read this page top-to-bottom
 once; then the transform pages assume the vocabulary.
+
+## Five-minute quickstart
+
+Array of raw rows → typed `TimeSeries` → one transform → chart-ready
+points:
+
+```ts
+import { TimeSeries, Sequence } from 'pond-ts';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+] as const;
+
+// 1. Construct from flat rows (time as ms since epoch).
+const cpu = new TimeSeries({
+  name: 'cpu',
+  schema,
+  rows: Array.from({ length: 60 }, (_, i) => [
+    i * 1000,
+    0.4 + Math.random() * 0.3,
+  ]),
+});
+
+// 2. Bucket into 10-second averages.
+const buckets = cpu.aggregate(Sequence.every('10s'), { cpu: 'avg' });
+
+// 3. Flat `{ts, value}[]` for any chart library.
+const points = buckets.toPoints('cpu');
+// [{ ts: 0, value: 0.514 }, { ts: 10000, value: 0.522 }, …]
+```
+
+That's the shape. If you're coming from React and just want a chart,
+`toPoints(col)` is the bridge — see
+[Getting data in and out](#getting-data-in-and-out) below.
+
+:::note[Coming from pandas?]
+
+- `aggregate(seq, mapping)` ≈ `.resample().agg()`
+- `rolling(window, mapping)` ≈ `.rolling().agg()`
+- `within(range)` / `overlapping` / `trim` ≈ `.loc[]` slicing with three
+  explicit semantics
+- `reduce(mapping)` ≈ `.agg()` on the whole frame
+- `groupBy(col)` ≈ `.groupby(col)`
+
+Full translation table coming in the Reference section; for now,
+transform pages cross-reference the analogue inline.
+:::
+
+:::note[Coming from pondjs?]
+
+| pondjs                  | pond-ts                                  |
+| ----------------------- | ---------------------------------------- |
+| `Collection`            | `TimeSeries`                             |
+| `IndexedEvent`          | `Event<Interval>`                        |
+| `TimeRangeEvent`        | `Event<TimeRange>`                       |
+| `Pipeline` + processors | method chain on `TimeSeries`             |
+| `Pond` / `Aggregator`   | batch `aggregate()` or `LiveAggregation` |
+
+Full migration guide is stubbed under Reference; for the common cases
+the rename table above covers ~80% of what you'll search for.
+:::
 
 ## Mental model
 
@@ -98,9 +165,13 @@ cpu.at(0)!.get('cpu'); // 0.31 — narrows to number
 cpu.at(0)!.get('host'); // 'api-1' — narrows to string
 ```
 
-The `as const` on `schema` is load-bearing. Without it, TypeScript
-widens the tuple to `{name: string, kind: string}[]` and you lose the
-per-column type narrowing on `.get()`.
+:::tip[`as const` is load-bearing]
+Without `as const`, TypeScript widens the schema tuple to
+`{ name: string; kind: string }[]` and you lose per-column narrowing on
+`.get()`. If `cpu.at(0)!.get('cpu')` ever shows as
+`ColumnValue | undefined` instead of `number | undefined`, check here
+first.
+:::
 
 ### Schemas drive everything
 
@@ -340,6 +411,27 @@ If you're composing a chart visible-range filter, you usually want
 `trim` so the rendered data doesn't leak outside the axis. If you're
 running analytics over a closed window, you usually want `within`.
 
+## Getting data in and out
+
+pond-ts is not a chart library — the actual rendering is yours. But
+the bridge to every chart library is deliberately short:
+
+- **`toPoints(col)`** — one column of a `TimeSeries` as a flat
+  `ReadonlyArray<{ ts: number; value: ScalarValue }>`. `undefined`
+  values are dropped. This is the shape Recharts, Observable Plot, visx,
+  and raw d3 all expect.
+- **`TimeSeries.fromPoints(points, { schema })`** — the inverse. Takes
+  a `{ ts, value }[]` and builds a two-column `TimeSeries`. Useful for
+  round-tripping chart points back into pond-native operations (e.g.
+  bucketing a flat anomaly list via `aggregate`).
+- **`toJSON()` / `TimeSeries.fromJSON(json)`** — full-fidelity
+  serialization; schema, name, and all rows round-trip. Use this for
+  persistence or wire transfer.
+
+See [Data shapes](../data-shapes/arrays) and
+[JSON ingest](../data-shapes/json-ingest-and-timezones) for the full
+shape of these bridges.
+
 ## What pond-ts isn't
 
 Honest scope is more useful than breathless value prop. pond-ts is:
@@ -357,9 +449,8 @@ Honest scope is more useful than breathless value prop. pond-ts is:
   [Streaming 101](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/)
   /
   [102](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/).
-- **Not a chart library.** `toPoints(col)` gives you the flat
-  `{ts, value}[]` shape every chart library wants; the actual
-  rendering is yours.
+- **Not a chart library.** See
+  [Getting data in and out](#getting-data-in-and-out) for the bridge.
 
 Built-in numerical smoothing (EMA, LOESS, moving average, box),
 temporal joins, rolling windows, calendar-aware sequences, and
