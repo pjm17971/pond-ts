@@ -51,6 +51,11 @@ const last5m = live.window('5m'); // time-based
 const last100 = live.window(100); // count-based
 ```
 
+Under `ordering: 'reorder'`, `window()` eviction is not re-applied
+when a late event is inserted — a late event can temporarily sit
+"outside" the declared window until the next prune. See
+[Late-event scope](#late-event-scope) for the full picture.
+
 Views maintain their own event buffer and implement the `LiveSource` interface,
 so they compose by stacking:
 
@@ -200,6 +205,13 @@ Use this shape for stat cards, alert decisions, and the top-of-dashboard
 "right now" readout — anywhere a bucketed grid would be overkill.
 
 #### In React: `useCurrent`
+
+:::tip[React users]
+`@pond-ts/react` packages the `subscribe + tail + reduce` dance into a
+single hook — this subsection is a forward reference. When the
+[@pond-ts/react](../../react) section lands with full per-hook prose,
+the example below will move there and this page will link to it.
+:::
 
 `@pond-ts/react` ships a thin wrapper that combines the subscription,
 the `tail`, and the `reduce` into one hook:
@@ -385,6 +397,14 @@ alerts.on('event', (bucket) => {
 
 `LiveRollingAggregation` maintains a sliding-window aggregate that updates on every source
 event. It supports time-based and count-based windows:
+
+:::note[Heads up on late events]
+Under `ordering: 'reorder'`, a late event becomes a new output event
+at its insertion point — this method does **not** re-scan historical
+windows to include it. See
+[Late-event scope](#late-event-scope) for the full story and the set
+of guarantees that hold at each point in the pipeline.
+:::
 
 ```ts
 const rolling = live.rolling('5m', { cpu: 'avg' });
