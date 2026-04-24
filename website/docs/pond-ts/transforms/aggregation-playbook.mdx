@@ -120,13 +120,9 @@ const rolling = series.groupBy('host', (group) =>
   group.rolling('5m', { cpu: 'avg' }),
 );
 
-// Per-host outliers, then union.
-const anomalies = new Map(
-  [
-    ...series.groupBy('host', (group) =>
-      group.outliers('cpu', { window: '1m', sigma: 2 }),
-    ),
-  ].map(([host, s]) => [host, s]),
+// Per-host outliers — one Map<host, anomaly series>.
+const anomalies = series.groupBy('host', (group) =>
+  group.outliers('cpu', { window: '1m', sigma: 2 }),
 );
 ```
 

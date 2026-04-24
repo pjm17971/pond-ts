@@ -21,6 +21,13 @@ If you're coming from pandas:
 - `align(method: 'hold')` ≈ `.asfreq().ffill()`
 - `align(method: 'linear')` ≈ `.asfreq().interpolate('time')`
 
+If you're coming from pondjs: `aggregate` is the same primitive, just
+typed. The grab-bag of `Pipeline` processors (`collapse`, `merge`,
+`combine`, `fill`) that surrounded it is now split across this page,
+[Aggregation playbook](./aggregation-playbook), and plain `TimeSeries`
+methods. `align` is new; pondjs typically held values forward via a
+custom processor.
+
 ## Mental picture
 
 :::note[Diagram candidate]
@@ -194,9 +201,10 @@ const aligned = cpu.align(Sequence.every('5s'), {
 - **`'hold'`** (default) — carry forward the last source value at or
   before each grid point. Works for every column kind.
 - **`'linear'`** — linearly interpolate numeric values by time between
-  the two nearest source events. Only works on `Time`-keyed series;
-  throws on `TimeRange` / `Interval` sources. Non-numeric columns fall
-  back to `'hold'` behavior.
+  the two nearest source events. **Time-keyed sources only** —
+  `align(seq, { method: 'linear' })` throws on `TimeRange`- or
+  `Interval`-keyed input. Non-numeric columns on a valid time-keyed
+  source fall back to `'hold'` behavior.
 
 ### Samples
 
@@ -237,6 +245,52 @@ const display = cpu
   .fill('hold');
 ```
 
-See [Aggregation playbook](./aggregation-playbook) for worked patterns
-on `reduce`, `groupBy`, and the per-event transforms (`diff`, `rate`,
-`pctChange`, `cumulative`, `shift`, `fill`).
+## End-to-end worked pipeline
+
+Raw events → bucketed → gap-filled → rolling statistics → baseline
+bands → chart-ready points. This is the shape of most live dashboards.
+
+```ts
+import { Sequence, TimeSeries } from 'pond-ts';
+
+// Raw events: irregular per-second samples, some missing windows.
+const raw = new TimeSeries({
+  name: 'cpu',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const,
+  rows: Array.from({ length: 300 }, (_, i) => [
+    i * 1000 + Math.random() * 400,
+    0.3 + 0.2 * Math.sin(i / 10) + Math.random() * 0.08,
+  ]),
+});
+
+const chart = raw
+  // 1. Bucket into a regular display cadence.
+  .aggregate(Sequence.every('10s'), { cpu: 'avg' })
+  // 2. Fill any empty buckets (linear interpolation for a smooth line).
+  .fill({ cpu: 'linear' })
+  // 3. Rolling baseline: appends avg / sd / upper / lower columns.
+  .baseline('cpu', { window: '1m', sigma: 2 });
+
+// 4. Chart-ready { ts, value }[] for each band.
+const line = chart.toPoints('cpu');
+const upperBand = chart.toPoints('upper');
+const lowerBand = chart.toPoints('lower');
+```
+
+Each step adds one concept; every intermediate is itself a
+`TimeSeries<S>` you can inspect, filter, or compose further. See the
+[Recipes](../../recipes) section for full worked dashboards using
+patterns like this one.
+
+## Where to go next
+
+- [**Rolling and smoothing**](./rolling-and-smoothing) — sliding-window
+  reductions, EMA / LOESS / moving average, `baseline` / `outliers`.
+- [**Aggregation playbook**](./aggregation-playbook) — `reduce`,
+  `groupBy`, per-event transforms (`diff`, `rate`, `pctChange`,
+  `cumulative`, `shift`), and [`fill`](./aggregation-playbook#fill).
+- [**Reducer reference**](./reducer-reference) — full catalog of
+  built-ins, empty-bucket behavior, and rolling complexity.

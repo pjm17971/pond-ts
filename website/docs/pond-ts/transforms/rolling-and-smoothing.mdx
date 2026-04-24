@@ -22,20 +22,10 @@ Coming from pandas? `rolling` ≈ `.rolling(window).agg(mapping)`.
 
 ## Rolling windows
 
-Two shapes. Pick the one that matches your output:
-
-```ts
-// Per-event rolling: one output event per source event, same key type.
-cpu.rolling('5m', { cpu: 'avg' });
-
-// Grid-anchored rolling: one output event per Sequence point.
-cpu.rolling(Sequence.every('1m'), '5m', { cpu: 'avg' });
-```
-
-The per-event form is the common one. Use the grid form when you want
-a fixed output cadence independent of where source events land.
-
-### Window alignment
+The core idea: for each event in the series, look at a window of
+nearby events and compute a reducer. What "nearby" means is the
+**window alignment** — trailing, centered, or leading. Pick the one
+that matches the question you're answering.
 
 :::note[Diagram candidate]
 ASCII first pass; Excalidraw replacement welcome.
@@ -65,9 +55,23 @@ window covers [anchor, anchor + duration]
 ```
 
 Trailing is "what's the average of what I've seen so far"; centered is
-"smoothed around now"; leading is "average of what's coming next." Match
-the alignment to the question you're answering.
+"smoothed around now"; leading is "average of what's coming next."
 :::
+
+### Two output shapes
+
+Pick the one that matches your output cadence:
+
+```ts
+// Per-event rolling: one output event per source event, same key type.
+cpu.rolling('5m', { cpu: 'avg' });
+
+// Grid-anchored rolling: one output event per Sequence point.
+cpu.rolling(Sequence.every('1m'), '5m', { cpu: 'avg' });
+```
+
+The per-event form is the common one. Use the grid form when you want
+a fixed output cadence independent of where source events land.
 
 ```ts
 cpu.rolling('5m', { cpu: 'avg' }, { alignment: 'centered' });
