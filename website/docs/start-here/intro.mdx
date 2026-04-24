@@ -3,35 +3,28 @@ slug: /
 sidebar_position: 1
 ---
 
-# Pond
+# pond-ts
 
-Pond is a TypeScript-first time series library built around typed events, explicit temporal keys, and immutable analytical transforms.
+Typed time-series primitives for TypeScript. Schema-driven events,
+composable transforms, a live-ingest mode, and an optional React
+integration — all strict TS end to end, all immutable.
 
-It is designed for modern Node and frontend projects that want a strongly typed way to work with:
+```sh
+npm install pond-ts                 # core
+npm install @pond-ts/react          # React hooks (optional)
+```
 
-- point-in-time events
-- interval and range keyed events
-- alignment onto fixed or calendar-aware sequences
-- aggregation and joins
-- rolling windows and smoothing
-- timezone-aware ingest
+## First example: batch
 
-## Why Pond?
-
-Most time series libraries treat rows as loosely typed arrays or plain objects with an implicit timestamp convention.
-
-Pond takes a different approach:
-
-- the temporal key is explicit and typed
-- payload columns are schema-driven
-- transforms preserve type information
-- event and series values are immutable
-
-## Example
+Your data is rows with timestamps. Tell pond-ts the schema once; every
+transform downstream narrows off of it.
 
 ```ts
 import { Sequence, TimeSeries } from 'pond-ts';
 
+// 1. Define the schema. Every downstream transform narrows off of it —
+//    .get('cpu') returns number, .get('host') returns string, and
+//    transforms like aggregate preserve that narrowing.
 const schema = [
   { name: 'time', kind: 'time' },
   { name: 'cpu', kind: 'number' },
@@ -39,42 +32,150 @@ const schema = [
   { name: 'host', kind: 'string' },
 ] as const;
 
+// 2. Construct a TimeSeries. Rows are positional by schema column;
+//    time values are ms-since-epoch (or use Date.parse / new Date).
 const cpu = TimeSeries.fromJSON({
   name: 'cpu',
   schema,
-  rows: [
-    ['2025-01-01T00:00:00Z', 0.31, 120, 'api-1'],
-    ['2025-01-01T00:01:00Z', 0.44, 135, 'api-1'],
-    ['2025-01-01T00:02:00Z', 0.52, 141, 'api-1'],
-    ['2025-01-01T00:03:00Z', 0.48, 128, 'api-1'],
-    ['2025-01-01T00:04:00Z', 0.63, 166, 'api-1'],
-  ],
+  rows: Array.from({ length: 120 }, (_, i) => [
+    i * 1000,
+    0.3 + 0.2 * Math.sin(i / 10) + Math.random() * 0.08,
+    Math.round(100 + Math.random() * 50),
+    'api-1',
+  ]),
 });
 
-const fiveMinute = cpu.aggregate(Sequence.every('5m'), {
+// 3. Compose transforms. Each one returns a new TimeSeries — the
+//    source is immutable, types narrow per step.
+const fiveSec = cpu.aggregate(Sequence.every('5s'), {
   cpu: 'avg',
   requests: 'sum',
   host: 'last',
 });
 
-const smoothed = cpu.smooth('cpu', 'ema', {
-  alpha: 0.35,
-  output: 'cpuTrend',
+const bands = cpu.baseline('cpu', { window: '10s', sigma: 2 });
+//    ^ appends avg / sd / upper / lower columns in one rolling pass,
+//      flat-window `sd === 0` handling already correct.
+
+const anomalies = cpu.outliers('cpu', { window: '10s', sigma: 2 });
+//    ^ schema-preserving filter — same columns, just the spikes.
+
+// 4. Chart-ready output. `toPoints(col)` is the bridge to every chart
+//    library (Recharts, Observable Plot, visx, raw d3).
+fiveSec.toPoints('cpu'); // one { ts, value } per 5-second bucket
+bands.toPoints('upper'); // upper band of an anomaly chart
+bands.toPoints('lower'); // lower band
+anomalies.length; // how many spikes tripped the 2σ band
+```
+
+The whole batch API is composable like this — `filter`, `map`,
+`rolling`, `smooth`, `groupBy`, `join`, `reduce`, `diff`, `rate`,
+`fill` all fit the same "TimeSeries in, TimeSeries out, typed schema
+preserved" shape.
+
+## Second example: live data
+
+Drop a `LiveSeries` wherever events arrive incrementally — a
+WebSocket, a polling loop, a message queue. Push in as they come;
+snapshot to a regular `TimeSeries` at any moment for batch analytics.
+
+```ts
+import { LiveSeries, Sequence } from 'pond-ts';
+
+// 1. Same schema; this is a live append buffer with retention.
+const live = new LiveSeries({
+  name: 'cpu',
+  schema,
+  retention: { maxAge: '10m' }, // keep only the last 10 minutes
 });
 
-console.log(fiveMinute.first()?.data());
-console.log(smoothed.last()?.get('cpuTrend'));
+// 2. Push as events arrive. Each push is validated against the schema.
+live.push([Date.now(), 0.45, 128, 'api-1']);
+// ...driven by whatever your data source is.
+
+// 3. React to events inline, with full schema narrowing in callbacks.
+live.on('event', (e) => {
+  if ((e.get('cpu') as number) > 0.9) {
+    console.warn(`High CPU on ${e.get('host')}`);
+  }
+});
+
+// 4. Snapshot to a TimeSeries for batch analytics at any time.
+const snap = live.toTimeSeries();
+snap.aggregate(Sequence.every('1m'), { cpu: 'avg' });
 ```
+
+The live side also has its own `aggregate` / `rolling` / `filter`
+views that stay incremental — good for continuously-updated dashboard
+numbers without snapshot overhead. See [Live](./pond-ts/live/live-series).
+
+## Third example: React (optional)
+
+You do **not** need React to use pond-ts. Everything above is the
+core package. `@pond-ts/react` is a separate install that wraps the
+live primitives in hooks — it's the bridge, not the library.
+
+```tsx
+import { useEffect } from 'react';
+import { useLiveSeries, useCurrent } from '@pond-ts/react';
+
+function Dashboard() {
+  // 1. Create and subscribe to a LiveSeries; snap refreshes on push.
+  const [live, snap] = useLiveSeries({
+    name: 'cpu',
+    schema,
+    retention: { maxAge: '10m' },
+  });
+
+  // 2. Pipe events from wherever they come (WebSocket here).
+  useEffect(() => {
+    const ws = new WebSocket('/api/metrics');
+    ws.onmessage = (m) => {
+      const { ts, cpu, requests, host } = JSON.parse(m.data);
+      live.push([ts, cpu, requests, host]);
+    };
+    return () => ws.close();
+  }, [live]);
+
+  // 3. Reduce the source to chart-ready scalars — reference-stable
+  //    per-field, so downstream useMemo doesn't invalidate on every
+  //    push.
+  const { cpu } = useCurrent(live, { cpu: 'avg' });
+
+  return (
+    <>
+      <Stat label="Avg CPU" value={cpu} />
+      {snap && <Chart points={snap.toPoints('cpu')} />}
+    </>
+  );
+}
+```
+
+See [@pond-ts/react](./react) for the hook reference and end-to-end
+dashboard patterns.
+
+## What pond-ts is (and isn't)
+
+- **Typed** — the schema is a `readonly` TypeScript tuple; every
+  transform output narrows off it. No `as` casts at the call site.
+- **Immutable** — `Event` and `TimeSeries` are frozen; transforms
+  return new instances.
+- **Batch-first** — the core library is in-memory transforms over a
+  complete `TimeSeries`. The live side is a bounded buffer with
+  moderate reordering tolerance at ingest, not a full streaming
+  engine (see [Live Transforms → Late-event scope](./pond-ts/live/live-transforms#late-event-scope)).
+- **Framework-agnostic** — the core has no React dependency;
+  `@pond-ts/react` is strictly optional.
+
+Not a database. Not a query engine. Not a chart library —
+`toPoints(col)` is the one-line bridge to every charting option.
 
 ## In this docs site
 
 - **Start here** — installation and first analytical workflow.
-- **pond-ts (core)** — concepts, transforms (align, aggregate, rolling,
-  smooth, reduce), data shapes (array columns, JSON ingest), and the
-  live-series model.
+- **pond-ts (core)** — concepts, transforms, data shapes, live.
 - **@pond-ts/react** — React hooks for subscribing to live sources.
-- **Recipes** — end-to-end worked examples.
-- **Reference** — benchmarks and supporting material.
+- **Recipes** — end-to-end worked dashboards.
+- **Reference** — benchmarks, migration, bibliography.
 
-Full generated API references for both packages live at
-[**/api**](/api).
+Full generated API references for both packages live at [**/api**](/api).
