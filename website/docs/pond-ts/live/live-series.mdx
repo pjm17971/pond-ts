@@ -4,10 +4,28 @@ sidebar_position: 13
 
 # LiveSeries
 
-`LiveSeries` is a mutable, append-optimized buffer that shares the same schema
-type system as `TimeSeries`. Use it when data arrives incrementally — from
-WebSockets, message queues, polling loops, or any streaming source — and you
-need to maintain a rolling window of recent events.
+`LiveSeries` is a mutable, append-optimized buffer that shares the same
+schema type system as [`TimeSeries`](../concepts/overview#timeseries).
+Use it when data arrives incrementally — from WebSockets, message queues,
+polling loops, or any streaming source — and you need to maintain a
+rolling window of recent events.
+
+:::note[Scope]
+pond-ts is batch-first. `LiveSeries` is a bounded in-order buffer with
+an opt-in grace window for moderate reordering at ingest — **not** a
+streaming engine. If you need watermarks, triggers, out-of-order
+correctness propagated through every operator, or exactly-once
+semantics, reach for a real streaming system. See
+[Streaming 101](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/)
+for the vocabulary of what a full streaming system looks like, and
+[Live Transforms → Late-event scope](./live-transforms#late-event-scope)
+for what specifically is and isn't covered downstream of ingest.
+:::
+
+If you're coming from pandas: there's no direct equivalent — pandas
+doesn't model live data. If you're coming from pondjs: `LiveSeries`
+takes the place of `Pond`'s live-collection role, with retention
+policies baked in instead of bolted on.
 
 ## Creating a LiveSeries
 

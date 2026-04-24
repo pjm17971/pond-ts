@@ -4,10 +4,20 @@ sidebar_position: 14
 
 # Live Transforms
 
-Live transforms build incremental processing pipelines on top of `LiveSeries`.
-Events flow through a chain of views and accumulators, each subscribing to its
-upstream source and emitting results to downstream consumers. Everything is
-synchronous and driven by data — no background timers, no implicit scheduling.
+Live transforms build incremental processing pipelines on top of
+[`LiveSeries`](./live-series). Events flow through a chain of views and
+accumulators, each subscribing to its upstream source and emitting
+results to downstream consumers. Everything is synchronous and driven
+by data — no background timers, no implicit scheduling.
+
+The same vocabulary as batch
+[`TimeSeries`](../concepts/overview#timeseries): `filter`, `map`,
+`select`, `window`, `aggregate`, `rolling`, `diff`, `rate`,
+`pctChange`, `fill`, `cumulative`. Each method exists in two flavors
+— batch over an immutable snapshot, live over an incoming stream —
+with the same shape of output. If you learned the vocabulary in
+[Transforms](../transforms/alignment-and-aggregation), most of this
+page will read as "the same thing, but incremental."
 
 ## LiveView: filter, map, select, window
 
@@ -307,6 +317,44 @@ has expired are silently dropped.
 **Tip:** pair `ordering: 'reorder'` on the source `LiveSeries` with a
 `graceWindow` — the aggregation will automatically inherit the same tolerance
 for late events.
+
+### Late-event scope \{#late-event-scope\}
+
+`graceWindow` works at exactly two boundaries in the live pipeline:
+
+- **`LiveSeries` ingest** — rejects events older than
+  `latest − graceWindow` under `ordering: 'reorder'`. Guarantees the
+  buffer's temporal extent covers any event it accepts.
+- **`LiveAggregation` bucket closure** — buckets stay open until the
+  watermark passes `bucket.end + grace`, so late events within the
+  grace window land in the correct bucket.
+
+**That's it.** Downstream live transforms **do not** re-flow late
+events through historical state:
+
+- `LiveRollingAggregation` treats a late insertion as a new output
+  event at its insertion point. It does _not_ re-scan historical
+  windows to include the late event in their totals.
+- `LiveView.window()` doesn't re-apply eviction when an event is
+  reordered in — a late event can temporarily sit "outside the
+  window" until the next prune.
+- Subscribers' `'event'` callback fires identically for on-time and
+  reordered insertions; there is no "this was late" payload.
+- React hooks (`@pond-ts/react`) inherit the above.
+
+If you need late-event correctness propagated through every operator
+— a late event at t=T triggering recomputation of every window and
+aggregation that covers t=T — pond-ts is not the right tool. Reach
+for a streaming engine with watermarks, triggers, and retraction. See
+Akidau's
+[Streaming 102](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/)
+for what full late-event propagation looks like in that class of
+system.
+
+For the common "moderate reorder at ingest, bucketed aggregation for
+dashboards" case, the two supported boundaries are sufficient — and
+the retention guard (`graceWindow ≤ retention.maxAge`) is enforced
+at construction to prevent the accept-then-evict race.
 
 ### As a LiveSource
 
