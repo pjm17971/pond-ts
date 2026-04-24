@@ -60,12 +60,20 @@ That's the shape. If you're coming from React and just want a chart,
 
 :::note[Coming from pandas?]
 
-- `aggregate(seq, mapping)` ≈ `.resample().agg()`
+pandas's `.resample()` covers both directions; pond-ts splits them:
+
+- **Downsample** (fewer rows out than in) — `aggregate(seq, mapping)` ≈
+  `.resample().agg()`
+- **Upsample / regrid** (one row per grid point, hold or interpolate)
+  — `align(seq, { method })` ≈ `.asfreq()` + `.ffill()` / `.interpolate('time')`
 - `rolling(window, mapping)` ≈ `.rolling().agg()`
 - `within(range)` / `overlapping` / `trim` ≈ `.loc[]` slicing with three
   explicit semantics
 - `reduce(mapping)` ≈ `.agg()` on the whole frame
 - `groupBy(col)` ≈ `.groupby(col)`
+
+See [Align and Aggregate](../transforms/alignment-and-aggregation) for
+the full treatment of the split.
 
 Full translation table coming in the Reference section; for now,
 transform pages cross-reference the analogue inline.
@@ -73,14 +81,14 @@ transform pages cross-reference the analogue inline.
 
 :::note[Coming from pondjs?]
 
-| pondjs                   | pond-ts                                                |
-| ------------------------ | ------------------------------------------------------ |
-| `TimeSeries` (sorted)    | `TimeSeries` (1:1)                                     |
-| `Collection` (unordered) | `TimeSeries` — pond-ts only exposes the sorted variant |
-| `IndexedEvent`           | `Event<Interval>`                                      |
-| `TimeRangeEvent`         | `Event<TimeRange>`                                     |
-| `Pipeline` + processors  | method chain on `TimeSeries`                           |
-| `Pond` / `Aggregator`    | batch `aggregate()` or `LiveAggregation`               |
+| pondjs                   | pond-ts                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `TimeSeries` (sorted)    | `TimeSeries` (conceptually 1:1; methods differ — everything below is in the new API) |
+| `Collection` (unordered) | `TimeSeries` — pond-ts only exposes the sorted variant                               |
+| `IndexedEvent`           | `Event<Interval>`                                                                    |
+| `TimeRangeEvent`         | `Event<TimeRange>`                                                                   |
+| `Pipeline` + processors  | method chain on `TimeSeries`                                                         |
+| `Pond` / `Aggregator`    | batch `aggregate()` or `LiveAggregation`                                             |
 
 pond-ts deliberately drops the `Collection` / `TimeSeries` distinction.
 pondjs used `Collection` as the unordered base type and also as the
@@ -102,11 +110,16 @@ Think of a `TimeSeries` as a spreadsheet with one special column:
 │  time                │  cpu  │ requests │  host   │
 │  (temporal key)      │  num  │   num    │   str   │   ← schema
 ├──────────────────────┼───────┼──────────┼─────────┤
-│  00:00  ─┐           │ 0.31  │   120    │ api-1   │
-│  00:01   │ ordered    │ 0.44  │   135    │ api-1   │
-│  00:02   │ immutable  │ 0.52  │   141    │ api-1   │
-│  00:03   │            │ 0.48  │   128    │ api-1   │
-│  00:04  ─┘           │ 0.63  │   166    │ api-1   │
+│  00:00  ─┐           │ 0.31  │   120    │ dev23   │
+│  00:01   │ ordered    │ 0.44  │   135    │ dev23   │
+│  00:02   │ immutable  │ 0.52  │   141    │ dev18   │
+│  00:03   │            │ 0.48  │   128    │ dev18   │
+│  00:04  ─┘           │ 0.63  │   166    │ dev02   │
+└──────────────────────┴───────┴──────────┴─────────┘
+
+Any one row, decomposed:                                ← Event
+┌──────────────────────┬───────┬──────────┬─────────┐
+│  00:01               │ 0.44  │   135    │ dev23   │
 └──────────────────────┴───────┴──────────┴─────────┘
 ```
 
@@ -140,9 +153,14 @@ e.get('cpu'); // 0.31 — type: number (narrowed from schema)
 e.begin(); // 1735689600000 — milliseconds since epoch
 ```
 
-You rarely construct individual `Event`s in application code — usually
-you build a `TimeSeries` from rows and the library makes the `Event`s
-for you.
+You rarely construct individual `Event`s directly in application code;
+usually you build a `TimeSeries` from rows and the library wraps each
+row as an `Event`. Transforms work at the `Event` level too — `filter`,
+`map`, `diff`, `rate`, `trim`, `align`, and per-event views in
+`LiveView` all operate on individual events, either inspecting them
+(`filter`, `groupBy`) or producing new ones (`map`, `trim`, `set`,
+`merge`). Understanding `Event` pays off once you're inside one of
+those callbacks.
 
 ## TimeSeries
 
@@ -413,7 +431,11 @@ trim(range)        → b (unchanged), c (clipped to 02:00–02:30),
 - **`overlapping`** preserves event keys exactly; straddling events
   are included in full.
 - **`trim`** clips straddling events' key extents to the query range,
-  creating new events with new keys.
+  creating new events with new keys. Values on a clipped event are
+  currently passed through unchanged — there's no proportional-
+  contribution option yet (e.g. weight a half-clipped interval's value
+  by `clippedDuration / originalDuration`). Under consideration as a
+  future option on `trim`.
 
 If you're composing a chart visible-range filter, you usually want
 `trim` so the rendered data doesn't leak outside the axis. If you're

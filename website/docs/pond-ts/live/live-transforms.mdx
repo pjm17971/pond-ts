@@ -40,8 +40,13 @@ const live = new LiveSeries({
 // Filter: only events from one host
 const api1 = live.filter((e) => e.get('host') === 'api-1');
 
-// Map: transform values
-const pct = live.map((e) => e.set('cpu', (e.get('cpu') as number) * 100));
+// Map: transform values. `e.get('cpu')` narrows to `number | undefined`
+// from the schema; pass the event through unchanged when the value is
+// missing, otherwise write the transformed number back.
+const pct = live.map((e) => {
+  const cpu = e.get('cpu');
+  return cpu === undefined ? e : e.set('cpu', cpu * 100);
+});
 
 // Select: narrow the schema to specific columns
 const cpuOnly = live.select('cpu');
@@ -566,7 +571,8 @@ closure inside `map()`:
 function ema(alpha: number) {
   let prev: number | undefined;
   return live.map((event) => {
-    const raw = event.get('cpu') as number;
+    const raw = event.get('cpu'); // number | undefined from schema
+    if (raw === undefined) return event; // pass through; no new prev
     prev = prev === undefined ? raw : alpha * raw + (1 - alpha) * prev;
     return event.set('cpu', prev);
   });

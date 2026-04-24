@@ -137,9 +137,10 @@ Now `hostCount` is a plain `number` column, so any of the existing
 scalar operators apply. A one-line alert filter:
 
 ```ts
-const broadOutages = withCount.filter(
-  (e) => (e.get('hostCount') as number) >= 3,
-);
+const broadOutages = withCount.filter((e) => {
+  const n = e.get('hostCount'); // number | undefined from schema
+  return n !== undefined && n >= 3;
+});
 // exactly 1 event: minute 1, hostCount = 4
 ```
 
@@ -254,7 +255,12 @@ function renderDashboard() {
     .arrayAggregate('host', 'count', { as: 'hostCount' });
 
   renderBarChart(perMinute);
-  renderAlerts(perMinute.filter((e) => (e.get('hostCount') as number) >= 3));
+  renderAlerts(
+    perMinute.filter((e) => {
+      const n = e.get('hostCount');
+      return n !== undefined && n >= 3;
+    }),
+  );
   renderSmallMultiples(perMinute.arrayExplode('host').groupBy('host'));
 }
 
