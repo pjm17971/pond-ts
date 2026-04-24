@@ -105,23 +105,9 @@ the rename table above covers ~80% of what you'll search for.
 
 Think of a `TimeSeries` as a spreadsheet with one special column:
 
-```
-┌──────────────────────┬───────┬──────────┬─────────┐
-│  time                │  cpu  │ requests │  host   │
-│  (temporal key)      │  num  │   num    │   str   │   ← schema
-├──────────────────────┼───────┼──────────┼─────────┤
-│  00:00  ─┐           │ 0.31  │   120    │ dev23   │
-│  00:01   │ ordered    │ 0.44  │   135    │ dev23   │
-│  00:02   │ immutable  │ 0.52  │   141    │ dev18   │
-│  00:03   │            │ 0.48  │   128    │ dev18   │
-│  00:04  ─┘           │ 0.63  │   166    │ dev02   │
-└──────────────────────┴───────┴──────────┴─────────┘
-
-Any one row, decomposed:                                ← Event
-┌──────────────────────┬───────┬──────────┬─────────┐
-│  00:01               │ 0.44  │   135    │ dev23   │
-└──────────────────────┴───────┴──────────┴─────────┘
-```
+![TimeSeries mental model: a named, schema-typed, ordered, immutable
+table of events, with one row extractable as an
+Event](/img/concepts-timeseries-model.png)
 
 Rows are events, columns are typed, and the first column is always
 a temporal key. The schema drives construction, type inference across
