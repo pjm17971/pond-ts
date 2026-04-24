@@ -57,6 +57,19 @@ describe('LiveSeries construction', () => {
     ).toThrow(/graceWindow.*cannot exceed retention\.maxAge/);
   });
 
+  it('accepts graceWindow without retention.maxAge (guard must not fire on partial config)', () => {
+    expect(() =>
+      makeLive({ ordering: 'reorder', graceWindow: '10s' }),
+    ).not.toThrow();
+    expect(() =>
+      makeLive({
+        ordering: 'reorder',
+        graceWindow: '10s',
+        retention: { maxEvents: 100 },
+      }),
+    ).not.toThrow();
+  });
+
   it('accepts graceWindow equal to or less than retention.maxAge', () => {
     expect(() =>
       makeLive({
