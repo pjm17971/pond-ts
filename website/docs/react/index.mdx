@@ -6,29 +6,65 @@ sidebar_position: 1
 
 # @pond-ts/react
 
-React hooks for pond-ts live time series: `useTimeSeries`,
-`useLiveSeries`, `useSnapshot`, `useLiveQuery`, `useDerived`, `useWindow`,
-`useCurrent`, `useLatest`.
+Thin, render-safe React hooks over the pond-ts live primitives.
+Dashboard-sized state out of the box: WebSocket ingest, throttled
+rendering, per-field reference stability, automatic subscription
+cleanup.
 
-:::note
-Guided per-hook prose is in progress — until those pages land, the
-**[generated API reference](/api)** covers every hook with full
-signatures and type information. The `@pond-ts/react` package reference
-is split out separately from the core `pond-ts` reference at the same
-entry point.
-:::
+**Install** — `npm install pond-ts @pond-ts/react`. Peer-depends on
+React 18 or 19.
 
-**Install** — `npm install pond-ts @pond-ts/react`. The peer dependency
-is React 18 or 19.
+```tsx
+import { useLiveSeries, useCurrent } from '@pond-ts/react';
 
-**Mental model.** `pond-ts/react` is a thin, render-safe subscription
-layer over the live-series primitives. Hooks fall into three groups:
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+] as const;
 
-- **Subscription hooks** — `useLiveSeries`, `useTimeSeries` own the
-  lifecycle of a live source.
-- **Snapshot hooks** — `useSnapshot`, `useLiveQuery`, `useDerived`,
-  `useWindow` read a batch `TimeSeries` out of a live source for
-  rendering.
-- **Reducer hooks** — `useCurrent`, `useLatest` return a single current
-  value with per-field reference stability so downstream `useMemo`
-  doesn't invalidate unnecessarily.
+function Dashboard() {
+  const [live, snap] = useLiveSeries({
+    name: 'metrics',
+    schema,
+    retention: { maxAge: '10m' },
+  });
+
+  const { cpu } = useCurrent(live, { cpu: 'avg' });
+
+  return (
+    <>
+      <Stat label="Avg CPU" value={cpu} />
+      {snap && <Chart points={snap.toPoints('cpu')} />}
+    </>
+  );
+}
+```
+
+## Where to start
+
+- [**Concepts**](./concepts) — the three-group mental model
+  (source / snapshot / reducer), subscription lifecycle, throttling,
+  reference stability.
+- [**Hooks**](./hooks) — reference for all eight hooks with signatures
+  and worked examples.
+- [**Patterns**](./patterns) — end-to-end dashboard composition,
+  throttling strategy, retention, testing, SSR.
+- [**API reference**](pathname:///generated-api/react/) — the generated
+  full-width reference, every signature and type.
+
+## The hook surface at a glance
+
+| Purpose                         | Hook            |
+| ------------------------------- | --------------- |
+| Parse JSON → typed TimeSeries   | `useTimeSeries` |
+| Own a LiveSeries in a component | `useLiveSeries` |
+| Live source → batch TimeSeries  | `useSnapshot`   |
+| Prop-dependent view + snapshot  | `useLiveQuery`  |
+| Pure transform, memoized        | `useDerived`    |
+| Windowed view with auto-dispose | `useWindow`     |
+| Current scalars for stat cards  | `useCurrent`    |
+| Latest single event             | `useLatest`     |
+
+Pandas has nothing analogous — React state management for time series
+is a different problem than in-memory data analysis. pondjs users: this
+is new; the library never shipped React bindings.

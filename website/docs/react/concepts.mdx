@@ -1,0 +1,162 @@
+---
+title: Concepts
+sidebar_position: 2
+---
+
+# Concepts
+
+`@pond-ts/react` is a thin, render-safe subscription layer over the
+pond-ts primitives. Every hook lands in one of three groups.
+
+## Three kinds of hooks
+
+```
+┌─────────────────────────────┐
+│  Source hooks               │   Own the lifecycle of a source.
+│  ─────────────              │   Created on mount, held for the
+│  useTimeSeries              │   component's lifetime.
+│  useLiveSeries              │
+└──────────────┬──────────────┘
+               │ (source)
+               ▼
+┌─────────────────────────────┐
+│  Snapshot hooks             │   Read a TimeSeries out of a source
+│  ───────────────            │   for rendering. Throttled.
+│  useSnapshot                │
+│  useLiveQuery               │
+│  useDerived                 │
+│  useWindow                  │
+└──────────────┬──────────────┘
+               │ (TimeSeries)
+               ▼
+┌─────────────────────────────┐
+│  Reducer hooks              │   Collapse a source to a scalar or
+│  ──────────────             │   a single-row record, throttled and
+│  useCurrent                 │   reference-stable.
+│  useLatest                  │
+└─────────────────────────────┘
+```
+
+A dashboard typically uses one source hook at the top, fans out
+through snapshot hooks for each chart, and sprinkles reducer hooks
+for stat-card headers.
+
+## Subscription lifecycle
+
+Source hooks create pond-ts live objects on mount (via `useRef`), keep
+them alive across renders, and tear them down on unmount. Snapshot
+and reducer hooks subscribe to their source's `'event'` emission and
+rebuild their state on change.
+
+```
+mount
+  └─ source hook:   new LiveSeries(...); ref.current = live;
+  └─ snapshot hook: const unsub = source.on('event', rebuild);
+                    initial state = takeSnapshot(source);
+
+per push into source
+  └─ snapshot hook rebuild is *throttled* — typically 100 ms between
+     rebuilds (configurable). Coalesces burst pushes into one render.
+
+unmount
+  └─ snapshot hook: unsub() fires, timer cleared.
+  └─ source hook:   no explicit teardown — the LiveSeries is GC'd
+                    once the component and its children drop.
+```
+
+No effect on push or pull side races: snapshot hooks track the latest
+source via `useRef` so the flush callback always reads current state,
+even if the source reference changed mid-throttle.
+
+## Throttling
+
+The default — 100 ms between rebuilds — is tuned for dashboard
+cadences. Push 1000 events in a burst, get one React render. The knob:
+
+```tsx
+const snap = useSnapshot(live); // 100ms default
+const tight = useSnapshot(live, { throttle: 16 }); // ~60fps, animation-heavy
+const loose = useSnapshot(live, { throttle: 1000 }); // 1Hz, cheap background refresh
+const immediate = useSnapshot(live, { throttle: 0 }); // no throttle, every push renders
+```
+
+Smaller values mean more React work per push; larger values mean more
+visual lag between source update and screen update. 100 ms is a good
+start — measure before changing.
+
+All four snapshot hooks and both reducer hooks accept
+`{ throttle }`; source hooks don't, because they don't re-render on
+push (only children that read from them do).
+
+## Reference stability
+
+React rerenders downstream `useMemo` / `useEffect` / `useCallback`
+when any of their dependencies change identity — not value. When a
+source emits a new event but the summary hasn't actually changed,
+you'd rather not invalidate every downstream `useMemo`. pond-ts's
+reducer hooks handle this:
+
+### `useCurrent` — per-field reference stability
+
+```tsx
+const current = useCurrent(live, {
+  cpu: 'avg', // number | undefined
+  host: 'unique', // ReadonlyArray<string> | undefined
+});
+```
+
+Each field of the returned record is reference-stable across renders
+as long as its value is structurally unchanged. If a new push changes
+`cpu` but `host` is the same set of hosts, `current.cpu` gets a fresh
+number and `current.host` keeps the same array reference.
+
+This means `useMemo([current.host], ...)` only re-runs when the host
+set actually changes — not every time the CPU does. The record itself
+is also stable if _all_ fields are stable.
+
+### `useLatest` — event identity
+
+`useLatest` returns the latest `Event` as-is — identical event
+reference means identical React identity. Safe to pass to `useMemo`
+deps without a manual comparator.
+
+### Snapshot hooks — throttle-based identity
+
+`useSnapshot` returns a new `TimeSeries` instance per rebuild. The
+identity turns over on every throttle tick that coincides with new
+data. If you need stable identity across semantic no-op pushes, wrap
+with `useDerived` to compute an identity-producing key, or (for
+scalar views) reach for `useCurrent` instead.
+
+## Empty / loading / error states
+
+Source hooks never return `null`; they return a live object from the
+first render, empty initially.
+
+Snapshot and reducer hooks return `null` when the source is `null` or
+hasn't been constructed yet. They do **not** return `null` for an
+"empty but valid" series — that returns a `TimeSeries` with
+`length === 0`, same schema. Check `.length` to distinguish loading
+from empty.
+
+```tsx
+const snap = useSnapshot(live);
+
+if (snap === null) return <Skeleton />; // not yet initialized
+if (snap.length === 0) return <NoData />; // initialized but empty
+return <Chart data={snap.toPoints('cpu')} />;
+```
+
+There's no built-in error channel — if a source throws on push, the
+push call site handles it (see
+[LiveSeries](../pond-ts/live/live-series#ordering-modes)). Hooks
+don't catch exceptions.
+
+## Where this lands
+
+Every hook in
+[Hooks](./hooks) uses exactly these three mechanisms: a source lifetime
+via `useRef`, a snapshot via `takeSnapshot` + `'event'` subscription,
+and a reducer via `takeSnapshot` + `.tail(...)` + `.reduce(...)`.
+`useCurrent` is the combined form; `useSnapshot` is the low-level
+primitive the others build on.

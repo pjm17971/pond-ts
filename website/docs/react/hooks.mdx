@@ -1,0 +1,269 @@
+---
+title: Hooks
+sidebar_position: 3
+---
+
+# Hooks
+
+Reference for all eight hooks shipped in `@pond-ts/react`, grouped by
+purpose. See [Concepts](./concepts) for the mental model and
+[Patterns](./patterns) for end-to-end composition.
+
+## Source hooks
+
+Create and own the lifecycle of a pond-ts data source.
+
+### `useTimeSeries(input, key?)`
+
+Memoize a batch `TimeSeries` from JSON-shaped input. Rebuilds when
+`input` identity changes (via `JSON.stringify` cache key) or when
+`key` changes if provided.
+
+```tsx
+import { useTimeSeries } from '@pond-ts/react';
+
+function Chart({ data }: { data: TimeSeriesJsonPayload }) {
+  const series = useTimeSeries(data);
+  return <LineChart points={series.toPoints('cpu')} />;
+}
+```
+
+When to use: you have JSON-shaped time series data (from props, from
+fetch, from context) and want a typed `TimeSeries` for rendering
+without re-parsing on every render.
+
+```tsx
+// Stable across renders; rebuilt only when the fetch key changes.
+const series = useTimeSeries(data, fetchKey);
+```
+
+### `useLiveSeries(options, hookOptions?)`
+
+Create a `LiveSeries` and subscribe to it in one hook. Returns
+`[live, snapshot]`.
+
+```tsx
+import { useLiveSeries } from '@pond-ts/react';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+] as const;
+
+function Dashboard() {
+  const [live, snap] = useLiveSeries({
+    name: 'cpu',
+    schema,
+    retention: { maxAge: '10m' },
+  });
+
+  // live — the LiveSeries; pass to push(), subscribe, etc.
+  // snap — a TimeSeries snapshot, refreshed on push (throttled 100ms).
+  return <Chart series={snap} />;
+}
+```
+
+The live object is created once per component instance and held for
+the component's lifetime. Pushes to `live` outside the component
+(from a WebSocket handler, a `setInterval`, etc.) trigger re-snapshot
+and re-render.
+
+:::tip[Retention matters]
+Without `retention`, a `LiveSeries` grows unboundedly. Dashboard-style
+views almost always want `{ maxAge: ... }` or `{ maxEvents: ... }` —
+see [LiveSeries → Retention policies](../pond-ts/live/live-series#retention-policies).
+:::
+
+## Snapshot hooks
+
+Read a batch `TimeSeries` out of a live source for rendering.
+
+### `useSnapshot(source, options?)`
+
+The primitive the rest build on. Subscribes to `source.on('event', …)`
+and rebuilds the snapshot on each push, throttled.
+
+```tsx
+import { useSnapshot } from '@pond-ts/react';
+
+function Stats({ live }: { live: LiveSeries<Schema> | null }) {
+  const snap = useSnapshot(live); // 100ms throttle default
+
+  if (snap === null) return <Skeleton />;
+  if (snap.length === 0) return <NoData />;
+  return <Chart points={snap.toPoints('cpu')} />;
+}
+```
+
+Accepts any `LiveSeries`, `LiveView`, `LiveAggregation`, or
+`LiveRollingAggregation`. Pass `null` during loading — the hook
+returns `null` too and will pick up the real source on the next
+render.
+
+Options: `{ throttle?: number }` — defaults to 100ms. See
+[Concepts → Throttling](./concepts#throttling).
+
+### `useLiveQuery(build, deps, options?)`
+
+`useMemo` for live views. Build a `LiveView` (or a chain of them),
+dep-track it, and get both the view and a snapshot.
+
+```tsx
+import { useLiveQuery } from '@pond-ts/react';
+
+function HostChart({ live, host }: { live: LiveSeries<Schema>; host: string }) {
+  const [view, snap] = useLiveQuery(
+    () => live.filter((e) => e.get('host') === host),
+    [live, host], // rebuild view when deps change
+  );
+
+  // view — the LiveView; use it as a source for child hooks if needed.
+  // snap — a TimeSeries snapshot of the view, refreshed on push.
+  return snap && <Chart points={snap.toPoints('cpu')} />;
+}
+```
+
+The callback builds a view; `useLiveQuery` memoizes it against `deps`
+(same semantics as `useMemo`). The returned view and snapshot stay
+stable across pushes — the view is only rebuilt when a dep changes.
+
+When to use: you have a view that depends on props (host filter, time
+window size, etc.) and want React's dep-tracking for it. For a fixed
+view that never changes, use `useSnapshot` on a view constructed
+outside the hook.
+
+### `useDerived(series, transform)`
+
+`useMemo` for pure transforms over a `TimeSeries`. Runs only when the
+source identity changes.
+
+```tsx
+import { useDerived } from '@pond-ts/react';
+
+function CpuAverages({ snap }: { snap: TimeSeries<Schema> | null }) {
+  const hourly = useDerived(snap, (s) =>
+    s.aggregate(Sequence.every('1h'), { cpu: 'avg' }),
+  );
+  return hourly && <Chart data={hourly.toPoints('cpu')} />;
+}
+```
+
+When to use: you have a `TimeSeries` (from `useSnapshot` or
+`useTimeSeries`) and want a transform applied without recomputing on
+every render. The transform runs when the source reference changes —
+snapshot hooks already throttle this, so `useDerived` on
+`useSnapshot` output gives you throttled-recompute semantics for
+free.
+
+### `useWindow(source, size, options?)`
+
+Attach a `.window(size)` view to the source on mount, snapshot it,
+dispose on unmount.
+
+```tsx
+import { useWindow } from '@pond-ts/react';
+
+function LastFive({ live }: { live: LiveSeries<Schema> }) {
+  const snap = useWindow(live, '5m'); // time-based window
+  const snap100 = useWindow(live, 100); // count-based window
+
+  return snap && <Chart points={snap.toPoints('cpu')} />;
+}
+```
+
+The hook manages the `LiveView.window()` lifecycle for you: creates
+it on mount, snapshots it, disposes when the source or window size
+changes. Equivalent to `useLiveQuery(() => source.window(size),
+[source, size])` but without the manual deps.
+
+## Reducer hooks
+
+Collapse a source to a scalar or single-row record.
+
+### `useCurrent(source, mapping, options?)`
+
+Reduce a source to a single record. Types narrow per-entry from the
+reducer name and source column kind. Reference-stable per-field —
+fields that don't change keep their prior reference.
+
+```tsx
+import { useCurrent } from '@pond-ts/react';
+
+function StatCards({ live }: { live: LiveSeries<Schema> }) {
+  const { cpu, host } = useCurrent(live, {
+    cpu: 'avg', // number | undefined
+    host: 'unique', // ReadonlyArray<string> | undefined
+  });
+
+  // Trailing-30s window, 200ms throttle:
+  const recent = useCurrent(
+    live,
+    { cpu: 'p95' },
+    { tail: '30s', throttle: 200 },
+  );
+
+  return (
+    <>
+      <Stat label="CPU (all)" value={cpu} />
+      <Stat label="CPU p95 (30s)" value={recent.cpu} />
+      <Stat label="Hosts" value={host?.join(', ')} />
+    </>
+  );
+}
+```
+
+Options: `{ throttle?: number; tail?: DurationInput }`. `tail` caps
+the reducer to a trailing window; omit for the whole snapshot.
+
+Returns a stable-shape record even when the source is empty (every
+mapped field is `undefined`), so destructuring on first render is
+safe.
+
+:::note[Per-field stability]
+Each field is reference-stable across renders when structurally
+unchanged. `current.host` stays the same array reference as long as
+the set of hosts doesn't change, so `useMemo([current.host], ...)`
+only re-runs on actual host changes — not every time `cpu` does.
+See [Concepts → Reference stability](./concepts#reference-stability).
+:::
+
+### `useLatest(source, options?)`
+
+Return the latest `Event` from the source, or `null` if empty.
+
+```tsx
+import { useLatest } from '@pond-ts/react';
+
+function LiveIndicator({ live }: { live: LiveSeries<Schema> }) {
+  const event = useLatest(live);
+
+  if (!event) return <div>Waiting…</div>;
+  return (
+    <div>
+      Latest CPU: {event.get('cpu')} at {new Date(event.begin()).toISOString()}
+    </div>
+  );
+}
+```
+
+Same throttle semantics as `useSnapshot`. Useful for status
+indicators, live readouts, and anywhere you need the single most
+recent event rather than a whole series. Event identity is preserved
+across renders — no redundant re-renders when the same event is still
+the latest.
+
+## When to pick which
+
+| You want…                                           | Reach for       |
+| --------------------------------------------------- | --------------- |
+| Parse JSON into a typed series once per prop change | `useTimeSeries` |
+| Own a LiveSeries inside a component                 | `useLiveSeries` |
+| Any live source → batch TimeSeries for a chart      | `useSnapshot`   |
+| Conditional view (dep on props) → snapshot          | `useLiveQuery`  |
+| Pure transform of a TimeSeries, memoized            | `useDerived`    |
+| `.window(size)` of a live source with auto-dispose  | `useWindow`     |
+| Current scalar values for stat cards (stable refs)  | `useCurrent`    |
+| Just the latest event                               | `useLatest`     |
+
+Full generated API reference for every signature: [/api](/api) (pick
+`@pond-ts/react`).
