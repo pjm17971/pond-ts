@@ -4,10 +4,11 @@ sidebar_position: 12
 
 # JSON Ingest and Time Zones
 
-pond-ts's wire format is JSON. `TimeSeries.fromJSON(...)` / `.toJSON()`
-round-trip a series through a JSON-friendly shape — suitable for APIs,
-`JSON.stringify`, disk, WebSocket messages. No separate schema
-registry, no codec, no nominal types to rehydrate.
+[Concepts → Getting data in and out](../concepts/overview#getting-data-in-and-out)
+introduced `toJSON` / `fromJSON` as the wire-format bridge. This page
+is the detailed reference — the shape of the JSON payload, the
+timestamp-parsing rules, and the one genuinely tricky corner
+(wall-clock strings and time zones).
 
 This page covers:
 
@@ -23,7 +24,8 @@ This page covers:
 
 If you're coming from pandas: `TimeSeries.fromJSON` ≈
 `pd.read_json(..., convert_dates=True, date_format='iso')`; `toJSON` ≈
-`.to_json(orient='records'|'values', date_format='iso')`.
+`.to_json(orient='records'|'values', date_format='iso')`;
+`parse.timeZone` ≈ `.tz_localize(...)` on a naive `DatetimeIndex`.
 
 ## The JSON shape
 
@@ -62,6 +64,15 @@ Everything else is the obvious thing — numbers become numbers, strings
 become strings, arrays become arrays, `undefined` is serialized as
 `null` (and parsed back to `undefined` on ingest).
 
+:::note[Coming from pondjs?]
+pondjs serialized `TimeRangeEvent` as a nested shape —
+`[[startMs, endMs], data]` — with the temporal key wrapped inside the
+event payload. pond-ts flattens: the timerange key is the first
+positional element (or the `timerange` key on an object row), and
+payload columns follow. A legacy pondjs JSON payload needs a small
+remap before it round-trips through `TimeSeries.fromJSON`.
+:::
+
 ## `fromJSON`
 
 Two-argument-free constructor: pass the parsed JSON and get back a
@@ -84,6 +95,21 @@ const cpu = TimeSeries.fromJSON({
     [1735689660000, 0.44, 'api-1'],
   ],
 });
+```
+
+In React, when the server emits a full pond-ts payload, the client is
+one line:
+
+```ts
+const payload = await (await fetch('/api/cpu')).json();
+const cpu = TimeSeries.fromJSON(payload);
+```
+
+When the server emits just the rows, supply the schema on the client:
+
+```ts
+const rows = await (await fetch('/api/cpu/rows')).json();
+const cpu = TimeSeries.fromJSON({ name: 'cpu', schema, rows });
 ```
 
 ### Timestamp inputs
@@ -119,16 +145,18 @@ ts.at(0)!.begin();
 // 1735714800000 — i.e. 2025-01-01T08:00:00Z
 ```
 
-`parse.timeZone` only applies to strings that lack an explicit offset.
-A string like `'2025-01-01T09:00Z'` ignores the parse option (`Z` is
-authoritative); a string like `'2025-01-01T09:00+01:00'` also ignores
-it. Numeric inputs always ignore `parse.timeZone` — ms-since-epoch is
-zone-free by definition.
+### Does this input need `parse.timeZone`?
 
-**Practical rule.** If your data source emits plain wall-clock strings
-(common for spreadsheets, log scrapers, upstream databases with no
-zone column), pass `parse.timeZone`. If it emits numbers or offset-
-qualified strings, skip it.
+| Input shape                   | Example                    | `parse.timeZone`?                  |
+| ----------------------------- | -------------------------- | ---------------------------------- |
+| Number (ms since epoch)       | `1735689600000`            | Ignored — UTC by definition.       |
+| String with offset (`Z`)      | `'2025-01-01T09:00Z'`      | Ignored — offset is authoritative. |
+| String with offset (`±hh:mm`) | `'2025-01-01T09:00+01:00'` | Ignored — offset is authoritative. |
+| Wall-clock string (no offset) | `'2025-01-01T09:00'`       | **Required.** Throws without it.   |
+
+If your upstream data source is a spreadsheet, a log scraper, or a
+database export without a zone column, you're almost certainly in the
+wall-clock row — pass `parse.timeZone` once per `fromJSON` call.
 
 ### Object rows
 
@@ -319,20 +347,22 @@ Either add `parse.timeZone` or switch to an offset-qualified string
 
 ### Mixed timestamp formats
 
-```ts
-TimeSeries.fromJSON({
-  name: 'mixed',
-  schema,
-  rows: [
-    [1735689600000, 0.31], // number
-    ['2025-01-01T00:01Z', 0.44], // string
-  ],
-});
-```
+Mixing number and ISO-string timestamps within one `rows` array is
+legal at the type level — both normalize to ms-since-epoch internally
+— but it's almost always a symptom of an upstream bug. Two specific
+risks worth naming:
 
-Legal and works — both get normalized to ms-since-epoch internally.
-But test with a consistent format in production; mixed inputs are a
-sign of an upstream bug somewhere.
+- **Silent zone drift.** A run of ISO strings marked with `Z` followed
+  by a run of bare-wall-clock strings will produce events that look
+  ordered but are actually offset by the local-vs-UTC delta of the
+  wall-clock rows' zone. Catch this upstream, not here.
+- **Numbers are always UTC.** If you mix numbers and wall-clock strings
+  with `parse.timeZone`, the numbers don't pick up the zone — they
+  stay UTC while the strings get resolved in the specified zone. If
+  the upstream emits both, something is already wrong in the producer.
+
+Test `fromJSON` with a consistent input format in production and
+normalize upstream before shipping the payload over the wire.
 
 ### `Sequence.every('1M')` for months
 
