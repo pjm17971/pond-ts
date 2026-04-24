@@ -33,37 +33,38 @@ const schema = [
 ] as const;
 
 // 2. Construct a TimeSeries. Rows are positional by schema column;
-//    time values are ms-since-epoch (or use Date.parse / new Date).
+//    time values are ms-since-epoch, ISO strings with an offset, or
+//    Dates.
 const cpu = TimeSeries.fromJSON({
   name: 'cpu',
   schema,
-  rows: Array.from({ length: 120 }, (_, i) => [
-    i * 1000,
-    // Deterministic: a slow sine + small jitter, plus one real spike.
-    i === 60 ? 0.95 : 0.3 + 0.2 * Math.sin(i / 10) + 0.03 * Math.sin(i / 3),
-    Math.round(120 + 20 * Math.sin(i / 7)),
-    'api-1',
-  ]),
+  rows: [
+    ['2025-01-01T00:00:00Z', 0.31, 120, 'host1'],
+    ['2025-01-01T00:01:00Z', 0.44, 135, 'host2'],
+    ['2025-01-01T00:02:00Z', 0.52, 141, 'host1'],
+    ['2025-01-01T00:03:00Z', 0.48, 128, 'host1'],
+    ['2025-01-01T00:04:00Z', 0.63, 166, 'host3'],
+  ],
 });
 
 // 3. Compose transforms. Each one returns a new TimeSeries — the
 //    source is immutable, types narrow per step.
-const fiveSec = cpu.aggregate(Sequence.every('5s'), {
+const byMinute = cpu.aggregate(Sequence.every('1m'), {
   cpu: 'avg',
   requests: 'sum',
   host: 'last',
 });
 
-const bands = cpu.baseline('cpu', { window: '10s', sigma: 2 });
+const bands = cpu.baseline('cpu', { window: '2m', sigma: 2 });
 //    ^ appends avg / sd / upper / lower columns in one rolling pass,
 //      flat-window `sd === 0` handling already correct.
 
-const anomalies = cpu.outliers('cpu', { window: '10s', sigma: 2 });
+const anomalies = cpu.outliers('cpu', { window: '2m', sigma: 2 });
 //    ^ schema-preserving filter — same columns, just the spikes.
 
 // 4. Chart-ready output. `toPoints(col)` is the bridge to every chart
 //    library (Recharts, Observable Plot, visx, raw d3).
-fiveSec.toPoints('cpu'); // one { ts, value } per 5-second bucket
+byMinute.toPoints('cpu'); // one { ts, value } per minute bucket
 bands.toPoints('upper'); // upper band of an anomaly chart
 bands.toPoints('lower'); // lower band
 anomalies.length; // how many spikes tripped the 2σ band
