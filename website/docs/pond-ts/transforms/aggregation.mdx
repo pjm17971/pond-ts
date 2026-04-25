@@ -34,6 +34,11 @@ bucketed aggregation over a `LiveSeries`).
 
 ## `aggregate` \{#aggregate\}
 
+![aggregate over a 5-minute grid with a sum reducer: irregularly-
+spaced request events land in three sequence buckets; each bucket
+emits one output event whose value is the reducer applied to every
+source event inside](/img/aggregate-mental-model.png)
+
 ```ts
 import { Sequence, TimeSeries } from 'pond-ts';
 
