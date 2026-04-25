@@ -20,12 +20,6 @@ operators. `align` ≈ `.asfreq()` (plus `.ffill()` or `.interpolate()`);
 
 ## Mental model
 
-![align vs aggregate against a 5-minute grid: align emits one
-interval-keyed event per grid step with a value sampled from the
-source via begin/center/end × hold/linear; aggregate emits one
-interval-keyed event per bucket with the value computed from a
-reducer over every source event inside](/img/align-aggregate-mental-model.png)
-
 Source events sit on the timeline at their own (sometimes irregular)
 times. Both `align` and `aggregate` emit one **interval-keyed** event
 per grid step — same key shape, different value rule:
@@ -36,6 +30,18 @@ per grid step — same key shape, different value rule:
   between the two surrounding sources.
 - `aggregate` collapses every source event whose key falls in
   `[step.begin, step.end)` through a reducer.
+
+### `align` visually
+
+![align(seq, options) over a 5-minute grid: three Time-keyed cpu
+events on a timeline are bucketed by Sequence.every('5m'); align
+emits one interval-keyed output per bucket. Six sub-views show the
+begin/center/end × hold/linear option combinations and how each picks
+the value at its sample point](/img/align-mental-model.png)
+
+The full `aggregate` visualization, including how multiple source
+events flow into one reducer per bucket, lives on
+[Aggregation](./aggregation).
 
 ## Comparison
 
