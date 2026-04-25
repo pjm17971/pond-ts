@@ -144,7 +144,7 @@ describe('TimeSeries.outliers', () => {
 });
 
 describe('TimeSeries.toPoints', () => {
-  it('returns flat { ts, value }[] pairs', () => {
+  it('returns wide rows { ts, ...valueColumns }[]', () => {
     const s = new TimeSeries({
       name: 'cpu',
       schema,
@@ -154,24 +154,29 @@ describe('TimeSeries.toPoints', () => {
         [2000, 0.7, 'api-2'],
       ],
     });
-    expect(s.toPoints('cpu')).toEqual([
-      { ts: 0, value: 0.3 },
-      { ts: 1000, value: 0.5 },
-      { ts: 2000, value: 0.7 },
+    expect(s.toPoints()).toEqual([
+      { ts: 0, cpu: 0.3, host: 'api-1' },
+      { ts: 1000, cpu: 0.5, host: 'api-1' },
+      { ts: 2000, cpu: 0.7, host: 'api-2' },
     ]);
   });
 
-  it('returns a frozen array', () => {
+  it('returns a frozen array of frozen rows', () => {
     const s = new TimeSeries({
       name: 'cpu',
       schema,
       rows: [[0, 0.5, 'api-1']],
     });
-    const pts = s.toPoints('cpu');
+    const pts = s.toPoints();
     expect(Object.isFrozen(pts)).toBe(true);
+    expect(Object.isFrozen(pts[0])).toBe(true);
   });
 
-  it('drops events where the column is undefined', () => {
+  it('keeps every event with undefined for missing values', () => {
+    // Wide form preserves the row count — chart libs render undefined
+    // as a gap with `connectNulls={false}` or equivalent. The old
+    // narrow toPoints(col) DROPPED events where the column was
+    // undefined; the new wide form keeps them.
     const optionalSchema = [
       { name: 'time', kind: 'time' },
       { name: 'cpu', kind: 'number', required: false },
@@ -185,9 +190,10 @@ describe('TimeSeries.toPoints', () => {
         [2000, 0.7],
       ],
     });
-    expect(s.toPoints('cpu')).toEqual([
-      { ts: 0, value: 0.3 },
-      { ts: 2000, value: 0.7 },
+    expect(s.toPoints()).toEqual([
+      { ts: 0, cpu: 0.3 },
+      { ts: 1000, cpu: undefined },
+      { ts: 2000, cpu: 0.7 },
     ]);
   });
 
@@ -204,40 +210,52 @@ describe('TimeSeries.toPoints', () => {
         [{ value: '1', start: 1000, end: 2000 }, 20],
       ],
     });
-    expect(s.toPoints('value')).toEqual([
+    expect(s.toPoints()).toEqual([
       { ts: 0, value: 10 },
       { ts: 1000, value: 20 },
     ]);
   });
 
+  it('narrows to one column via select().toPoints()', () => {
+    // Common single-column case: compose select then toPoints.
+    const s = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [[0, 0.3, 'api-1']],
+    });
+    expect(s.select('cpu').toPoints()).toEqual([{ ts: 0, cpu: 0.3 }]);
+  });
+
   it('returns an empty array for an empty series', () => {
     const s = new TimeSeries({ name: 'cpu', schema, rows: [] });
-    expect(s.toPoints('cpu')).toEqual([]);
+    expect(s.toPoints()).toEqual([]);
   });
 });
 
 describe('TimeSeries.fromPoints', () => {
-  it('constructs a series from flat { ts, value } points', () => {
+  it('constructs a series from wide-row points', () => {
     const ts = TimeSeries.fromPoints(
       [
-        { ts: 0, value: 0.3 },
-        { ts: 1000, value: 0.5 },
-        { ts: 2000, value: 0.7 },
+        { ts: 0, cpu: 0.3, host: 'api-1' },
+        { ts: 1000, cpu: 0.5, host: 'api-1' },
+        { ts: 2000, cpu: 0.7, host: 'api-2' },
       ],
       {
         schema: [
           { name: 'time', kind: 'time' },
           { name: 'cpu', kind: 'number' },
+          { name: 'host', kind: 'string' },
         ] as const,
       },
     );
     expect(ts.length).toBe(3);
     expect(ts.at(0)!.get('cpu')).toBe(0.3);
-    expect(ts.at(2)!.get('cpu')).toBe(0.7);
+    expect(ts.at(0)!.get('host')).toBe('api-1');
+    expect(ts.at(2)!.get('host')).toBe('api-2');
   });
 
   it('accepts a name option, defaults to "points"', () => {
-    const defaultName = TimeSeries.fromPoints([{ ts: 0, value: 1 }], {
+    const defaultName = TimeSeries.fromPoints([{ ts: 0, v: 1 }], {
       schema: [
         { name: 'time', kind: 'time' },
         { name: 'v', kind: 'number' },
@@ -245,7 +263,7 @@ describe('TimeSeries.fromPoints', () => {
     });
     expect(defaultName.name).toBe('points');
 
-    const custom = TimeSeries.fromPoints([{ ts: 0, value: 1 }], {
+    const custom = TimeSeries.fromPoints([{ ts: 0, v: 1 }], {
       schema: [
         { name: 'time', kind: 'time' },
         { name: 'v', kind: 'number' },
@@ -255,49 +273,50 @@ describe('TimeSeries.fromPoints', () => {
     expect(custom.name).toBe('anomalies');
   });
 
-  it('rejects schemas with other than 2 columns', () => {
+  it('rejects schemas with no value columns', () => {
     expect(() =>
-      TimeSeries.fromPoints([{ ts: 0, value: 1 }], {
+      TimeSeries.fromPoints([{ ts: 0 }], {
         schema: [{ name: 'time', kind: 'time' }] as const,
       }),
-    ).toThrow(/exactly two columns/);
-
-    expect(() =>
-      TimeSeries.fromPoints([{ ts: 0, value: 1 }], {
-        schema: [
-          { name: 'time', kind: 'time' },
-          { name: 'a', kind: 'number' },
-          { name: 'b', kind: 'number' },
-        ] as const,
-      }),
-    ).toThrow(/exactly two columns/);
+    ).toThrow(/at least one value column/);
   });
 
-  it('round-trips with toPoints', () => {
+  it('rejects non-time-keyed schemas', () => {
+    expect(() =>
+      TimeSeries.fromPoints([{ ts: 0, v: 1 }], {
+        schema: [
+          { name: 'interval', kind: 'interval' },
+          { name: 'v', kind: 'number' },
+        ] as const,
+      }),
+    ).toThrow(/time-keyed/);
+  });
+
+  it('round-trips with toPoints (multi-column)', () => {
     const original = TimeSeries.fromPoints(
       [
-        { ts: 0, value: 0.3 },
-        { ts: 1000, value: 0.5 },
+        { ts: 0, cpu: 0.3, host: 'api-1' },
+        { ts: 1000, cpu: 0.5, host: 'api-2' },
       ],
       {
         schema: [
           { name: 'time', kind: 'time' },
           { name: 'cpu', kind: 'number' },
+          { name: 'host', kind: 'string' },
         ] as const,
       },
     );
-    const pts = original.toPoints('cpu');
-    expect(pts).toEqual([
-      { ts: 0, value: 0.3 },
-      { ts: 1000, value: 0.5 },
+    expect(original.toPoints()).toEqual([
+      { ts: 0, cpu: 0.3, host: 'api-1' },
+      { ts: 1000, cpu: 0.5, host: 'api-2' },
     ]);
   });
 
-  it('accepts Date and Time ts inputs', () => {
+  it('accepts Date and number ts inputs', () => {
     const ts = TimeSeries.fromPoints(
       [
-        { ts: new Date(0), value: 1 },
-        { ts: 1000, value: 2 },
+        { ts: new Date(0), v: 1 },
+        { ts: 1000, v: 2 },
       ],
       {
         schema: [
@@ -309,6 +328,44 @@ describe('TimeSeries.fromPoints', () => {
     expect(ts.length).toBe(2);
     expect(ts.at(0)!.begin()).toBe(0);
     expect(ts.at(1)!.begin()).toBe(1000);
+  });
+
+  it('rejects missing keys for required columns', () => {
+    // Required columns can't accept undefined; the schema validates
+    // this at construction. fromPoints surfaces the same error path.
+    expect(() =>
+      TimeSeries.fromPoints(
+        [
+          { ts: 0, cpu: 0.3 }, // missing required 'host'
+        ],
+        {
+          schema: [
+            { name: 'time', kind: 'time' },
+            { name: 'cpu', kind: 'number' },
+            { name: 'host', kind: 'string' }, // required by default
+          ] as const,
+        },
+      ),
+    ).toThrow();
+  });
+
+  it('treats missing keys as undefined', () => {
+    // A point missing a column key is the same as undefined.
+    const ts = TimeSeries.fromPoints(
+      [
+        { ts: 0, cpu: 0.3, host: 'api-1' },
+        { ts: 1000, cpu: 0.5 }, // host missing
+      ],
+      {
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'cpu', kind: 'number' },
+          { name: 'host', kind: 'string', required: false },
+        ] as const,
+      },
+    );
+    expect(ts.at(0)!.get('host')).toBe('api-1');
+    expect(ts.at(1)!.get('host')).toBeUndefined();
   });
 
   it('replays the dashboard pattern: outliers → points → fromPoints → aggregate', () => {
@@ -323,7 +380,10 @@ describe('TimeSeries.fromPoints', () => {
     // Dashboard pattern: flatten outliers to points (e.g. for chart
     // rendering), then round-trip back to a TimeSeries for bucketed
     // counting.
-    const pts = s.outliers('cpu', { window: '5s', sigma: 2 }).toPoints('cpu');
+    const pts = s
+      .outliers('cpu', { window: '5s', sigma: 2 })
+      .select('cpu')
+      .toPoints();
     expect(pts.length).toBeGreaterThan(0);
 
     const restored = TimeSeries.fromPoints(pts, {

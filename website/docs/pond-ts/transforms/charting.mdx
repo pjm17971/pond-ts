@@ -12,127 +12,68 @@ built on visx). Until then, the workflow is: shape your `TimeSeries`
 into the chart library's expected input via `toPoints` / `fromPoints`,
 hand it to the chart, done.
 
-## `toPoints(col)` — the bridge
+## `toPoints()` — the bridge
 
-One column of a `TimeSeries` as a flat array:
+Wide-row export: every event becomes one row with `ts` plus every
+value column from the schema as a top-level key.
 
 ```ts
-const pts = cpu.toPoints('cpu');
-// ReadonlyArray<{ ts: number; value: number }>
+const data = cpu.toPoints();
+// [{ ts: number, cpu: number | undefined, host: string | undefined, ... }]
 ```
 
-The shape — `{ ts, value }[]` — is what every mainstream chart
-library accepts (Recharts, Observable Plot, visx, raw d3).
+`ts` is `event.begin()` — for `Time` keys this is the timestamp; for
+`TimeRange` / `Interval` keys this is the interval start. Missing
+values stay `undefined`; chart libraries render those as gaps with
+`connectNulls={false}` or equivalent.
 
-:::caution[`toPoints` drops `undefined` values]
-Each `toPoints(col)` call independently drops events where _that
-column_ is `undefined`. If two columns from the same source have
-gaps in different places (warmup, flat-window regions on
-[`baseline`](./anomaly-detection#baseline)), their arrays will have
-different lengths. **Don't index across two `toPoints` results by
-position** — see [Wide rows vs long
-columns](#wide-rows-vs-long-columns) for the right pattern.
-:::
+The shape — flat `{ ts, ...cols }[]` — is what every mainstream
+chart library accepts directly (Recharts, Observable Plot, visx, raw
+d3).
+
+### Narrowing to a single column
+
+For a single-series chart, compose with `select` to drop the columns
+you don't want:
+
+```ts
+const cpuPoints = cpu.select('cpu').toPoints();
+// [{ ts: number, cpu: number | undefined }, ...]
+```
+
+The narrowed-row shape is the same; just fewer keys.
 
 ## `fromPoints(points, { schema, name? })` — the inverse
 
-Useful for round-tripping derived data — flatten anomaly events into
-chart points, then back into a `TimeSeries` for further composition:
+Construct a `TimeSeries` from a flat array of wide-row points. Each
+point carries `ts` plus one key per value column from the schema:
 
 ```ts
-const ts = TimeSeries.fromPoints(pts, {
-  schema: [
-    { name: 'time', kind: 'time' },
-    { name: 'cpu', kind: 'number' },
-  ] as const,
-  name: 'reconstructed',
-});
-```
-
-Schema must be exactly two columns: a time-key column and one value
-column.
-
-## Wide rows vs long columns
-
-The shape mismatch every nontrivial Recharts adapter hits:
-
-- pond-ts thinks in **long columns** — `toPoints(col)` returns one
-  list of `{ ts, value }` per column, independent.
-- Recharts thinks in **wide rows** — one `data` array of
-  `{ ts, key1: v1, key2: v2, … }` rows, every series sharing the
-  same x.
-
-A single-series chart doesn't notice — `data={cpu.toPoints('cpu')}`
-just works. The moment you have two series, a band chart, or an
-anomaly overlay, you need to **merge** several long columns into
-wide rows yourself.
-
-The `:::caution` above is why: zipping three independently-filtered
-`toPoints` arrays by index silently misaligns when the columns have
-gaps in different places (warmup, flat-window regions).
-
-### `mergeWideRows(...)` — the recipe
-
-A typed helper that takes long-column inputs and produces the wide
-rows Recharts wants. Drop this into your codebase; every
-multi-series chart will reach for it:
-
-```ts
-type Point = { ts: number; value: number };
-type Row = Record<string, number | undefined> & { ts: number };
-
-function mergeWideRows(
-  series: ReadonlyArray<{ name: string; points: ReadonlyArray<Point> }>,
-  bands: ReadonlyArray<{
-    name: string;
-    upper: ReadonlyArray<Point>;
-    lower: ReadonlyArray<Point>;
-  }> = [],
-): Row[] {
-  const byTs = new Map<number, Row>();
-  const get = (ts: number): Row => {
-    let r = byTs.get(ts);
-    if (!r) {
-      r = { ts };
-      byTs.set(ts, r);
-    }
-    return r;
-  };
-  for (const s of series) {
-    for (const p of s.points) get(p.ts)[s.name] = p.value;
-  }
-  for (const b of bands) {
-    for (const p of b.upper) get(p.ts)[`${b.name}_upper`] = p.value;
-    for (const p of b.lower) get(p.ts)[`${b.name}_lower`] = p.value;
-  }
-  return [...byTs.values()].sort((a, b) => a.ts - b.ts);
-}
-```
-
-Use it like this:
-
-```ts
-const data = mergeWideRows(
+const ts = TimeSeries.fromPoints(
   [
-    { name: 'cpu', points: cpu.toPoints('cpu') },
-    { name: 'cpuTrend', points: cpu.toPoints('cpuTrend') },
+    { ts: 0, cpu: 0.31, host: 'api-1' },
+    { ts: 60_000, cpu: 0.44, host: 'api-1' },
   ],
-  [
-    {
-      name: 'cpu',
-      upper: bands.toPoints('upper'),
-      lower: bands.toPoints('lower'),
-    },
-  ],
+  {
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'cpu', kind: 'number' },
+      { name: 'host', kind: 'string' },
+    ] as const,
+    name: 'reconstructed',
+  },
 );
-// data: [{ ts, cpu, cpuTrend, cpu_upper, cpu_lower }, ...]
 ```
 
-Rows where a column is missing leave that key `undefined`, which
-Recharts renders as a gap (with `connectNulls={false}`) — the right
-behavior for warmup and flat-window regions.
+The schema's first column must be `kind: 'time'` (`ts` is a single
+timestamp; it can't reconstruct a `TimeRange` or `Interval` extent).
+Missing keys on a row become `undefined` on the resulting `Event`.
 
-## Single line chart
+Useful for round-tripping derived data — flatten anomaly events into
+chart points, edit, then turn back into a `TimeSeries` for further
+composition.
+
+## Single line chart with Recharts
 
 The simple case. Drop `toPoints` straight into a `LineChart`:
 
@@ -148,7 +89,7 @@ import {
 } from 'recharts';
 
 function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
-  const data = cpu.toPoints('cpu');
+  const data = cpu.toPoints();
 
   return (
     <ResponsiveContainer width="100%" height={300}>
@@ -164,7 +105,7 @@ function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
         <Tooltip labelFormatter={(t) => new Date(t).toISOString()} />
         <Line
           type="monotone"
-          dataKey="value"
+          dataKey="cpu"
           dot={false}
           isAnimationActive={false}
         />
@@ -174,15 +115,16 @@ function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
 }
 ```
 
+Note `dataKey="cpu"` — the column name from the schema. No `.value`
+accessor; that was the old narrow-form API.
+
 `isAnimationActive={false}` is load-bearing for live dashboards — see
 [Live-update gotchas](#live-update-gotchas) below.
 
 ## Band chart with a filled region
 
-For a baseline band, use `<Area>` with a **ranged `dataKey`** —
-return `[lower, upper]` and Recharts paints the region between. Pair
-with a `<Line>` for the center series. Build the wide-row data
-through `mergeWideRows`:
+`baseline()` adds `avg` / `sd` / `upper` / `lower` columns to the
+source schema. `toPoints()` emits all of them in one wide-row array:
 
 ```tsx
 import {
@@ -196,17 +138,8 @@ import {
 
 function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
   const bands = cpu.baseline('cpu', { window: '1m', sigma: 2 });
-
-  const data = mergeWideRows(
-    [{ name: 'avg', points: bands.toPoints('avg') }],
-    [
-      {
-        name: 'cpu',
-        upper: bands.toPoints('upper'),
-        lower: bands.toPoints('lower'),
-      },
-    ],
-  );
+  const data = bands.toPoints();
+  // [{ ts, cpu, avg, sd, upper, lower, host, ... }, ...]
 
   return (
     <ResponsiveContainer width="100%" height={300}>
@@ -216,8 +149,8 @@ function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
         <Area
           // Ranged dataKey: returns [low, high]; Recharts fills between.
           dataKey={(d) =>
-            d.cpu_lower != null && d.cpu_upper != null
-              ? [d.cpu_lower, d.cpu_upper]
+            d.lower != null && d.upper != null
+              ? [d.lower, d.upper]
               : [null, null]
           }
           stroke="none"
@@ -239,9 +172,13 @@ function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
 }
 ```
 
-The ranged-`dataKey` trick isn't obvious from Recharts' own docs.
-It's the cleanest way to render a filled band — far less code than
-two separate `<Line>` strokes plus a `<polygon>` overlay.
+Two non-obvious tricks:
+
+1. **`<Area>` with a ranged `dataKey`** — return `[lower, upper]`
+   and Recharts paints the region between. Far less code than two
+   separate `<Line>` strokes plus a `<polygon>` overlay.
+2. **`connectNulls={false}`** — leaves the band visibly open in
+   warm-up and flat-window regions instead of papering over them.
 
 ## Anomaly dots overlay with `<Scatter>`
 
@@ -260,11 +197,11 @@ import {
 } from 'recharts';
 
 function CpuWithAnomalies({ cpu }: { cpu: TimeSeries<Schema> }) {
-  const main = cpu.toPoints('cpu');
+  const main = cpu.toPoints();
   const anomalies = cpu
     .outliers('cpu', { window: '1m', sigma: 2 })
-    .toPoints('cpu')
-    .map((p) => ({ ts: p.ts, value: p.value }));
+    .select('cpu')
+    .toPoints();
 
   return (
     <ResponsiveContainer width="100%" height={300}>
@@ -273,12 +210,17 @@ function CpuWithAnomalies({ cpu }: { cpu: TimeSeries<Schema> }) {
         <YAxis />
         <Line
           type="monotone"
-          dataKey="value"
+          dataKey="cpu"
           dot={false}
           isAnimationActive={false}
         />
         {/* Scatter has its own data prop — independent of the parent. */}
-        <Scatter data={anomalies} fill="#ef4444" isAnimationActive={false} />
+        <Scatter
+          data={anomalies}
+          dataKey="cpu"
+          fill="#ef4444"
+          isAnimationActive={false}
+        />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -326,6 +268,52 @@ For a `'dataMin' | 'dataMax'` auto-domain, an empty array renders an
 empty axis with no grid — generally fine — but a fixed domain plus
 no data renders a confusingly populated-looking empty chart.
 
+## Merging across multiple `TimeSeries` instances
+
+When all your data comes from a **single** `TimeSeries` (a snapshot,
+a baseline, an outliers result), `toPoints()` already returns wide
+rows — drop in. The case where you need extra work is **across
+sources** — e.g. a chart that overlays this-week and last-week from
+two separate `TimeSeries`, or merges live data with a static
+threshold series:
+
+```ts
+type Row = Record<string, number | undefined> & { ts: number };
+
+function mergeWideRows(
+  parts: ReadonlyArray<{
+    name: string;
+    points: ReadonlyArray<{ ts: number } & Record<string, unknown>>;
+    key: string;
+  }>,
+): Row[] {
+  const byTs = new Map<number, Row>();
+  const get = (ts: number): Row => {
+    let r = byTs.get(ts);
+    if (!r) {
+      r = { ts };
+      byTs.set(ts, r);
+    }
+    return r;
+  };
+  for (const part of parts) {
+    for (const p of part.points) {
+      const v = p[part.key];
+      if (typeof v === 'number') get(p.ts)[part.name] = v;
+    }
+  }
+  return [...byTs.values()].sort((a, b) => a.ts - b.ts);
+}
+
+const data = mergeWideRows([
+  { name: 'thisWeek', points: thisWeek.toPoints(), key: 'cpu' },
+  { name: 'lastWeek', points: lastWeek.toPoints(), key: 'cpu' },
+]);
+```
+
+For the single-source case (most charts), you don't need this — just
+`source.toPoints()`.
+
 ## When to skip Recharts
 
 Honest tradeoffs from a real adapter swap (custom SVG → Recharts on
@@ -337,15 +325,14 @@ a CPU/requests/anomaly dashboard):
 | Tooltips, snap-to-tick, auto axes                   | free                                         | DIY               |
 | Banded region                                       | `<Area>` 1 line                              | polygon ~8 lines  |
 | Live update without flicker                         | needs `isAnimationActive={false}` everywhere | natural           |
-| Bands + dots + multi-host + threshold + raw overlay | wide-row merge per chart                     | sometimes cleaner |
+| Bands + dots + multi-host + threshold + raw overlay | one `toPoints()` per source, fine            | sometimes cleaner |
 | Very large datasets (>10k points)                   | slow                                         | canvas faster     |
 | Precise visual control (custom render order)        | fights you                                   | you control it    |
 
-The pond-side prep is identical either way — `toPoints` is the only
-call that matters. The chart-side weight is in data-shaping for
-Recharts vs draw logic for SVG. For typical dashboards Recharts wins
-on bundle-vs-features; for the busier overlap of bands + dots +
-multi-series + threshold lines, custom SVG can come out cleaner.
+The pond-side prep is identical either way — `toPoints()` is the
+only call that matters. The chart-side weight is in component
+configuration for Recharts vs draw logic for SVG. For typical
+dashboards Recharts wins on bundle-vs-features.
 
 If you outgrow Recharts, **visx** is the next step up — same
 `toPoints` bridge, primitives instead of components. Reach for it

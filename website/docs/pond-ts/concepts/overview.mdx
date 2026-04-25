@@ -49,13 +49,13 @@ const cpu = new TimeSeries({
 // 2. Bucket into 10-second averages.
 const buckets = cpu.aggregate(Sequence.every('10s'), { cpu: 'avg' });
 
-// 3. Flat `{ts, value}[]` for any chart library.
-const points = buckets.toPoints('cpu');
-// [{ ts: 0, value: 0.514 }, { ts: 10000, value: 0.522 }, …]
+// 3. Flat wide rows for any chart library.
+const points = buckets.toPoints();
+// [{ ts: 0, cpu: 0.514 }, { ts: 10000, cpu: 0.522 }, …]
 ```
 
 That's the shape. If you're coming from React and just want a chart,
-`toPoints(col)` is the bridge — see
+`toPoints()` is the bridge — see
 [Getting data in and out](#getting-data-in-and-out) below.
 
 :::note[Coming from pandas?]
@@ -385,14 +385,15 @@ running analytics over a closed window, you usually want `within`.
 pond-ts is not a chart library — the actual rendering is yours. But
 the bridge to every chart library is deliberately short:
 
-- **`toPoints(col)`** — one column of a `TimeSeries` as a flat
-  `ReadonlyArray<{ ts: number; value: ScalarValue }>`. `undefined`
-  values are dropped. This is the shape Recharts, Observable Plot, visx,
-  and raw d3 all expect.
+- **`toPoints()`** — every event as a flat row keyed by schema column
+  name: `ReadonlyArray<{ ts: number, [col]: T | undefined, ... }>`.
+  This is the shape Recharts, Observable Plot, visx, and raw d3 all
+  expect. Single-column case: compose with `select` first
+  (`series.select('cpu').toPoints()`).
 - **`TimeSeries.fromPoints(points, { schema })`** — the inverse. Takes
-  a `{ ts, value }[]` and builds a two-column `TimeSeries`. Useful for
-  round-tripping chart points back into pond-native operations (e.g.
-  bucketing a flat anomaly list via `aggregate`).
+  wide-row points and builds a `TimeSeries` against any time-keyed
+  schema. Useful for round-tripping chart points back into pond-native
+  operations (e.g. bucketing a flat anomaly list via `aggregate`).
 - **`toJSON()` / `TimeSeries.fromJSON(json)`** — full-fidelity
   serialization; schema, name, and all rows round-trip. Use this for
   persistence or wire transfer.

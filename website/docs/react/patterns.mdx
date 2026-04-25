@@ -70,7 +70,7 @@ function ChartPerHost({
     [live, host],
   );
 
-  return snap && <Chart points={snap.toPoints('cpu')} label={host} />;
+  return snap && <Chart points={snap.select('cpu').toPoints()} label={host} />;
 }
 ```
 
@@ -117,13 +117,10 @@ function RollingBand({ live }: { live: LiveSeries<Schema> }) {
   );
   if (!baseline) return null;
 
-  return (
-    <BandChart
-      center={baseline.toPoints('avg')}
-      upper={baseline.toPoints('upper')}
-      lower={baseline.toPoints('lower')}
-    />
-  );
+  // toPoints() returns wide rows with avg / sd / upper / lower as
+  // top-level keys; pass the array straight to a chart that reads
+  // those keys.
+  return <BandChart data={baseline.toPoints()} />;
 }
 ```
 
@@ -262,7 +259,7 @@ function ServerHydratedChart({ initial }: { initial: JsonPayload }) {
   }, [live, initialSeries]);
 
   const snap = useSnapshot(live);
-  return snap && <Chart points={snap.toPoints('cpu')} />;
+  return snap && <Chart points={snap.select('cpu').toPoints()} />;
 }
 ```
 

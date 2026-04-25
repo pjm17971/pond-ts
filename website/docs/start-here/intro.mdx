@@ -62,11 +62,11 @@ const bands = cpu.baseline('cpu', { window: '2m', sigma: 2 });
 const anomalies = cpu.outliers('cpu', { window: '2m', sigma: 2 });
 //    ^ schema-preserving filter — same columns, just the spikes.
 
-// 4. Chart-ready output. `toPoints(col)` is the bridge to every chart
-//    library (Recharts, Observable Plot, visx, raw d3).
-byMinute.toPoints('cpu'); // one { ts, value } per minute bucket
-bands.toPoints('upper'); // upper band of an anomaly chart
-bands.toPoints('lower'); // lower band
+// 4. Chart-ready output. `toPoints()` returns wide rows keyed by
+//    schema column name — drop straight into Recharts / Observable
+//    Plot / visx / d3.
+byMinute.toPoints(); // [{ ts, cpu, requests, host }, ...]
+bands.toPoints(); // [{ ts, cpu, ..., avg, sd, upper, lower }, ...]
 anomalies.length; // how many spikes tripped the 2σ band
 ```
 
@@ -149,7 +149,7 @@ function Dashboard() {
   return (
     <>
       <Stat label="Avg CPU" value={cpu} />
-      {snap && <Chart points={snap.toPoints('cpu')} />}
+      {snap && <Chart points={snap.select('cpu').toPoints()} />}
     </>
   );
 }
@@ -172,7 +172,7 @@ dashboard patterns.
   `@pond-ts/react` is strictly optional.
 
 Not a database. Not a query engine. Not a chart library —
-`toPoints(col)` is the one-line bridge to every charting option.
+`toPoints()` is the one-line bridge to every charting option.
 
 ## In this docs site
 

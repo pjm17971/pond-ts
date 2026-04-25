@@ -24,7 +24,7 @@ import { useTimeSeries } from '@pond-ts/react';
 
 function Chart({ data }: { data: TimeSeriesJsonPayload }) {
   const series = useTimeSeries(data);
-  return <LineChart points={series.toPoints('cpu')} />;
+  return <LineChart points={series.select('cpu').toPoints()} />;
 }
 ```
 
@@ -91,7 +91,7 @@ function Stats({ live }: { live: LiveSeries<Schema> | null }) {
 
   if (snap === null) return <Skeleton />;
   if (snap.length === 0) return <NoData />;
-  return <Chart points={snap.toPoints('cpu')} />;
+  return <Chart points={snap.select('cpu').toPoints()} />;
 }
 ```
 
@@ -119,7 +119,7 @@ function HostChart({ live, host }: { live: LiveSeries<Schema>; host: string }) {
 
   // view — the LiveView; use it as a source for child hooks if needed.
   // snap — a TimeSeries snapshot of the view, refreshed on push.
-  return snap && <Chart points={snap.toPoints('cpu')} />;
+  return snap && <Chart points={snap.select('cpu').toPoints()} />;
 }
 ```
 
@@ -144,7 +144,7 @@ function CpuAverages({ snap }: { snap: TimeSeries<Schema> | null }) {
   const hourly = useDerived(snap, (s) =>
     s.aggregate(Sequence.every('1h'), { cpu: 'avg' }),
   );
-  return hourly && <Chart data={hourly.toPoints('cpu')} />;
+  return hourly && <Chart data={hourly.select('cpu').toPoints()} />;
 }
 ```
 
@@ -167,7 +167,7 @@ function LastFive({ live }: { live: LiveSeries<Schema> }) {
   const snap = useWindow(live, '5m'); // time-based window
   const snap100 = useWindow(live, 100); // count-based window
 
-  return snap && <Chart points={snap.toPoints('cpu')} />;
+  return snap && <Chart points={snap.select('cpu').toPoints()} />;
 }
 ```
 

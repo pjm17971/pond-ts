@@ -153,27 +153,30 @@ describe('TimeSeries.baseline', () => {
     }
   });
 
-  it('toPoints on upper/lower drops warm-up events and widens each frame', () => {
+  it('toPoints exposes upper/lower alongside avg/sd in wide rows', () => {
     const b = makeSteady().baseline('cpu', { window: '10s', sigma: 2 });
-    const upper = b.toPoints('upper');
-    const lower = b.toPoints('lower');
-    // Warm-up events (sd still undefined) produce undefined bands;
-    // toPoints drops those, so the emitted point count is strictly
-    // smaller than the total event count.
-    expect(upper.length).toBe(lower.length);
-    expect(upper.length).toBeGreaterThan(0);
-    expect(upper.length).toBeLessThan(b.length);
-    // For every emitted frame, upper is *strictly* above lower. Strict
-    // inequality holds because the `makeSteady` fixture has jitter — no
-    // rolling window inside it has sd===0 once warm-up passes. If a
-    // future fixture edit introduces a flat region, those rows would
-    // be dropped here (undefined band) before this assertion runs.
-    for (let i = 0; i < upper.length; i += 1) {
-      expect(upper[i]!.value).toBeGreaterThan(lower[i]!.value);
+    const points = b.toPoints();
+
+    // Wide form preserves every event — chart libs render undefined
+    // as gaps. Length matches the source.
+    expect(points.length).toBe(b.length);
+
+    // Warm-up region: upper/lower are undefined while sd hasn't
+    // converged yet.
+    const warmup = points.filter((p) => p.upper === undefined);
+    expect(warmup.length).toBeGreaterThan(0);
+
+    // After warm-up, upper > lower strictly (sd > 0 throughout the
+    // jittery makeSteady fixture).
+    const live = points.filter((p) => p.upper !== undefined);
+    expect(live.length).toBeGreaterThan(0);
+    for (const p of live) {
+      expect(p.upper).toBeGreaterThan(p.lower!);
     }
-    // Point timestamps align with the source events in order.
-    for (let i = 0; i < upper.length; i += 1) {
-      expect(upper[i]!.ts).toBe(lower[i]!.ts);
+
+    // ts is monotonically increasing.
+    for (let i = 1; i < points.length; i += 1) {
+      expect(points[i]!.ts).toBeGreaterThan(points[i - 1]!.ts);
     }
   });
 
