@@ -100,6 +100,7 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
 };
 type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
+type PivotByGroupOptions = { aggregate?: AggregateReducer };
 type FillStrategy = 'hold' | 'bfill' | 'linear' | 'zero';
 type FillMapping<S extends SeriesSchema> = {
   [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
@@ -1501,6 +1502,134 @@ export class TimeSeries<S extends SeriesSchema> {
       result.set(key, buildGroup(events));
     }
     return result;
+  }
+
+  /**
+   * Example: `series.pivotByGroup("host", "cpu")`.
+   * Reshapes long-form data into wide rows. Each distinct value of
+   * `groupCol` becomes its own column in the output schema named
+   * `${group}_${valueCol}`, holding the value from `valueCol` at that
+   * timestamp.
+   *
+   * Rows sharing a timestamp collapse into one output row. Cells where
+   * a group has no event at a given timestamp are `undefined`. The
+   * inverse operation of `groupBy` for the case where you want one wide
+   * `TimeSeries` instead of N separate ones — typically because the
+   * downstream chart expects wide rows.
+   *
+   * If two events share both a timestamp AND a group value the call
+   * throws by default. Pass `{ aggregate: "avg" }` (or any reducer name
+   * that `aggregate()` accepts: `"sum"`, `"first"`, `"last"`, `"min"`,
+   * `"max"`, `"median"`, percentiles like `"p95"`, etc.) to combine
+   * duplicates instead.
+   *
+   * Output schema is dynamic — column names depend on runtime data —
+   * so the return type is `TimeSeries<SeriesSchema>` (loosely typed).
+   * Group values are sorted alphabetically for stable column order.
+   * Requires a time-keyed input series.
+   *
+   * Example: `series.pivotByGroup("host", "cpu", { aggregate: "avg" })`.
+   * Averages values when multiple rows share `(timestamp, host)`.
+   */
+  pivotByGroup<
+    G extends keyof EventDataForSchema<S> & string,
+    V extends keyof EventDataForSchema<S> & string,
+  >(
+    groupCol: G,
+    valueCol: V,
+    options: PivotByGroupOptions = {},
+  ): TimeSeries<SeriesSchema> {
+    if (this.schema[0].kind !== 'time') {
+      throw new TypeError(
+        `pivotByGroup requires a time-keyed series; got ${this.schema[0].kind}`,
+      );
+    }
+    const valueColumnDef = this.schema.find(
+      (c): c is ValueColumn => c.name === valueCol,
+    );
+    if (!valueColumnDef) {
+      throw new TypeError(
+        `pivotByGroup: value column "${String(valueCol)}" not in schema`,
+      );
+    }
+    if (!this.schema.some((c) => c.name === groupCol)) {
+      throw new TypeError(
+        `pivotByGroup: group column "${String(groupCol)}" not in schema`,
+      );
+    }
+
+    const aggregator = options.aggregate;
+    const valueKind = valueColumnDef.kind;
+
+    type Cell = ColumnValue | undefined;
+    const groupSeen = new Set<string>();
+    const byTs = new Map<number, Map<string, Cell[]>>();
+
+    for (const event of this.events) {
+      const ts = event.begin();
+      const data = event.data() as Record<string, ColumnValue | undefined>;
+      const rawGroup = data[groupCol];
+      const groupKey = rawGroup === undefined ? 'undefined' : String(rawGroup);
+      const value = data[valueCol];
+
+      groupSeen.add(groupKey);
+
+      let tsBucket = byTs.get(ts);
+      if (!tsBucket) {
+        tsBucket = new Map();
+        byTs.set(ts, tsBucket);
+      }
+      let groupBucket = tsBucket.get(groupKey);
+      if (!groupBucket) {
+        groupBucket = [];
+        tsBucket.set(groupKey, groupBucket);
+      }
+      groupBucket.push(value);
+    }
+
+    const sortedGroups = [...groupSeen].sort();
+    const outputSchema = [
+      this.schema[0],
+      ...sortedGroups.map((g) => ({
+        name: `${g}_${String(valueCol)}`,
+        kind: valueKind,
+        required: false,
+      })),
+    ] as unknown as SeriesSchema;
+
+    const sortedTimestamps = [...byTs.keys()].sort((a, b) => a - b);
+    const outputRows: unknown[][] = [];
+    for (const ts of sortedTimestamps) {
+      const tsBucket = byTs.get(ts)!;
+      const row: unknown[] = [ts];
+      for (const groupKey of sortedGroups) {
+        const cell = tsBucket.get(groupKey);
+        if (cell === undefined) {
+          row.push(undefined);
+          continue;
+        }
+        if (cell.length === 1) {
+          row.push(cell[0]);
+          continue;
+        }
+        if (aggregator === undefined) {
+          throw new Error(
+            `pivotByGroup: ${cell.length} events share timestamp ${ts} ` +
+              `and group "${groupKey}". Pass ` +
+              `{ aggregate: "avg" | "sum" | "first" | "last" | ... } ` +
+              `to combine duplicates.`,
+          );
+        }
+        row.push(applyAggregateReducer(aggregator, cell));
+      }
+      outputRows.push(row);
+    }
+
+    return new TimeSeries({
+      name: this.name,
+      schema: outputSchema,
+      rows: outputRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    });
   }
 
   /**
