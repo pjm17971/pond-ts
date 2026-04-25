@@ -7,9 +7,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.0...HEAD
 
 ## [Unreleased]
+
+## [0.8.0] — 2026-04-25
+
+### Added
+
+- **`TimeSeries.pivotByGroup(groupCol, valueCol, options?)`** — long-to-wide
+  reshape on a categorical column. Each distinct value of `groupCol` becomes
+  its own column in the output schema named `${group}_${value}`, holding the
+  value column at that timestamp. Rows sharing a timestamp collapse into one
+  output row; missing `(timestamp, group)` cells are `undefined`.
+
+  ```ts
+  // Long: { ts, cpu, host } per row
+  // Wide: { ts, "api-1_cpu", "api-2_cpu", ... } per row
+  long.pivotByGroup('host', 'cpu').toPoints();
+  // Drops straight into <Line dataKey="api-1_cpu" /> etc.
+  ```
+
+  Duplicate `(timestamp, group)` pairs throw by default; opt-in
+  `{ aggregate: 'avg' | 'sum' | 'first' | 'last' | 'min' | 'max' | 'median' | 'p95' | ... }`
+  to combine. The aggregator's output kind must match the value column's
+  kind — `count`, `unique`, `topN` and other kind-changing reducers are
+  rejected upfront with a clear error. Output schema is dynamic so the
+  return type is `TimeSeries<SeriesSchema>` (loosely typed). Time-keyed
+  input required.
+
+  Use `pivotByGroup` for the per-group dashboard case ("one source, many
+  producers, one chart line per producer"). Use `groupBy + joinMany` when
+  each group spawns multiple derived columns (e.g. per-host baseline →
+  cpu/avg/upper/lower per host). At 200k events × 100 groups, runs in
+  ~43 ms — at parity with hand-rolled JS that skips `TimeSeries`
+  construction entirely.
+
+### Changed
+
+- Charting docs lead with `series.join(other, ...).toPoints()` for
+  cross-source overlays. The manual `mergeWideRows` recipe is demoted to
+  "non-`TimeSeries` inputs". A new "Per-group wide rows" section covers
+  `pivotByGroup` end-to-end with Recharts.
+
+### Notes
+
+- **Live counterpart deferred.** No `LiveSeries.pivotByGroup` /
+  `LiveSeries.merge` / `LiveSeries.join` yet — see PLAN.md "Known scope
+  gap: live merge / join". Snapshot-then-batch is the workaround:
+  `useSnapshot` per source + `useMemo` running a batch `pivotByGroup` or
+  `join`.
 
 ## [0.7.0] — 2026-04-25
 
@@ -144,6 +191,7 @@ type-level changes; patch bumps are strictly additive.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
+[0.8.0]: https://github.com/pjm17971/pond-ts/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...v0.6.0
 [0.5.11]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...v0.5.11
