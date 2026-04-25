@@ -30,9 +30,8 @@ column_ is `undefined`. If two columns from the same source have
 gaps in different places (warmup, flat-window regions on
 [`baseline`](./anomaly-detection#baseline)), their arrays will have
 different lengths. **Don't index across two `toPoints` results by
-position** — use a single iteration over the source `TimeSeries`
-and build merged rows directly. The band-chart example below shows
-the right shape.
+position** — see [Wide rows vs long
+columns](#wide-rows-vs-long-columns) for the right pattern.
 :::
 
 ## `fromPoints(points, { schema, name? })` — the inverse
@@ -53,10 +52,89 @@ const ts = TimeSeries.fromPoints(pts, {
 Schema must be exactly two columns: a time-key column and one value
 column.
 
-## Recharts example
+## Wide rows vs long columns
 
-The most common React combo. Drop `toPoints` output straight into a
-`<LineChart>` or `<AreaChart>`:
+The shape mismatch every nontrivial Recharts adapter hits:
+
+- pond-ts thinks in **long columns** — `toPoints(col)` returns one
+  list of `{ ts, value }` per column, independent.
+- Recharts thinks in **wide rows** — one `data` array of
+  `{ ts, key1: v1, key2: v2, … }` rows, every series sharing the
+  same x.
+
+A single-series chart doesn't notice — `data={cpu.toPoints('cpu')}`
+just works. The moment you have two series, a band chart, or an
+anomaly overlay, you need to **merge** several long columns into
+wide rows yourself.
+
+The `:::caution` above is why: zipping three independently-filtered
+`toPoints` arrays by index silently misaligns when the columns have
+gaps in different places (warmup, flat-window regions).
+
+### `mergeWideRows(...)` — the recipe
+
+A typed helper that takes long-column inputs and produces the wide
+rows Recharts wants. Drop this into your codebase; every
+multi-series chart will reach for it:
+
+```ts
+type Point = { ts: number; value: number };
+type Row = Record<string, number | undefined> & { ts: number };
+
+function mergeWideRows(
+  series: ReadonlyArray<{ name: string; points: ReadonlyArray<Point> }>,
+  bands: ReadonlyArray<{
+    name: string;
+    upper: ReadonlyArray<Point>;
+    lower: ReadonlyArray<Point>;
+  }> = [],
+): Row[] {
+  const byTs = new Map<number, Row>();
+  const get = (ts: number): Row => {
+    let r = byTs.get(ts);
+    if (!r) {
+      r = { ts };
+      byTs.set(ts, r);
+    }
+    return r;
+  };
+  for (const s of series) {
+    for (const p of s.points) get(p.ts)[s.name] = p.value;
+  }
+  for (const b of bands) {
+    for (const p of b.upper) get(p.ts)[`${b.name}_upper`] = p.value;
+    for (const p of b.lower) get(p.ts)[`${b.name}_lower`] = p.value;
+  }
+  return [...byTs.values()].sort((a, b) => a.ts - b.ts);
+}
+```
+
+Use it like this:
+
+```ts
+const data = mergeWideRows(
+  [
+    { name: 'cpu', points: cpu.toPoints('cpu') },
+    { name: 'cpuTrend', points: cpu.toPoints('cpuTrend') },
+  ],
+  [
+    {
+      name: 'cpu',
+      upper: bands.toPoints('upper'),
+      lower: bands.toPoints('lower'),
+    },
+  ],
+);
+// data: [{ ts, cpu, cpuTrend, cpu_upper, cpu_lower }, ...]
+```
+
+Rows where a column is missing leave that key `undefined`, which
+Recharts renders as a gap (with `connectNulls={false}`) — the right
+behavior for warmup and flat-window regions.
+
+## Single line chart
+
+The simple case. Drop `toPoints` straight into a `LineChart`:
 
 ```tsx
 import {
@@ -64,9 +142,9 @@ import {
   Line,
   LineChart,
   ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
 } from 'recharts';
 
 function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
@@ -84,123 +162,198 @@ function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
         />
         <YAxis />
         <Tooltip labelFormatter={(t) => new Date(t).toISOString()} />
-        <Line type="monotone" dataKey="value" dot={false} />
+        <Line
+          type="monotone"
+          dataKey="value"
+          dot={false}
+          isAnimationActive={false}
+        />
       </LineChart>
     </ResponsiveContainer>
   );
 }
 ```
 
-For a band chart, three series — center, upper, lower — from one
-`baseline()` pass. Build merged rows by iterating the source
-once; **don't** zip three separate `toPoints` arrays — each one
-drops gaps independently and the indexes won't line up:
+`isAnimationActive={false}` is load-bearing for live dashboards — see
+[Live-update gotchas](#live-update-gotchas) below.
+
+## Band chart with a filled region
+
+For a baseline band, use `<Area>` with a **ranged `dataKey`** —
+return `[lower, upper]` and Recharts paints the region between. Pair
+with a `<Line>` for the center series. Build the wide-row data
+through `mergeWideRows`:
 
 ```tsx
+import {
+  Area,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
 function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
   const bands = cpu.baseline('cpu', { window: '1m', sigma: 2 });
 
-  // Build merged rows directly from the source. Every grid point is
-  // kept; undefined fields render as gaps in Recharts.
-  const merged = Array.from({ length: bands.length }, (_, i) => {
-    const e = bands.at(i)!;
-    return {
-      ts: e.begin(),
-      avg: e.get('avg'),
-      upper: e.get('upper'),
-      lower: e.get('lower'),
-    };
-  });
+  const data = mergeWideRows(
+    [{ name: 'avg', points: bands.toPoints('avg') }],
+    [
+      {
+        name: 'cpu',
+        upper: bands.toPoints('upper'),
+        lower: bands.toPoints('lower'),
+      },
+    ],
+  );
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <LineChart data={merged}>
+      <ComposedChart data={data}>
         <XAxis dataKey="ts" type="number" />
         <YAxis />
-        <Line type="monotone" dataKey="avg" dot={false} connectNulls={false} />
-        <Line
-          type="monotone"
-          dataKey="upper"
-          stroke="#888"
-          strokeDasharray="4 4"
-          dot={false}
-          connectNulls={false}
+        <Area
+          // Ranged dataKey: returns [low, high]; Recharts fills between.
+          dataKey={(d) =>
+            d.cpu_lower != null && d.cpu_upper != null
+              ? [d.cpu_lower, d.cpu_upper]
+              : [null, null]
+          }
+          stroke="none"
+          fill="#3b82f6"
+          fillOpacity={0.15}
+          isAnimationActive={false}
         />
         <Line
           type="monotone"
-          dataKey="lower"
-          stroke="#888"
-          strokeDasharray="4 4"
+          dataKey="avg"
+          stroke="#3b82f6"
           dot={false}
           connectNulls={false}
+          isAnimationActive={false}
         />
-      </LineChart>
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
 ```
 
-`connectNulls={false}` leaves the band visibly open in warmup and
-flat-window regions instead of papering over them with a straight
-line.
+The ranged-`dataKey` trick isn't obvious from Recharts' own docs.
+It's the cleanest way to render a filled band — far less code than
+two separate `<Line>` strokes plus a `<polygon>` overlay.
 
-For live data, hook this up via [`useSnapshot`](../../react/hooks#usesnapshot)
-or [`useDerived`](../../react/hooks#usederived) — see
-[React patterns → Rolling band chart](../../react/patterns#rolling-band-chart).
+## Anomaly dots overlay with `<Scatter>`
 
-## visx — for primitive control
-
-When you need tighter control over scales, axes, or composition,
-visx exposes the underlying primitives. Same `toPoints` bridge,
-just more wiring:
+Recharts' `<Scatter>` accepts its **own** `data` prop, separate from
+the chart-level `data`. Useful for anomaly markers that don't share
+the main series' grid:
 
 ```tsx
-import { scaleLinear, scaleTime } from '@visx/scale';
-import { LinePath } from '@visx/shape';
-import { extent, max, min } from 'd3-array';
+import {
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Scatter,
+  XAxis,
+  YAxis,
+} from 'recharts';
 
-function CpuLine({
-  cpu,
-  width,
-  height,
-}: {
-  cpu: TimeSeries<Schema>;
-  width: number;
-  height: number;
-}) {
-  const data = cpu.toPoints('cpu');
-  if (data.length === 0) return null; // empty source — extent would be [undefined, undefined]
-
-  const xScale = scaleTime({
-    domain: extent(data, (d) => d.ts) as [number, number],
-    range: [0, width],
-  });
-
-  const yScale = scaleLinear({
-    domain: [min(data, (d) => d.value)!, max(data, (d) => d.value)!],
-    range: [height, 0],
-    nice: true,
-  });
+function CpuWithAnomalies({ cpu }: { cpu: TimeSeries<Schema> }) {
+  const main = cpu.toPoints('cpu');
+  const anomalies = cpu
+    .outliers('cpu', { window: '1m', sigma: 2 })
+    .toPoints('cpu')
+    .map((p) => ({ ts: p.ts, value: p.value }));
 
   return (
-    <svg width={width} height={height}>
-      <LinePath
-        data={data}
-        x={(d) => xScale(d.ts)}
-        y={(d) => yScale(d.value)}
-        stroke="#3b82f6"
-        strokeWidth={2}
-      />
-    </svg>
+    <ResponsiveContainer width="100%" height={300}>
+      <ComposedChart data={main}>
+        <XAxis dataKey="ts" type="number" domain={['dataMin', 'dataMax']} />
+        <YAxis />
+        <Line
+          type="monotone"
+          dataKey="value"
+          dot={false}
+          isAnimationActive={false}
+        />
+        {/* Scatter has its own data prop — independent of the parent. */}
+        <Scatter data={anomalies} fill="#ef4444" isAnimationActive={false} />
+      </ComposedChart>
+    </ResponsiveContainer>
   );
 }
 ```
 
-This is the rough shape `@pond-ts/charts` will eventually wrap with
-opinionated defaults, axes, tooltips, brushing, and live-source
-hooks — but the underlying contract stays the same:
-**`toPoints` returns chart-ready arrays; the chart library does the
-rest.**
+For per-host anomaly dots, render one `<Scatter>` per host with its
+own filtered data and color.
+
+## Live-update gotchas
+
+Two things bite immediately when wiring Recharts to a `LiveSeries`:
+
+### Disable animation on snapshot ticks
+
+Recharts' default is `isAnimationActive={true}`, which animates from
+the previous frame to the new one over ~1.5 seconds. With a live
+`useSnapshot` rebuilding the snapshot every 100–200 ms (the
+[default throttle](../../react/concepts#throttling)), the chart
+visibly **redraws** on every tick — it's mid-animation when the
+next snapshot lands.
+
+Set `isAnimationActive={false}` on every `<Line>` / `<Area>` /
+`<Scatter>` in a live chart. Static (one-time-fetched) charts can
+keep animation; live ones should not.
+
+### Empty-state branch for fixed domains
+
+With a fixed time domain (`domain={[tStart, tEnd]}`), Recharts
+renders the axis even with an empty `data` array. The chart looks
+"there" before any source events arrive — usually the wrong thing.
+Add an explicit branch:
+
+```tsx
+function LiveCpu({ live }: { live: LiveSeries<Schema> }) {
+  const snap = useSnapshot(live);
+  if (!snap || snap.length === 0) {
+    return <div className="placeholder">Waiting for data…</div>;
+  }
+  return <CpuChart cpu={snap} />;
+}
+```
+
+For a `'dataMin' | 'dataMax'` auto-domain, an empty array renders an
+empty axis with no grid — generally fine — but a fixed domain plus
+no data renders a confusingly populated-looking empty chart.
+
+## When to skip Recharts
+
+Honest tradeoffs from a real adapter swap (custom SVG → Recharts on
+a CPU/requests/anomaly dashboard):
+
+| Need                                                | Recharts                                     | Custom SVG        |
+| --------------------------------------------------- | -------------------------------------------- | ----------------- |
+| Single-series line / area / bar                     | clear win                                    | overkill          |
+| Tooltips, snap-to-tick, auto axes                   | free                                         | DIY               |
+| Banded region                                       | `<Area>` 1 line                              | polygon ~8 lines  |
+| Live update without flicker                         | needs `isAnimationActive={false}` everywhere | natural           |
+| Bands + dots + multi-host + threshold + raw overlay | wide-row merge per chart                     | sometimes cleaner |
+| Very large datasets (>10k points)                   | slow                                         | canvas faster     |
+| Precise visual control (custom render order)        | fights you                                   | you control it    |
+
+The pond-side prep is identical either way — `toPoints` is the only
+call that matters. The chart-side weight is in data-shaping for
+Recharts vs draw logic for SVG. For typical dashboards Recharts wins
+on bundle-vs-features; for the busier overlap of bands + dots +
+multi-series + threshold lines, custom SVG can come out cleaner.
+
+If you outgrow Recharts, **visx** is the next step up — same
+`toPoints` bridge, primitives instead of components. Reach for it
+when you need fine-grained control over scales, render order, or
+canvas rendering for big datasets. A first-party `@pond-ts/charts`
+will eventually wrap visx with opinionated defaults; until then,
+build your own thin wrapper if you find yourself repeating the same
+visx scaffolding.
 
 ## Why no first-party charts yet
 
