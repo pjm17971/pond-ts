@@ -111,6 +111,9 @@ Completed:
 - [x] `groupBy` — partition by column value, optional transform callback
 - [x] `diff` / `rate` — per-event differences and per-second rates of change
 - [x] `fill` — per-column gap-filling strategies (hold, linear, zero, literal)
+- [x] `pivotByGroup` — long-to-wide reshape on a categorical column; the missing
+      inverse of `groupBy` for cases where you want one wide series instead of N
+      separate ones (added late, after dashboard-agent feedback)
 
 Scope: none — all items complete.
 
@@ -129,7 +132,7 @@ Nice-to-have in the same wave:
 
 Hold for later unless a concrete user need appears:
 
-- `pivot` / `unpivot`
+- `unpivot` — wide-to-long; trivial via `flatMap` today, no demand seen yet
 
 ### Design notes
 
@@ -210,6 +213,33 @@ series.fill({ cpu: 0, host: 'unknown' });
 
 `linear` requires known values on both sides of a gap; leading and trailing
 undefined runs are left unfilled.
+
+**`pivotByGroup`**: reshapes long-form data into wide rows. Each distinct
+value of a categorical column becomes its own column in the output schema,
+named `${group}_${value}`, holding the value column at that timestamp.
+Rows sharing a timestamp collapse into one output row; missing
+`(timestamp, group)` cells are `undefined`. Output schema is dynamic
+(column names depend on runtime data), so the return type is
+`TimeSeries<SeriesSchema>` (loosely typed) — callers bridging to charts
+read columns by name out of `toPoints()` rows.
+
+```ts
+// Long: { ts, cpu, host } per row
+// Wide: { ts, "api-1_cpu", "api-2_cpu", ... } per row
+const wide = long.pivotByGroup('host', 'cpu');
+wide.toPoints(); // ready for Recharts <Line dataKey="api-1_cpu" /> etc.
+```
+
+Duplicate `(timestamp, group)` pairs throw by default; opt-in with
+`{ aggregate: 'avg' | 'sum' | 'first' | 'last' | ... }` to combine
+(reuses the `aggregate()` reducer registry, including custom functions
+and `pN` / `topN` parsed names). Requires a time-keyed input.
+
+The single-value-column form covers the dashboard case ("one metric,
+multiple producers"). A multi-value-column variant
+(`pivotByGroup('host', ['cpu', 'memory'])` → schema with
+`api-1_cpu`, `api-1_memory`, ...) is a candidate follow-up if a real
+need appears; today's workaround is two `pivotByGroup` calls + `join`.
 
 **Per-column alignment**: extend `align()` to accept a per-column map. Default
 (`'hold'`) applies to any column not in the map:

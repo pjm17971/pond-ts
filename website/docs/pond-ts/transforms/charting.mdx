@@ -268,7 +268,92 @@ For a `'dataMin' | 'dataMax'` auto-domain, an empty array renders an
 empty axis with no grid — generally fine — but a fixed domain plus
 no data renders a confusingly populated-looking empty chart.
 
-## Merging across multiple `TimeSeries` instances
+## Per-group wide rows (one source, categorical column)
+
+The most common dashboard shape: **one** source where events carry a
+categorical column (`host`, `region`, `service`, …), and you want one
+chart line per category. The events arrive in long form — multiple
+rows per timestamp, each tagged with its category — and Recharts wants
+wide form, one row per timestamp with one column per category.
+
+`pivotByGroup` is the reshape:
+
+```ts
+const long = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+    { name: 'host', kind: 'string' },
+  ] as const,
+  rows: [
+    [0, 0.31, 'api-1'],
+    [0, 0.52, 'api-2'],
+    [60_000, 0.44, 'api-1'],
+    [60_000, 0.48, 'api-2'],
+  ],
+});
+
+const wide = long.pivotByGroup('host', 'cpu');
+// schema: [time, "api-1_cpu", "api-2_cpu"]
+
+wide.toPoints();
+// [
+//   { ts: 0,      "api-1_cpu": 0.31, "api-2_cpu": 0.52 },
+//   { ts: 60_000, "api-1_cpu": 0.44, "api-2_cpu": 0.48 },
+// ]
+```
+
+Drop the points straight into Recharts:
+
+```tsx
+<LineChart data={wide.toPoints()}>
+  <Line dataKey="api-1_cpu" />
+  <Line dataKey="api-2_cpu" />
+</LineChart>
+```
+
+If a host is missing at a given timestamp, that cell is `undefined` —
+`<Line connectNulls />` joins across the gap, or `.fill({ 'api-2_cpu':
+'hold' })` carry-forwards before charting. If two events share both a
+timestamp **and** a host, the call throws by default; opt in with
+`{ aggregate: 'avg' | 'sum' | 'first' | 'last' | ... }` to combine.
+
+`pivotByGroup` composes downstream — every wide column is a regular
+numeric column:
+
+```ts
+const smoothed = wide.rolling('5m', {
+  'api-1_cpu': 'avg',
+  'api-2_cpu': 'avg',
+});
+```
+
+Per-host **baselines** (anomaly bands per host) need a slightly
+different shape — `baseline` is single-column today, so reach for
+`groupBy` + `joinMany` instead of pivot:
+
+```ts
+const groups = long.groupBy('host', (g, host) =>
+  g.baseline('cpu', { window: '5m', sigma: 2 }).rename({
+    cpu: `${host}_cpu`,
+    avg: `${host}_avg`,
+    upper: `${host}_upper`,
+    lower: `${host}_lower`,
+  }),
+);
+const wide = TimeSeries.joinMany([...groups.values()], { type: 'outer' });
+wide.toPoints();
+// { ts, "api-1_cpu", "api-1_upper", "api-1_lower",
+//       "api-2_cpu", "api-2_upper", "api-2_lower", ... }
+```
+
+`pivotByGroup` is the simpler primitive when there's just one value
+column per group; `groupBy` + `joinMany` is the heavier workflow when
+each group spawns multiple derived columns. Full reference:
+[Aggregation → pivotByGroup](./aggregation#pivotbygroup).
+
+## Joining across multiple `TimeSeries` instances
 
 When all your data comes from a **single** `TimeSeries` (a snapshot,
 a baseline, an outliers result), `toPoints()` already returns wide
