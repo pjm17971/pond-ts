@@ -20,15 +20,22 @@ operators. `align` ≈ `.asfreq()` (plus `.ffill()` or `.interpolate()`);
 
 ## Mental model
 
-A grid on the timeline. Source events sit on the timeline at their
-own (sometimes irregular) times. Each operator emits one
-**interval-keyed** event per grid step — but the value comes from a
-different rule:
+![align vs aggregate against a 5-minute grid: align emits one
+interval-keyed event per grid step with a value sampled from the
+source via begin/center/end × hold/linear; aggregate emits one
+interval-keyed event per bucket with the value computed from a
+reducer over every source event inside](/img/align-aggregate-mental-model.png)
 
-- `align` snapshots the source at each grid point (hold the previous,
-  or interpolate between neighbors).
-- `aggregate` collapses every source event in `[step, step + width)`
-  through a reducer.
+Source events sit on the timeline at their own (sometimes irregular)
+times. Both `align` and `aggregate` emit one **interval-keyed** event
+per grid step — same key shape, different value rule:
+
+- `align` samples the source at a chosen point inside each grid step
+  (`'begin'` / `'center'` / `'end'`), with the value either **held**
+  from the most recent source ≤ that point or **linearly interpolated**
+  between the two surrounding sources.
+- `aggregate` collapses every source event whose key falls in
+  `[step.begin, step.end)` through a reducer.
 
 ## Comparison
 
@@ -95,19 +102,37 @@ For the deep dive — `LiveAggregation`, `reduce`, `groupBy`,
 ```ts
 cpu.align(Sequence.every('5s'), {
   method: 'hold', // 'hold' (carry previous) | 'linear' (interpolate)
-  sample: 'begin', // 'begin' (start of grid step) | 'center'
+  sample: 'begin', // 'begin' | 'center' | 'end'
 });
 ```
 
-- **`method: 'hold'`** — carry the previous value; first grid points
-  before any source produce `undefined`.
+- **`method: 'hold'`** — carry the most recent source value at or
+  before the sample point; output is `undefined` before any source
+  is available.
 - **`method: 'linear'`** — interpolate between the two neighboring
   sources. Throws on non-`Time`-keyed sources (`TimeRange` /
   `Interval`); falls back to `'hold'` for non-numeric columns.
-- **`sample: 'begin' | 'center'`** — where in each grid step to take
-  the snapshot.
+- **`sample`** — where inside each grid step to take the snapshot:
+  `'begin'` (interval start), `'center'` (midpoint), `'end'`
+  (interval's exclusive boundary, i.e. the start of the next step).
 - **`range`** — pin the output range explicitly; default is the
   source extent.
+
+:::tip[Want time-keyed output for charting?]
+`align` returns interval-keyed events (consistent with `aggregate`).
+For point-keyed output — what most chart libraries expect — chain
+`.asTime({ at })`:
+
+```ts
+const points = cpu
+  .align(Sequence.every('5m'), { method: 'hold', sample: 'end' })
+  .asTime({ at: 'end' });
+// points.at(0)?.key() is now a Time at the interval's end.
+```
+
+`asTime`'s `at` option (`'begin' | 'center' | 'end'`) picks where on
+each interval the resulting `Time` lands.
+:::
 
 ## Where to next
 

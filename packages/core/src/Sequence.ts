@@ -17,7 +17,7 @@ import type { TemporalLike, TimestampInput } from './temporal.js';
 import { normalizeTimestamp } from './temporal.js';
 
 export type { DurationInput };
-export type SequenceSample = 'begin' | 'center';
+export type SequenceSample = 'begin' | 'center' | 'end';
 
 type FixedSequenceInput = {
   every: DurationInput;
@@ -156,10 +156,23 @@ export class Sequence {
     if (this.#kind === 'fixed') {
       const stepMs = this.#stepMs!;
       const anchorMs = this.#anchorMs!;
-      const sampleOffset = sample === 'center' ? stepMs / 2 : 0;
-      const firstIndex = Math.ceil(
-        (requested.begin() - sampleOffset - anchorMs) / stepMs,
-      );
+      // sampleOffset shifts the sample point relative to interval.begin()
+      // so the inclusion test is "is the sample point inside the requested
+      // range?" For 'begin' the sample is the start; for 'center' it's the
+      // midpoint; for 'end' it's the exclusive interval boundary.
+      //
+      // 'begin' and 'center' use an inclusive range — sample ∈ [begin, end].
+      // 'end' uses left-exclusive — sample ∈ (begin, end] — to keep the
+      // boundary case symmetric: begin-sampling at range.end() and
+      // end-sampling at range.begin() would otherwise BOTH include
+      // intervals whose extent sits entirely outside the range.
+      const sampleOffset =
+        sample === 'center' ? stepMs / 2 : sample === 'end' ? stepMs : 0;
+      const firstIndex =
+        sample === 'end'
+          ? Math.floor((requested.begin() - sampleOffset - anchorMs) / stepMs) +
+            1
+          : Math.ceil((requested.begin() - sampleOffset - anchorMs) / stepMs);
       const lastIndex = Math.floor(
         (requested.end() - sampleOffset - anchorMs) / stepMs,
       );
@@ -191,13 +204,24 @@ export class Sequence {
       const start = currentStart.epochMilliseconds;
       const end = nextStart.epochMilliseconds;
       const sampleTime =
-        sample === 'center' ? start + (end - start) / 2 : start;
+        sample === 'end'
+          ? end
+          : sample === 'center'
+            ? start + (end - start) / 2
+            : start;
 
       if (sampleTime > requested.end()) {
         break;
       }
 
-      if (sampleTime >= requested.begin()) {
+      // 'begin' and 'center': sample ∈ [requested.begin, requested.end]
+      // 'end':                 sample ∈ (requested.begin, requested.end]
+      const include =
+        sample === 'end'
+          ? sampleTime > requested.begin()
+          : sampleTime >= requested.begin();
+
+      if (include) {
         intervals.push(new Interval({ value: start, start, end }));
       }
 

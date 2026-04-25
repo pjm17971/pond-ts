@@ -89,7 +89,7 @@ type BoundaryLike = EventKey | TimestampInput;
 type KeyLike = EventKey | TimestampInput | TimeRangeInput | IntervalInput;
 type SeriesRangeLike = TemporalLike | { timeRange(): TimeRange | undefined };
 type AlignMethod = 'hold' | 'linear';
-type AlignSample = 'begin' | 'center';
+type AlignSample = 'begin' | 'center' | 'end';
 type SequenceLike = Sequence | BoundedSequence;
 type ErrorJoinOptions = { type?: JoinType; onConflict?: 'error' };
 type PrefixJoinOptions<Prefixes extends readonly string[]> = {
@@ -393,9 +393,14 @@ function makeAlignedSchema<S extends SeriesSchema>(schema: S): AlignSchema<S> {
 }
 
 function sampleTime(interval: Interval, sample: AlignSample): number {
-  return sample === 'center'
-    ? interval.begin() + interval.duration() / 2
-    : interval.begin();
+  switch (sample) {
+    case 'begin':
+      return interval.begin();
+    case 'center':
+      return interval.begin() + interval.duration() / 2;
+    case 'end':
+      return interval.end();
+  }
 }
 
 function eventAnchorTime(key: EventKey): number {
