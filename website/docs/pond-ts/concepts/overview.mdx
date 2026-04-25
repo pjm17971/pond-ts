@@ -226,25 +226,10 @@ reducers that produce them.
 Every event has exactly one temporal key. Which one is a modeling
 choice — it encodes how the event sits on the timeline.
 
-:::note[Diagram candidate]
-ASCII first pass; Excalidraw replacement welcome.
-
-```
-Timeline ─────────────────────────────────────────────────────▶
-
-Time              ●                     One instant.
-                  └─▶ 00:02
-
-TimeRange         [────────]            An extent, no label.
-                  └─▶ 00:02–00:04
-
-Interval (5m)     ├────────┤ "00:00"    An extent *with* a bucket
-                  └─▶ 00:00–00:05        label — picks up its
-                                         identity from the sequence
-                                         that produced it.
-```
-
-:::
+![Three temporal-key shapes on a timeline: Time as one instant,
+TimeRange as an unlabeled extent, Interval as an extent that picks up
+its identity from the sequence that produced
+it](/img/concepts-temporal-keys.png)
 
 ### `Time`
 
@@ -301,25 +286,10 @@ const calendarDaily = Sequence.calendar('day', {
 });
 ```
 
-:::note[Diagram candidate]
-ASCII first pass; Excalidraw replacement welcome.
-
-```
-events (Time-keyed)  ● ● ●   ●  ●   ● ●  ●    ●   ●    ● ● ●
-Timeline ──────────────────────────────────────────────────────▶
-                    00:00    00:05    00:10    00:15    00:20
-
-Sequence.every('5m')
-                    [─────────)[─────────)[─────────)[─────────)
-                    "00:00"    "00:05"    "00:10"    "00:15"
-
-aggregate(seq, {cpu: 'avg'}) —► one Interval-keyed event per bucket
-                    ├─avg 1─┤  ├─avg 2─┤  ├─avg 3─┤  ├─avg 4─┤
-```
-
-Buckets are half-open: `[start, end)`. An event at exactly the
-boundary lands in the _later_ bucket.
-:::
+![Time-keyed cpu events bucketed by Sequence.every('5m'); aggregate
+produces one Interval-keyed event per bucket. Buckets are half-open
+[start, end), so an event at exactly the boundary lands in the later
+bucket](/img/concepts-sequence.png)
 
 ```ts
 const buckets = cpu.aggregate(minutely, {
@@ -390,27 +360,10 @@ cpu.overlapping(range); // keep events that intersect
 cpu.trim(range); // intersect and clip key extents
 ```
 
-:::note[Diagram candidate]
-ASCII first pass; Excalidraw replacement welcome.
-
-```
-query range                          [═════════════════]
-                                     02:00             05:00
-
-events on timeline:
-  a) Time @ 01:59                ●                           (outside)
-  b) Time @ 03:00                        ●                   (inside)
-  c) TimeRange 01:30–02:30        [──────]                   (straddles start)
-  d) TimeRange 03:00–04:00             [────]                (contained)
-  e) TimeRange 04:30–05:30                  [──────]         (straddles end)
-
-within(range)      → b, d
-overlapping(range) → b, c, d, e
-trim(range)        → b (unchanged), c (clipped to 02:00–02:30),
-                     d (unchanged), e (clipped to 04:30–05:00)
-```
-
-:::
+![Five test events (a–e) against a query range from 02:00 to 05:00:
+within keeps b and d; overlapping keeps b, c, d, e; trim keeps b
+unchanged, clips c to 02:00–02:30, leaves d unchanged, and clips e to
+04:30–05:00](/img/concepts-selection.png)
 
 - **`within`** preserves event keys exactly; events are kept or
   dropped wholesale.
