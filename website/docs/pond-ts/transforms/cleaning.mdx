@@ -1,0 +1,157 @@
+---
+sidebar_position: 11
+---
+
+# Cleaning Data
+
+Real ingestion is messy. Timestamps drift, values arrive `null`,
+duplicate rows slip in, the source produces gaps that aggregation
+later turns into `undefined` cells. This page is the place to look
+when you need to **fix** a `TimeSeries` before downstream transforms
+can reason over it.
+
+What's covered:
+
+- [**Filter out bad rows**](#filter-bad-rows) — `.filter()` patterns.
+- [**Fill the gaps**](#fill-gaps) — `.fill()` strategies.
+- [**Deduplicate**](#deduplicate) — manual filter pattern, plus an
+  honest API gap note.
+- [**Ingest edges**](#ingest-edges) — pointers to where wall-clock
+  timestamps, time zones, and missing values are handled.
+
+## Filter out bad rows \{#filter-bad-rows\}
+
+`filter()` is the simplest cleaning tool — keep events that match a
+predicate, drop the rest. Same schema in, same schema out, fewer
+rows.
+
+```ts
+// Drop events whose value is missing.
+const present = cpu.filter((e) => e.get('cpu') !== undefined);
+
+// Drop obvious sensor errors (negative CPU, value over 100%).
+const sane = cpu.filter((e) => {
+  const v = e.get('cpu');
+  return v !== undefined && v >= 0 && v <= 1;
+});
+
+// Drop events from a known-bad host.
+const trusted = events.filter((e) => e.get('host') !== 'staging-1');
+```
+
+Filtering early means downstream transforms never see the bad rows.
+For exploration, also pull _just_ the bad rows into a separate series
+to inspect:
+
+```ts
+const bad = cpu.filter((e) => {
+  const v = e.get('cpu');
+  return v === undefined || v < 0 || v > 1;
+});
+console.log(bad.length, 'suspect rows');
+```
+
+## Fill the gaps \{#fill-gaps\}
+
+`fill()` replaces `undefined` values that aggregation, alignment, or
+upstream sources leave behind. The typical post-`aggregate` cleanup.
+
+### Strategies
+
+- **`'hold'`** — forward-fill: carry the last known value. Leading
+  `undefined` runs stay unfilled (nothing to carry).
+- **`'bfill'`** — backward-fill: pull in the next known value.
+  Trailing `undefined` runs stay unfilled.
+- **`'linear'`** — time-interpolate between the two nearest known
+  values on either side. Leading and trailing `undefined` runs stay
+  unfilled (no extrapolation).
+- **`'zero'`** — fill with `0`. Numeric columns only.
+
+A single strategy applies to every value column:
+
+```ts
+series.fill('hold');
+series.fill('linear');
+series.fill('zero');
+```
+
+Per-column mapping targets specific columns; other columns pass
+through with their `undefined`s intact:
+
+```ts
+series.fill({ cpu: 'linear', host: 'hold' });
+```
+
+Literal fill values (anything that's not a strategy string) set the
+column to that value:
+
+```ts
+series.fill({ cpu: 0, host: 'unknown' });
+```
+
+### `limit` cap
+
+Caps consecutive fills per column:
+
+```ts
+series.fill('hold', { limit: 3 });
+// No more than 3 consecutive undefined values get filled. Longer gaps
+// stay undefined past the limit.
+```
+
+### Typical post-aggregate pipeline
+
+```ts
+const hourly = series
+  .aggregate(Sequence.every('1h'), { cpu: 'avg', host: 'last' })
+  .fill({ cpu: 'linear', host: 'hold' });
+```
+
+## Deduplicate \{#deduplicate\}
+
+There's no first-party `dedupe()` operator yet. The manual pattern
+uses `filter` plus a `Set` over event keys:
+
+```ts
+// Keep the first event at each unique timestamp.
+const seen = new Set<number>();
+const deduped = events.filter((e) => {
+  const t = e.begin();
+  if (seen.has(t)) return false;
+  seen.add(t);
+  return true;
+});
+```
+
+For "keep the _last_ event at each timestamp," reverse the events
+first then dedupe, then re-sort — or build a `Map<ts, Event>` and
+reconstruct via `TimeSeries.fromJSON`. The pattern is verbose enough
+to be worth wrapping in a helper in your own codebase.
+
+:::note[API gap]
+A `series.dedupe({ on?: 'time' | 'time-and-host', keep?: 'first' | 'last' })`
+operator would cover the common cases without the `Set` dance. On the
+roadmap; not in the current API. If you hit this regularly, file an
+issue with your specific shape and we'll prioritize.
+:::
+
+## Ingest edges \{#ingest-edges\}
+
+Most "the data is wrong" problems happen at the boundary, not inside
+pipelines. The relevant docs:
+
+- **Time zones / wall-clock strings** — see
+  [JSON ingest and time zones → Wall-clock strings](../data-shapes/json-ingest-and-timezones#wall-clock-strings-parsetimezone).
+  The decision table there ("does this input need `parse.timeZone`?")
+  is the single most useful artifact for ingest-side time bugs.
+- **`null` vs `undefined`** — see
+  [JSON ingest → Missing values](../data-shapes/json-ingest-and-timezones#missing-values).
+  Wire-format `null` becomes `undefined` on read; columns marked
+  `required: false` accept it.
+- **Mixed timestamp formats** — see
+  [JSON ingest → Pitfalls](../data-shapes/json-ingest-and-timezones#pitfalls).
+  Mixing offset-qualified strings with bare wall-clock strings is a
+  silent zone-drift footgun.
+
+Cleaning the data **after** ingest can't recover from a wrong-zone
+parse. Get the boundary right first.

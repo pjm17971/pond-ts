@@ -72,8 +72,9 @@ pandas's `.resample()` covers both directions; pond-ts splits them:
 - `reduce(mapping)` ≈ `.agg()` on the whole frame
 - `groupBy(col)` ≈ `.groupby(col)`
 
-See [Align and Aggregate](../transforms/alignment-and-aggregation) for
-the full treatment of the split.
+See [Sampling overview](../transforms/sampling-overview) for the
+treatment of the split, and [Aggregation](../transforms/aggregation)
+for the deep dive on `aggregate`.
 
 Full translation table coming in the Reference section; for now,
 transform pages cross-reference the analogue inline.
@@ -203,7 +204,7 @@ smoothed.at(0)?.get('cpuTrend'); // number | undefined
 
 Aggregations, reductions, rolling windows, smoothings — each narrows
 its output type based on reducer / operator kind. See
-[Transforms](../transforms/alignment-and-aggregation) for the details.
+[Transforms](../transforms/eventwise) for the details.
 
 ### Column kinds
 
@@ -304,8 +305,7 @@ const buckets = cpu.aggregate(minutely, {
 `Sequence.calendar('day' | 'week' | 'month', { timeZone })` steps by
 local calendar boundaries and is what you want when month or day
 lengths matter. See
-[Aggregation playbook](../transforms/aggregation-playbook) for
-worked examples.
+[Aggregation](../transforms/aggregation) for worked examples.
 
 ### `BoundedSequence`
 
@@ -428,10 +428,25 @@ exceptionally well.
 
 ## Where to go next
 
-- [**Alignment and aggregation**](../transforms/alignment-and-aggregation)
-  — resampling, bucketing, and the aggregation playbook
-- [**Rolling and smoothing**](../transforms/rolling-and-smoothing)
-  — sliding-window reductions, EMA / LOESS / moving average
+- [**Eventwise transforms**](../transforms/eventwise) — `map`,
+  `select`, `rename`, `filter`, `diff`, `rate`, `pctChange`,
+  `cumulative`, `shift`
+- [**Cleaning data**](../transforms/cleaning) — `fill`, dedupe,
+  ingest edges
+- [**Sampling overview**](../transforms/sampling-overview) — align
+  vs aggregate, mental model + comparison
+- [**Aggregation**](../transforms/aggregation) — `aggregate`,
+  `reduce`, `groupBy`, `arrayAggregate`, `LiveAggregation`
+- [**Rolling windows**](../transforms/rolling) — sliding-window
+  reductions, `tail`, `LiveRollingAggregation`
+- [**Smoothing**](../transforms/smoothing) — EMA / moving average /
+  LOESS, picking one
+- [**Anomaly detection**](../transforms/anomaly-detection) —
+  `baseline`, `outliers`
+- [**Charting**](../transforms/charting) — `toPoints` interop,
+  Recharts and visx examples
+- [**Reducer reference**](../transforms/reducer-reference) — every
+  built-in
 - [**Array columns**](../data-shapes/arrays) — when reducers produce
   collections
 - [**Live series**](../live/live-series) — stream-style ingest

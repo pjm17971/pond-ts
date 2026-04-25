@@ -1,0 +1,95 @@
+---
+sidebar_position: 13
+---
+
+# Sampling Overview
+
+Two operations resample a `TimeSeries` onto a [`Sequence`](../concepts/overview#sequence)
+grid. They look similar on the surface — both take a sequence and
+return interval-keyed events — but they answer different questions.
+
+- **`align(seq, opts)`** asks "**what was the value at this grid point?**"
+  and returns one event per grid point.
+- **`aggregate(seq, mapping)`** asks "**what's the rollup of every event
+  inside this bucket?**" and returns one event per bucket, computed
+  from a reducer mapping.
+
+Pandas users: pond-ts splits what `.resample()` does into two
+operators. `align` ≈ `.asfreq()` (plus `.ffill()` or `.interpolate()`);
+`aggregate` ≈ `.resample().agg()`.
+
+## Mental model
+
+A grid on the timeline. Source events sit on the timeline at their
+own (sometimes irregular) times. Each operator emits one
+**interval-keyed** event per grid step — but the value comes from a
+different rule:
+
+- `align` snapshots the source at each grid point (hold the previous,
+  or interpolate between neighbors).
+- `aggregate` collapses every source event in `[step, step + width)`
+  through a reducer.
+
+## Comparison
+
+The same source, the same grid, two outputs:
+
+```ts
+import { Sequence, TimeSeries } from 'pond-ts';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+] as const;
+
+const cpu = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows: [
+    ['2025-01-01T00:00:00Z', 0.31],
+    ['2025-01-01T00:00:30Z', 0.44],
+    ['2025-01-01T00:00:45Z', 0.52],
+    ['2025-01-01T00:01:30Z', 0.48],
+    ['2025-01-01T00:02:10Z', 0.63],
+  ],
+});
+
+// align — one row per minute, value carried from the most recent source.
+cpu.align(Sequence.every('1m'), { method: 'hold' });
+
+// aggregate — one row per minute, value reduced from sources inside.
+cpu.aggregate(Sequence.every('1m'), { cpu: 'avg' });
+```
+
+For a chart at one-minute resolution where every grid point should
+have a value, `align` is right. For "average CPU per minute," `aggregate`
+is right. The two are complementary, not interchangeable.
+
+## `align` quick reference
+
+```ts
+cpu.align(Sequence.every('5s'), {
+  method: 'hold', // 'hold' (carry previous) | 'linear' (interpolate)
+  sample: 'begin', // 'begin' (start of grid step) | 'center'
+});
+```
+
+- **`method: 'hold'`** — carry the previous value; first grid points
+  before any source produce `undefined`.
+- **`method: 'linear'`** — interpolate between the two neighboring
+  sources. Throws on non-`Time`-keyed sources (`TimeRange` /
+  `Interval`); falls back to `'hold'` for non-numeric columns.
+- **`sample: 'begin' | 'center'`** — where in each grid step to take
+  the snapshot.
+- **`range`** — pin the output range explicitly; default is the
+  source extent.
+
+## Where to next
+
+- [Aggregation](./aggregation) — full coverage of `aggregate`,
+  including custom reducers, mapping shapes, `LiveAggregation`,
+  `reduce`, and `groupBy`.
+- [Reducer reference](./reducer-reference) — every built-in reducer
+  with its empty-bucket and rolling-window behavior.
+- [Cleaning data](./cleaning) — once you have a uniform grid, what
+  to do with the gaps `align` and `aggregate` leave behind.

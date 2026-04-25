@@ -1,0 +1,201 @@
+---
+sidebar_position: 10
+---
+
+# Eventwise Transforms
+
+The simplest shape: events in, events out. One event per source event.
+Same temporal key, sometimes a different schema. These are the
+operators most pipelines start with.
+
+Two flavors:
+
+- **Per-event-only** — operate on one event at a time, no memory.
+  `map`, `select`, `rename`, `collapse`, `filter`, plus `set` / `merge`
+  on individual events.
+- **Per-event-with-tiny-state** — look at the previous event (or a
+  small accumulator) to compute each output. `diff`, `rate`,
+  `pctChange`, `cumulative`, `shift`.
+
+Coming from pandas: this section covers `.assign()`, `.rename()`,
+`[cols]`, `.where()` (≈ filter), `.diff()`, `.pct_change()`,
+`.cumsum()`, `.shift()`. Coming from JavaScript arrays: `map`, `filter`
+do exactly what you'd expect; the rest are time-series-aware.
+
+## Per-event-only
+
+### `map(nextSchema, fn)` — transform each event
+
+The most general. Pass the **output schema** (so the result type is
+narrow) and a function that takes a source event and returns the new
+one. The schema argument is mandatory even when the shape doesn't
+change — pond-ts always wants the next schema explicit.
+
+```ts
+// Same schema; just transform the cpu value.
+const scaled = cpu.map(cpu.schema, (e) => {
+  const value = e.get('cpu');
+  return value === undefined ? e : e.set('cpu', value * 100);
+});
+
+// New schema — adds a "flagged" column.
+const flaggedSchema = [
+  ...cpu.schema,
+  { name: 'flagged', kind: 'boolean' },
+] as const;
+const flagged = cpu.map(flaggedSchema, (e) =>
+  e.merge({ flagged: (e.get('cpu') ?? 0) > 0.9 }),
+);
+```
+
+`Event` instances are immutable; `set` returns a new `Event` with the
+field updated. `merge(patch)` works the same way for multi-field
+updates and can introduce new columns.
+
+### `filter(predicate)` — drop events
+
+Predicate gets an event and an index, returns true to keep:
+
+```ts
+const active = cpu.filter((e) => e.get('cpu') !== undefined);
+const apiOnly = events.filter((e) => e.get('host')?.startsWith('api'));
+```
+
+Same schema in, same schema out; just fewer rows. See
+[Cleaning data](./cleaning) for filter as a "remove bad rows"
+pattern.
+
+### `select(...keys)` — keep only some columns
+
+Schema-narrowing — type-level too:
+
+```ts
+const just = full.select('cpu', 'host');
+// just.schema === [time, cpu, host]; the other columns are gone.
+just.at(0)?.get('cpu'); // still narrows to number | undefined
+```
+
+### `rename(mapping)` — rename payload columns
+
+```ts
+const renamed = cpu.rename({ cpu: 'usage' });
+renamed.at(0)?.get('usage'); // number | undefined
+// renamed.schema has 'usage' where 'cpu' was.
+```
+
+The temporal key column can't be renamed.
+
+### `collapse(keys, output, reducer)` — combine columns into one
+
+Reducer receives a typed record of just the named columns, returns a
+single value:
+
+```ts
+// Average of cpu and requests into a "load" column.
+const summary = metrics.collapse(
+  ['cpu', 'requests'],
+  'load',
+  ({ cpu, requests }) => ((cpu ?? 0) + (requests ?? 0)) / 2,
+);
+// schema: [time, load, ...other source columns]
+```
+
+The named columns are removed by default; `{ append: true }` keeps
+them and adds the new one alongside.
+
+### `Event.set(field, value)` and `Event.merge(patch)`
+
+Work directly on an `Event`. You'll use them inside `map` callbacks:
+
+```ts
+events.map((e) => e.set('cpuPct', (e.get('cpu') ?? 0) * 100));
+
+events.map((e) =>
+  e.merge({
+    cpu: (e.get('cpu') ?? 0) * 100,
+    flagged: (e.get('cpu') ?? 0) > 0.9,
+  }),
+);
+```
+
+`set` returns the same key; `merge` does too. Both are immutable.
+
+## Per-event-with-tiny-state
+
+These look at one event plus the previous (or an accumulator) to
+compute each output. Length is preserved; the first event has no
+predecessor, so target columns are `undefined` (or you can drop the
+first event with `{ drop: true }`).
+
+### `diff(cols)` — per-event delta
+
+```ts
+const deltas = series.diff('requests');
+// requests = curr - prev. First event: undefined.
+const both = series.diff(['cpu', 'mem']);
+const dropped = series.diff('requests', { drop: true });
+```
+
+### `rate(cols)` — delta per second
+
+`diff` divided by the time gap (in seconds). When two consecutive
+events share a timestamp (`dt = 0`), `rate` returns `undefined`
+rather than dividing by zero — filter per-producer first if you have
+concurrent emissions.
+
+```ts
+const rps = series.rate('requests');
+```
+
+### `pctChange(cols)` — relative change
+
+`(curr - prev) / prev`. Time-gap-independent. Returns `undefined`
+when the previous value is 0.
+
+```ts
+const rets = prices.pctChange('price');
+```
+
+### `cumulative(spec)` — running total / max / min / count
+
+```ts
+const running = series.cumulative({ requests: 'sum', cpu: 'max' });
+const errors = series.cumulative({ errors: 'count' });
+const product = series.cumulative({ factor: (acc, v) => acc * v });
+```
+
+When a source value is `undefined`, the accumulator carries forward
+its previous value — no NaN propagation.
+
+### `shift(cols, n)` — lag / lead
+
+Move column values forward (positive `n` = lag) or backward
+(negative `n` = lead). Vacated slots become `undefined`. Keys are
+unchanged.
+
+```ts
+const lagged = series.shift('value', 1);
+const lead = series.shift('value', -1);
+const multi = series.shift(['cpu', 'mem'], 2);
+```
+
+For time-based shifts on irregular data, align to a regular grid
+first ([Sampling overview](./sampling-overview)), then shift by the
+corresponding number of events.
+
+## Method comparison
+
+| Method                | Output                                     |
+| --------------------- | ------------------------------------------ |
+| `map(fn)`             | New schema possible; one event in, one out |
+| `filter(pred)`        | Same schema; subset of rows                |
+| `select(...keys)`     | Schema narrowed to chosen columns          |
+| `rename(mapping)`     | Schema with renamed columns                |
+| `collapse(cols, ...)` | Schema replaces several columns with one   |
+| `diff(cols)`          | Same schema; per-event delta column        |
+| `rate(cols)`          | Same schema; delta-per-second column       |
+| `pctChange(cols)`     | Same schema; relative-change column        |
+| `cumulative(spec)`    | Same schema; running aggregate column      |
+| `shift(cols, n)`      | Same schema; column values shifted         |
+| `Event.set(field, v)` | Single field on one event                  |
+| `Event.merge(patch)`  | Multi-field patch on one event             |

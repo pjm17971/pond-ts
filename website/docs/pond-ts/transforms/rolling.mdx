@@ -1,0 +1,162 @@
+---
+sidebar_position: 15
+---
+
+# Rolling Windows
+
+Sliding-window computations over ordered events. For each event in
+the source, look at a window of nearby events and compute a reducer.
+
+```ts
+const rollingAvg = cpu.rolling('5m', { cpu: 'avg' });
+// rollingAvg.length === cpu.length; each output's cpu is the
+// trailing-5-minute average ending at that event.
+```
+
+Same reducer vocabulary as [`aggregate`](./aggregation) — every
+built-in works, plus custom functions. The difference is per-event
+output cadence vs. one-per-bucket.
+
+## Window alignment
+
+What "nearby" means is the alignment. Pick the one that matches the
+question:
+
+:::note[Diagram candidate]
+ASCII first pass; Excalidraw replacement welcome.
+
+```
+source events  ● ● ● ● ● ● ● ● ● ● ● ● ● ● ● ●
+Timeline ─────────────────────────────────────▶
+                            ^ anchor event
+
+trailing (default):    [────window────] anchor
+centered:                   [── anchor ──]
+leading:                            anchor [────window────]
+```
+
+:::
+
+- **`'trailing'`** (default) — "what's the average of what I've seen
+  up to now."
+- **`'centered'`** — "smoothed around now."
+- **`'leading'`** — "what's the average of what's coming next."
+
+```ts
+cpu.rolling('5m', { cpu: 'avg' }, { alignment: 'centered' });
+```
+
+Opening events — where the window would extend beyond the series'
+ends — emit `undefined` under trailing and centered; under leading,
+trailing events emit `undefined` instead.
+
+## Two output shapes
+
+Pick the one that matches your output cadence:
+
+```ts
+// Per-event rolling: one output per source event, same key type.
+cpu.rolling('5m', { cpu: 'avg' });
+
+// Grid-anchored rolling: one output per Sequence point.
+cpu.rolling(Sequence.every('1m'), '5m', { cpu: 'avg' });
+```
+
+The per-event form is the common one. Use the grid form when you
+want a fixed output cadence independent of where source events land
+— common for chart sampling.
+
+## Mapping shapes
+
+Same two shapes as [`aggregate`](./aggregation#mapping-shapes):
+
+```ts
+// Shorthand
+cpu.rolling('5m', { cpu: 'avg' });
+
+// Explicit { from, using, kind? } — rename, multi-reducer-per-column
+cpu.rolling('5m', {
+  avg: { from: 'cpu', using: 'avg' },
+  sd: { from: 'cpu', using: 'stdev' },
+  peak: { from: 'cpu', using: 'max' },
+});
+```
+
+The explicit form is how you get a band chart in one pass — `avg`
+and `sd` from the same source column without two rolling traversals.
+[Anomaly detection](./anomaly-detection) ships a `baseline` helper
+that's sugar over this exact pattern.
+
+## Custom reducers
+
+Same contract as `aggregate`:
+
+```ts
+cpu.rolling('5m', {
+  cpu: (values) => {
+    const nums = values.filter((v): v is number => typeof v === 'number');
+    return nums.length === 0
+      ? undefined
+      : nums.reduce((a, b) => a + b, 0) / nums.length;
+  },
+});
+```
+
+Mix built-in and custom reducers in the same mapping.
+
+## Complexity
+
+Most built-in reducers are O(1) per event via incremental
+add/remove. `min` / `max` are O(1) amortized. Median and percentiles
+are O(N) per event (sorted-array maintenance). Full table on
+[Reducer reference → Rolling window behavior](./reducer-reference#rolling-window-behavior).
+
+## `tail(duration)` — temporal slice
+
+Often paired with `rolling` for a "current state" readout:
+
+```ts
+// Trailing 30s, then collapse to scalars.
+const recent = series.tail('30s').reduce({
+  cpu: 'p95',
+  host: 'unique',
+});
+```
+
+`tail(duration)` is the temporal counterpart to `Array.slice(-n)`:
+it keeps events whose `begin()` is strictly greater than
+`lastEvent.begin() - duration`. Called with no argument it's the
+identity (whole series). Composes with every method, not just
+`reduce` — plot the last 30s, aggregate just the last hour, etc.
+
+## Live: `LiveRollingAggregation`
+
+The streaming counterpart. Maintains a sliding window incrementally;
+each source event produces an output event with the rolling
+aggregate at that point.
+
+```ts
+import { LiveRollingAggregation, LiveSeries } from 'pond-ts';
+
+const live = new LiveSeries({ name: 'cpu', schema });
+
+const rolling = live.rolling('5m', { cpu: 'avg' });
+// rolling is a LiveRollingAggregation; satisfies LiveSource
+
+rolling.on('event', (event) => {
+  console.log('rolling avg:', event.get('cpu'));
+});
+
+rolling.value(); // current { cpu: number } record
+```
+
+The output buffer grows unbounded — compose with
+[`window()`](../live/live-transforms) to bound it.
+
+:::note[Heads up on late events]
+Under `ordering: 'reorder'`, a late event becomes a new output event
+at its insertion point — `LiveRollingAggregation` does **not**
+re-scan historical windows to include it. See
+[Live transforms → Late-event scope](../live/live-transforms#late-event-scope)
+for the full picture.
+:::

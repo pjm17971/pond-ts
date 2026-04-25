@@ -1,0 +1,191 @@
+---
+sidebar_position: 18
+---
+
+# Charting
+
+pond-ts is not a chart library. The actual rendering is yours. The
+bridge to whichever charting library you pick is deliberately short.
+
+A first-party `@pond-ts/charts` is on the long-term roadmap (likely
+built on visx). Until then, the workflow is: shape your `TimeSeries`
+into the chart library's expected input via `toPoints` / `fromPoints`,
+hand it to the chart, done.
+
+## `toPoints(col)` — the bridge
+
+One column of a `TimeSeries` as a flat array:
+
+```ts
+const pts = cpu.toPoints('cpu');
+// ReadonlyArray<{ ts: number; value: number }>
+```
+
+`undefined` values are dropped. The shape — `{ ts, value }[]` — is
+what every mainstream chart library accepts (Recharts, Observable
+Plot, visx, raw d3).
+
+## `fromPoints(points, { schema, name? })` — the inverse
+
+Useful for round-tripping derived data — flatten anomaly events into
+chart points, then back into a `TimeSeries` for further composition:
+
+```ts
+const ts = TimeSeries.fromPoints(pts, {
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const,
+  name: 'reconstructed',
+});
+```
+
+Schema must be exactly two columns: a time-key column and one value
+column.
+
+## Recharts example
+
+The most common React combo. Drop `toPoints` output straight into a
+`<LineChart>` or `<AreaChart>`:
+
+```tsx
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from 'recharts';
+
+function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
+  const data = cpu.toPoints('cpu');
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <LineChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis
+          dataKey="ts"
+          type="number"
+          domain={['dataMin', 'dataMax']}
+          tickFormatter={(t) => new Date(t).toISOString().slice(11, 19)}
+        />
+        <YAxis />
+        <Tooltip labelFormatter={(t) => new Date(t).toISOString()} />
+        <Line type="monotone" dataKey="value" dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+```
+
+For a band chart, three series — center, upper, lower — from one
+`baseline()` pass:
+
+```tsx
+function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
+  const bands = cpu.baseline('cpu', { window: '1m', sigma: 2 });
+
+  // Recharts wants one row per x with named series fields.
+  const merged = bands.toPoints('avg').map((p, i) => ({
+    ts: p.ts,
+    avg: p.value,
+    upper: bands.toPoints('upper')[i]?.value,
+    lower: bands.toPoints('lower')[i]?.value,
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <LineChart data={merged}>
+        <XAxis dataKey="ts" type="number" />
+        <YAxis />
+        <Line type="monotone" dataKey="avg" dot={false} />
+        <Line
+          type="monotone"
+          dataKey="upper"
+          stroke="#888"
+          strokeDasharray="4 4"
+          dot={false}
+        />
+        <Line
+          type="monotone"
+          dataKey="lower"
+          stroke="#888"
+          strokeDasharray="4 4"
+          dot={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+```
+
+For live data, hook this up via [`useSnapshot`](../../react/hooks#usesnapshot)
+or [`useDerived`](../../react/hooks#usederived) — see
+[React patterns → Rolling band chart](../../react/patterns#rolling-band-chart).
+
+## visx — for primitive control
+
+When you need tighter control over scales, axes, or composition,
+visx exposes the underlying primitives. Same `toPoints` bridge,
+just more wiring:
+
+```tsx
+import { scaleLinear, scaleTime } from '@visx/scale';
+import { LinePath } from '@visx/shape';
+import { extent, max, min } from 'd3-array';
+
+function CpuLine({
+  cpu,
+  width,
+  height,
+}: {
+  cpu: TimeSeries<Schema>;
+  width: number;
+  height: number;
+}) {
+  const data = cpu.toPoints('cpu');
+
+  const xScale = scaleTime({
+    domain: extent(data, (d) => d.ts) as [number, number],
+    range: [0, width],
+  });
+
+  const yScale = scaleLinear({
+    domain: [min(data, (d) => d.value)!, max(data, (d) => d.value)!],
+    range: [height, 0],
+    nice: true,
+  });
+
+  return (
+    <svg width={width} height={height}>
+      <LinePath
+        data={data}
+        x={(d) => xScale(d.ts)}
+        y={(d) => yScale(d.value)}
+        stroke="#3b82f6"
+        strokeWidth={2}
+      />
+    </svg>
+  );
+}
+```
+
+This is the rough shape `@pond-ts/charts` will eventually wrap with
+opinionated defaults, axes, tooltips, brushing, and live-source
+hooks — but the underlying contract stays the same:
+**`toPoints` returns chart-ready arrays; the chart library does the
+rest.**
+
+## Why no first-party charts yet
+
+Chart components carry a lot of opinions — dimensions, themes,
+interactivity, accessibility, animation. Rolling those out before
+the data layer is settled would tie pond-ts to a specific chart
+shape. Better to keep the data layer stable and clean, and ship a
+first-party chart package once the patterns settle.
+
+If you build a particularly clean adapter for a chart library, an
+issue or PR adding a snippet to this page is welcome.
