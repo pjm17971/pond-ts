@@ -45,6 +45,13 @@ type-level changes; patch bumps are strictly additive.
   dropped events whose column was `undefined`; the new form preserves
   them so chart libraries can render gaps via `connectNulls={false}`.
 
+  **Watch out for `value`-named columns.** If your schema has a value
+  column literally named `value`, the new wide rows will have a
+  `value` key that looks identical to the old narrow shape — but it's
+  the column-named-`value`, not the narrow-form `value`. Audit any
+  `row.value` reads after upgrading; the safe migration is
+  `row.<schema-column-name>`.
+
 - **`TimeSeries.fromPoints()` accepts wide-row points** with a schema
   of any number of value columns. Schema's first column must still be
   `kind: 'time'`.

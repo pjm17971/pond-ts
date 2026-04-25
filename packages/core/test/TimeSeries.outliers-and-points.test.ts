@@ -330,6 +330,25 @@ describe('TimeSeries.fromPoints', () => {
     expect(ts.at(1)!.begin()).toBe(1000);
   });
 
+  it('rejects missing keys for required columns', () => {
+    // Required columns can't accept undefined; the schema validates
+    // this at construction. fromPoints surfaces the same error path.
+    expect(() =>
+      TimeSeries.fromPoints(
+        [
+          { ts: 0, cpu: 0.3 }, // missing required 'host'
+        ],
+        {
+          schema: [
+            { name: 'time', kind: 'time' },
+            { name: 'cpu', kind: 'number' },
+            { name: 'host', kind: 'string' }, // required by default
+          ] as const,
+        },
+      ),
+    ).toThrow();
+  });
+
   it('treats missing keys as undefined', () => {
     // A point missing a column key is the same as undefined.
     const ts = TimeSeries.fromPoints(

@@ -190,9 +190,23 @@ export type EventDataForSchema<S extends SeriesSchema> = {
 /**
  * Wide-row shape returned by `TimeSeries.toPoints()`: `ts` plus every
  * value column from the schema. Each value column is `T | undefined`
- * regardless of the schema's `required` flag — the runtime row may
- * have a missing value, and chart libraries render `undefined` as a
- * gap.
+ * regardless of the schema's `required` flag.
+ *
+ * Why ignore `required`? Charting workflows are the dominant consumer.
+ * Even on a `required: true` schema, transformed series can produce
+ * rows with `undefined` cells — `baseline()` adds optional `avg` /
+ * `sd` / `upper` / `lower` columns, `align()` produces gaps before
+ * the first source event, and aggregations on partial buckets emit
+ * `undefined` for some reducers. Chart libraries handle the
+ * `T | undefined` shape natively (rendering gaps via
+ * `connectNulls={false}`); narrowing to `T` would force every caller
+ * to widen back. If you have a fully-required schema and want strict
+ * narrowing, work with `EventDataForSchema<S>` directly instead of
+ * `toPoints()`.
+ *
+ * Caveat: a value column literally named `ts` would collide with the
+ * timestamp key. The library doesn't currently guard against this;
+ * pick a different column name if it matters.
  */
 export type PointRowForSchema<S extends SeriesSchema> = { ts: number } & {
   [C in DataColumnsForSchema<S>[number] as C['name']]:

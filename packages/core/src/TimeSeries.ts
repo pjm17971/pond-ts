@@ -3330,9 +3330,9 @@ export class TimeSeries<S extends SeriesSchema> {
    * ```ts
    * const baseline = series.baseline('cpu', { window: '1m', sigma: 2 });
    *
-   * // Band charts: each column is a ready-to-plot series.
-   * const upperBand = baseline.toPoints('upper');
-   * const lowerBand = baseline.toPoints('lower');
+   * // Band charts: one wide-row export covers every column at once.
+   * const data = baseline.toPoints();
+   * // [{ ts, cpu, ..., avg, sd, upper, lower }, ...]
    *
    * // Anomaly detection: one filter, no extra rolling pass.
    * const anomalies = baseline.filter((e) => {
