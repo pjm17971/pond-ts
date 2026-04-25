@@ -11,7 +11,7 @@ the conceptual split between aggregate and align? Skip the
 This page covers three shapes of "collapse many events into fewer":
 
 - [**`aggregate(seq, mapping)`**](#aggregate) — one row per bucket on
-  a [`Sequence`](../concepts/overview#sequence) grid.
+  a [`Sequence`](../../start-here/concepts#sequence) grid.
 - [**`reduce(mapping)`**](#reduce) — collapse a whole series into a
   single record. "Bucket size: all of it."
 - [**`arrayAggregate(col, reducer)`**](#arrayaggregate) — reduce one
@@ -31,7 +31,7 @@ shape-changing ops, not value collapses.
 - `Pipeline` + `Processor` → method chain on `TimeSeries`; a custom
   reducer function fills the `Processor` role.
 - `Index`-keyed buckets → `Interval`-keyed events. The full rename
-  table is on [Concepts](../concepts/overview).
+  table is on [Concepts](../../start-here/concepts).
   :::
 
 ## `aggregate` \{#aggregate\}
@@ -193,7 +193,7 @@ events.arrayAggregate('tags', 'unique');
 
 Full treatment, including custom reducers and the flatten-one-level
 semantics on array-kind sources, lives on
-[Array columns](../data-shapes/arrays).
+[Array columns](../advanced/arrays).
 
 ## `LiveAggregation`
 

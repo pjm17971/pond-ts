@@ -5,7 +5,11 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Start here',
-      items: ['start-here/intro', 'start-here/getting-started'],
+      items: [
+        'start-here/intro',
+        'start-here/getting-started',
+        'start-here/concepts',
+      ],
     },
     {
       type: 'category',
@@ -14,36 +18,30 @@ const sidebars: SidebarsConfig = {
       items: [
         {
           type: 'category',
-          label: 'Concepts',
-          items: ['pond-ts/concepts/overview'],
-        },
-        {
-          type: 'category',
-          label: 'Transforms',
+          label: 'TimeSeries',
           items: [
+            'pond-ts/transforms/ingest',
+            'pond-ts/transforms/queries',
             'pond-ts/transforms/eventwise',
             'pond-ts/transforms/cleaning',
             'pond-ts/transforms/sampling-overview',
             'pond-ts/transforms/aggregation',
+            'pond-ts/transforms/reshape',
             'pond-ts/transforms/rolling',
             'pond-ts/transforms/smoothing',
             'pond-ts/transforms/anomaly-detection',
-            'pond-ts/transforms/charting',
             'pond-ts/transforms/reducer-reference',
           ],
         },
         {
           type: 'category',
-          label: 'Data shapes',
-          items: [
-            'pond-ts/data-shapes/arrays',
-            'pond-ts/data-shapes/json-ingest-and-timezones',
-          ],
+          label: 'LiveSeries',
+          items: ['pond-ts/live/live-series', 'pond-ts/live/live-transforms'],
         },
         {
           type: 'category',
-          label: 'Live',
-          items: ['pond-ts/live/live-series', 'pond-ts/live/live-transforms'],
+          label: 'Advanced',
+          items: ['pond-ts/advanced/charting', 'pond-ts/advanced/arrays'],
         },
         {
           type: 'link',

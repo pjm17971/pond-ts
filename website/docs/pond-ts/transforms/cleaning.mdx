@@ -141,15 +141,15 @@ Most "the data is wrong" problems happen at the boundary, not inside
 pipelines. The relevant docs:
 
 - **Time zones / wall-clock strings** — see
-  [JSON ingest and time zones → Wall-clock strings](../data-shapes/json-ingest-and-timezones#wall-clock-strings-parsetimezone).
+  [JSON ingest and time zones → Wall-clock strings](./ingest#wall-clock-strings-parsetimezone).
   The decision table there ("does this input need `parse.timeZone`?")
   is the single most useful artifact for ingest-side time bugs.
 - **`null` vs `undefined`** — see
-  [JSON ingest → Missing values](../data-shapes/json-ingest-and-timezones#missing-values).
+  [JSON ingest → Missing values](./ingest#missing-values).
   Wire-format `null` becomes `undefined` on read; columns marked
   `required: false` accept it.
 - **Mixed timestamp formats** — see
-  [JSON ingest → Pitfalls](../data-shapes/json-ingest-and-timezones#pitfalls).
+  [JSON ingest → Pitfalls](./ingest#pitfalls).
   Mixing offset-qualified strings with bare wall-clock strings is a
   silent zone-drift footgun.
 

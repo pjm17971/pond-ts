@@ -72,8 +72,8 @@ pandas's `.resample()` covers both directions; pond-ts splits them:
 - `reduce(mapping)` ≈ `.agg()` on the whole frame
 - `groupBy(col)` ≈ `.groupby(col)`
 
-See [Sampling overview](../transforms/sampling-overview) for the
-treatment of the split, and [Aggregation](../transforms/aggregation)
+See [Sampling overview](../pond-ts/transforms/sampling-overview) for the
+treatment of the split, and [Aggregation](../pond-ts/transforms/aggregation)
 for the deep dive on `aggregate`.
 
 Full translation table coming in the Reference section; for now,
@@ -204,7 +204,7 @@ smoothed.at(0)?.get('cpuTrend'); // number | undefined
 
 Aggregations, reductions, rolling windows, smoothings — each narrows
 its output type based on reducer / operator kind. See
-[Transforms](../transforms/eventwise) for the details.
+[Transforms](../pond-ts/transforms/eventwise) for the details.
 
 ### Column kinds
 
@@ -219,7 +219,7 @@ pond-ts supports four value kinds for cells:
 
 Array columns are inert for numerical operators (`diff`, `rate`,
 `rolling` over numbers) — they pass through untouched. See
-[Array columns](../data-shapes/arrays) for details and the
+[Array columns](../pond-ts/advanced/arrays) for details and the
 reducers that produce them.
 
 ## Temporal keys
@@ -305,7 +305,7 @@ const buckets = cpu.aggregate(minutely, {
 `Sequence.calendar('day' | 'week' | 'month', { timeZone })` steps by
 local calendar boundaries and is what you want when month or day
 lengths matter. See
-[Aggregation](../transforms/aggregation) for worked examples.
+[Aggregation](../pond-ts/transforms/aggregation) for worked examples.
 
 ### `BoundedSequence`
 
@@ -398,9 +398,9 @@ the bridge to every chart library is deliberately short:
   serialization; schema, name, and all rows round-trip. Use this for
   persistence or wire transfer.
 
-See [Data shapes](../data-shapes/arrays) and
-[JSON ingest](../data-shapes/json-ingest-and-timezones) for the full
-shape of these bridges.
+See [Array columns](../pond-ts/advanced/arrays) and
+[Ingest](../pond-ts/transforms/ingest) for the full shape of these
+bridges.
 
 ## What pond-ts isn't
 
@@ -429,27 +429,32 @@ exceptionally well.
 
 ## Where to go next
 
-- [**Eventwise transforms**](../transforms/eventwise) — `map`,
-  `select`, `rename`, `filter`, `diff`, `rate`, `pctChange`,
+- [**Ingest**](../pond-ts/transforms/ingest) — JSON
+  serialization, time-zone parsing, missing values
+- [**Queries**](../pond-ts/transforms/queries) — `at`, `first`,
+  `timeRange`, `includesKey`, `intersection`, iterators
+- [**Eventwise transforms**](../pond-ts/transforms/eventwise) —
+  `map`, `select`, `rename`, `filter`, `diff`, `rate`, `pctChange`,
   `cumulative`, `shift`
-- [**Cleaning data**](../transforms/cleaning) — `fill`, dedupe,
-  ingest edges
-- [**Sampling overview**](../transforms/sampling-overview) — align
-  vs aggregate, mental model + comparison
-- [**Aggregation**](../transforms/aggregation) — `aggregate`,
-  `reduce`, `arrayAggregate`, `LiveAggregation`
-- [**Reshaping**](../transforms/reshape) — `groupBy`,
+- [**Cleaning data**](../pond-ts/transforms/cleaning) — `fill`,
+  dedupe, ingest edges
+- [**Sampling overview**](../pond-ts/transforms/sampling-overview)
+  — align vs aggregate, mental model + comparison
+- [**Aggregation**](../pond-ts/transforms/aggregation) —
+  `aggregate`, `reduce`, `arrayAggregate`, `LiveAggregation`
+- [**Reshaping**](../pond-ts/transforms/reshape) — `groupBy`,
   `pivotByGroup`, `join`, `joinMany`
-- [**Rolling windows**](../transforms/rolling) — sliding-window
-  reductions, `tail`, `LiveRollingAggregation`
-- [**Smoothing**](../transforms/smoothing) — EMA / moving average /
-  LOESS, picking one
-- [**Anomaly detection**](../transforms/anomaly-detection) —
-  `baseline`, `outliers`
-- [**Charting**](../transforms/charting) — `toPoints` interop,
-  Recharts and visx examples
-- [**Reducer reference**](../transforms/reducer-reference) — every
-  built-in
-- [**Array columns**](../data-shapes/arrays) — when reducers produce
-  collections
-- [**Live series**](../live/live-series) — stream-style ingest
+- [**Rolling windows**](../pond-ts/transforms/rolling) —
+  sliding-window reductions, `tail`, `LiveRollingAggregation`
+- [**Smoothing**](../pond-ts/transforms/smoothing) — EMA / moving
+  average / LOESS, picking one
+- [**Anomaly detection**](../pond-ts/transforms/anomaly-detection)
+  — `baseline`, `outliers`
+- [**Reducer reference**](../pond-ts/transforms/reducer-reference)
+  — every built-in
+- [**Charting**](../pond-ts/advanced/charting) — `toPoints`
+  interop, Recharts and visx examples
+- [**Array columns**](../pond-ts/advanced/arrays) — when reducers
+  produce collections
+- [**Live series**](../pond-ts/live/live-series) — stream-style
+  ingest

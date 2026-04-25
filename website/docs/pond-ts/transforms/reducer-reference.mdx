@@ -9,7 +9,7 @@ pond-ts ships 14 built-in reducers, plus percentile patterns (`p50`,
 built-in works in `aggregate()`, `reduce()`, `rolling()`, and
 `collapse()`. The two array-producing reducers (`unique` and `top(n)`)
 also slot into
-[`arrayAggregate()`](../data-shapes/arrays#per-event-reduction-arrayaggregate).
+[`arrayAggregate()`](../advanced/arrays#per-event-reduction-arrayaggregate).
 
 ## Choosing a reducer
 
@@ -222,7 +222,7 @@ Returns `undefined` for an empty bucket or mixed values.
 
 These two reducers output an array column (`kind: 'array'`) instead of a scalar. They
 drive most of the tagging / distinct-value workflows — see the
-[Array Columns guide](../data-shapes/arrays) for the full treatment.
+[Array Columns guide](../advanced/arrays) for the full treatment.
 
 ### `unique`
 
