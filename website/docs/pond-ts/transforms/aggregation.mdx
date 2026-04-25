@@ -22,6 +22,16 @@ This page covers four shapes of "collapse many events into fewer":
 Plus the live-side counterpart: `LiveAggregation` (incremental
 bucketed aggregation over a `LiveSeries`).
 
+:::note[Coming from pondjs?]
+
+- pondjs `Aggregator` → `aggregate()` for batch, `LiveAggregation`
+  for streaming.
+- `Pipeline` + `Processor` → method chain on `TimeSeries`; a custom
+  reducer function fills the `Processor` role.
+- `Index`-keyed buckets → `Interval`-keyed events. The full rename
+  table is on [Concepts](../concepts/overview).
+  :::
+
 ## `aggregate` \{#aggregate\}
 
 ```ts
@@ -206,14 +216,20 @@ Reduce one array cell per event — feeds each event's array to a
 reducer as if it were a bucket. Per-event in / per-event out.
 
 ```ts
-// "Most common tag per event" — count, then top1.
-events.arrayAggregate('tags', 'count'); // tags: number column
-events.arrayAggregate('tags', 'unique'); // tags: still array, deduped
+// "Number of tags per event" — replace the array column with a count.
+events.arrayAggregate('tags', 'count');
+
+// Same, but keep the original array column too — append a new
+// `tagCount` number column alongside.
+events.arrayAggregate('tags', 'count', { as: 'tagCount' });
+
+// Distinct values per event, deduped (keeps the array column).
+events.arrayAggregate('tags', 'unique');
 ```
 
-Full treatment, including `{ as }` for appending vs replacing,
-custom reducers, and the flatten-one-level semantics on array-kind
-sources, lives on [Array columns](../data-shapes/arrays).
+Full treatment, including custom reducers and the flatten-one-level
+semantics on array-kind sources, lives on
+[Array columns](../data-shapes/arrays).
 
 ## `LiveAggregation`
 

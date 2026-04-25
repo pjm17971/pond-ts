@@ -21,9 +21,19 @@ const pts = cpu.toPoints('cpu');
 // ReadonlyArray<{ ts: number; value: number }>
 ```
 
-`undefined` values are dropped. The shape — `{ ts, value }[]` — is
-what every mainstream chart library accepts (Recharts, Observable
-Plot, visx, raw d3).
+The shape — `{ ts, value }[]` — is what every mainstream chart
+library accepts (Recharts, Observable Plot, visx, raw d3).
+
+:::caution[`toPoints` drops `undefined` values]
+Each `toPoints(col)` call independently drops events where _that
+column_ is `undefined`. If two columns from the same source have
+gaps in different places (warmup, flat-window regions on
+[`baseline`](./anomaly-detection#baseline)), their arrays will have
+different lengths. **Don't index across two `toPoints` results by
+position** — use a single iteration over the source `TimeSeries`
+and build merged rows directly. The band-chart example below shows
+the right shape.
+:::
 
 ## `fromPoints(points, { schema, name? })` — the inverse
 
@@ -82,32 +92,39 @@ function CpuChart({ cpu }: { cpu: TimeSeries<Schema> }) {
 ```
 
 For a band chart, three series — center, upper, lower — from one
-`baseline()` pass:
+`baseline()` pass. Build merged rows by iterating the source
+once; **don't** zip three separate `toPoints` arrays — each one
+drops gaps independently and the indexes won't line up:
 
 ```tsx
 function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
   const bands = cpu.baseline('cpu', { window: '1m', sigma: 2 });
 
-  // Recharts wants one row per x with named series fields.
-  const merged = bands.toPoints('avg').map((p, i) => ({
-    ts: p.ts,
-    avg: p.value,
-    upper: bands.toPoints('upper')[i]?.value,
-    lower: bands.toPoints('lower')[i]?.value,
-  }));
+  // Build merged rows directly from the source. Every grid point is
+  // kept; undefined fields render as gaps in Recharts.
+  const merged = Array.from({ length: bands.length }, (_, i) => {
+    const e = bands.at(i)!;
+    return {
+      ts: e.begin(),
+      avg: e.get('avg'),
+      upper: e.get('upper'),
+      lower: e.get('lower'),
+    };
+  });
 
   return (
     <ResponsiveContainer width="100%" height={300}>
       <LineChart data={merged}>
         <XAxis dataKey="ts" type="number" />
         <YAxis />
-        <Line type="monotone" dataKey="avg" dot={false} />
+        <Line type="monotone" dataKey="avg" dot={false} connectNulls={false} />
         <Line
           type="monotone"
           dataKey="upper"
           stroke="#888"
           strokeDasharray="4 4"
           dot={false}
+          connectNulls={false}
         />
         <Line
           type="monotone"
@@ -115,12 +132,17 @@ function CpuBand({ cpu }: { cpu: TimeSeries<Schema> }) {
           stroke="#888"
           strokeDasharray="4 4"
           dot={false}
+          connectNulls={false}
         />
       </LineChart>
     </ResponsiveContainer>
   );
 }
 ```
+
+`connectNulls={false}` leaves the band visibly open in warmup and
+flat-window regions instead of papering over them with a straight
+line.
 
 For live data, hook this up via [`useSnapshot`](../../react/hooks#usesnapshot)
 or [`useDerived`](../../react/hooks#usederived) — see
@@ -147,6 +169,7 @@ function CpuLine({
   height: number;
 }) {
   const data = cpu.toPoints('cpu');
+  if (data.length === 0) return null; // empty source — extent would be [undefined, undefined]
 
   const xScale = scaleTime({
     domain: extent(data, (d) => d.ts) as [number, number],

@@ -167,6 +167,21 @@ const product = series.cumulative({ factor: (acc, v) => acc * v });
 When a source value is `undefined`, the accumulator carries forward
 its previous value — no NaN propagation.
 
+### `tail(duration)` — keep the trailing window
+
+`tail` is technically a temporal selection rather than a per-event
+op, but it's tiny and lives next to these in practice — keep events
+whose `begin()` is greater than `lastEvent.begin() - duration`. Same
+schema, fewer rows.
+
+```ts
+const recent = series.tail('30s');
+const all = series.tail(); // identity (whole series) when no duration
+```
+
+Often paired with `reduce` for "current state" readouts — see
+[Rolling windows → tail](./rolling#tail) for the composition.
+
 ### `shift(cols, n)` — lag / lead
 
 Move column values forward (positive `n` = lag) or backward
@@ -187,7 +202,7 @@ corresponding number of events.
 
 | Method                | Output                                     |
 | --------------------- | ------------------------------------------ |
-| `map(fn)`             | New schema possible; one event in, one out |
+| `map(nextSchema, fn)` | New schema possible; one event in, one out |
 | `filter(pred)`        | Same schema; subset of rows                |
 | `select(...keys)`     | Schema narrowed to chosen columns          |
 | `rename(mapping)`     | Schema with renamed columns                |
@@ -196,6 +211,7 @@ corresponding number of events.
 | `rate(cols)`          | Same schema; delta-per-second column       |
 | `pctChange(cols)`     | Same schema; relative-change column        |
 | `cumulative(spec)`    | Same schema; running aggregate column      |
+| `tail(duration)`      | Same schema; trailing temporal slice       |
 | `shift(cols, n)`      | Same schema; column values shifted         |
 | `Event.set(field, v)` | Single field on one event                  |
 | `Event.merge(patch)`  | Multi-field patch on one event             |

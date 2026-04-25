@@ -65,6 +65,31 @@ For a chart at one-minute resolution where every grid point should
 have a value, `align` is right. For "average CPU per minute," `aggregate`
 is right. The two are complementary, not interchangeable.
 
+## `aggregate` quick reference
+
+```ts
+cpu.aggregate(Sequence.every('5s'), {
+  cpu: 'avg',
+  requests: 'sum',
+  host: 'last',
+});
+```
+
+- **Mapping shapes** — shorthand (`col: 'reducer'`) or explicit
+  (`{ from, using, kind? }`). Mix freely; see
+  [Aggregation → Mapping shapes](./aggregation#mapping-shapes).
+- **Custom reducers** — pass a function instead of a name.
+- **Buckets** are half-open `[begin, end)` — boundary events land
+  in the **later** bucket.
+- **`range`** — pin the output range explicitly (default: source
+  extent).
+- **Empty buckets** — `count` and `sum` emit `0`; most others emit
+  `undefined`. See [Reducer reference →
+  Empty-bucket behavior](./reducer-reference#empty-bucket-behavior).
+
+For the deep dive — `LiveAggregation`, `reduce`, `groupBy`,
+`arrayAggregate` — see [Aggregation](./aggregation).
+
 ## `align` quick reference
 
 ```ts
