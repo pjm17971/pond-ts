@@ -132,7 +132,10 @@ Nice-to-have in the same wave:
 
 Hold for later unless a concrete user need appears:
 
-- `unpivot` — wide-to-long; trivial via `flatMap` today, no demand seen yet
+- `unpivot` — wide-to-long; sketched on the
+  [Reshaping](website/docs/pond-ts/transforms/reshape.mdx#unpivot)
+  page with a manual workaround. Promote to shipped if a real case
+  appears.
 
 ### Design notes
 

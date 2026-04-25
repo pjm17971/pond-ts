@@ -1,0 +1,323 @@
+---
+sidebar_position: 15
+---
+
+# Reshaping
+
+Operations that change the **shape** of a series — pivot from long
+to wide, partition into per-group sub-series, or join two series
+into one wider one. Distinct from
+[Aggregation](./aggregation) (which collapses to fewer events) and
+from [Eventwise transforms](./eventwise) (which preserve the row
+count and only reshape per event).
+
+This page covers five ops:
+
+- [**`pivotByGroup(group, value)`**](#pivotbygroup) — long-to-wide
+  reshape on a categorical column.
+- [**`unpivot(group, value, mapping)`**](#unpivot) — wide-to-long
+  inverse. **Sketch — not yet shipped.**
+- [**`groupBy(col, fn?)`**](#groupby) — partition a series by a
+  column value into N per-group sub-series.
+- [**`join(other, options?)`**](#join) — exact-key pairwise join of
+  two `TimeSeries` into one wider series.
+- [**`joinMany(seriesList, options?)`**](#joinmany) — N-ary join of
+  many series at once. Static method on `TimeSeries`.
+
+For per-event shape changes — `select`, `rename`, `collapse`,
+`map(newSchema, fn)` — see
+[Eventwise transforms → Per-event-only](./eventwise#per-event-only).
+
+## `pivotByGroup` \{#pivotbygroup\}
+
+Reshape long-form data into wide rows. Each distinct value of the
+group column becomes its own column in the output schema named
+`{group}_{value}`, holding the value column at that timestamp.
+
+```ts
+// Long: one row per (timestamp, host).
+// Wide: one row per timestamp, columns per host.
+const wide = long.pivotByGroup('host', 'cpu');
+// schema: [time, "api-1_cpu", "api-2_cpu", ...]
+```
+
+The wide-row counterpart of [`groupBy`](#groupby): where `groupBy`
+gives you `N` separate `TimeSeries`, `pivotByGroup` gives you
+**one** wide `TimeSeries`. Pick whichever shape your downstream
+code wants — `groupBy` for per-group transform pipelines,
+`pivotByGroup` for chart data and column-wise operations.
+
+Rows sharing a timestamp collapse into one output row. Cells where
+a group has no event at a timestamp are `undefined`. Output schema
+is dynamic (column names depend on runtime data) so the return
+type is `TimeSeries<SeriesSchema>` (loosely typed) — read columns
+by name out of `toPoints()` rows. Group values are sorted
+alphabetically for stable column order.
+
+If two events share both a timestamp **and** a group value, the
+call throws by default. Opt-in with `{ aggregate: 'avg' }` (or any
+reducer name `aggregate()` accepts: `'sum'`, `'first'`, `'last'`,
+`'min'`, `'max'`, `'median'`, percentiles like `'p95'`, custom
+functions, …):
+
+```ts
+long.pivotByGroup('host', 'cpu', { aggregate: 'avg' });
+```
+
+The aggregator's output kind must match the value column's kind —
+e.g. `count`, `unique`, `topN` produce kind-changing reductions
+and are rejected upfront with a clear error. Use `aggregate()`
+first if you need a kind-changing reduction.
+
+Composes with every other transform — every wide column is a
+regular numeric column:
+
+```ts
+// Per-host rolling smoothing on the wide series.
+const smoothed = long.pivotByGroup('host', 'cpu').rolling('5m', {
+  'api-1_cpu': 'avg',
+  'api-2_cpu': 'avg',
+});
+
+// Per-host carry-forward for missing cells.
+const filled = long.pivotByGroup('host', 'cpu').fill({ 'api-2_cpu': 'hold' });
+```
+
+Requires a time-keyed input. See
+[Charting → Per-group wide rows](./charting#per-group-wide-rows-one-source-categorical-column)
+for the end-to-end Recharts pipeline.
+
+:::note[Known limitation]
+A group column containing both literal `"undefined"` strings and
+actually-undefined values collapses both into a single
+`"undefined"` output column. Edge case — open an issue if you hit
+it.
+:::
+
+## `unpivot` \{#unpivot\}
+
+:::caution[Sketch — not yet implemented]
+This is a design sketch for a future API, not a shipped method.
+Today, build the long form by hand from `pivotByGroup`'s wide
+output if you need the round-trip. The sketch lives here so the
+shape can be validated against real use cases before
+implementation.
+:::
+
+The wide-to-long inverse of [`pivotByGroup`](#pivotbygroup). Each
+**wide column** becomes one row per source row, tagged with a
+group key derived from the column name.
+
+```ts
+// Wide → long, the proposed API:
+const long = wide.unpivot('host', 'cpu', {
+  'api-1_cpu': 'api-1',
+  'api-2_cpu': 'api-2',
+});
+// schema: [time, host: string, cpu: number]
+// rows expand 1 wide → N long, where N = mapping.length
+```
+
+The mapping object has explicit `{ wideColumn: groupValue }` pairs —
+no convention-based stripping (`/^_cpu$/`) so renamed-column edge
+cases stay obvious. Wide columns not in the mapping pass through
+unchanged into the output schema.
+
+For now, the today's workaround using existing primitives:
+
+```ts
+const wideCols = ['api-1_cpu', 'api-2_cpu'] as const;
+const groupOf = { 'api-1_cpu': 'api-1', 'api-2_cpu': 'api-2' } as const;
+
+const longRows: Array<[number, string, number | undefined]> = [];
+for (const event of wide.events) {
+  const ts = event.begin();
+  for (const col of wideCols) {
+    longRows.push([ts, groupOf[col], event.get(col) as number | undefined]);
+  }
+}
+longRows.sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]));
+
+const long = new TimeSeries({
+  name: wide.name,
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'host', kind: 'string' },
+    { name: 'cpu', kind: 'number', required: false },
+  ] as const,
+  rows: longRows,
+});
+```
+
+If you need this and it's getting in the way, open an issue with
+your case and the sketch becomes a real implementation.
+
+## `groupBy` \{#groupby\}
+
+Partition by a column value. Returns `Map<string, TimeSeries<S>>`,
+or (with a transform callback) `Map<string, T>`.
+
+```ts
+const perHost = series.groupBy('host');
+// Map<'api-1' | 'api-2' | ..., TimeSeries<S>>
+```
+
+The transform callback is the common form — avoids building
+intermediate maps of `TimeSeries`:
+
+```ts
+const perHostAvg = series.groupBy('host', (group) =>
+  group.reduce({ cpu: 'avg', requests: 'sum' }),
+);
+// Map { 'api-1' => { cpu: 0.42, requests: 12543 }, ... }
+```
+
+Callback receives the group key as a second argument:
+
+```ts
+series.groupBy('host', (group, host) => ({
+  host,
+  avgCpu: group.reduce('cpu', 'avg'),
+}));
+```
+
+Composes with every other method:
+
+```ts
+// Per-host hourly aggregation.
+const hourly = series.groupBy('host', (group) =>
+  group.aggregate(Sequence.every('1h'), { cpu: 'avg' }),
+);
+
+// Per-host outliers.
+const anomalies = series.groupBy('host', (group) =>
+  group.outliers('cpu', { window: '1m', sigma: 2 }),
+);
+```
+
+Reach for `groupBy` when each group spawns multiple derived
+columns (e.g. per-host baseline producing `cpu`/`avg`/`upper`/`lower`
+per host). Reach for [`pivotByGroup`](#pivotbygroup) when you want
+**one** wide series with one column per group.
+
+## `join` \{#join\}
+
+Exact-key pairwise join of two series with the same key kind.
+
+```ts
+const joined = thisWeek.join(lastWeek, {
+  type: 'outer',
+  onConflict: 'prefix',
+  prefixes: ['this_', 'last_'],
+});
+// joined.schema gains both sources' columns under prefixes:
+//   [time, this_cpu, this_requests, last_cpu, last_requests, ...]
+```
+
+**Join types:**
+
+| `type`    | Keeps                                |
+| --------- | ------------------------------------ |
+| `'outer'` | every key from either side (default) |
+| `'left'`  | every key from the left series       |
+| `'right'` | every key from the right series      |
+| `'inner'` | only keys present on both sides      |
+
+**Conflict handling.** If both series have a column with the same
+name, the join is ambiguous. Two ways to resolve:
+
+```ts
+// 1. error (default) — fail at compile/runtime if columns collide.
+left.join(right); // throws if both have a 'cpu' column
+
+// 2. prefix — rename colliding columns with one prefix per side.
+left.join(right, {
+  onConflict: 'prefix',
+  prefixes: ['l_', 'r_'],
+});
+```
+
+Or rename one side before joining (cleanest when the prefix
+convention doesn't fit):
+
+```ts
+left.join(right.rename({ cpu: 'right_cpu' }));
+```
+
+**What "exact-key" means.** A join row is emitted when the two
+sides have events with **identical keys** (same `Time` /
+`Interval` / `TimeRange`). For time-keyed inputs that means
+identical timestamps; nothing is bridged across nearby-but-not-
+identical timestamps. If your sources tick at slightly different
+intervals, [`align`](./aggregation#aggregate) both onto a common
+sequence before joining:
+
+```ts
+const seq = Sequence.every('1m');
+left.align(seq).join(right.align(seq));
+```
+
+Output value columns are always optional (`required: false`)
+because non-`'inner'` joins emit `undefined` cells where one side
+has no event for that key.
+
+## `joinMany` \{#joinmany\}
+
+`TimeSeries.joinMany([a, b, c, ...], options?)` — N-ary join.
+Static method on `TimeSeries`. Same semantics as binary `join`
+applied N-ary in one pass; avoids the awkward
+`a.join(b).join(c)` chain that builds intermediate series.
+
+```ts
+const wide = TimeSeries.joinMany(
+  [cpu.align(seq), memory.align(seq), errors.align(seq)],
+  { type: 'outer' },
+);
+// schema combines all three sources' value columns.
+```
+
+With prefixes to disambiguate same-named columns across sources:
+
+```ts
+TimeSeries.joinMany([cpuA, cpuB, cpuC], {
+  type: 'outer',
+  onConflict: 'prefix',
+  prefixes: ['a_', 'b_', 'c_'],
+});
+// schema: [time, a_cpu, b_cpu, c_cpu]
+```
+
+The prefix array length must equal the input series count. Same
+exact-key contract as `join` — `align` first if your sources tick
+on different cadences. Common use cases: feature-building (joining
+many aligned metric series), reporting tables, and dashboard
+pipelines that need one wide source for charting.
+
+`joinMany` is also the right primitive when you start with
+[`groupBy`](#groupby) and want to merge per-group outputs into one
+wide series:
+
+```ts
+const perHost = series.groupBy('host', (g, host) =>
+  g.baseline('cpu', { window: '5m', sigma: 2 }).rename({
+    cpu: `${host}_cpu`,
+    upper: `${host}_upper`,
+    lower: `${host}_lower`,
+  }),
+);
+const wide = TimeSeries.joinMany([...perHost.values()], { type: 'outer' });
+```
+
+This is the heavier sibling of `pivotByGroup` for cases where
+each group spawns multiple derived columns.
+
+## See also
+
+| Op                    | Page                                   | Shape                                               |
+| --------------------- | -------------------------------------- | --------------------------------------------------- |
+| `select(...cols)`     | [Eventwise](./eventwise#select)        | narrow columns; row count unchanged                 |
+| `rename(mapping)`     | [Eventwise](./eventwise#rename)        | rename columns; row count unchanged                 |
+| `collapse(cols, out)` | [Eventwise](./eventwise#collapse)      | merge several columns into one; row count unchanged |
+| `map(schema, fn)`     | [Eventwise](./eventwise#map)           | per-event schema transform                          |
+| `aggregate(seq, m)`   | [Aggregation](./aggregation#aggregate) | collapse to fewer events on a grid                  |
+| `reduce(mapping)`     | [Aggregation](./aggregation#reduce)    | collapse whole series to one record                 |

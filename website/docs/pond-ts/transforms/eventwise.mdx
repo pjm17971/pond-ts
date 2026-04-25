@@ -24,7 +24,7 @@ do exactly what you'd expect; the rest are time-series-aware.
 
 ## Per-event-only
 
-### `map(nextSchema, fn)` — transform each event
+### `map(nextSchema, fn)` — transform each event \{#map\}
 
 The most general. Pass the **output schema** (so the result type is
 narrow) and a function that takes a source event and returns the new
@@ -65,7 +65,7 @@ Same schema in, same schema out; just fewer rows. See
 [Cleaning data](./cleaning) for filter as a "remove bad rows"
 pattern.
 
-### `select(...keys)` — keep only some columns
+### `select(...keys)` — keep only some columns \{#select\}
 
 Schema-narrowing — type-level too:
 
@@ -75,7 +75,7 @@ const just = full.select('cpu', 'host');
 just.at(0)?.get('cpu'); // still narrows to number | undefined
 ```
 
-### `rename(mapping)` — rename payload columns
+### `rename(mapping)` — rename payload columns \{#rename\}
 
 ```ts
 const renamed = cpu.rename({ cpu: 'usage' });
@@ -85,7 +85,7 @@ renamed.at(0)?.get('usage'); // number | undefined
 
 The temporal key column can't be renamed.
 
-### `collapse(keys, output, reducer)` — combine columns into one
+### `collapse(keys, output, reducer)` — combine columns into one \{#collapse\}
 
 Reducer receives a typed record of just the named columns, returns a
 single value:

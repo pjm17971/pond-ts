@@ -1,5 +1,5 @@
 ---
-sidebar_position: 18
+sidebar_position: 19
 ---
 
 # Charting
@@ -351,7 +351,7 @@ wide.toPoints();
 `pivotByGroup` is the simpler primitive when there's just one value
 column per group; `groupBy` + `joinMany` is the heavier workflow when
 each group spawns multiple derived columns. Full reference:
-[Aggregation → pivotByGroup](./aggregation#pivotbygroup).
+[Reshaping → pivotByGroup](./reshape#pivotbygroup).
 
 ## Joining across multiple `TimeSeries` instances
 
@@ -359,7 +359,7 @@ When all your data comes from a **single** `TimeSeries` (a snapshot,
 a baseline, an outliers result), `toPoints()` already returns wide
 rows — drop in. When you have **two TimeSeries** to overlay
 (this-week vs last-week, two metrics joined for a comparison chart,
-…), reach for [`series.join(other)`](./aggregation) before going to
+…), reach for [`series.join(other)`](./reshape#join) before going to
 the chart layer. The library does the temporal join for you:
 
 ```ts
@@ -368,18 +368,14 @@ const joined = thisWeek.join(lastWeek, {
   onConflict: 'prefix',
   prefixes: ['this_', 'last_'],
 });
-// joined.schema gains both sources' columns under prefixes:
-//   [time, this_cpu, last_cpu, ...]
-
 const data = joined.toPoints();
 // [{ ts, this_cpu, last_cpu, ... }, ...] — exactly what Recharts wants
 ```
 
-`type: 'outer'` keeps every event from both sides; `'inner'` keeps
-only events whose timestamps line up exactly; `'left'` / `'right'`
-preserve one side's events. `onConflict: 'prefix'` renames colliding
-columns; pass `'error'` if you want a build-time guarantee that the
-schemas don't overlap.
+For more than two sources, [`TimeSeries.joinMany([a, b, c, ...])`](./reshape#joinmany)
+folds them all in one pass. Full join semantics — types,
+conflict handling, the exact-key contract — live on
+[Reshaping](./reshape#join).
 
 This stays inside the typed pond-ts contract. The chart-layer helper
 below is only useful when one of your inputs **isn't** a
