@@ -141,9 +141,18 @@ export class Sequence {
    * Example: `sequence.bounded(new TimeRange({ start, end }))`.
    * Realizes a finite `BoundedSequence` over the supplied range.
    *
-   * Sample position controls which interval starts are selected:
-   * `begin` includes buckets whose starts fall within the range, while `center` includes buckets
-   * whose midpoints fall within the range.
+   * Sample position controls which intervals are selected:
+   *
+   * - `'begin'` (default) — sample point is the interval's start.
+   *   Includes buckets where `sample ∈ [range.begin, range.end]`.
+   * - `'center'` — sample point is the interval's midpoint.
+   *   Same inclusive range as `'begin'`.
+   * - `'end'` — sample point is the interval's exclusive end (i.e.
+   *   the start of the next bucket). Inclusion is **left-exclusive**:
+   *   `sample ∈ (range.begin, range.end]`. This keeps the boundary
+   *   case symmetric — an end-sample at exactly `range.begin()` would
+   *   otherwise pull in an interval whose extent sits entirely before
+   *   the range.
    */
   bounded(
     range: TemporalLike,

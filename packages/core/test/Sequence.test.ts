@@ -90,6 +90,59 @@ describe('Sequence', () => {
     );
   });
 
+  it('bounds fixed-step sequences using end sampling', () => {
+    // sample: 'end' uses left-exclusive inclusion (sample > range.begin)
+    // so the [0,10) interval whose end-sample is exactly 10 is dropped,
+    // even though begin sampling on the same range includes [10,20).
+    const sequence = Sequence.every(10, { anchor: 0 });
+    const end = sequence.bounded(new TimeRange({ start: 10, end: 30 }), {
+      sample: 'end',
+    });
+
+    expect(end.length).toBe(2);
+    expect(end.at(0)).toEqual(new Interval({ value: 10, start: 10, end: 20 }));
+    expect(end.at(1)).toEqual(new Interval({ value: 20, start: 20, end: 30 }));
+  });
+
+  it('bounds end-sampled sequences with a non-zero anchor', () => {
+    // anchor 5 shifts the grid; intervals start at ...,-5,5,15,25,35,...
+    // end samples are 5, 15, 25, 35. Range (10, 30] includes 15 and 25.
+    const sequence = Sequence.every(10, { anchor: 5 });
+    const end = sequence.bounded(new TimeRange({ start: 10, end: 30 }), {
+      sample: 'end',
+    });
+
+    expect(end.length).toBe(2);
+    expect(end.at(0)).toEqual(new Interval({ value: 5, start: 5, end: 15 }));
+    expect(end.at(1)).toEqual(new Interval({ value: 15, start: 15, end: 25 }));
+  });
+
+  it('returns no intervals for end sampling on a zero-length range', () => {
+    const sequence = Sequence.every(10, { anchor: 0 });
+    const end = sequence.bounded(new TimeRange({ start: 10, end: 10 }), {
+      sample: 'end',
+    });
+    expect(end.length).toBe(0);
+  });
+
+  it('end sampling works on calendar sequences', () => {
+    // Daily UTC sequence; range covers two day-ends in 2025-03.
+    const sequence = Sequence.calendar('day', { timeZone: 'UTC' });
+    const end = sequence.bounded(
+      new TimeRange({
+        start: Date.parse('2025-03-09T00:00:00Z'),
+        end: Date.parse('2025-03-11T00:00:00Z'),
+      }),
+      { sample: 'end' },
+    );
+    // Day-end samples land at 03-10T00 and 03-11T00 (both in range).
+    // The 03-09T00 day-end sample equals range.begin() and is excluded
+    // by the left-exclusive 'end' rule.
+    expect(end.length).toBe(2);
+    expect(end.at(0)?.begin()).toBe(Date.parse('2025-03-09T00:00:00Z'));
+    expect(end.at(1)?.begin()).toBe(Date.parse('2025-03-10T00:00:00Z'));
+  });
+
   it('exposes anchor and step metadata for procedural sequences', () => {
     const sequence = Sequence.hourly({ anchor: 1_000 });
 

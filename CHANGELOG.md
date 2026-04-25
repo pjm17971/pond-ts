@@ -7,11 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.5.12...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...HEAD
 
 ## [Unreleased]
 
-## [0.5.12] — 2026-04-25
+## [0.6.0] — 2026-04-25
 
 ### Added
 
@@ -22,6 +22,15 @@ type-level changes; patch bumps are strictly additive.
   (`sample ∈ (range.begin, range.end]`) so an end-sample at exactly
   `range.begin()` doesn't pull in an interval that sits entirely
   before the range.
+
+### Type-surface change
+
+- `AlignSample` and `SequenceSample` literal unions widen from
+  `'begin' | 'center'` to `'begin' | 'center' | 'end'`. Pattern-matching
+  consumers that exhaustively `switch` on the old two-value union
+  silently miss the new arm — minor bump rather than a patch per this
+  project's "patch bumps are strictly additive" rule. Update any
+  `switch (sample)` blocks to handle `'end'` (or add a `default`).
 
 ## [0.5.11] — 2026-04-24
 
@@ -74,7 +83,7 @@ type-level changes; patch bumps are strictly additive.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
-[0.5.12]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...v0.5.12
+[0.6.0]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...v0.6.0
 [0.5.11]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/pjm17971/pond-ts/compare/v0.5.8...v0.5.9
