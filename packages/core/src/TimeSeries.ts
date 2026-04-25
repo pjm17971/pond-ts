@@ -1513,20 +1513,28 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Rows sharing a timestamp collapse into one output row. Cells where
    * a group has no event at a given timestamp are `undefined`. The
-   * inverse operation of `groupBy` for the case where you want one wide
-   * `TimeSeries` instead of N separate ones — typically because the
-   * downstream chart expects wide rows.
+   * wide-row counterpart of `groupBy` for the case where you want one
+   * wide `TimeSeries` instead of N separate ones — typically because
+   * the downstream chart expects wide rows.
    *
    * If two events share both a timestamp AND a group value the call
    * throws by default. Pass `{ aggregate: "avg" }` (or any reducer name
    * that `aggregate()` accepts: `"sum"`, `"first"`, `"last"`, `"min"`,
    * `"max"`, `"median"`, percentiles like `"p95"`, etc.) to combine
-   * duplicates instead.
+   * duplicates instead. The aggregator's output kind must match the
+   * value column's kind — e.g. `count`, `unique`, `topN` produce
+   * non-source kinds and are rejected upfront. Use `aggregate()` first
+   * if you need a kind-changing reduction.
    *
    * Output schema is dynamic — column names depend on runtime data —
    * so the return type is `TimeSeries<SeriesSchema>` (loosely typed).
    * Group values are sorted alphabetically for stable column order.
    * Requires a time-keyed input series.
+   *
+   * Known limitation: a group column containing both literal
+   * `"undefined"` strings and actually-undefined values collapses both
+   * into a single `"undefined"` output column. Edge case — open an
+   * issue if you hit it.
    *
    * Example: `series.pivotByGroup("host", "cpu", { aggregate: "avg" })`.
    * Averages values when multiple rows share `(timestamp, host)`.
@@ -1560,6 +1568,18 @@ export class TimeSeries<S extends SeriesSchema> {
 
     const aggregator = options.aggregate;
     const valueKind = valueColumnDef.kind;
+
+    if (aggregator !== undefined && isBuiltInAggregateReducer(aggregator)) {
+      const outputKind = resolveReducer(aggregator).outputKind;
+      if (outputKind !== 'source' && outputKind !== valueKind) {
+        throw new TypeError(
+          `pivotByGroup: aggregator "${aggregator}" produces ` +
+            `${outputKind} output, but value column "${String(valueCol)}" ` +
+            `has kind "${valueKind}". Aggregate first with the kind change, ` +
+            `then pivot.`,
+        );
+      }
+    }
 
     type Cell = ColumnValue | undefined;
     const groupSeen = new Set<string>();

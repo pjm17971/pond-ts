@@ -255,6 +255,47 @@ describe('TimeSeries.pivotByGroup', () => {
       ).toThrow(/group column "doesNotExist" not in schema/);
     });
 
+    it('throws when aggregator output kind would not match value kind', () => {
+      const stringSchema = [
+        { name: 'time', kind: 'time' },
+        { name: 'status', kind: 'string' },
+        { name: 'host', kind: 'string' },
+      ] as const;
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema: stringSchema,
+        rows: [[0, 'ok', 'api-1']],
+      });
+      expect(() =>
+        ts.pivotByGroup('host', 'status', { aggregate: 'count' }),
+      ).toThrow(/produces number output.*has kind "string"/);
+    });
+
+    it('throws when aggregator produces array output', () => {
+      expect(() =>
+        longSeries().pivotByGroup('host', 'cpu', { aggregate: 'unique' }),
+      ).toThrow(/produces array output.*has kind "number"/);
+    });
+
+    it('accepts source-preserving aggregators on any value kind', () => {
+      const stringSchema = [
+        { name: 'time', kind: 'time' },
+        { name: 'status', kind: 'string' },
+        { name: 'host', kind: 'string' },
+      ] as const;
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema: stringSchema,
+        rows: [
+          [0, 'ok', 'api-1'],
+          [0, 'fail', 'api-1'], // duplicate
+        ],
+      });
+      // 'last' has outputKind 'source', so string-valued sources work.
+      const wide = ts.pivotByGroup('host', 'status', { aggregate: 'last' });
+      expect(wide.toPoints()[0]['api-1_status']).toBe('fail');
+    });
+
     it('throws when input is not time-keyed', () => {
       const intervalSchema = [
         { name: 'window', kind: 'interval' },
