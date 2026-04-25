@@ -895,6 +895,70 @@ describe('TimeSeries', () => {
     expect(aligned.at(1)?.get('value')).toBe(3);
   });
 
+  it('supports end-sampled alignment with hold', () => {
+    // sample: 'end' anchors at interval.end(); the held value is the
+    // most recent source ≤ that endpoint.
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [10, 1],
+        [20, 3],
+        [30, 5],
+      ],
+    });
+
+    const aligned = ts.align(Sequence.every(10), {
+      method: 'hold',
+      sample: 'end',
+      range: new TimeRange({ start: 10, end: 30 }),
+    });
+
+    // Two interval-keyed outputs; end-sample reads the value at
+    // interval.end() — i.e. the source value at 20 for the first
+    // bucket [10, 20) and at 30 for the second [20, 30).
+    expect(aligned.length).toBe(2);
+    expect(aligned.at(0)?.key()).toEqual(
+      new Interval({ value: 10, start: 10, end: 20 }),
+    );
+    expect(aligned.at(0)?.get('value')).toBe(3); // hold @ end=20 -> source@20=3
+    expect(aligned.at(1)?.get('value')).toBe(5); // hold @ end=30 -> source@30=5
+  });
+
+  it('supports end-sampled alignment with linear interpolation', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    const ts = new TimeSeries({
+      name: 'cpu',
+      schema,
+      rows: [
+        [10, 1],
+        [30, 5], // linear interpolation between 10 and 30
+      ],
+    });
+
+    const aligned = ts.align(Sequence.every(10), {
+      method: 'linear',
+      sample: 'end',
+      range: new TimeRange({ start: 10, end: 30 }),
+    });
+
+    // First bucket [10, 20) ends at 20 — interpolated between 1@10 and
+    // 5@30 gives 3 at t=20. Second bucket [20, 30) ends at 30 — exactly
+    // the source value 5.
+    expect(aligned.length).toBe(2);
+    expect(aligned.at(0)?.get('value')).toBe(3);
+    expect(aligned.at(1)?.get('value')).toBe(5);
+  });
+
   it('merges aligned series on exact interval keys', () => {
     const leftSchema = [
       { name: 'interval', kind: 'interval' },
