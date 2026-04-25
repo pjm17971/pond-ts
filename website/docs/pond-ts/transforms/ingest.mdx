@@ -1,10 +1,10 @@
 ---
-sidebar_position: 12
+sidebar_position: 10
 ---
 
-# JSON Ingest and Time Zones
+# Ingest
 
-[Concepts → Getting data in and out](../concepts/overview#getting-data-in-and-out)
+[Concepts → Getting data in and out](../../start-here/concepts#getting-data-in-and-out)
 introduced `toJSON` / `fromJSON` as the wire-format bridge. This page
 is the detailed reference — the shape of the JSON payload, the
 timestamp-parsing rules, and the one genuinely tricky corner
@@ -390,9 +390,9 @@ Library isn't trying to guess remaps.
 
 ## See also
 
-- [Concepts → Getting data in and out](../concepts/overview#getting-data-in-and-out)
+- [Concepts → Getting data in and out](../../start-here/concepts#getting-data-in-and-out)
   — the bigger picture on `toPoints` / `fromPoints` / JSON.
-- [Array columns](./arrays) — array cells serialize as JSON arrays
-  and round-trip without special handling.
-- [Transforms → Sampling overview](../transforms/sampling-overview)
-  — where `Sequence.calendar(...)` gets used.
+- [Array columns](../advanced/arrays) — array cells serialize as
+  JSON arrays and round-trip without special handling.
+- [Sampling overview](./sampling-overview) — where
+  `Sequence.calendar(...)` gets used.
