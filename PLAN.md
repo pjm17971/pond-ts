@@ -414,7 +414,8 @@ Definition of done:
 ## Phase 4: Live composition
 
 Status: core primitives complete; late-event propagation through live
-transforms is a known scope gap (see below).
+transforms and live merge / join across sources are known scope gaps (see
+below).
 
 Goal: validate the live composition model before building UI integrations on top
 of it.
@@ -490,6 +491,63 @@ Concrete next steps when this work begins:
 - [ ] Test matrix: `graceWindow + retention`, `graceWindow + rolling`,
       `graceWindow + window view`, `graceWindow + nested transforms`
 
+### Known scope gap: live merge / join
+
+Multiple `LiveSeries` instances cannot be combined into a single live source
+today. There is no `LiveSeries.merge(a, b)` (interleave events from same-schema
+sources) and no `LiveSeries.join(a, b)` (join cross-schema sources by time
+proximity into a wider schema). The batch API has `series.join(other, ...)`
+and a manual `mergeWideRows` recipe documented for charting; the live side
+has neither.
+
+The dashboard use case that surfaces this: overlaying two metrics from
+separate WebSockets onto one chart (e.g. `cpu` and `memory` arriving as
+independent streams that need to render as `{ ts, cpu, memory }` rows). The
+dashboard agent asked for `mergeWideRows` to be re-exported as a workaround;
+the deeper ask is a live join.
+
+Why it's deferred:
+
+- **Subscription fan-in.** A live join needs to subscribe to N upstream
+  sources and emit events on its own schedule (per-source push? buffered
+  flush? watermark-driven?). The choice has user-visible latency and ordering
+  consequences.
+- **Time alignment.** Cross-source joins almost never have exactly-aligned
+  timestamps. Either we expose a tolerance window (`{ within: '50ms' }`),
+  carry-forward fill, or push the alignment problem to the caller via a
+  required `align()` step. Each option has different memory and correctness
+  trade-offs.
+- **Schema conflict.** Same as batch `join` — two columns called `value` on
+  both sides need a prefix or rename strategy. Live join inherits this.
+- **Interaction with grace / retention / late events.** A late event on
+  source A may need to retroactively emit a join row with the prevailing
+  source-B value at that timestamp. This compounds the late-event scope gap
+  above.
+
+For now, document the scope honestly: callers who need to combine live
+sources for rendering should snapshot each source independently and use the
+batch `join()` on the resulting `TimeSeries` instances. The throttled
+re-snapshot at the React layer makes this cheap enough for typical dashboard
+cadences (`useSnapshot` on each source + `useMemo` over both for the joined
+result; `useDerived` is single-source only today). See
+[Charting → Live: snapshot-then-batch-join](website/docs/pond-ts/transforms/charting.mdx)
+for the worked pattern.
+
+Concrete next steps when this work begins:
+
+- [ ] Decide the surface: `LiveSeries.merge(a, b, ...)` for same-schema
+      interleave, `liveA.join(liveB, options)` for cross-schema. Mirror the
+      batch shape where possible.
+- [ ] Pick a time-alignment story: tolerance window vs. carry-forward fill
+      vs. caller-supplied `align()`.
+- [ ] Define emission cadence: emit on every upstream push (high frequency)
+      vs. emit on watermark advance (lower latency variance).
+- [ ] Schema conflict: reuse the batch `onConflict: 'error' | 'prefix'`
+      contract verbatim.
+- [ ] Decide what late events on one input do to already-emitted join rows
+      — defer to the late-event work above, or carve out an in-order-only
+      contract for the first cut.
+
 ### Batch → Live applicability
 
 Not every batch `TimeSeries` method needs a live equivalent. The live layer is
@@ -513,7 +571,7 @@ toolkit, snapshot to `TimeSeries` and use the batch API.
 | `smooth()`        | covered  | EMA is a closure in `map()`; MA is rolling avg           |
 | `shift(col, n)`   | maybe    | needs lookback buffer, niche for live                    |
 | `align()`         | no       | resampling assumes complete data                         |
-| `join()`          | no       | two-stream join is a different primitive                 |
+| `join()`          | **gap**  | real ask, deferred — see "live merge / join" above       |
 | `groupBy()`       | no       | partitioning is a source-level concern                   |
 | `within/trim`     | no       | temporal selection — snapshot then slice                 |
 | `reduce()`        | no       | whole-series → scalar — that's `LiveRollingAggregation`  |
