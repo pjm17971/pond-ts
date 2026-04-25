@@ -115,7 +115,7 @@ const snap = useSnapshot(live);
 
 if (snap === null) return <Skeleton />; // not yet initialized
 if (snap.length === 0) return <NoData />; // initialized but empty
-return <Chart data={snap.toPoints('cpu')} />;
+return <Chart data={snap.select('cpu').toPoints()} />;
 ```
 
 There's no built-in error channel — if a source throws on push, the

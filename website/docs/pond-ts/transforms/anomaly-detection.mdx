@@ -35,8 +35,8 @@ Four optional number columns appended:
 Then a band chart is two `toPoints` calls; an outlier filter is one:
 
 ```ts
-const upperBand = bands.toPoints('upper');
-const lowerBand = bands.toPoints('lower');
+const data = bands.toPoints();
+// [{ ts, cpu, ..., avg, sd, upper, lower }, ...] — chart-ready
 
 const anomalies = bands.filter((e) => {
   const v = e.get('cpu');

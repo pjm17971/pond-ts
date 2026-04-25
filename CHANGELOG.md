@@ -7,9 +7,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.7.0...HEAD
 
 ## [Unreleased]
+
+## [0.7.0] — 2026-04-25
+
+### Changed (breaking)
+
+- **`TimeSeries.toPoints()` returns wide rows** instead of single-column
+  `{ ts, value }[]`. Every event becomes one row with `ts` plus every
+  value column from the schema as a top-level key:
+
+  ```ts
+  // Before:                       // After:
+  series.toPoints('cpu');
+  series.toPoints();
+  // [{ ts, value }, ...]          // [{ ts, cpu, host, ... }, ...]
+  ```
+
+  This aligns pond-ts's multi-column nature with what every chart
+  library actually wants (Recharts, Observable Plot, visx all consume
+  wide rows directly). Band charts, multi-series overlays, and
+  `<Area>` ranged-`dataKey` patterns become a single `toPoints()`
+  call instead of a manual merge.
+
+  **Migration:** for the common single-column case, compose with
+  `select`:
+
+  ```ts
+  const cpuPoints = series.select('cpu').toPoints();
+  // [{ ts, cpu }, ...]
+  ```
+
+  Then read the column by name (`row.cpu`) instead of the old
+  `.value`. Wide form keeps every event — the old narrow form
+  dropped events whose column was `undefined`; the new form preserves
+  them so chart libraries can render gaps via `connectNulls={false}`.
+
+- **`TimeSeries.fromPoints()` accepts wide-row points** with a schema
+  of any number of value columns. Schema's first column must still be
+  `kind: 'time'`.
+
+  ```ts
+  TimeSeries.fromPoints(
+    [{ ts: 0, cpu: 0.3, host: 'api-1' }, ...],
+    {
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'cpu', kind: 'number' },
+        { name: 'host', kind: 'string' },
+      ] as const,
+    },
+  );
+  ```
+
+  Previously restricted to exactly two columns with `{ ts, value }`
+  rows; that form is gone.
 
 ## [0.6.0] — 2026-04-25
 
@@ -83,6 +137,7 @@ type-level changes; patch bumps are strictly additive.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
+[0.7.0]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...v0.6.0
 [0.5.11]: https://github.com/pjm17971/pond-ts/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/pjm17971/pond-ts/compare/v0.5.9...v0.5.10

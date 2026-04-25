@@ -30,6 +30,7 @@ import type {
   NormalizedObjectRow,
   NormalizedObjectRowForSchema,
   NormalizedRowForSchema,
+  PointRowForSchema,
   PrefixedJoinManySchema,
   PrefixedJoinSchema,
   ReduceResult,
@@ -3282,25 +3283,38 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
-   * Example: `series.toPoints('cpu')`.
-   * Flat `{ ts, value }[]` export for a single numeric column — the
-   * conventional shape for most time-series chart libraries (Recharts,
-   * Observable Plot, d3, etc.).
+   * Example: `series.toPoints()`.
+   * Wide-row export: `{ ts, ...valueColumns }[]`. Every event in the
+   * series produces one row; every value column from the schema
+   * appears as a top-level key. Missing values stay `undefined`
+   * (chart libraries render those as gaps under `connectNulls={false}`
+   * or equivalent).
    *
-   * Events whose `col` is `undefined` are dropped (no point emitted).
    * `ts` is `event.begin()` — for `Time` keys this is the timestamp,
    * for `TimeRange` / `Interval` keys this is the interval start.
+   *
+   * Need a single column? Compose with `select`:
+   *
+   * ```ts
+   * const data = series.select('cpu').toPoints();
+   * // [{ ts: number, cpu: number | undefined }, ...]
+   * ```
+   *
+   * The shape — flat `{ ts, ... }[]` — is what every mainstream chart
+   * library accepts directly (Recharts, Observable Plot, visx, raw d3).
    */
-  toPoints<const Col extends NumericColumnNameForSchema<S>>(
-    col: Col,
-  ): ReadonlyArray<{ ts: number; value: number }> {
-    const out: { ts: number; value: number }[] = [];
-    for (const event of this.events) {
-      const value = event.get(col);
-      if (typeof value !== 'number') continue;
-      out.push({ ts: event.begin(), value });
-    }
-    return Object.freeze(out);
+  toPoints(): ReadonlyArray<PointRowForSchema<S>> {
+    const valueCols = this.schema.slice(1) as ReadonlyArray<{ name: string }>;
+    return Object.freeze(
+      this.events.map((event) => {
+        const row: Record<string, unknown> = { ts: event.begin() };
+        const data = event.data() as Record<string, unknown>;
+        for (const col of valueCols) {
+          row[col.name] = data[col.name];
+        }
+        return Object.freeze(row) as PointRowForSchema<S>;
+      }),
+    );
   }
 
   /**
@@ -3511,30 +3525,43 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /**
    * Example: `TimeSeries.fromPoints(pts, { schema: [...] })`.
-   * Construct a two-column `TimeSeries` from a flat `{ ts, value }[]`
-   * array — the inverse of `toPoints(col)`. The schema must have
-   * exactly two columns: a time-kind first column and one value
-   * column. Each point's `ts` becomes the time key; `value` goes
-   * into the named value column.
+   * Construct a `TimeSeries` from a flat array of wide-row points —
+   * the inverse of `toPoints()`. Each point carries `ts` plus one key
+   * per value column from the schema; missing keys become `undefined`.
+   *
+   * The schema's first column must be `kind: 'time'` — `ts` is a
+   * single timestamp and can't reconstruct a `TimeRange` or
+   * `Interval` extent. Schemas may have any number of value columns.
    *
    * Useful for round-tripping chart data back into pond-native
    * operations — e.g. bucketing a flat list of anomaly points via
    * `aggregate(Sequence.every('15s'), { cpu: 'count' })`.
    */
   static fromPoints<S extends SeriesSchema>(
-    points: ReadonlyArray<{ ts: TimestampInput; value: ScalarValue }>,
+    points: ReadonlyArray<{ ts: TimestampInput } & Record<string, unknown>>,
     options: { schema: S; name?: string },
   ): TimeSeries<S> {
-    if (options.schema.length !== 2) {
+    const schema = options.schema;
+    if (schema.length < 2) {
       throw new TypeError(
-        'TimeSeries.fromPoints expects a schema with exactly two columns: a time key and one value column',
+        'TimeSeries.fromPoints expects a schema with at least one value column',
       );
     }
+    if (schema[0]!.kind !== 'time') {
+      throw new TypeError(
+        `TimeSeries.fromPoints requires a time-keyed schema; got first column kind '${schema[0]!.kind}'`,
+      );
+    }
+    const valueCols = schema.slice(1);
     return new TimeSeries({
       name: options.name ?? 'points',
-      schema: options.schema,
+      schema,
       rows: points.map(
-        (p) => [p.ts, p.value] as unknown,
+        (p) =>
+          [
+            p.ts,
+            ...valueCols.map((col) => p[col.name] as ScalarValue | undefined),
+          ] as unknown,
       ) as unknown as TimeSeriesInput<S>['rows'],
     });
   }

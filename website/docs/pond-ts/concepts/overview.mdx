@@ -49,9 +49,9 @@ const cpu = new TimeSeries({
 // 2. Bucket into 10-second averages.
 const buckets = cpu.aggregate(Sequence.every('10s'), { cpu: 'avg' });
 
-// 3. Flat `{ts, value}[]` for any chart library.
-const points = buckets.toPoints('cpu');
-// [{ ts: 0, value: 0.514 }, { ts: 10000, value: 0.522 }, …]
+// 3. Flat wide rows for any chart library.
+const points = buckets.toPoints();
+// [{ ts: 0, cpu: 0.514 }, { ts: 10000, cpu: 0.522 }, …]
 ```
 
 That's the shape. If you're coming from React and just want a chart,

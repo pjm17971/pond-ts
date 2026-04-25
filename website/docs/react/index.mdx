@@ -47,7 +47,7 @@ function Dashboard() {
   return (
     <>
       <Stat label="Avg CPU" value={cpu} />
-      {snap && <Chart points={snap.toPoints('cpu')} />}
+      {snap && <Chart points={snap.select('cpu').toPoints()} />}
     </>
   );
 }

@@ -187,6 +187,19 @@ export type EventDataForSchema<S extends SeriesSchema> = {
   [C in DataColumnsForSchema<S>[number] as C['name']]: DataValueForColumn<C>;
 };
 
+/**
+ * Wide-row shape returned by `TimeSeries.toPoints()`: `ts` plus every
+ * value column from the schema. Each value column is `T | undefined`
+ * regardless of the schema's `required` flag — the runtime row may
+ * have a missing value, and chart libraries render `undefined` as a
+ * gap.
+ */
+export type PointRowForSchema<S extends SeriesSchema> = { ts: number } & {
+  [C in DataColumnsForSchema<S>[number] as C['name']]:
+    | NormalizedValueForKind<C['kind']>
+    | undefined;
+};
+
 export type EventKeyForKind<K extends FirstColKind> = K extends 'time'
   ? Time
   : K extends 'timeRange'
