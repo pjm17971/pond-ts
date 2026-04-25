@@ -1,0 +1,117 @@
+---
+sidebar_position: 16
+---
+
+# Smoothing
+
+`smooth()` extracts a trend line from a noisy numeric column.
+pond-ts ships three algorithms; this page is the place to figure out
+**which one to pick**.
+
+```ts
+const trend = cpu.smooth('cpu', 'ema', { alpha: 0.3, output: 'cpuTrend' });
+// trend.schema gains { cpuTrend, number? } — source 'cpu' passes through.
+```
+
+## The three algorithms
+
+### EMA — exponential moving average
+
+Each output is `alpha * raw + (1 - alpha) * previous`. The bigger
+`alpha`, the more reactive (less smoothing).
+
+```ts
+cpu.smooth('cpu', 'ema', { alpha: 0.3, output: 'cpuTrend' });
+```
+
+What it actually does: every previous value contributes, with weight
+that decays geometrically. Recent values dominate; older values
+fade. **Streaming-friendly** — the math is `O(1)` per event with one
+state variable, so it works incrementally over a `LiveSeries` (write
+the closure inside `live.map`; see
+[Live transforms → EMA](../live/live-transforms#ema-smoothing-via-map)).
+
+The first ~`1/alpha` rows are noisy as the smoother seeds on the
+first raw value and converges. Use `warmup: N` to drop those:
+
+```ts
+cpu.smooth('cpu', 'ema', { alpha: 0.3, warmup: 4 });
+// length === source.length - 4
+```
+
+### Moving average — windowed arithmetic mean
+
+```ts
+cpu.smooth('cpu', 'movingAverage', {
+  window: '5m',
+  alignment: 'centered', // 'trailing' | 'leading' | 'centered'
+  output: 'cpuAvg',
+});
+```
+
+What it actually does: at each event, average every value inside the
+window. Predictable lag (centered alignment removes phase shift;
+trailing introduces a half-window lag). **Equal weighting** of every
+sample inside the window — older and newer data treated the same,
+which makes it more stable than EMA but less reactive to recent
+trends.
+
+### LOESS — locally weighted regression
+
+```ts
+cpu.smooth('cpu', 'loess', {
+  span: 0.25, // fraction of series — smaller = more local
+  output: 'cpuLoess',
+});
+```
+
+What it actually does: fits a low-degree polynomial through the
+neighborhood of each point, weighted by distance. **High shape
+fidelity** — preserves curves the other two flatten. Cost is per-
+point regression; not a streaming fit. Use it offline when the
+shape of the trend matters more than the speed.
+
+## Comparison
+
+| Aspect               | EMA                 | Moving average                        | LOESS                                |
+| -------------------- | ------------------- | ------------------------------------- | ------------------------------------ |
+| Cost per output      | `O(1)`              | `O(window size)`\*                    | `O(span × N)`                        |
+| Streaming-friendly   | ✅                  | with care                             | ❌ (offline)                         |
+| Reactivity to recent | weighted recent     | equal in window                       | local fit                            |
+| Lag                  | none, but skewed    | half-window (trailing) / 0 (centered) | none                                 |
+| Shape fidelity       | low                 | medium                                | high                                 |
+| Tuning knob          | `alpha`             | `window`                              | `span`                               |
+| When to pick         | streaming dashboard | "average of last N min" semantics     | offline analysis where curves matter |
+
+\* O(1) amortized via sliding-window deque under
+[`rolling('avg')`](./rolling).
+
+## Picking one
+
+- Live dashboard, "give me the trend now": **EMA**, `alpha` ≈ 0.2–0.4.
+- Reporting "average over the last hour" with predictable bucketing:
+  **moving average**.
+- Offline analysis, exploratory plots, where the shape of bumps
+  matters: **LOESS**.
+
+If you don't know yet: start with EMA, `alpha: 0.3`, and adjust if
+the trend feels too noisy or too slow.
+
+## Output column
+
+All three smoothers take an optional `output` parameter:
+
+- **Omitted** — the source column is replaced in place.
+- **String** — a new column is appended; the source column passes
+  through unchanged. Useful when you want both the raw and smoothed
+  series for an overlay plot.
+
+## Further reading
+
+- [Wikipedia — Moving average](https://en.wikipedia.org/wiki/Moving_average)
+  for the EMA / simple / weighted MA family.
+- [Wikipedia — Local regression](https://en.wikipedia.org/wiki/Local_regression)
+  for LOESS / LOWESS.
+
+For rolling stats other than smoothing — windowed sums, percentiles,
+counts — reach for [`rolling()`](./rolling) directly.

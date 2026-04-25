@@ -13,7 +13,7 @@ purpose. See [Concepts](./concepts) for the mental model and
 
 Create and own the lifecycle of a pond-ts data source.
 
-### `useTimeSeries(input, key?)`
+### `useTimeSeries(input, key?)` \{#usetimeseries\}
 
 Memoize a batch `TimeSeries` from JSON-shaped input. Rebuilds when
 `input` identity changes (via `JSON.stringify` cache key) or when
@@ -37,7 +37,7 @@ without re-parsing on every render.
 const series = useTimeSeries(data, fetchKey);
 ```
 
-### `useLiveSeries(options, hookOptions?)`
+### `useLiveSeries(options, hookOptions?)` \{#useliveseries\}
 
 Create a `LiveSeries` and subscribe to it in one hook. Returns
 `[live, snapshot]`.
@@ -78,7 +78,7 @@ see [LiveSeries → Retention policies](../pond-ts/live/live-series#retention-po
 
 Read a batch `TimeSeries` out of a live source for rendering.
 
-### `useSnapshot(source, options?)`
+### `useSnapshot(source, options?)` \{#usesnapshot\}
 
 The primitive the rest build on. Subscribes to `source.on('event', …)`
 and rebuilds the snapshot on each push, throttled.
@@ -103,7 +103,7 @@ render.
 Options: `{ throttle?: number }` — defaults to 100ms. See
 [Concepts → Throttling](./concepts#throttling).
 
-### `useLiveQuery(build, deps, options?)`
+### `useLiveQuery(build, deps, options?)` \{#uselivequery\}
 
 `useMemo` for live views. Build a `LiveView` (or a chain of them),
 dep-track it, and get both the view and a snapshot.
@@ -132,7 +132,7 @@ window size, etc.) and want React's dep-tracking for it. For a fixed
 view that never changes, use `useSnapshot` on a view constructed
 outside the hook.
 
-### `useDerived(series, transform)`
+### `useDerived(series, transform)` \{#usederived\}
 
 `useMemo` for pure transforms over a `TimeSeries`. Runs only when the
 source identity changes.
@@ -155,7 +155,7 @@ snapshot hooks already throttle this, so `useDerived` on
 `useSnapshot` output gives you throttled-recompute semantics for
 free.
 
-### `useWindow(source, size, options?)`
+### `useWindow(source, size, options?)` \{#usewindow\}
 
 Attach a `.window(size)` view to the source on mount, snapshot it,
 dispose on unmount.
@@ -180,7 +180,7 @@ changes. Equivalent to `useLiveQuery(() => source.window(size),
 
 Collapse a source to a scalar or single-row record.
 
-### `useCurrent(source, mapping, options?)`
+### `useCurrent(source, mapping, options?)` \{#usecurrent\}
 
 Reduce a source to a single record. Types narrow per-entry from the
 reducer name and source column kind. Reference-stable per-field —
@@ -227,7 +227,7 @@ only re-runs on actual host changes — not every time `cpu` does.
 See [Concepts → Reference stability](./concepts#reference-stability).
 :::
 
-### `useLatest(source, options?)`
+### `useLatest(source, options?)` \{#uselatest\}
 
 Return the latest `Event` from the source, or `null` if empty.
 

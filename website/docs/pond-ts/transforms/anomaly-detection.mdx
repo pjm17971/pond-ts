@@ -1,0 +1,122 @@
+---
+sidebar_position: 17
+---
+
+# Anomaly Detection
+
+Two methods, one pattern: rolling baseline + threshold. For each
+event, compute a rolling average and standard deviation; if the
+event's value is more than `sigma * sd` away from the mean, flag it.
+
+- [**`baseline(col, opts)`**](#baseline) — appends `avg` / `sd` /
+  `upper` / `lower` columns to the source schema. Drives band charts
+  and outlier filters.
+- [**`outliers(col, opts)`**](#outliers) — sugar over the same
+  rolling pass, returns just the anomalous events.
+
+Both are built on top of [`rolling()`](./rolling). Reach for them
+directly when the rolling-baseline pattern is what you want; reach
+for `rolling()` itself for arbitrary windowed reductions.
+
+## `baseline(col, opts)` \{#baseline\}
+
+```ts
+const bands = cpu.baseline('cpu', { window: '1m', sigma: 2 });
+// bands.schema: [time, cpu, host, avg, sd, upper, lower]
+```
+
+Four optional number columns appended:
+
+- `avg` — rolling average of `col`
+- `sd` — rolling standard deviation of `col`
+- `upper` — `avg + sigma * sd`
+- `lower` — `avg - sigma * sd`
+
+Then a band chart is two `toPoints` calls; an outlier filter is one:
+
+```ts
+const upperBand = bands.toPoints('upper');
+const lowerBand = bands.toPoints('lower');
+
+const anomalies = bands.filter((e) => {
+  const v = e.get('cpu');
+  const lo = e.get('lower');
+  const hi = e.get('upper');
+  return v != null && lo != null && hi != null && (v > hi || v < lo);
+});
+```
+
+### Warm-up and flat windows
+
+- Before the rolling window has enough samples for a meaningful
+  baseline, `avg` and `sd` are `undefined`; `upper` and `lower`
+  follow.
+- When the rolling window is **flat** (every sample identical),
+  `sd === 0`. `avg` and `sd` still report their real values, but
+  `upper` and `lower` collapse to `undefined` — a zero-width band
+  would flag every non-equal point as anomalous, which is usually
+  the opposite of what you want.
+
+Filters that null-check `upper` / `lower` will do the right thing
+through warm-up and flat-window regions.
+
+### Custom column names
+
+If the defaults (`avg` / `sd` / `upper` / `lower`) collide with
+source columns:
+
+```ts
+cpu.baseline('cpu', {
+  window: '1m',
+  sigma: 2,
+  names: { avg: 'cpuAvg', sd: 'cpuSd', upper: 'cpuHi', lower: 'cpuLo' },
+});
+```
+
+Collisions throw at construction, so the rename is mandatory, not
+optional.
+
+## `outliers(col, opts)` \{#outliers\}
+
+Just the anomalies — same schema as the source, filtered to events
+outside the band:
+
+```ts
+const anomalies = cpu.outliers('cpu', { window: '1m', sigma: 2 });
+// anomalies.length ≤ cpu.length, schema unchanged.
+```
+
+Composes with the rest of the API for dashboards:
+
+```ts
+// Bucketed anomaly count per 15s for a bar chart.
+const perBucket = anomalies.aggregate(Sequence.every('15s'), {
+  cpu: 'count',
+});
+
+// Per-host breakdown.
+const perHost = anomalies.groupBy('host');
+```
+
+Conceptually equivalent to `baseline(col, opts).filter(...)`;
+implemented independently (one rolling pass either way). Reach for
+`baseline()` directly when you want the band columns for charting.
+The two share flat-window semantics — both skip events where
+`sd === 0`.
+
+## Picking one
+
+- Drawing a band chart: **`baseline`** — you'll use the `upper` /
+  `lower` columns directly.
+- Just want the spike list (alerting, counting, per-host): **`outliers`**.
+- Both at once: **`baseline`** — one rolling pass for everything.
+
+## Beyond rolling-baseline
+
+`baseline` and `outliers` are deliberately the only first-party
+anomaly-detection helpers. Other patterns — STL decomposition,
+seasonal-adjusted thresholds, classifier-based detection — fit
+`map`, `rolling`, and reducer combinations cleanly enough that
+folding them into the library would just add a vocabulary tax. If
+you need one and the composition feels heavy, file an issue with the
+shape and we'll see if it's worth lifting.
