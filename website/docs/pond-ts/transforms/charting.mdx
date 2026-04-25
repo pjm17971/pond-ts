@@ -272,10 +272,38 @@ no data renders a confusingly populated-looking empty chart.
 
 When all your data comes from a **single** `TimeSeries` (a snapshot,
 a baseline, an outliers result), `toPoints()` already returns wide
-rows — drop in. The case where you need extra work is **across
-sources** — e.g. a chart that overlays this-week and last-week from
-two separate `TimeSeries`, or merges live data with a static
-threshold series:
+rows — drop in. When you have **two TimeSeries** to overlay
+(this-week vs last-week, two metrics joined for a comparison chart,
+…), reach for [`series.join(other)`](./aggregation) before going to
+the chart layer. The library does the temporal join for you:
+
+```ts
+const joined = thisWeek.join(lastWeek, {
+  type: 'outer',
+  onConflict: 'prefix',
+  prefixes: ['this_', 'last_'],
+});
+// joined.schema gains both sources' columns under prefixes:
+//   [time, this_cpu, last_cpu, ...]
+
+const data = joined.toPoints();
+// [{ ts, this_cpu, last_cpu, ... }, ...] — exactly what Recharts wants
+```
+
+`type: 'outer'` keeps every event from both sides; `'inner'` keeps
+only events whose timestamps line up exactly; `'left'` / `'right'`
+preserve one side's events. `onConflict: 'prefix'` renames colliding
+columns; pass `'error'` if you want a build-time guarantee that the
+schemas don't overlap.
+
+This stays inside the typed pond-ts contract. The chart-layer helper
+below is only useful when one of your inputs **isn't** a
+`TimeSeries` — e.g. a flat `{ ts, value }[]` you fetched from a JSON
+endpoint and don't want to round-trip through `fromPoints`.
+
+### Manual recipe — for non-`TimeSeries` inputs
+
+If you do find yourself merging arrays from outside the library:
 
 ```ts
 type Row = Record<string, number | undefined> & { ts: number };
@@ -304,15 +332,48 @@ function mergeWideRows(
   }
   return [...byTs.values()].sort((a, b) => a.ts - b.ts);
 }
-
-const data = mergeWideRows([
-  { name: 'thisWeek', points: thisWeek.toPoints(), key: 'cpu' },
-  { name: 'lastWeek', points: lastWeek.toPoints(), key: 'cpu' },
-]);
 ```
 
-For the single-source case (most charts), you don't need this — just
-`source.toPoints()`.
+This isn't exported from `pond-ts` because it's chart-layer plumbing,
+not a time-series operation. Paste it once into your codebase if you
+need it.
+
+### Live: snapshot-then-batch-join
+
+Live counterpart isn't yet a first-class operator — there's no
+`LiveSeries.join(a, b)` today (see
+[PLAN.md](https://github.com/pjm17971/pond-ts/blob/main/PLAN.md)).
+The workaround is to snapshot each live source via `useSnapshot`,
+then run a batch `join` over the two snapshots:
+
+```tsx
+function ComparisonChart({
+  liveA,
+  liveB,
+}: {
+  liveA: LiveSeries<S>;
+  liveB: LiveSeries<S>;
+}) {
+  const snapA = useSnapshot(liveA);
+  const snapB = useSnapshot(liveB);
+
+  const joined = useMemo(() => {
+    if (!snapA || !snapB) return null;
+    return snapA.join(snapB, {
+      type: 'outer',
+      onConflict: 'prefix',
+      prefixes: ['a_', 'b_'],
+    });
+  }, [snapA, snapB]);
+
+  if (!joined) return null;
+  return <ChartOf data={joined.toPoints()} />;
+}
+```
+
+Each snapshot has its own throttle; the `useMemo` only re-runs when
+a snapshot identity changes, so the chart updates at the slower of
+the two cadences without recomputing on every push.
 
 ## When to skip Recharts
 
