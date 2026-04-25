@@ -100,8 +100,10 @@ cpu.aggregate(Sequence.every('5s'), {
   `undefined`. See [Reducer reference →
   Empty-bucket behavior](./reducer-reference#empty-bucket-behavior).
 
-For the deep dive — `LiveAggregation`, `reduce`, `groupBy`,
-`arrayAggregate` — see [Aggregation](./aggregation).
+For the deep dive — `LiveAggregation`, `reduce`,
+`arrayAggregate` — see [Aggregation](./aggregation). For partition
+ops (`groupBy`) and reshape (`pivotByGroup`, `join`), see
+[Reshaping](./reshape).
 
 ## `align` quick reference
 
@@ -144,7 +146,9 @@ each interval the resulting `Time` lands.
 
 - [Aggregation](./aggregation) — full coverage of `aggregate`,
   including custom reducers, mapping shapes, `LiveAggregation`,
-  `reduce`, and `groupBy`.
+  and `reduce`.
+- [Reshaping](./reshape) — `groupBy` partition, `pivotByGroup`
+  long-to-wide, `join` / `joinMany`.
 - [Reducer reference](./reducer-reference) — every built-in reducer
   with its empty-bucket and rolling-window behavior.
 - [Cleaning data](./cleaning) — once you have a uniform grid, what

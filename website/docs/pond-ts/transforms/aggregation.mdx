@@ -8,22 +8,21 @@ The deep dive on `aggregate` and its siblings. Already familiar with
 the conceptual split between aggregate and align? Skip the
 [Sampling overview](./sampling-overview) and start here.
 
-This page covers four shapes of "collapse many events into fewer":
+This page covers three shapes of "collapse many events into fewer":
 
 - [**`aggregate(seq, mapping)`**](#aggregate) — one row per bucket on
   a [`Sequence`](../concepts/overview#sequence) grid.
 - [**`reduce(mapping)`**](#reduce) — collapse a whole series into a
   single record. "Bucket size: all of it."
-- [**`groupBy(col, fn)`**](#groupby) — partition by a column value,
-  apply any method per group.
-- [**`pivotByGroup(group, value)`**](#pivotbygroup) — long-to-wide
-  reshape; one output column per category. The wide-row complement of
-  `groupBy` for cases where you want one series, not N.
 - [**`arrayAggregate(col, reducer)`**](#arrayaggregate) — reduce one
   array cell per event.
 
 Plus the live-side counterpart: `LiveAggregation` (incremental
 bucketed aggregation over a `LiveSeries`).
+
+For partition-by-column (`groupBy`) and long-to-wide reshape
+(`pivotByGroup`), see [Reshaping](./reshape) — those are
+shape-changing ops, not value collapses.
 
 :::note[Coming from pondjs?]
 
@@ -175,100 +174,6 @@ See
 [Reducer reference → Type narrowing on reduce](./reducer-reference#type-narrowing-on-reducemapping)
 for the full narrowing story.
 
-## `groupBy` \{#groupby\}
-
-Partition by a column value. Returns `Map<string, TimeSeries<S>>`, or
-(with a transform callback) `Map<string, T>`.
-
-```ts
-const perHost = series.groupBy('host');
-// Map<'api-1' | 'api-2' | ..., TimeSeries<S>>
-```
-
-The transform callback is the common form — avoids building
-intermediate maps of `TimeSeries`:
-
-```ts
-const perHostAvg = series.groupBy('host', (group) =>
-  group.reduce({ cpu: 'avg', requests: 'sum' }),
-);
-// Map { 'api-1' => { cpu: 0.42, requests: 12543 }, ... }
-```
-
-Callback receives the group key as a second argument:
-
-```ts
-series.groupBy('host', (group, host) => ({
-  host,
-  avgCpu: group.reduce('cpu', 'avg'),
-}));
-```
-
-Composes with every other method:
-
-```ts
-// Per-host hourly aggregation.
-const hourly = series.groupBy('host', (group) =>
-  group.aggregate(Sequence.every('1h'), { cpu: 'avg' }),
-);
-
-// Per-host outliers.
-const anomalies = series.groupBy('host', (group) =>
-  group.outliers('cpu', { window: '1m', sigma: 2 }),
-);
-```
-
-## `pivotByGroup` \{#pivotbygroup\}
-
-Reshape long-form data into wide rows. Each distinct value of the
-group column becomes its own column in the output schema named
-`{group}_{value}`, holding the value column at that timestamp.
-
-```ts
-// Long: one row per (timestamp, host).
-// Wide: one row per timestamp, columns per host.
-const wide = long.pivotByGroup('host', 'cpu');
-// schema: [time, "api-1_cpu", "api-2_cpu", ...]
-```
-
-The wide-row counterpart of `groupBy`: where `groupBy` gives you `N`
-separate `TimeSeries`, `pivotByGroup` gives you **one** wide
-`TimeSeries`. Pick whichever shape your downstream code wants —
-`groupBy` for per-group transform pipelines, `pivotByGroup` for chart
-data and column-wise operations.
-
-Rows sharing a timestamp collapse into one output row. Cells where a
-group has no event at a timestamp are `undefined`. Output schema is
-dynamic (column names depend on runtime data) so the return type is
-`TimeSeries<SeriesSchema>` (loosely typed) — read columns by name out
-of `toPoints()` rows.
-
-If two events share both a timestamp **and** a group value, the call
-throws by default. Opt-in with `{ aggregate: 'avg' }` (or any reducer
-name `aggregate()` accepts: `'sum'`, `'first'`, `'last'`, `'min'`,
-`'max'`, `'median'`, percentiles like `'p95'`, custom functions, …):
-
-```ts
-long.pivotByGroup('host', 'cpu', { aggregate: 'avg' });
-```
-
-Composes with every other transform:
-
-```ts
-// Per-host rolling smoothing on the wide series.
-const smoothed = long.pivotByGroup('host', 'cpu').rolling('5m', {
-  'api-1_cpu': 'avg',
-  'api-2_cpu': 'avg',
-});
-
-// Per-host carry-forward for missing cells.
-const filled = long.pivotByGroup('host', 'cpu').fill({ 'api-2_cpu': 'hold' });
-```
-
-Requires a time-keyed input. See
-[Charting → Per-group wide rows](./charting#per-group-wide-rows-one-source-categorical-column)
-for the end-to-end Recharts pipeline.
-
 ## `arrayAggregate` \{#arrayaggregate\}
 
 Reduce one array cell per event — feeds each event's array to a
@@ -326,13 +231,13 @@ that does and doesn't propagate further down the pipeline.
 
 ## Method comparison
 
-| Method                         | Returns                                                |
-| ------------------------------ | ------------------------------------------------------ |
-| `aggregate(seq, mapping)`      | `TimeSeries<S>` — one row per bucket                   |
-| `reduce(col, reducer)`         | Wide `ColumnValue \| undefined`                        |
-| `reduce(mapping)`              | `Record<key, narrowed>`                                |
-| `groupBy(col)`                 | `Map<groupKey, TimeSeries<S>>`                         |
-| `groupBy(col, fn)`             | `Map<groupKey, ReturnType<fn>>`                        |
-| `pivotByGroup(group, value)`   | `TimeSeries<SeriesSchema>` — one wide column per group |
-| `arrayAggregate(col, reducer)` | `TimeSeries<S>` — one cell reduced per event           |
-| `LiveAggregation(src, seq, m)` | Stream of closed buckets + provisional bucket events   |
+| Method                         | Returns                                              |
+| ------------------------------ | ---------------------------------------------------- |
+| `aggregate(seq, mapping)`      | `TimeSeries<S>` — one row per bucket                 |
+| `reduce(col, reducer)`         | Wide `ColumnValue \| undefined`                      |
+| `reduce(mapping)`              | `Record<key, narrowed>`                              |
+| `arrayAggregate(col, reducer)` | `TimeSeries<S>` — one cell reduced per event         |
+| `LiveAggregation(src, seq, m)` | Stream of closed buckets + provisional bucket events |
+
+For `groupBy` and `pivotByGroup` see [Reshaping](./reshape) — those
+are partition / long-to-wide ops, not collapses.
