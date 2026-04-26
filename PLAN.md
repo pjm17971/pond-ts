@@ -145,11 +145,15 @@ Completed:
 - [x] `pivotByGroup` — long-to-wide reshape on a categorical column; the missing
       inverse of `groupBy` for cases where you want one wide series instead of N
       separate ones (added late, after dashboard-agent feedback)
-- [x] `TimeSeries.merge([s1, s2, ...])` — fan-in primitive that closes the
+- [x] `TimeSeries.concat([s1, s2, ...])` — fan-in primitive that closes the
       `groupBy(col, fn)` round-trip without forcing callers out of the typed
       contract. Concatenate same-schema series, re-sort by key, return one
       wider series. Shipped in v0.8.2 after the CSV-cleaner agent run flagged
       the missing third leg of the fan-out / column-merge / row-append triangle.
+      Initially named `merge` (matching pondjs lineage); renamed to `concat`
+      pre-release after the adversarial review flagged the verb-overlap with
+      `Event.merge(patch)` and the cleaner alignment with `Array.prototype.concat`,
+      `pandas.concat(axis=0)`, and SQL `UNION ALL`.
 - [x] `TimeSeries.fromEvents(events, { schema, name })` — companion to `merge`
       for the rare case where you have a flat events array (not a list of
       series) to assemble. Sorts by key. Shipped in v0.8.2.

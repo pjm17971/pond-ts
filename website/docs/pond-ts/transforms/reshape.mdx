@@ -24,10 +24,10 @@ This page covers seven ops, grouped by what they do:
 
 - [**`groupBy(col, fn?)`**](#groupby) — partition a series by a
   column value into N per-group sub-series.
-- [**`merge(seriesList)`**](#merge) — row-append fan-in: concatenate
+- [**`concat(seriesList)`**](#concat) — row-append fan-in: concatenate
   N same-schema series, re-sorted by key. The inverse of `groupBy`.
 - [**`fromEvents(events, options)`**](#fromevents) — build a series
-  from an existing `Event[]` array. Companion primitive to `merge`.
+  from an existing `Event[]` array. Companion primitive to `concat`.
 
 **Join two or more series by time key**
 
@@ -39,6 +39,32 @@ This page covers seven ops, grouped by what they do:
 For per-event shape changes — `select`, `rename`, `collapse`,
 `map(newSchema, fn)` — see
 [Eventwise transforms → Per-event-only](./eventwise#per-event-only).
+
+## Picking the right op
+
+Reshape ops split along two axes: **how many series in vs. how many
+out**, and **which dimension changes** (more rows, more columns, or a
+fundamental long↔wide flip).
+
+| Input                                 | Want                                            | Op                                     |
+| ------------------------------------- | ----------------------------------------------- | -------------------------------------- |
+| **1 series**, long form               | **wider** — one column per category value       | [`pivotByGroup`](#pivotbygroup)        |
+| **1 series**, wide form               | **longer** — one row per cell                   | [`unpivot`](#unpivot) (sketch)         |
+| **1 series**, with categorical column | **N sub-series**, one per category              | [`groupBy(col)`](#groupby)             |
+| **1 series**, with categorical column | **N transformed results** (records, scalars, …) | [`groupBy(col, fn)`](#groupby)         |
+| **N series**, all the same schema     | **1 series with more rows**                     | [`TimeSeries.concat`](#concat)         |
+| **2 series**, different schemas       | **1 wider series**, joined on the time key      | [`a.join(b)`](#join)                   |
+| **N series**, different schemas       | **1 wider series**, joined on the time key      | [`TimeSeries.joinMany`](#joinmany)     |
+| **`Event[]`** array (not a series)    | **1 series**                                    | [`TimeSeries.fromEvents`](#fromevents) |
+
+Two mental shortcuts:
+
+- **More rows or more columns?** `concat` adds rows (same schema, more
+  events). `join` / `joinMany` add columns (different schemas, merged
+  on time keys).
+- **Splitting or combining?** `groupBy` splits one into many. `concat`
+  / `join` / `joinMany` combine many into one. `pivotByGroup` and
+  `unpivot` keep one series but change its shape.
 
 ## `pivotByGroup` \{#pivotbygroup\}
 
@@ -275,20 +301,20 @@ columns (e.g. per-host baseline producing `cpu`/`avg`/`upper`/`lower`
 per host). Reach for [`pivotByGroup`](#pivotbygroup) when you want
 **one** wide series with one column per group.
 
-## `merge` \{#merge\}
+## `concat` \{#concat\}
 
-`TimeSeries.merge([s1, s2, s3])` — concatenates the events of N
+`TimeSeries.concat([s1, s2, s3])` — concatenates the events of N
 **same-schema** `TimeSeries` instances and returns one wider series
 with all events sorted by key. The row-append / vertical-stack
 counterpart to [`joinMany`](#joinmany) (column-merge by key).
 
 ```ts
-const merged = TimeSeries.merge([cpuLastWeek, cpuThisWeek]);
-// same schema as the inputs; events from both weeks merged and sorted.
+const combined = TimeSeries.concat([cpuLastWeek, cpuThisWeek]);
+// same schema as the inputs; events from both weeks concatenated and sorted.
 ```
 
 **The fan-in primitive.** [`groupBy(col, fn)`](#groupby) is the
-fan-out (one series → many); `merge` is the fan-in (many same-schema
+fan-out (one series → many); `concat` is the fan-in (many same-schema
 series → one). Together they close the round-trip:
 
 ```ts
@@ -297,14 +323,14 @@ const filledByHost = series.groupBy('host', (g) =>
 );
 // Map<string, TimeSeries<S>> — each host has its own filled subseries.
 
-const merged = TimeSeries.merge([...filledByHost.values()]);
+const combined = TimeSeries.concat([...filledByHost.values()]);
 // Back to one TimeSeries<S>. Schema flows through unchanged; events
 // re-sorted across all hosts.
 ```
 
-Without `merge`, closing this loop required unwrapping events back
+Without `concat`, closing this loop required unwrapping events back
 to row tuples and reconstructing — verbose and easy to break when
-the schema has many columns. `merge` keeps you inside the typed
+the schema has many columns. `concat` keeps you inside the typed
 contract.
 
 **Schema match is required.** All inputs must have identical
@@ -314,21 +340,29 @@ throw upfront. For combining series with **different** schemas —
 joining CPU metrics with memory metrics on time keys — use
 [`joinMany`](#joinmany) instead.
 
-**Event identity is preserved.** `merged.at(0)` is the same `Event`
-instance as the corresponding source-series event — no clones. Tied
-keys preserve input order via stable sort.
+**Event identity is preserved.** `concat([a]).at(0)` is the same
+`Event` instance as `a.at(0)` — no clones. Tied keys preserve input
+order via stable sort.
 
-**Naming.** The merged series's `name` is taken from the first
+**Naming.** The concatenated series's `name` is taken from the first
 input. Override with `.rename(...)` afterward if needed.
+
+**pondjs lineage.** pondjs's `TimeSeries.timeSeriesListMerge(...)`
+combined two cases under one call: same-schema concatenation (which
+maps to `TimeSeries.concat([...])` here) and different-schema
+column-union (which maps to [`joinMany`](#joinmany)). pond-ts splits
+these because the intent is meaningfully different — choose the
+right one based on whether you want more rows (concat) or wider rows
+(joinMany).
 
 **When events share a key.** Events with the same key from
 different inputs are both kept; this is row-append, not
 key-deduplication. If you need same-key collapse, see the queued
-`dedupe` work in PLAN.md or do it yourself before / after `merge`.
+`dedupe` work in PLAN.md or do it yourself before / after `concat`.
 
 :::note[Not the same as `Event.merge`]
 `Event.merge(patch)` is a **per-event** payload merge (column-wise:
-patch some fields on one event, return a new one). `TimeSeries.merge`
+patch some fields on one event, return a new one). `TimeSeries.concat`
 is a **per-series** row append (concatenate events from N series).
 Different axes, different receivers.
 :::
@@ -336,7 +370,7 @@ Different axes, different receivers.
 ## `fromEvents` \{#fromevents\}
 
 `TimeSeries.fromEvents(events, { schema, name })` — builds a typed
-series from an array of `Event` instances. Companion to `merge` for
+series from an array of `Event` instances. Companion to `concat` for
 the rare case where you have raw events (not series) to assemble.
 
 ```ts
@@ -366,7 +400,7 @@ column-not-found errors. Most callers come from `groupBy(...).values()`
 or other pond-ts transforms and can't hit this; if you're constructing
 events by hand, prefer the validating constructors.
 
-Most callers should reach for [`merge`](#merge) first — it does the
+Most callers should reach for [`concat`](#concat) first — it does the
 event-spread for you. Use `fromEvents` when you've already got a
 flat events array and don't have a list of series.
 

@@ -952,7 +952,7 @@ export class TimeSeries<S extends SeriesSchema> {
    * ```
    *
    * For combining multiple same-schema series in one call, prefer
-   * `TimeSeries.merge([...])` — it does the events-spread for you.
+   * `TimeSeries.concat([...])` — it does the events-spread for you.
    */
   static fromEvents<S extends SeriesSchema>(
     events: ReadonlyArray<EventForSchema<S>>,
@@ -965,33 +965,35 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
-   * Example: `TimeSeries.merge([s1, s2, s3])`.
+   * Example: `TimeSeries.concat([s1, s2, s3])`.
    * Concatenates the events of N same-schema `TimeSeries` instances and
    * returns one wider series with all events sorted by key. This is the
    * "row-append" / vertical-stack counterpart to `joinMany` (column-merge
    * by key) and the inverse of the per-group fan-out pattern from
-   * `groupBy(col, fn)`.
+   * `groupBy(col, fn)`. Matches `Array.prototype.concat` /
+   * `pandas.concat(axis=0)` / SQL `UNION ALL` semantics.
    *
    * Schemas must match column-by-column on `name` and `kind` only —
    * the `required` flag is intentionally not part of the structural
    * check, since `required: false` only widens cell types and doesn't
-   * affect the merge contract. Other mismatches throw upfront. The
-   * merged series's `name` is taken from the first input.
+   * affect the concat contract. Other mismatches throw upfront. The
+   * concatenated series's `name` is taken from the first input.
    *
-   * Event references survive the merge unchanged (no clones), so
-   * `merged.at(0)` is the same `Event` instance as the corresponding
+   * Event references survive the concat unchanged (no clones), so
+   * `concat.at(0)` is the same `Event` instance as the corresponding
    * source-series event. Tied keys preserve input order via stable
-   * sort — `merge([a, b])` puts a's events before b's at any shared
+   * sort — `concat([a, b])` puts a's events before b's at any shared
    * key.
    *
-   * Not the same as `Event.merge(patch)`, which is a per-event
-   * payload merge (column-wise) — `TimeSeries.merge` is row-wise.
+   * Coming from pondjs: `TimeSeries.timeSeriesListMerge(...)`'s
+   * concatenation case maps to `TimeSeries.concat([...])`. Its
+   * column-union case maps to `TimeSeries.joinMany([...])`.
    *
    * ```ts
    * const groups = series.groupBy('host', (g) =>
    *   g.fill({ cpu: 'linear' }, { limit: 2 }),
    * );
-   * const merged = TimeSeries.merge([...groups.values()]);
+   * const concat = TimeSeries.concat([...groups.values()]);
    * // same schema as the source; events from all hosts re-sorted by time.
    * ```
    *
@@ -999,12 +1001,12 @@ export class TimeSeries<S extends SeriesSchema> {
    * sources) by joining on the time key, use `TimeSeries.joinMany([...])`
    * instead.
    */
-  static merge<S extends SeriesSchema>(
+  static concat<S extends SeriesSchema>(
     series: ReadonlyArray<TimeSeries<S>>,
   ): TimeSeries<S> {
     if (series.length === 0) {
       throw new TypeError(
-        'TimeSeries.merge requires at least one input series.',
+        'TimeSeries.concat requires at least one input series.',
       );
     }
     const head = series[0]!;
@@ -1012,7 +1014,7 @@ export class TimeSeries<S extends SeriesSchema> {
       const other = series[i]!;
       if (other.schema.length !== head.schema.length) {
         throw new TypeError(
-          `TimeSeries.merge: schema length mismatch at index ${i} ` +
+          `TimeSeries.concat: schema length mismatch at index ${i} ` +
             `(${head.schema.length} vs ${other.schema.length}).`,
         );
       }
@@ -1021,7 +1023,7 @@ export class TimeSeries<S extends SeriesSchema> {
         const otherCol = other.schema[c]!;
         if (headCol.name !== otherCol.name || headCol.kind !== otherCol.kind) {
           throw new TypeError(
-            `TimeSeries.merge: schema mismatch at column ${c} ` +
+            `TimeSeries.concat: schema mismatch at column ${c} ` +
               `("${headCol.name}: ${headCol.kind}" vs ` +
               `"${otherCol.name}: ${otherCol.kind}").`,
           );

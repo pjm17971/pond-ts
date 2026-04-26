@@ -21,24 +21,29 @@ subseries.
 
 ### Added
 
-- **`TimeSeries.merge([s1, s2, ...])`** — concatenates the events of
+- **`TimeSeries.concat([s1, s2, ...])`** — concatenates the events of
   N same-schema `TimeSeries` instances, re-sorted by key. The
   row-append / vertical-stack counterpart to `joinMany` (which
-  column-merges by key). Closes the round-trip after
-  `groupBy(col, fn)` + per-group transforms without forcing callers
-  to unwrap events back to row tuples.
+  column-merges by key). Matches `Array.prototype.concat` /
+  `pandas.concat(axis=0)` / SQL `UNION ALL` semantics. Closes the
+  round-trip after `groupBy(col, fn)` + per-group transforms without
+  forcing callers to unwrap events back to row tuples.
 
   ```ts
   const filledByHost = series.groupBy('host', (g) =>
     g.fill({ cpu: 'linear' }, { limit: 2 }),
   );
-  const merged = TimeSeries.merge([...filledByHost.values()]);
+  const combined = TimeSeries.concat([...filledByHost.values()]);
   // back to one TimeSeries<S>; events from all hosts re-sorted.
   ```
 
   Schemas must match column-by-column on `name` and `kind`; throws
   upfront on mismatch. Same-key events from different inputs are
   both kept (row-append, not key-dedupe).
+
+  Coming from pondjs: `timeSeriesListMerge`'s concatenation case
+  maps to `TimeSeries.concat([...])`; its column-union case maps to
+  `TimeSeries.joinMany([...])`.
 
 - **`TimeSeries.fromEvents(events, { schema, name })`** — builds a
   typed series from a flat `Event[]` array. Sorts by key. Companion

@@ -111,7 +111,7 @@ describe('TimeSeries.fromEvents', () => {
   });
 });
 
-describe('TimeSeries.merge', () => {
+describe('TimeSeries.concat', () => {
   it('concatenates events from multiple same-schema series', () => {
     const a = makeSeries('a', [
       [0, 0.5, 'a'],
@@ -121,7 +121,7 @@ describe('TimeSeries.merge', () => {
       [30_000, 0.7, 'b'],
       [90_000, 0.8, 'b'],
     ]);
-    const merged = TimeSeries.merge([a, b]);
+    const merged = TimeSeries.concat([a, b]);
     expect(merged.length).toBe(4);
     expect(merged.toPoints().map((p) => p.ts)).toEqual([
       0, 30_000, 60_000, 90_000,
@@ -131,47 +131,47 @@ describe('TimeSeries.merge', () => {
   it('takes name from the first input', () => {
     const a = makeSeries('first', [[0, 0.5, 'a']]);
     const b = makeSeries('second', [[60_000, 0.6, 'b']]);
-    expect(TimeSeries.merge([a, b]).name).toBe('first');
+    expect(TimeSeries.concat([a, b]).name).toBe('first');
   });
 
   it('preserves the source schema', () => {
     const a = makeSeries('a', [[0, 0.5, 'a']]);
     const b = makeSeries('b', [[60_000, 0.6, 'b']]);
-    expect(TimeSeries.merge([a, b]).schema).toEqual(schema);
+    expect(TimeSeries.concat([a, b]).schema).toEqual(schema);
   });
 
-  it('single-input merge passes through cleanly', () => {
+  it('single-input concat passes through cleanly', () => {
     const a = makeSeries('a', [
       [0, 0.5, 'a'],
       [60_000, 0.6, 'a'],
     ]);
-    const merged = TimeSeries.merge([a]);
+    const merged = TimeSeries.concat([a]);
     expect(merged.length).toBe(2);
     expect(merged.first()?.get('cpu')).toBe(0.5);
   });
 
   it('preserves event identity — references survive, not clones', () => {
-    // Pins that merge does not allocate fresh Event instances. A future
-    // refactor that adds event.merge({}) or similar in the merge path
+    // Pins that concat does not allocate fresh Event instances. A future
+    // refactor that adds event.merge({}) or similar in the concat path
     // must trip this test.
     const a = makeSeries('a', [
       [0, 0.5, 'a'],
       [60_000, 0.6, 'a'],
     ]);
-    const merged = TimeSeries.merge([a]);
+    const merged = TimeSeries.concat([a]);
     expect(merged.at(0)).toBe(a.at(0));
     expect(merged.at(1)).toBe(a.at(1));
   });
 
   it('preserves input order for tied keys (stable sort)', () => {
-    // Array.prototype.sort is stable since ES2019. merge relies on this
+    // Array.prototype.sort is stable since ES2019. concat relies on this
     // to keep deterministic ordering when two inputs have an event at
     // the exact same key. Pin it so a future custom-sort refactor
     // can't silently break the contract.
     const a = makeSeries('a', [[0, 0.5, 'first']]);
     const b = makeSeries('b', [[0, 0.7, 'second']]);
     const c = makeSeries('c', [[0, 0.9, 'third']]);
-    const merged = TimeSeries.merge([a, b, c]);
+    const merged = TimeSeries.concat([a, b, c]);
     expect(merged.toPoints().map((p) => p.host)).toEqual([
       'first',
       'second',
@@ -202,7 +202,7 @@ describe('TimeSeries.merge', () => {
         [{ value: 'b-1', start: 90_000, end: 150_000 }, 0.8],
       ],
     });
-    const merged = TimeSeries.merge([a, b]);
+    const merged = TimeSeries.concat([a, b]);
     expect(merged.length).toBe(4);
     expect(merged.toPoints().map((p) => p.ts)).toEqual([
       0, 30_000, 60_000, 90_000,
@@ -210,7 +210,7 @@ describe('TimeSeries.merge', () => {
   });
 
   it('throws on empty input', () => {
-    expect(() => TimeSeries.merge([])).toThrow(
+    expect(() => TimeSeries.concat([])).toThrow(
       /requires at least one input series/,
     );
   });
@@ -227,7 +227,7 @@ describe('TimeSeries.merge', () => {
       ] as const,
       rows: [[60_000, 0.6, 'b', 1]],
     });
-    expect(() => TimeSeries.merge([a, wide as unknown as typeof a])).toThrow(
+    expect(() => TimeSeries.concat([a, wide as unknown as typeof a])).toThrow(
       /schema length mismatch/,
     );
   });
@@ -239,7 +239,7 @@ describe('TimeSeries.merge', () => {
       schema: altSchema,
       rows: [[60_000, 0.7, 'b']],
     });
-    expect(() => TimeSeries.merge([a, b as unknown as typeof a])).toThrow(
+    expect(() => TimeSeries.concat([a, b as unknown as typeof a])).toThrow(
       /schema mismatch at column 1/,
     );
   });
@@ -253,7 +253,7 @@ describe('TimeSeries.merge', () => {
       [60_000, 0.7, 'b'],
       [120_000, 0.8, 'b'],
     ]);
-    const merged = TimeSeries.merge([a, b]);
+    const merged = TimeSeries.concat([a, b]);
     // Same-timestamp events both kept (this is row-append, not key-dedupe).
     expect(merged.length).toBe(4);
     const at60k = merged
@@ -271,7 +271,7 @@ describe('TimeSeries.merge', () => {
       [60_000, 0.8, 'b'],
     ]);
     const groups = source.groupBy('host');
-    const merged = TimeSeries.merge([...groups.values()]);
+    const merged = TimeSeries.concat([...groups.values()]);
     expect(merged.length).toBe(source.length);
     // Same time-ordered output.
     expect(merged.toPoints().map((p) => p.ts)).toEqual([0, 0, 60_000, 60_000]);
