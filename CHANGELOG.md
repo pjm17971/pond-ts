@@ -7,9 +7,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.2...HEAD
 
 ## [Unreleased]
+
+## [0.8.2] — 2026-04-26
+
+Strictly additive over v0.8.1. Closes friction surfaced by two
+independent agent runs against a realistic CSV-cleaning task —
+specifically, the missing fan-in primitive that forces callers out
+of the typed contract when reassembling per-host transformed
+subseries.
+
+### Added
+
+- **`TimeSeries.merge([s1, s2, ...])`** — concatenates the events of
+  N same-schema `TimeSeries` instances, re-sorted by key. The
+  row-append / vertical-stack counterpart to `joinMany` (which
+  column-merges by key). Closes the round-trip after
+  `groupBy(col, fn)` + per-group transforms without forcing callers
+  to unwrap events back to row tuples.
+
+  ```ts
+  const filledByHost = series.groupBy('host', (g) =>
+    g.fill({ cpu: 'linear' }, { limit: 2 }),
+  );
+  const merged = TimeSeries.merge([...filledByHost.values()]);
+  // back to one TimeSeries<S>; events from all hosts re-sorted.
+  ```
+
+  Schemas must match column-by-column on `name` and `kind`; throws
+  upfront on mismatch. Same-key events from different inputs are
+  both kept (row-append, not key-dedupe).
+
+- **`TimeSeries.fromEvents(events, { schema, name })`** — builds a
+  typed series from a flat `Event[]` array. Sorts by key. Companion
+  to `merge` for the case where you have raw events rather than a
+  list of series.
+
+- **`TimeRange.toJSON()`** returns `{ start: number, end: number }`,
+  the same shape `JsonTimeRangeInput` accepts, so
+  `new TimeRange(range.toJSON())` round-trips. Implicitly invoked by
+  `JSON.stringify(range)`.
+
+- **`TimeRange.toString()`** returns ISO-8601 `start/end` format
+  (e.g. `2025-01-15T09:00:00.000Z/2025-01-15T10:00:00.000Z`) for
+  debug logs and human-readable display.
+
+### Known limitation
+
+Two type-level fixes flagged by the agents are tracked but deferred
+to a future variance refactor:
+
+- `toJSON()` returns `TimeSeriesJsonInput<SeriesSchema>` (loose),
+  not `TimeSeriesJsonInput<S>`. Cast the result at the call site
+  if you need the narrow schema preserved.
+- `RowForSchema` doesn't honor `required: false`. Use `fromJSON`
+  with `null` cells instead of the row-array constructor with
+  `undefined`.
+
+Both are real but blocked by class-wide invariance through method
+overloads. See PLAN.md "Known type-level limitation" for the full
+story.
 
 ## [0.8.1] — 2026-04-26
 
@@ -230,6 +289,7 @@ opted in via `groups`; untyped form is unchanged. Plus a docs reorg.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
+[0.8.2]: https://github.com/pjm17971/pond-ts/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/pjm17971/pond-ts/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/pjm17971/pond-ts/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...v0.7.0

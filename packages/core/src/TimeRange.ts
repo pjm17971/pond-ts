@@ -135,6 +135,25 @@ export class TimeRange implements EventKey {
     return this.start + this.duration() / 2;
   }
 
+  /**
+   * Example: `range.toJSON()`. Returns `{ start, end }` as ms-since-epoch
+   * numbers — the same shape `JsonTimeRangeInput` accepts, so the result
+   * round-trips through `new TimeRange(range.toJSON())` and JSON wire
+   * formats. Implicitly invoked by `JSON.stringify(range)`.
+   */
+  toJSON(): { start: number; end: number } {
+    return { start: this.start, end: this.endMs };
+  }
+
+  /**
+   * Example: `range.toString()`. Returns an ISO-8601 representation of
+   * the range as `start/end`, e.g. `2025-01-15T09:00:00.000Z/2025-01-15T10:00:00.000Z`.
+   * Useful for debug logs and human-readable display.
+   */
+  toString(): string {
+    return `${new Date(this.start).toISOString()}/${new Date(this.endMs).toISOString()}`;
+  }
+
   /** Example: `range.contains(otherRange)`. Returns `true` when this range fully contains the supplied temporal value. */
   contains(other: TemporalLike): boolean {
     const range = toTimeRange(other);

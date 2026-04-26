@@ -97,6 +97,37 @@ From the original audit, not yet addressed:
   be one pass
 - `parseDurationInput` is duplicated in `TimeSeries.ts` and `Sequence.ts`
 
+### Known type-level limitation: `TimeSeries<S>` variance
+
+Both Codex and Claude agents flagged in the CSV-cleaner experiment that:
+
+- `toJSON()` returns `TimeSeriesJsonInput<SeriesSchema>` (loose) rather than
+  `TimeSeriesJsonInput<S>`, so a typed `TimeSeries<Schema>` round-tripped
+  through `toJSON` loses its specific schema. Callers cast back at the
+  call site (`as TimeSeriesJsonInput<MySchema>`).
+- `RowForSchema` doesn't honor `required: false`, so
+  `new TimeSeries({ rows: [[ts, undefined, ...]] })` rejects undefined
+  cells even when the schema allows them. Workaround: go through
+  `fromJSON({ rows: [[ts, null, ...]] })` instead, which already widens
+  cells via `JsonRowForSchema`.
+
+Both fixes are real and correct in isolation, but trying to land them
+hits a class-wide variance issue: many `TimeSeries` methods have
+overloads that return `TimeSeries<NarrowSchema>` while the impl returns
+`TimeSeries<SeriesSchema>`. Tightening `toJSON`'s return to use `<S>`
+makes `TimeSeries<NarrowSchema>` no longer assignable to
+`TimeSeries<SeriesSchema>` (the variance now propagates through every
+method that references S in a return position), which breaks the
+overload-impl compatibility check on `pivotByGroup`, `rolling`,
+`arrayAggregate`, and `arrayExplode`.
+
+Fixing this properly requires a class-wide variance refactor — either
+restructure each invariant overload to use a separate type-level helper
+that doesn't tie back to the class generic, or split `TimeSeries<S>`
+into a covariant read-side and an invariant write-side. Both are
+non-trivial. Queued as future work; the workarounds above are honest
+documentation in the meantime.
+
 ---
 
 ## Phase 2: Batch expansion
@@ -114,6 +145,17 @@ Completed:
 - [x] `pivotByGroup` — long-to-wide reshape on a categorical column; the missing
       inverse of `groupBy` for cases where you want one wide series instead of N
       separate ones (added late, after dashboard-agent feedback)
+- [x] `TimeSeries.merge([s1, s2, ...])` — fan-in primitive that closes the
+      `groupBy(col, fn)` round-trip without forcing callers out of the typed
+      contract. Concatenate same-schema series, re-sort by key, return one
+      wider series. Shipped in v0.8.2 after the CSV-cleaner agent run flagged
+      the missing third leg of the fan-out / column-merge / row-append triangle.
+- [x] `TimeSeries.fromEvents(events, { schema, name })` — companion to `merge`
+      for the rare case where you have a flat events array (not a list of
+      series) to assemble. Sorts by key. Shipped in v0.8.2.
+- [x] `TimeRange.toJSON()` and `.toString()` — `{ start, end }` ms shape that
+      round-trips through `new TimeRange(...)` and JSON wire formats; ISO
+      `start/end` for debug. Shipped in v0.8.2.
 
 Scope: none — all items complete.
 

@@ -11,18 +11,22 @@ into one wider one. Distinct from
 from [Eventwise transforms](./eventwise) (which preserve the row
 count and only reshape per event).
 
-This page covers five ops:
+This page covers seven ops:
 
 - [**`pivotByGroup(group, value)`**](#pivotbygroup) — long-to-wide
   reshape on a categorical column.
 - [**`unpivot(group, value, mapping)`**](#unpivot) — wide-to-long
   inverse. **Sketch — not yet shipped.**
 - [**`groupBy(col, fn?)`**](#groupby) — partition a series by a
-  column value into N per-group sub-series.
+  column value into N per-group sub-series. (Fan-out.)
 - [**`join(other, options?)`**](#join) — exact-key pairwise join of
   two `TimeSeries` into one wider series.
 - [**`joinMany(seriesList, options?)`**](#joinmany) — N-ary join of
   many series at once. Static method on `TimeSeries`.
+- [**`merge(seriesList)`**](#merge) — row-append fan-in: concatenate
+  N same-schema series, re-sorted by key. The inverse of `groupBy`.
+- [**`fromEvents(events, options)`**](#fromevents) — build a series
+  from an existing `Event[]` array. Companion to `merge`.
 
 For per-event shape changes — `select`, `rename`, `collapse`,
 `map(newSchema, fn)` — see
@@ -373,6 +377,80 @@ const wide = TimeSeries.joinMany([...perHost.values()], { type: 'outer' });
 
 This is the heavier sibling of `pivotByGroup` for cases where
 each group spawns multiple derived columns.
+
+## `merge` \{#merge\}
+
+`TimeSeries.merge([s1, s2, s3])` — concatenates the events of N
+**same-schema** `TimeSeries` instances and returns one wider series
+with all events sorted by key. The row-append / vertical-stack
+counterpart to [`joinMany`](#joinmany) (column-merge by key).
+
+```ts
+const merged = TimeSeries.merge([cpuLastWeek, cpuThisWeek]);
+// same schema as the inputs; events from both weeks merged and sorted.
+```
+
+**The fan-in primitive.** [`groupBy(col, fn)`](#groupby) is the
+fan-out (one series → many); `merge` is the fan-in (many same-schema
+series → one). Together they close the round-trip:
+
+```ts
+const filledByHost = series.groupBy('host', (g) =>
+  g.fill({ cpu: 'linear' }, { limit: 2 }),
+);
+// Map<string, TimeSeries<S>> — each host has its own filled subseries.
+
+const merged = TimeSeries.merge([...filledByHost.values()]);
+// Back to one TimeSeries<S>. Schema flows through unchanged; events
+// re-sorted across all hosts.
+```
+
+Without `merge`, closing this loop required unwrapping events back
+to row tuples and reconstructing — verbose and easy to break when
+the schema has many columns. `merge` keeps you inside the typed
+contract.
+
+**Schema match is required.** All inputs must have identical
+`schema` (column-by-column on `name` and `kind`). Mismatches throw
+upfront. For combining series with different schemas — joining CPU
+metrics with memory metrics on time keys — use
+[`joinMany`](#joinmany) instead.
+
+**Naming.** The merged series's `name` is taken from the first
+input. Override with `.rename(...)` afterward if needed.
+
+**When events share a key.** Events with the same key from
+different inputs are both kept; this is row-append, not
+key-deduplication. If you need same-key collapse, see the queued
+`dedupe` work in PLAN.md or do it yourself before / after `merge`.
+
+## `fromEvents` \{#fromevents\}
+
+`TimeSeries.fromEvents(events, { schema, name })` — builds a typed
+series from an array of `Event` instances. Companion to `merge` for
+the rare case where you have raw events (not series) to assemble.
+
+```ts
+import { TimeSeries } from 'pond-ts';
+
+// You have an EventForSchema<S>[] from somewhere — perhaps after
+// flattening Map<host, TimeSeries<S>> values, or from a custom
+// transform pipeline.
+const events: EventForSchema<typeof schema>[] = [...];
+
+const series = TimeSeries.fromEvents(events, {
+  schema,
+  name: 'reconstructed',
+});
+```
+
+Events are sorted by key before construction — caller doesn't need
+to pre-sort. The schema is taken on trust; pass the same schema the
+events were originally produced under.
+
+Most callers should reach for [`merge`](#merge) first — it does the
+event-spread for you. Use `fromEvents` when you've already got a
+flat events array and don't have a list of series.
 
 ## See also
 
