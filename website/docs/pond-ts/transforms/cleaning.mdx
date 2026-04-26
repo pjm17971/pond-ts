@@ -12,12 +12,40 @@ can reason over it.
 
 What's covered:
 
+- [**Schema first — `required: false`**](#schema-first) — declare
+  optional cells before reaching for any cleaning op.
 - [**Filter out bad rows**](#filter-bad-rows) — `.filter()` patterns.
 - [**Fill the gaps**](#fill-gaps) — `.fill()` strategies.
 - [**Deduplicate**](#deduplicate) — `.dedupe()` policies and the
   multi-entity story.
+- [**End-to-end multi-entity cleaning pipeline**](#end-to-end) — the
+  full `partitionBy + dedupe + fill(maxGap)` chain in one place.
 - [**Ingest edges**](#ingest-edges) — pointers to where wall-clock
   timestamps, time zones, and missing values are handled.
+
+## Schema first — `required: false` \{#schema-first\}
+
+Most cleaning starts with knowing which columns can have missing
+cells. **Declare those columns `required: false` in your schema** —
+otherwise the type system narrows their cell values to `T` (not
+`T | undefined`), and `fill`/`dedupe` won't have anything to
+operate on:
+
+```ts
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number', required: false }, // ← optional
+  { name: 'host', kind: 'string' }, // ← required (always present)
+] as const;
+```
+
+When ingesting JSON or CSV-derived rows, missing cells arrive as
+`null` on the wire and become `undefined` after
+`TimeSeries.fromJSON(...)`. (For row-array construction with
+`new TimeSeries({ rows })`, the `RowForSchema` type currently doesn't
+honor `required: false` — go through `fromJSON` with `null` cells
+when you need optional values, or see [the known limitation in the
+0.8.2 changelog](https://github.com/pjm17971/pond-ts/blob/main/CHANGELOG.md#082--2026-04-26).)
 
 ## Filter out bad rows \{#filter-bad-rows\}
 
@@ -235,6 +263,48 @@ events
   .rolling('5m', { cpu: 'avg' })
   .collect();
 ```
+
+## End-to-end multi-entity cleaning pipeline \{#end-to-end\}
+
+The canonical multi-host cleaning chain — covers the three most
+common ingest hazards (cross-entity neighbor leaks, duplicate rows
+from retried polls, fabrication across long outages) in one
+pipeline:
+
+```ts
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number', required: false },
+  { name: 'host', kind: 'string' },
+] as const;
+
+const raw = TimeSeries.fromJSON({
+  name: 'cpu',
+  schema,
+  rows /* JSON rows from your ingest */,
+});
+
+const cleaned = raw
+  // Scope every following stateful op to within each host.
+  .partitionBy('host')
+  // Collapse duplicates that share (time, host); keep newest.
+  .dedupe({ keep: 'last' })
+  // Linear-interpolate cpu, but only across short gaps. A 30-minute
+  // outage stays unfilled — no fabricated slope across data we don't
+  // have.
+  .fill({ cpu: 'linear' }, { maxGap: '5m' })
+  // Materialize back to a regular TimeSeries.
+  .collect();
+```
+
+Each step removes one class of error:
+
+| Step                                        | Hazard removed                                                                                                             |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `partitionBy('host')`                       | Stateful ops below stop crossing entity boundaries — `host-A` no longer interpolates against `host-B`'s neighboring value. |
+| `dedupe({ keep: 'last' })`                  | Retried HTTP polls / WebSocket replays at the same `(time, host)` collapse to the newest.                                  |
+| `fill({ cpu: 'linear' }, { maxGap: '5m' })` | Short gaps fill cleanly; long outages stay `undefined` — no invented slopes across data you don't have.                    |
+| `.collect()`                                | Returns a `TimeSeries<S>` ready for downstream rendering or aggregation.                                                   |
 
 ## Ingest edges \{#ingest-edges\}
 
