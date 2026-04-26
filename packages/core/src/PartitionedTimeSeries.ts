@@ -233,7 +233,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   /** Per-partition `fill`. See {@link TimeSeries.fill}. */
   fill(
     strategy: FillStrategy | FillMapping<S>,
-    options?: { limit?: number },
+    options?: { limit?: number; maxGap?: DurationInput },
   ): PartitionedTimeSeries<S> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>

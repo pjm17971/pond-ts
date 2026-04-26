@@ -381,4 +381,227 @@ describe('TimeSeries.partitionBy', () => {
       expect(out).toBeInstanceOf(TimeSeries);
     });
   });
+
+  describe('fill option pass-through (regression — v0.9.1)', () => {
+    // The headline v0.9.0 chain — partitionBy('host').fill('linear', { maxGap }).
+    // PR #78 added `maxGap` to `TimeSeries.fill` but the partitioned sugar's
+    // option type was not updated, so this exact call failed type checking
+    // until v0.9.1.
+
+    it('accepts maxGap option without type or runtime error', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [60_000, undefined, 'a'], // 1m gap
+        [120_000, 0.7, 'a'],
+      ]);
+      const out = ts
+        .partitionBy('host')
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      // Gap span is 2m, fits within 5m cap → linear interp fills it.
+      const aAt60k = [...out.events].find((e) => e.begin() === 60_000);
+      expect(aAt60k?.get('cpu')).toBeCloseTo(0.6, 5);
+    });
+
+    it('all-or-nothing maxGap respects per-partition gap span', () => {
+      // host-a has a 2-minute gap (0 → 120k → 240k);
+      // host-b has a 10-minute gap (240k → 840k → 1440k).
+      // With maxGap '5m', a's gap fills, b's stays unfilled.
+      // Rows must be in time order; interleave hosts where times match.
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [120_000, undefined, 'a'],
+        [240_000, 0.7, 'a'],
+        [240_000, 0.5, 'b'],
+        [840_000, undefined, 'b'],
+        [1_440_000, 0.7, 'b'],
+      ]);
+      const out = ts
+        .partitionBy('host')
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      const aMid = [...out.events].find(
+        (e) => e.begin() === 120_000 && e.get('host') === 'a',
+      );
+      const bMid = [...out.events].find(
+        (e) => e.begin() === 840_000 && e.get('host') === 'b',
+      );
+      expect(aMid?.get('cpu')).toBeCloseTo(0.6, 5);
+      expect(bMid?.get('cpu')).toBeUndefined();
+    });
+
+    it('limit and maxGap compose on the partitioned view', () => {
+      // 1-cell gap fits limit:1; 2m span fits maxGap:5m.
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [120_000, undefined, 'a'],
+        [240_000, 0.7, 'a'],
+      ]);
+      const out = ts
+        .partitionBy('host')
+        .fill('linear', { limit: 1, maxGap: '5m' })
+        .collect();
+      const mid = [...out.events].find((e) => e.begin() === 120_000);
+      expect(mid?.get('cpu')).toBeCloseTo(0.6, 5);
+    });
+
+    it('full v0.9.0 chain — partitionBy + dedupe + fill(maxGap) — works end to end', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [0, 0.55, 'a'], // duplicate at t=0 for host 'a'
+        [0, 0.3, 'b'],
+        [60_000, undefined, 'a'],
+        [60_000, undefined, 'b'],
+        [120_000, 0.7, 'a'],
+        [120_000, 0.5, 'b'],
+      ]);
+      const out = ts
+        .partitionBy('host')
+        .dedupe({ keep: 'last' })
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      // host a, t=0: dedupe-last → 0.55
+      const aAt0 = [...out.events].find(
+        (e) => e.begin() === 0 && e.get('host') === 'a',
+      );
+      expect(aAt0?.get('cpu')).toBe(0.55);
+      // host a, t=60k: linear interp between 0.55 and 0.7 → 0.625
+      const aMid = [...out.events].find(
+        (e) => e.begin() === 60_000 && e.get('host') === 'a',
+      );
+      expect(aMid?.get('cpu')).toBeCloseTo(0.625, 5);
+      // host b, t=60k: linear interp between 0.3 and 0.5 → 0.4
+      const bMid = [...out.events].find(
+        (e) => e.begin() === 60_000 && e.get('host') === 'b',
+      );
+      expect(bMid?.get('cpu')).toBeCloseTo(0.4, 5);
+    });
+  });
+
+  describe('composite partition keys round-trip (v0.9.1)', () => {
+    // Verifies that partitionBy(['host', 'region']) preserves both key
+    // columns through the per-partition transforms and back into the
+    // collected/applied output, including the schema. Flagged as a
+    // refinement target by the dashboard agent against v0.9.0.
+
+    function makeComposite(
+      rows: ReadonlyArray<
+        readonly [number, number | undefined, string, string]
+      >,
+    ) {
+      return new TimeSeries({
+        name: 'metrics',
+        schema: compositeSchema,
+        rows: rows.map(
+          (r) => [...r] as [number, number | undefined, string, string],
+        ),
+      });
+    }
+
+    it('preserves both partition columns in the collected output schema', () => {
+      const ts = makeComposite([[0, 0.5, 'a', 'eu']]);
+      const out = ts.partitionBy(['host', 'region']).collect();
+      expect(out.schema).toEqual(compositeSchema);
+    });
+
+    it('preserves both partition column values on every output event', () => {
+      const ts = makeComposite([
+        [0, 0.5, 'a', 'eu'],
+        [0, 0.3, 'a', 'us'],
+        [0, 0.4, 'b', 'eu'],
+        [60_000, undefined, 'a', 'eu'],
+        [60_000, undefined, 'a', 'us'],
+        [120_000, 0.7, 'a', 'eu'],
+        [120_000, 0.5, 'a', 'us'],
+        [120_000, 0.6, 'b', 'eu'],
+      ]);
+      const out = ts
+        .partitionBy(['host', 'region'])
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      // Every output event must carry both keys
+      for (const e of out.events) {
+        expect(typeof e.get('host')).toBe('string');
+        expect(typeof e.get('region')).toBe('string');
+      }
+    });
+
+    it('keeps (host, region) tuples distinct (does not collapse on host alone)', () => {
+      // host 'a' appears in two regions. After per-partition fill, both
+      // sub-series must survive — no cross-region mixing.
+      const ts = makeComposite([
+        [0, 0.5, 'a', 'eu'],
+        [0, 0.3, 'a', 'us'],
+        [60_000, undefined, 'a', 'eu'],
+        [60_000, undefined, 'a', 'us'],
+        [120_000, 0.7, 'a', 'eu'],
+        [120_000, 0.5, 'a', 'us'],
+      ]);
+      const out = ts
+        .partitionBy(['host', 'region'])
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      const aEuMid = [...out.events].find(
+        (e) =>
+          e.begin() === 60_000 &&
+          e.get('host') === 'a' &&
+          e.get('region') === 'eu',
+      );
+      const aUsMid = [...out.events].find(
+        (e) =>
+          e.begin() === 60_000 &&
+          e.get('host') === 'a' &&
+          e.get('region') === 'us',
+      );
+      // Each gap fills against its own sub-series only.
+      expect(aEuMid?.get('cpu')).toBeCloseTo(0.6, 5); // (0.5 + 0.7) / 2
+      expect(aUsMid?.get('cpu')).toBeCloseTo(0.4, 5); // (0.3 + 0.5) / 2
+      // If composite keys collapsed on host alone, the four 'a' points
+      // would interleave and produce a different (wrong) interpolated value.
+    });
+
+    it('apply() preserves both partition columns', () => {
+      const ts = makeComposite([
+        [0, 0.5, 'a', 'eu'],
+        [0, 0.3, 'a', 'us'],
+        [60_000, 0.6, 'a', 'eu'],
+        [60_000, 0.4, 'a', 'us'],
+      ]);
+      const out = ts.partitionBy(['host', 'region']).apply((g) => g);
+      expect(out.schema).toEqual(compositeSchema);
+      const hostsRegions = [...out.events].map((e) => [
+        e.get('host'),
+        e.get('region'),
+      ]);
+      expect(hostsRegions).toContainEqual(['a', 'eu']);
+      expect(hostsRegions).toContainEqual(['a', 'us']);
+    });
+
+    it('composite partitioning + dedupe + fill chain works end to end', () => {
+      const ts = makeComposite([
+        [0, 0.5, 'a', 'eu'],
+        [0, 0.55, 'a', 'eu'], // duplicate within ('a', 'eu')
+        [0, 0.3, 'a', 'us'], // same (time, host) as 'eu' duplicate but different region — NOT a duplicate
+        [60_000, undefined, 'a', 'eu'],
+        [120_000, 0.7, 'a', 'eu'],
+      ]);
+      const out = ts
+        .partitionBy(['host', 'region'])
+        .dedupe({ keep: 'last' })
+        .fill('linear', { maxGap: '5m' })
+        .collect();
+      // ('a', 'eu') @ 0: dedupe-last → 0.55 (NOT collapsed against 'us')
+      const aEuAt0 = [...out.events].find(
+        (e) =>
+          e.begin() === 0 && e.get('host') === 'a' && e.get('region') === 'eu',
+      );
+      expect(aEuAt0?.get('cpu')).toBe(0.55);
+      // ('a', 'us') @ 0 stays at 0.3 — different partition
+      const aUsAt0 = [...out.events].find(
+        (e) =>
+          e.begin() === 0 && e.get('host') === 'a' && e.get('region') === 'us',
+      );
+      expect(aUsAt0?.get('cpu')).toBe(0.3);
+    });
+  });
 });
