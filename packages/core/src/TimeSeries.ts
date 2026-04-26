@@ -48,6 +48,8 @@ import type {
   ColumnValue,
   CustomAggregateReducer,
   DiffSchema,
+  FillMapping,
+  FillStrategy,
   ScalarKind,
   ScalarValue,
   SmoothMethod,
@@ -77,6 +79,7 @@ import type {
 } from './temporal.js';
 import { compareEventKeys } from './temporal.js';
 import { Event } from './Event.js';
+import { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
 import { Sequence } from './Sequence.js';
 import { validateAndNormalize } from './validate.js';
 import type { DurationInput } from './utils/duration.js';
@@ -105,10 +108,6 @@ type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
 type PivotByGroupOptions = { aggregate?: AggregateReducer };
 type PivotByGroupOptionsTyped<Groups extends readonly string[]> =
   PivotByGroupOptions & { groups: Groups };
-type FillStrategy = 'hold' | 'bfill' | 'linear' | 'zero';
-type FillMapping<S extends SeriesSchema> = {
-  [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
-};
 type ResolvedFillSpec =
   | { mode: FillStrategy }
   | { mode: 'literal'; value: ScalarValue };
@@ -1625,6 +1624,51 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
+   * Example: `series.partitionBy('host').fill({ cpu: 'linear' })`.
+   * Returns a {@link PartitionedTimeSeries} view that scopes stateful
+   * transforms to within each partition. Most stateful operators
+   * (`fill`, `align`, `rolling`, `smooth`, `baseline`, `outliers`,
+   * `diff`, `rate`, `pctChange`, `cumulative`, `shift`, `aggregate`)
+   * read neighboring events when computing each output and silently
+   * cross entity boundaries on multi-entity series — `partitionBy`
+   * fixes that by running the op independently per partition and
+   * reassembling.
+   *
+   * Composite partitioning by multiple columns is supported by passing
+   * an array: `series.partitionBy(['host', 'region'])`.
+   *
+   * The return shape is always `TimeSeries`, not
+   * `PartitionedTimeSeries` — each operation is a single step. To
+   * chain another partitioned op, re-`partitionBy` after.
+   *
+   * Coming from pondjs / pandas: this is roughly the equivalent of
+   * `df.groupby(col)` returning an object whose methods auto-apply
+   * per group, but the return type is the regrouped frame, not the
+   * grouped view.
+   *
+   * @example
+   * ```ts
+   * // Per-host fill — no cross-host interpolation
+   * series.partitionBy('host').fill({ cpu: 'linear' });
+   *
+   * // Composite partitioning
+   * series.partitionBy(['host', 'region']).rolling('5m', { cpu: 'avg' });
+   *
+   * // Arbitrary composition via .apply()
+   * series.partitionBy('host').apply(g =>
+   *   g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }),
+   * );
+   * ```
+   */
+  partitionBy(
+    by:
+      | (keyof EventDataForSchema<S> & string)
+      | ReadonlyArray<keyof EventDataForSchema<S> & string>,
+  ): PartitionedTimeSeries<S> {
+    return new PartitionedTimeSeries(this, by);
+  }
+
+  /**
    * Example: `series.pivotByGroup("host", "cpu")`.
    * Reshapes long-form data into wide rows. Each distinct value of
    * `groupCol` becomes its own column in the output schema named
@@ -1846,7 +1890,7 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.#diffOrRate('diff', columns, options);
+    return this.diffOrRateImpl('diff', columns, options);
   }
 
   /**
@@ -1866,7 +1910,7 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.#diffOrRate('rate', columns, options);
+    return this.diffOrRateImpl('rate', columns, options);
   }
 
   /**
@@ -1880,10 +1924,13 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.#diffOrRate('pctChange', columns, options);
+    return this.diffOrRateImpl('pctChange', columns, options);
   }
 
-  #diffOrRate<Target extends NumericColumnNameForSchema<S>>(
+  // Marked TS-private (not # private) so it stays accessible on
+  // instances built via #fromTrustedEvents (which bypasses the
+  // constructor's private-field initialization).
+  private diffOrRateImpl<Target extends NumericColumnNameForSchema<S>>(
     mode: 'diff' | 'rate' | 'pctChange',
     columns: Target | readonly Target[],
     options?: { drop?: boolean },

@@ -7,6 +7,7 @@ export { LiveSeries } from './LiveSeries.js';
 export { LiveView } from './LiveView.js';
 export type { LiveFillMapping, LiveFillStrategy } from './LiveView.js';
 export { LiveRollingAggregation } from './LiveRollingAggregation.js';
+export { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';
 export { Sequence } from './Sequence.js';
@@ -34,6 +35,8 @@ export type {
   EventDataForSchema,
   EventForSchema,
   EventKeyForKind,
+  FillMapping,
+  FillStrategy,
   EventKeyForSchema,
   FirstColKind,
   FirstColumn,
