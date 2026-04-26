@@ -348,6 +348,61 @@ describe('TimeSeries.fill', () => {
       expect(blocked.at(1)?.get('value')).toBeUndefined();
       expect(blocked.at(2)?.get('value')).toBeUndefined();
     });
+
+    it('maxGap exact-boundary is inclusive (length === cap fills)', () => {
+      // makeGappy gap span = 3s (1000 → 4000). maxGap of exactly '3s' must fill.
+      const filled = makeGappy().fill('linear', { maxGap: '3s' });
+      expect(filled.at(1)?.get('value')).toBe(20);
+      expect(filled.at(2)?.get('value')).toBe(30);
+    });
+
+    it('limit and maxGap compose — both gates fail', () => {
+      // gap is 2 cells over 3s span; both caps below threshold
+      const filled = makeGappy().fill('hold', { limit: 1, maxGap: '1s' });
+      expect(filled.at(1)?.get('value')).toBeUndefined();
+      expect(filled.at(2)?.get('value')).toBeUndefined();
+    });
+  });
+
+  describe('limit edge cases', () => {
+    it('limit: 0 leaves every gap unfilled', () => {
+      // Every nonempty gap exceeds limit 0 → all-or-nothing leaves all unfilled.
+      const filled = makeGappy().fill('hold', { limit: 0 });
+      expect(filled.at(1)?.get('value')).toBeUndefined();
+      expect(filled.at(2)?.get('value')).toBeUndefined();
+    });
+
+    it('zero strategy fills an all-undefined column without neighbors', () => {
+      // No prev or next known values — strategyOk is true for zero/literal
+      // (no neighbor required), so the entire run is filled.
+      const ts = new TimeSeries({
+        name: 'all-undef',
+        schema,
+        rows: [
+          [1000, undefined, undefined],
+          [2000, undefined, undefined],
+          [3000, undefined, undefined],
+        ],
+      });
+      const filled = ts.fill('zero');
+      expect(filled.at(0)?.get('value')).toBe(0);
+      expect(filled.at(1)?.get('value')).toBe(0);
+      expect(filled.at(2)?.get('value')).toBe(0);
+    });
+
+    it('literal fill on an all-undefined column fills entirely', () => {
+      const ts = new TimeSeries({
+        name: 'all-undef',
+        schema,
+        rows: [
+          [1000, undefined, undefined],
+          [2000, undefined, undefined],
+        ],
+      });
+      const filled = ts.fill({ host: 'unknown' });
+      expect(filled.at(0)?.get('host')).toBe('unknown');
+      expect(filled.at(1)?.get('host')).toBe('unknown');
+    });
   });
 
   describe('edge cases', () => {
