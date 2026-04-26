@@ -657,30 +657,54 @@ Concrete next steps when this work begins:
       — defer to the late-event work above, or carve out an in-order-only
       contract for the first cut.
 
-### Queued: deduping strategy (batch + live)
+### Shipped: batch dedupe — `series.dedupe({ keep })`
 
-Real-world ingest produces duplicate events: WebSocket replays, kafka
-at-least-once semantics, retried HTTP fetches, polling overlaps. There
-is no first-class dedupe primitive today — callers either pre-filter
-upstream or live with duplicates downstream.
+Real-world ingest produces duplicate events: WebSocket replays, Kafka
+at-least-once semantics, retried HTTP fetches, polling overlaps.
+v0.9.0 (PR 3 of the wave) ships the **batch** dedupe primitive:
 
-Both batch and live need a story.
+```ts
+series.dedupe(); // default: keep last
+series.dedupe({ keep: 'first' });
+series.dedupe({ keep: 'error' }); // throw on duplicates
+series.dedupe({ keep: 'drop' }); // discard all events at any duplicate timestamp
+series.dedupe({ keep: { min: 'cpu' } }); // keep smallest at named numeric column
+series.dedupe({ keep: { max: 'cpu' } });
+series.dedupe({ keep: (events) => events[0] }); // custom resolver
 
-**Batch:** `series.dedupe(options?)` returns a new `TimeSeries<S>` with
-duplicates collapsed.
+// Multi-entity: pair with partitionBy so the key includes the entity column.
+series.partitionBy('host').dedupe({ keep: 'last' }).collect();
+```
 
-**Live:** an ingest-time policy on `LiveSeries`, surfaced either as a
-new `ordering` mode (`'append' | 'reorder' | 'dedupe'`) or as a
-separate `dedupe: 'last-wins' | 'first-wins' | 'error'` option.
+Decisions made:
 
-Design questions to settle before implementation:
+- **Default key is timestamp alone.** Multi-entity series are
+  expected to compose with `partitionBy` rather than have an `on`
+  option on `dedupe` itself — `partitionBy` is the project's
+  canonical entity-segregation primitive. Adding `on` would
+  duplicate that vocabulary.
+- **Default `keep` is `'last'`.** Matches WebSocket replay
+  intuition: a retried event supersedes the prior occurrence.
+- **`min`/`max` take a column reference.** Bare `'min'`/`'max'`
+  strings can't carry the column to evaluate; the object form
+  (`{ min: 'col' }`) is one extra brace and removes ambiguity.
+- **`'drop'` discards the entire bucket.** The value of "1.5 events
+  at this timestamp" is rarely defensible. `'drop'` is the
+  conservative choice when duplicates indicate untrustworthy data.
+- **Custom resolver gets the array.** Two-event reducer (`(a, b) =>
+Event`) is more streaming-friendly but less flexible; `(events)
+=> Event` lets callers compute averages, medians, etc. Batch can
+  afford the array.
+- **Custom resolver only invoked for buckets ≥ 2.** Single-event
+  buckets pass through untouched without function call overhead.
 
-- **What counts as a duplicate?** Same key only, or same key + same
-  payload? Same-key-different-payload is the interesting case
-  (resolver: first-wins, last-wins, merge). The conservative default
-  is probably "same key, last-wins" — matches how WebSocket replay
-  feels intuitively — but "same key only with custom resolver" is
-  the most flexible.
+### Queued: live dedupe (LiveSeries)
+
+The **live** ingest-time story is still open. The PR-3 batch
+primitive is a clean shape for it to converge on (`keep: 'first' |
+'last' | 'error' | 'drop' | { min/max } | fn`), but live raises
+its own questions:
+
 - **Live update vs. emit?** When a duplicate-key event arrives in
   last-wins mode, do we update the in-place event (and notify
   subscribers via a separate `'replace'` event), or treat the new
@@ -689,17 +713,17 @@ Design questions to settle before implementation:
   is heavier but stays consistent with the rest of the model.
 - **Interaction with grace + retention.** A late event whose key
   already exists in the buffer is a duplicate by definition under
-  this design. Does the late-event-propagation work treat it
-  identically to any other dedup case, or is there a "late
-  duplicate" special case worth distinguishing?
+  this design. The grace window already buffers late arrivals;
+  dedupe should fold into that window rather than be a separate
+  pre-filter. Likely shape: at the close of the grace window for a
+  given timestamp, the buffered events are passed through the
+  configured `keep` policy and the survivor is emitted.
 - **Subscribers:** does dedupe surface a `'duplicate'` event so
   metrics / logging can react? Probably yes.
 
 Concrete next steps when this work begins:
 
-- [ ] Spec batch `dedupe(options?)`: default behavior, exact-key vs.
-      key+payload, custom resolver shape.
-- [ ] Decide the live API shape: separate `dedupe` option vs. third
+- [ ] Spec live API shape: separate `dedupe` option vs. third
       `ordering` mode. Lean separate-option since dedupe is
       orthogonal to ordering.
 - [ ] Plumb through `LiveAggregation` / `LiveRollingAggregation` —
@@ -707,6 +731,8 @@ Concrete next steps when this work begins:
       case (modify or ignore?).
 - [ ] Add the `'duplicate'` (and possibly `'replace'`) event type
       to the subscriber surface.
+- [ ] Decide grace-window interaction shape (likely:
+      dedupe-at-close).
 
 ### Shipped: cross-entity correctness via `partitionBy`
 

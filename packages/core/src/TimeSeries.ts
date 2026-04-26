@@ -47,6 +47,7 @@ import type {
   RollingSchema,
   ColumnValue,
   CustomAggregateReducer,
+  DedupeKeep,
   DiffSchema,
   FillMapping,
   FillStrategy,
@@ -2404,6 +2405,131 @@ export class TimeSeries<S extends SeriesSchema> {
       this.schema,
       resultEvents,
     );
+  }
+
+  /**
+   * Example: `series.dedupe()`.
+   * Collapses events that share a key. The default key is the event's
+   * timestamp — events at the exact same `begin()` are considered
+   * duplicates of each other. The default resolution is `'last'` wins.
+   *
+   * For multi-entity series (events for many hosts/regions interleaved
+   * by time), call this on a partitioned view so the key includes the
+   * entity column:
+   *
+   * ```ts
+   * // Per-host dedupe — same time AND same host is the duplicate key.
+   * series.partitionBy('host').dedupe({ keep: 'last' }).collect();
+   * ```
+   *
+   * The `keep` option chooses the resolution policy:
+   *
+   * - `'first'` — keep the first occurrence at each timestamp.
+   * - `'last'` — keep the last occurrence (default; matches WebSocket
+   *   replay semantics).
+   * - `'error'` — throw on the first duplicate seen. Useful for
+   *   ingestion paths that want to fail loudly on shape violations.
+   * - `'drop'` — discard *every* event at any duplicate timestamp.
+   *   Conservative; the value of "1.5 events at this timestamp" is
+   *   rarely defensible.
+   * - `{ min: col }` / `{ max: col }` — keep the event with the
+   *   smallest / largest value at the named numeric column. Ties keep
+   *   the earliest tied event. Events with `undefined` at that column
+   *   lose to any event with a defined value.
+   * - `(events) => Event` — custom resolver. Receives all duplicates
+   *   at a single timestamp (length ≥ 2) and returns one. Use for
+   *   merge logic that combines fields, e.g.:
+   *
+   *   ```ts
+   *   series.dedupe({
+   *     keep: (events) =>
+   *       Event.fromTime(events[0].begin(), {
+   *         cpu: events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) / events.length,
+   *         host: events[events.length - 1].get('host'),
+   *       }),
+   *   });
+   *   ```
+   *
+   * Real-world ingest produces duplicates: WebSocket replays, Kafka
+   * at-least-once, retried HTTP fetches, polling overlaps. `dedupe()`
+   * is the post-ingest cleanup primitive.
+   */
+  dedupe(options: { keep?: DedupeKeep<S> } = {}): TimeSeries<S> {
+    const keep = options.keep ?? 'last';
+    if (this.events.length === 0) {
+      return this;
+    }
+
+    // Single-pass bucket by timestamp. Map iteration is insertion-order;
+    // since the input events are already sorted by time, each bucket
+    // corresponds to a unique timestamp and the buckets traverse in
+    // time order. No re-sort needed.
+    const buckets = new Map<number, EventForSchema<S>[]>();
+    for (const event of this.events) {
+      const t = event.begin();
+      let bucket = buckets.get(t);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(t, bucket);
+      }
+      bucket.push(event);
+    }
+
+    const resolved: EventForSchema<S>[] = [];
+    for (const [t, bucket] of buckets) {
+      if (bucket.length === 1) {
+        resolved.push(bucket[0]!);
+        continue;
+      }
+
+      // Multiple events at the same timestamp — apply the policy.
+      if (typeof keep === 'function') {
+        resolved.push(keep(bucket));
+        continue;
+      }
+      if (keep === 'first') {
+        resolved.push(bucket[0]!);
+        continue;
+      }
+      if (keep === 'last') {
+        resolved.push(bucket[bucket.length - 1]!);
+        continue;
+      }
+      if (keep === 'error') {
+        throw new Error(
+          `dedupe: ${bucket.length} events at the same timestamp ` +
+            `${new Date(t).toISOString()} (${t}). ` +
+            `Specify a different 'keep' policy or fix upstream.`,
+        );
+      }
+      if (keep === 'drop') {
+        continue;
+      }
+      if ('min' in keep || 'max' in keep) {
+        const isMin = 'min' in keep;
+        const col = (isMin ? keep.min : keep.max) as string;
+        let best = bucket[0]!;
+        let bestVal = best.get(col) as number | undefined;
+        for (let i = 1; i < bucket.length; i += 1) {
+          const candidate = bucket[i]!;
+          const v = candidate.get(col) as number | undefined;
+          if (v === undefined) continue;
+          if (bestVal === undefined || (isMin ? v < bestVal : v > bestVal)) {
+            best = candidate;
+            bestVal = v;
+          }
+        }
+        resolved.push(best);
+        continue;
+      }
+      // Defensive fallthrough: unrecognized keep shape.
+      throw new TypeError(
+        `dedupe: invalid keep option ${JSON.stringify(keep)}. ` +
+          `Expected 'first' | 'last' | 'error' | 'drop' | { min: col } | { max: col } | (events) => Event.`,
+      );
+    }
+
+    return TimeSeries.#fromTrustedEvents<S>(this.name, this.schema, resolved);
   }
 
   /**

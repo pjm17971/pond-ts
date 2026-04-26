@@ -14,8 +14,8 @@ What's covered:
 
 - [**Filter out bad rows**](#filter-bad-rows) — `.filter()` patterns.
 - [**Fill the gaps**](#fill-gaps) — `.fill()` strategies.
-- [**Deduplicate**](#deduplicate) — manual filter pattern, plus an
-  honest API gap note.
+- [**Deduplicate**](#deduplicate) — `.dedupe()` policies and the
+  multi-entity story.
 - [**Ingest edges**](#ingest-edges) — pointers to where wall-clock
   timestamps, time zones, and missing values are handled.
 
@@ -155,31 +155,73 @@ for the full hazard discussion.
 
 ## Deduplicate \{#deduplicate\}
 
-There's no first-party `dedupe()` operator yet. The manual pattern
-uses `filter` plus a `Set` over event keys:
+`dedupe()` collapses events that share a key. Real-world ingest
+produces duplicates: WebSocket replays, Kafka at-least-once, retried
+HTTP fetches, polling overlaps. The default key is the event's
+timestamp; the default resolution is **last-wins** (matches the
+"newer event supersedes" intuition):
 
 ```ts
-// Keep the first event at each unique timestamp.
-const seen = new Set<number>();
-const deduped = events.filter((e) => {
-  const t = e.begin();
-  if (seen.has(t)) return false;
-  seen.add(t);
-  return true;
+// Single-entity series — collapse same-timestamp duplicates, keep last.
+const clean = events.dedupe();
+```
+
+### Multi-entity series — partition first
+
+If your series carries multiple entities (host, region, device id),
+you almost always want **(time + entity)** as the dedupe key, not
+time alone. Bare `dedupe()` would collapse `host=A@t` and `host=B@t`
+as if they were duplicates of each other.
+
+Pair it with [`partitionBy(col)`](./reshape#partitionby):
+
+```ts
+// Per-host dedupe — same time AND same host is the duplicate key.
+const clean = events.partitionBy('host').dedupe({ keep: 'last' }).collect();
+```
+
+### Resolution policies — `keep`
+
+| `keep`              | Behavior                                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `'last'` (default)  | Keep the last event at each timestamp. Matches WebSocket replay / "newer wins" intuition.     |
+| `'first'`           | Keep the first event encountered.                                                             |
+| `'error'`           | Throw on the first duplicate seen. Useful when duplicates indicate an upstream shape problem. |
+| `'drop'`            | Discard _every_ event at any duplicate timestamp. Conservative — never invents a survivor.    |
+| `{ min: 'col' }`    | Keep the event with the smallest value at the named numeric column. Ties keep first.          |
+| `{ max: 'col' }`    | Keep the event with the largest value at the named numeric column.                            |
+| `(events) => Event` | Custom resolver. Receives all duplicates (length ≥ 2), returns one. Use for merge logic.      |
+
+```ts
+// Throw on duplicates — useful in ingestion pipelines that want loud failures.
+events.dedupe({ keep: 'error' });
+
+// Keep the highest-CPU sample when two reports race at the same instant.
+events.dedupe({ keep: { max: 'cpu' } });
+
+// Custom merge: average all duplicate samples at each timestamp.
+events.dedupe({
+  keep: (events) =>
+    new Event(new Time(events[0].begin()), {
+      cpu: events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) / events.length,
+      host: events[events.length - 1].get('host'),
+    }),
 });
 ```
 
-For "keep the _last_ event at each timestamp," reverse the events
-first then dedupe, then re-sort — or build a `Map<ts, Event>` and
-reconstruct via `TimeSeries.fromJSON`. The pattern is verbose enough
-to be worth wrapping in a helper in your own codebase.
+### Chains compose
 
-:::note[API gap]
-A `series.dedupe({ on?: 'time' | 'time-and-host', keep?: 'first' | 'last' })`
-operator would cover the common cases without the `Set` dance. On the
-roadmap; not in the current API. If you hit this regularly, file an
-issue with your specific shape and we'll prioritize.
-:::
+`dedupe` returns the same schema, so it sits naturally before any
+other transform:
+
+```ts
+events
+  .partitionBy('host')
+  .dedupe({ keep: 'last' })
+  .fill({ cpu: 'linear' })
+  .rolling('5m', { cpu: 'avg' })
+  .collect();
+```
 
 ## Ingest edges \{#ingest-edges\}
 
