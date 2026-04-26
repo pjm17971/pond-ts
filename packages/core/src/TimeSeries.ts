@@ -929,6 +929,15 @@ export class TimeSeries<S extends SeriesSchema> {
    * pre-sort. The schema is taken on trust — callers should pass the
    * same schema the events were originally produced under.
    *
+   * **Trust contract:** no validation against the declared schema. If
+   * the caller passes events from a different schema, the series
+   * builds successfully and downstream `event.get('col')` calls will
+   * return undefined / produce confusing errors at access time. Most
+   * callers come from `groupBy(...).values()` or other pond-ts
+   * transforms and can't hit this; if you're constructing events by
+   * hand, prefer `new TimeSeries({ schema, rows })` or
+   * `TimeSeries.fromJSON(...)`, both of which validate.
+   *
    * Closes the round-trip after `groupBy(col, fn)` + per-group transforms:
    *
    * ```ts
@@ -963,9 +972,20 @@ export class TimeSeries<S extends SeriesSchema> {
    * by key) and the inverse of the per-group fan-out pattern from
    * `groupBy(col, fn)`.
    *
-   * Schemas must match column-by-column on `name` and `kind`. Mismatches
-   * throw upfront. The merged series's `name` is taken from the first
-   * input.
+   * Schemas must match column-by-column on `name` and `kind` only —
+   * the `required` flag is intentionally not part of the structural
+   * check, since `required: false` only widens cell types and doesn't
+   * affect the merge contract. Other mismatches throw upfront. The
+   * merged series's `name` is taken from the first input.
+   *
+   * Event references survive the merge unchanged (no clones), so
+   * `merged.at(0)` is the same `Event` instance as the corresponding
+   * source-series event. Tied keys preserve input order via stable
+   * sort — `merge([a, b])` puts a's events before b's at any shared
+   * key.
+   *
+   * Not the same as `Event.merge(patch)`, which is a per-event
+   * payload merge (column-wise) — `TimeSeries.merge` is row-wise.
    *
    * ```ts
    * const groups = series.groupBy('host', (g) =>

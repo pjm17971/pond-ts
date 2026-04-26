@@ -150,6 +150,65 @@ describe('TimeSeries.merge', () => {
     expect(merged.first()?.get('cpu')).toBe(0.5);
   });
 
+  it('preserves event identity — references survive, not clones', () => {
+    // Pins that merge does not allocate fresh Event instances. A future
+    // refactor that adds event.merge({}) or similar in the merge path
+    // must trip this test.
+    const a = makeSeries('a', [
+      [0, 0.5, 'a'],
+      [60_000, 0.6, 'a'],
+    ]);
+    const merged = TimeSeries.merge([a]);
+    expect(merged.at(0)).toBe(a.at(0));
+    expect(merged.at(1)).toBe(a.at(1));
+  });
+
+  it('preserves input order for tied keys (stable sort)', () => {
+    // Array.prototype.sort is stable since ES2019. merge relies on this
+    // to keep deterministic ordering when two inputs have an event at
+    // the exact same key. Pin it so a future custom-sort refactor
+    // can't silently break the contract.
+    const a = makeSeries('a', [[0, 0.5, 'first']]);
+    const b = makeSeries('b', [[0, 0.7, 'second']]);
+    const c = makeSeries('c', [[0, 0.9, 'third']]);
+    const merged = TimeSeries.merge([a, b, c]);
+    expect(merged.toPoints().map((p) => p.host)).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+  });
+
+  it('works on Interval-keyed schemas, not just Time-keyed', () => {
+    // compareEventKeys handles all key kinds; verify the sort path
+    // doesn't have a Time-key assumption.
+    const intervalSchema = [
+      { name: 'window', kind: 'interval' },
+      { name: 'cpu', kind: 'number' },
+    ] as const;
+    const a = new TimeSeries({
+      name: 'a',
+      schema: intervalSchema,
+      rows: [
+        [{ value: 'a-0', start: 0, end: 60_000 }, 0.5],
+        [{ value: 'a-1', start: 60_000, end: 120_000 }, 0.6],
+      ],
+    });
+    const b = new TimeSeries({
+      name: 'b',
+      schema: intervalSchema,
+      rows: [
+        [{ value: 'b-0', start: 30_000, end: 90_000 }, 0.7],
+        [{ value: 'b-1', start: 90_000, end: 150_000 }, 0.8],
+      ],
+    });
+    const merged = TimeSeries.merge([a, b]);
+    expect(merged.length).toBe(4);
+    expect(merged.toPoints().map((p) => p.ts)).toEqual([
+      0, 30_000, 60_000, 90_000,
+    ]);
+  });
+
   it('throws on empty input', () => {
     expect(() => TimeSeries.merge([])).toThrow(
       /requires at least one input series/,
