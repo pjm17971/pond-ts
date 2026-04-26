@@ -2409,13 +2409,15 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /**
    * Example: `series.dedupe()`.
-   * Collapses events that share a key. The default key is the event's
-   * timestamp — events at the exact same `begin()` are considered
-   * duplicates of each other. The default resolution is `'last'` wins.
+   * Collapses events that share a key. The default key is the full
+   * event key — `begin()` for time-keyed series, `begin()`+`end()` for
+   * time-range, and `begin()`+`end()`+`value` for interval-keyed
+   * series. Two events with the same full key are treated as
+   * duplicates. The default resolution is `'last'` wins.
    *
    * For multi-entity series (events for many hosts/regions interleaved
-   * by time), call this on a partitioned view so the key includes the
-   * entity column:
+   * by time), call this on a partitioned view so the partition column
+   * is part of the duplicate identity:
    *
    * ```ts
    * // Per-host dedupe — same time AND same host is the duplicate key.
@@ -2424,12 +2426,12 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * The `keep` option chooses the resolution policy:
    *
-   * - `'first'` — keep the first occurrence at each timestamp.
+   * - `'first'` — keep the first occurrence at each key.
    * - `'last'` — keep the last occurrence (default; matches WebSocket
    *   replay semantics).
    * - `'error'` — throw on the first duplicate seen. Useful for
    *   ingestion paths that want to fail loudly on shape violations.
-   * - `'drop'` — discard *every* event at any duplicate timestamp.
+   * - `'drop'` — discard *every* event at any duplicate key.
    *   Conservative; the value of "1.5 events at this timestamp" is
    *   rarely defensible.
    * - `{ min: col }` / `{ max: col }` — keep the event with the
@@ -2437,16 +2439,19 @@ export class TimeSeries<S extends SeriesSchema> {
    *   the earliest tied event. Events with `undefined` at that column
    *   lose to any event with a defined value.
    * - `(events) => Event` — custom resolver. Receives all duplicates
-   *   at a single timestamp (length ≥ 2) and returns one. Use for
-   *   merge logic that combines fields, e.g.:
+   *   at a single key (length ≥ 2) and returns one. The cleanest
+   *   pattern is to start from one of the input events and use
+   *   `event.set(field, value)` so the type stays narrow:
    *
    *   ```ts
    *   series.dedupe({
-   *     keep: (events) =>
-   *       Event.fromTime(events[0].begin(), {
-   *         cpu: events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) / events.length,
-   *         host: events[events.length - 1].get('host'),
-   *       }),
+   *     keep: (events) => {
+   *       const last = events[events.length - 1];
+   *       const avg =
+   *         events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) /
+   *         events.length;
+   *       return last.set('cpu', avg);
+   *     },
    *   });
    *   ```
    *
@@ -2460,29 +2465,47 @@ export class TimeSeries<S extends SeriesSchema> {
       return this;
     }
 
-    // Single-pass bucket by timestamp. Map iteration is insertion-order;
-    // since the input events are already sorted by time, each bucket
-    // corresponds to a unique timestamp and the buckets traverse in
-    // time order. No re-sort needed.
-    const buckets = new Map<number, EventForSchema<S>[]>();
+    // Bucket key encoder. For time-keyed series, `begin()` alone fully
+    // identifies an event key; for time-range, both `begin()` and
+    // `end()` matter; for interval-keyed, the labeled `value` is part
+    // of identity too. A naive `begin()`-only key would silently
+    // collapse semantically distinct interval/timeRange events.
+    const firstKind = this.schema[0]!.kind;
+    const keyOf = (event: EventForSchema<S>): string => {
+      if (firstKind === 'time') {
+        return `${event.begin()}`;
+      }
+      if (firstKind === 'timeRange') {
+        return `${event.begin()}:${event.end()}`;
+      }
+      // interval
+      const k = event.key() as unknown as Interval;
+      return `${event.begin()}:${event.end()}:${String(k.value)}`;
+    };
+
+    // Single-pass bucket by full event key. Map iteration is insertion-
+    // order; since the input events are already sorted by key, each
+    // bucket corresponds to a unique key and the buckets traverse in
+    // input order. No re-sort needed.
+    const buckets = new Map<string, EventForSchema<S>[]>();
     for (const event of this.events) {
-      const t = event.begin();
-      let bucket = buckets.get(t);
+      const k = keyOf(event);
+      let bucket = buckets.get(k);
       if (!bucket) {
         bucket = [];
-        buckets.set(t, bucket);
+        buckets.set(k, bucket);
       }
       bucket.push(event);
     }
 
     const resolved: EventForSchema<S>[] = [];
-    for (const [t, bucket] of buckets) {
+    for (const [keyStr, bucket] of buckets) {
       if (bucket.length === 1) {
         resolved.push(bucket[0]!);
         continue;
       }
 
-      // Multiple events at the same timestamp — apply the policy.
+      // Multiple events sharing the same key — apply the policy.
       if (typeof keep === 'function') {
         resolved.push(keep(bucket));
         continue;
@@ -2496,9 +2519,16 @@ export class TimeSeries<S extends SeriesSchema> {
         continue;
       }
       if (keep === 'error') {
+        // Use the first event's begin() for the human-readable timestamp.
+        // For interval/timeRange-keyed series, also include the full
+        // encoded key so the failure mode names the exact collision.
+        const t = bucket[0]!.begin();
+        const detail =
+          firstKind === 'time'
+            ? `${new Date(t).toISOString()} (${t})`
+            : `key "${keyStr}"`;
         throw new Error(
-          `dedupe: ${bucket.length} events at the same timestamp ` +
-            `${new Date(t).toISOString()} (${t}). ` +
+          `dedupe: ${bucket.length} events at ${detail}. ` +
             `Specify a different 'keep' policy or fix upstream.`,
         );
       }

@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from '../src/index.js';
-import { Event } from '../src/Event.js';
-import { Time } from '../src/Time.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -97,7 +95,7 @@ describe('TimeSeries.dedupe', () => {
   describe('keep: error', () => {
     it('throws on the first duplicate timestamp seen', () => {
       expect(() => makeWithDupes().dedupe({ keep: 'error' })).toThrow(
-        /2 events at the same timestamp/,
+        /dedupe: 2 events at /,
       );
     });
 
@@ -232,26 +230,25 @@ describe('TimeSeries.dedupe', () => {
       expect(out.length).toBe(5);
     });
 
-    it('can implement merge logic — averaging numeric fields', () => {
+    it('can implement merge logic — averaging via event.set() (no cast needed)', () => {
       const out = makeWithDupes().dedupe({
         keep: (events) => {
+          const last = events[events.length - 1]!;
           const avg =
             events.reduce(
               (a, e) => a + ((e.get('value') as number | undefined) ?? 0),
               0,
             ) / events.length;
-          // Build a fresh event at the same timestamp with averaged value.
-          return new Event(new Time(events[0]!.begin()), {
-            value: avg,
-            host: 'merged',
-          }) as never;
+          // event.set returns Event<K, D> — same schema type, no cast.
+          return last.set('value', avg);
         },
       });
-      // t=2000: avg(20, 25) = 22.5
+      // t=2000: avg(20, 25) = 22.5; host comes from last event of bucket = 'b'
       expect(out.at(1)?.get('value')).toBe(22.5);
-      expect(out.at(1)?.get('host')).toBe('merged');
-      // t=4000: avg(40, 45) = 42.5
+      expect(out.at(1)?.get('host')).toBe('b');
+      // t=4000: avg(40, 45) = 42.5; host = 'd'
       expect(out.at(3)?.get('value')).toBe(42.5);
+      expect(out.at(3)?.get('host')).toBe('d');
     });
   });
 
@@ -348,6 +345,143 @@ describe('TimeSeries.dedupe', () => {
       // t=2000: linear interp between 11 and 30 → 20.5
       expect(out.at(1)?.get('value')).toBe(20.5);
       expect(out.at(2)?.get('value')).toBe(30);
+    });
+  });
+
+  describe('order preservation', () => {
+    it('preserves time-order across a longer mixed series', () => {
+      // 12 events at 6 distinct timestamps; some duplicates, some unique,
+      // mixed throughout. Confirms bucket-iteration matches input order.
+      const ts = new TimeSeries({
+        name: 'mixed',
+        schema,
+        rows: [
+          [1000, 1, 'a'],
+          [2000, 2, 'b'],
+          [2000, 22, 'b2'],
+          [3000, 3, 'c'],
+          [4000, 4, 'd'],
+          [4000, 44, 'd2'],
+          [4000, 444, 'd3'],
+          [5000, 5, 'e'],
+          [6000, 6, 'f'],
+          [6000, 66, 'f2'],
+          [7000, 7, 'g'],
+          [8000, 8, 'h'],
+        ],
+      });
+      const out = ts.dedupe({ keep: 'last' });
+      const times = [...out.events].map((e) => e.begin());
+      expect(times).toEqual([1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]);
+      // Last-wins values at the duplicate buckets
+      expect(out.at(1)?.get('host')).toBe('b2');
+      expect(out.at(3)?.get('host')).toBe('d3');
+      expect(out.at(5)?.get('host')).toBe('f2');
+    });
+
+    it('handles a series where every event is at one timestamp', () => {
+      const ts = new TimeSeries({
+        name: 'all-same-t',
+        schema,
+        rows: Array.from({ length: 15 }, (_, i) => [1000, i, `host-${i}`]),
+      });
+      const out = ts.dedupe({ keep: 'last' });
+      expect(out.length).toBe(1);
+      expect(out.at(0)?.get('value')).toBe(14);
+      expect(out.at(0)?.get('host')).toBe('host-14');
+    });
+  });
+
+  describe('non-time-keyed series (interval / timeRange)', () => {
+    const intervalSchema = [
+      { name: 'interval', kind: 'interval' },
+      { name: 'value', kind: 'number', required: false },
+    ] as const;
+
+    const rangeSchema = [
+      { name: 'timeRange', kind: 'timeRange' },
+      { name: 'value', kind: 'number', required: false },
+    ] as const;
+
+    it('interval-keyed: same begin but different end are NOT duplicates', () => {
+      const ts = new TimeSeries({
+        name: 'iv',
+        schema: intervalSchema,
+        rows: [
+          [['1d-1', 1000, 2000], 10],
+          [['1d-2', 1000, 3000], 20], // same begin, different end & value
+        ],
+      });
+      const out = ts.dedupe();
+      expect(out.length).toBe(2);
+    });
+
+    it('interval-keyed: same begin AND same end but different value are NOT duplicates', () => {
+      const ts = new TimeSeries({
+        name: 'iv',
+        schema: intervalSchema,
+        rows: [
+          [['1d-1', 1000, 2000], 10],
+          [['1d-2', 1000, 2000], 20], // same begin/end, different value label
+        ],
+      });
+      const out = ts.dedupe();
+      expect(out.length).toBe(2);
+    });
+
+    it('interval-keyed: identical full keys collapse', () => {
+      const ts = new TimeSeries({
+        name: 'iv',
+        schema: intervalSchema,
+        rows: [
+          [['1d-1', 1000, 2000], 10],
+          [['1d-1', 1000, 2000], 20], // identical key — true duplicate
+        ],
+      });
+      const out = ts.dedupe();
+      expect(out.length).toBe(1);
+      expect(out.at(0)?.get('value')).toBe(20);
+    });
+
+    it('timeRange-keyed: same begin different end are NOT duplicates', () => {
+      const ts = new TimeSeries({
+        name: 'tr',
+        schema: rangeSchema,
+        rows: [
+          [[1000, 2000], 10],
+          [[1000, 3000], 20],
+        ],
+      });
+      const out = ts.dedupe();
+      expect(out.length).toBe(2);
+    });
+
+    it('timeRange-keyed: identical begin+end collapse', () => {
+      const ts = new TimeSeries({
+        name: 'tr',
+        schema: rangeSchema,
+        rows: [
+          [[1000, 2000], 10],
+          [[1000, 2000], 20],
+        ],
+      });
+      const out = ts.dedupe();
+      expect(out.length).toBe(1);
+      expect(out.at(0)?.get('value')).toBe(20);
+    });
+
+    it('error message names the encoded key for interval-keyed series', () => {
+      const ts = new TimeSeries({
+        name: 'iv',
+        schema: intervalSchema,
+        rows: [
+          [['1d-1', 1000, 2000], 10],
+          [['1d-1', 1000, 2000], 20],
+        ],
+      });
+      expect(() => ts.dedupe({ keep: 'error' })).toThrow(
+        /key "1000:2000:1d-1"/,
+      );
     });
   });
 });

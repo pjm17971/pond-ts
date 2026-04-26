@@ -157,21 +157,33 @@ for the full hazard discussion.
 
 `dedupe()` collapses events that share a key. Real-world ingest
 produces duplicates: WebSocket replays, Kafka at-least-once, retried
-HTTP fetches, polling overlaps. The default key is the event's
-timestamp; the default resolution is **last-wins** (matches the
-"newer event supersedes" intuition):
+HTTP fetches, polling overlaps. The default resolution is
+**last-wins** (matches the "newer event supersedes" intuition).
+
+:::warning[Multi-entity hazard]
+For series carrying multiple entities (host, region, device id),
+bare `dedupe()` will collapse events from **different entities** at
+the same timestamp as if they were duplicates of each other. Always
+pair it with [`partitionBy`](#multi-entity-dedupe-partition-first)
+on multi-entity series before reaching for the operator.
+:::
+
+For single-entity series, the default key is the event's full key
+(timestamp for time-keyed series; `begin`+`end` for time-range and
+interval keys; the labeled `value` is part of identity for
+intervals):
 
 ```ts
 // Single-entity series — collapse same-timestamp duplicates, keep last.
 const clean = events.dedupe();
 ```
 
-### Multi-entity series — partition first
+### Multi-entity dedupe — partition first \{#multi-entity-dedupe-partition-first\}
 
-If your series carries multiple entities (host, region, device id),
-you almost always want **(time + entity)** as the dedupe key, not
-time alone. Bare `dedupe()` would collapse `host=A@t` and `host=B@t`
-as if they were duplicates of each other.
+If your series carries multiple entities, you almost always want
+**(time + entity)** as the dedupe key, not time alone. Bare
+`dedupe()` would collapse `host=A@t` and `host=B@t` as if they were
+duplicates of each other.
 
 Pair it with [`partitionBy(col)`](./reshape#partitionby):
 
@@ -199,13 +211,14 @@ events.dedupe({ keep: 'error' });
 // Keep the highest-CPU sample when two reports race at the same instant.
 events.dedupe({ keep: { max: 'cpu' } });
 
-// Custom merge: average all duplicate samples at each timestamp.
+// Custom merge: average duplicate cpu samples; keep the last host name.
 events.dedupe({
-  keep: (events) =>
-    new Event(new Time(events[0].begin()), {
-      cpu: events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) / events.length,
-      host: events[events.length - 1].get('host'),
-    }),
+  keep: (events) => {
+    const last = events[events.length - 1];
+    const avg =
+      events.reduce((a, e) => a + (e.get('cpu') ?? 0), 0) / events.length;
+    return last.set('cpu', avg);
+  },
 });
 ```
 
