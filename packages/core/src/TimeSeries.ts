@@ -30,6 +30,7 @@ import type {
   NormalizedObjectRow,
   NormalizedObjectRowForSchema,
   NormalizedRowForSchema,
+  PivotByGroupSchema,
   PointRowForSchema,
   PrefixedJoinManySchema,
   PrefixedJoinSchema,
@@ -101,6 +102,8 @@ type PrefixJoinOptions<Prefixes extends readonly string[]> = {
 type AlignCursor = { index: number };
 type JoinOptions = ErrorJoinOptions | PrefixJoinOptions<readonly string[]>;
 type PivotByGroupOptions = { aggregate?: AggregateReducer };
+type PivotByGroupOptionsTyped<Groups extends readonly string[]> =
+  PivotByGroupOptions & { groups: Groups };
 type FillStrategy = 'hold' | 'bfill' | 'linear' | 'zero';
 type FillMapping<S extends SeriesSchema> = {
   [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
@@ -1538,6 +1541,25 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Example: `series.pivotByGroup("host", "cpu", { aggregate: "avg" })`.
    * Averages values when multiple rows share `(timestamp, host)`.
+   *
+   * Example (typed output via declared `groups`):
+   *
+   * ```ts
+   * const HOSTS = ['api-1', 'api-2'] as const;
+   * const wide = series.pivotByGroup('host', 'cpu', { groups: HOSTS });
+   * // wide.schema is now literal-typed:
+   * //   [time, { name: 'api-1_cpu', kind: 'number', required: false },
+   * //          { name: 'api-2_cpu', kind: 'number', required: false }]
+   * wide.baseline('api-1_cpu', { window: '1m', sigma: 2 }); // no cast
+   * ```
+   *
+   * When `groups` is supplied:
+   * - Output column order matches declaration order, not alphabetical —
+   *   declaration is the user's intent.
+   * - Declared groups with no events still produce a column (all-undefined
+   *   cells), so the schema is stable across runs even when data is sparse.
+   * - Runtime values not in `groups` throw upfront. Use the untyped form
+   *   (no `groups` option) when the group set is open or unknown.
    */
   pivotByGroup<
     G extends keyof EventDataForSchema<S> & string,
@@ -1545,7 +1567,26 @@ export class TimeSeries<S extends SeriesSchema> {
   >(
     groupCol: G,
     valueCol: V,
-    options: PivotByGroupOptions = {},
+    options?: PivotByGroupOptions,
+  ): TimeSeries<SeriesSchema>;
+  pivotByGroup<
+    G extends keyof EventDataForSchema<S> & string,
+    V extends keyof EventDataForSchema<S> & string,
+    const Groups extends readonly string[],
+  >(
+    groupCol: G,
+    valueCol: V,
+    options: PivotByGroupOptionsTyped<Groups>,
+  ): TimeSeries<PivotByGroupSchema<S, V, Groups>>;
+  pivotByGroup<
+    G extends keyof EventDataForSchema<S> & string,
+    V extends keyof EventDataForSchema<S> & string,
+  >(
+    groupCol: G,
+    valueCol: V,
+    options:
+      | PivotByGroupOptions
+      | PivotByGroupOptionsTyped<readonly string[]> = {},
   ): TimeSeries<SeriesSchema> {
     if (this.schema[0].kind !== 'time') {
       throw new TypeError(
@@ -1581,6 +1622,10 @@ export class TimeSeries<S extends SeriesSchema> {
       }
     }
 
+    const declaredGroups = 'groups' in options ? options.groups : undefined;
+    const declaredSet =
+      declaredGroups === undefined ? undefined : new Set(declaredGroups);
+
     type Cell = ColumnValue | undefined;
     const groupSeen = new Set<string>();
     const byTs = new Map<number, Map<string, Cell[]>>();
@@ -1591,6 +1636,16 @@ export class TimeSeries<S extends SeriesSchema> {
       const rawGroup = data[groupCol];
       const groupKey = rawGroup === undefined ? 'undefined' : String(rawGroup);
       const value = data[valueCol];
+
+      if (declaredSet !== undefined && !declaredSet.has(groupKey)) {
+        throw new TypeError(
+          `pivotByGroup: encountered group value "${groupKey}" that is ` +
+            `not in declared groups [${declaredGroups!
+              .map((g) => `"${g}"`)
+              .join(', ')}]. Drop the \`groups\` option to discover ` +
+            `groups dynamically, or add this value to the declared set.`,
+        );
+      }
 
       groupSeen.add(groupKey);
 
@@ -1607,10 +1662,15 @@ export class TimeSeries<S extends SeriesSchema> {
       groupBucket.push(value);
     }
 
-    const sortedGroups = [...groupSeen].sort();
+    // When `groups` is declared, output columns follow declaration order so
+    // a downstream chart can rely on a stable column layout — and declared
+    // groups with no events still emit a column. Otherwise, sort
+    // alphabetically over discovered groups.
+    const outputGroups: readonly string[] =
+      declaredGroups ?? [...groupSeen].sort();
     const outputSchema = [
       this.schema[0],
-      ...sortedGroups.map((g) => ({
+      ...outputGroups.map((g) => ({
         name: `${g}_${String(valueCol)}`,
         kind: valueKind,
         required: false,
@@ -1622,7 +1682,7 @@ export class TimeSeries<S extends SeriesSchema> {
     for (const ts of sortedTimestamps) {
       const tsBucket = byTs.get(ts)!;
       const row: unknown[] = [ts];
-      for (const groupKey of sortedGroups) {
+      for (const groupKey of outputGroups) {
         const cell = tsBucket.get(groupKey);
         if (cell === undefined) {
           row.push(undefined);

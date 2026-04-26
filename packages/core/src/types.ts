@@ -275,6 +275,58 @@ export type KindForValue<V extends ScalarValue> = V extends number
     ? 'string'
     : 'boolean';
 
+/**
+ * Resolves the `kind` of the value column named `V` on schema `S`. Used by
+ * the typed `pivotByGroup` overload to propagate the source value column's
+ * kind to every output column in the wide schema.
+ */
+export type ValueColumnKindForName<
+  S extends SeriesSchema,
+  V extends string,
+> = Extract<ValueColumnsForSchema<S>[number], { name: V }>['kind'];
+
+/**
+ * Output column tuple for the typed `pivotByGroup` overload — recursive
+ * helper that builds one `ValueColumn` per declared group in declaration
+ * order.
+ */
+type PivotByGroupColumns<
+  S extends SeriesSchema,
+  V extends string,
+  Groups extends readonly string[],
+  Acc extends ValueColumn[] = [],
+> = Groups extends readonly [infer Head, ...infer Tail]
+  ? Head extends string
+    ? Tail extends readonly string[]
+      ? PivotByGroupColumns<
+          S,
+          V,
+          Tail,
+          [
+            ...Acc,
+            {
+              name: `${Head}_${V}`;
+              kind: ValueColumnKindForName<S, V>;
+              required: false;
+            },
+          ]
+        >
+      : Acc
+    : Acc
+  : Acc;
+
+/**
+ * Output schema of `pivotByGroup(group, value, { groups: [...] as const })`.
+ * Builds `[time, ...{name: '${G}_${V}', kind: <V's kind>, required: false}[]]`,
+ * preserving the time column from `S` and emitting one value column per
+ * declared group in declaration order.
+ */
+export type PivotByGroupSchema<
+  S extends SeriesSchema,
+  V extends string,
+  Groups extends readonly string[],
+> = readonly [S[0], ...PivotByGroupColumns<S, V, Groups>];
+
 export type CollapseData<
   D,
   Keys extends keyof D,

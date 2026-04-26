@@ -1148,3 +1148,44 @@ const reduceCustomWide:
   | ReadonlyArray<string | number | boolean>
   | undefined = reduceCustom;
 void reduceCustomWide;
+
+// pivotByGroup: typed variant via declared `groups`.
+const longSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+const longSeries = new TimeSeries({
+  name: 'metrics',
+  schema: longSchema,
+  rows: [[0, 0.31, 'api-1']],
+});
+
+// Untyped overload: schema widens to SeriesSchema (loose).
+const wideUntyped = longSeries.pivotByGroup('host', 'cpu');
+void wideUntyped;
+
+// Typed overload: schema is literal-typed from declared groups.
+const HOSTS = ['api-1', 'api-2'] as const;
+const wideTyped = longSeries.pivotByGroup('host', 'cpu', { groups: HOSTS });
+
+// `.baseline('api-1_cpu', ...)` should type-check without `as never` —
+// the typed overload propagates literal column names through.
+const widenedWithBaseline = wideTyped.baseline('api-1_cpu', {
+  window: '1m',
+  sigma: 2,
+});
+void widenedWithBaseline;
+
+// Reading a known column out of `toPoints()` returns the source column's
+// kind (`number` here).
+const wideTypedPoint = wideTyped.toPoints()[0];
+const apiCpu: number | undefined = wideTypedPoint?.['api-1_cpu'];
+void apiCpu;
+
+// @ts-expect-error declared groups make 'api-3_cpu' an invalid column name
+const badBaselineColumn = wideTyped.baseline('api-3_cpu', {
+  window: '1m',
+  sigma: 2,
+});
+void badBaselineColumn;
