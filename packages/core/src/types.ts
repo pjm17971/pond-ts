@@ -276,6 +276,28 @@ export type KindForValue<V extends ScalarValue> = V extends number
     : 'boolean';
 
 /**
+ * Strategies accepted by `TimeSeries.fill(strategy, options?)` and the
+ * partitioned variant `series.partitionBy(col).fill(...)`.
+ *
+ * - `'hold'` — forward fill: carry the most recent known value forward.
+ * - `'bfill'` — backward fill: use the next known value.
+ * - `'linear'` — time-interpolated; numeric only. Leading and trailing
+ *    null runs are left unfilled (no neighbor on one side).
+ * - `'zero'` — fill with `0`.
+ */
+export type FillStrategy = 'hold' | 'bfill' | 'linear' | 'zero';
+
+/**
+ * Per-column fill spec for `TimeSeries.fill(mapping, options?)` and the
+ * partitioned variant. Values are either a {@link FillStrategy} name or
+ * a literal `ScalarValue` (the latter is treated as a constant fill,
+ * e.g. `host: 'unknown'`). Columns not listed are left untouched.
+ */
+export type FillMapping<S extends SeriesSchema> = {
+  [K in ValueColumnsForSchema<S>[number]['name']]?: FillStrategy | ScalarValue;
+};
+
+/**
  * Resolves the `kind` of the value column named `V` on schema `S`. Used by
  * the typed `pivotByGroup` overload to propagate the source value column's
  * kind to every output column in the wide schema.

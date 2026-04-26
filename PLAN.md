@@ -160,6 +160,16 @@ Completed:
 - [x] `TimeRange.toJSON()` and `.toString()` — `{ start, end }` ms shape that
       round-trips through `new TimeRange(...)` and JSON wire formats; ISO
       `start/end` for debug. Shipped in v0.8.2.
+- [x] `series.partitionBy(col)` and `PartitionedTimeSeries<S>` — chainable
+      view that scopes stateful transforms to within each partition, fixing
+      the cross-entity correctness hazard surfaced by all three CSV-cleaner
+      agents. Sugar for `fill` / `align` / `rolling` / `smooth` / `baseline` /
+      `outliers` / `diff` / `rate` / `pctChange` / `cumulative` / `shift` /
+      `aggregate` plus `apply(fn)` escape hatch. Sugar methods return another
+      `PartitionedTimeSeries` (persistent across chains, e.g.
+      `ts.partitionBy('host').dedupe(...).fill(...).collect()`); `.collect()`
+      materializes back to a regular `TimeSeries`. Shipped in v0.9.0 (PR 1
+      of the wave).
 
 Scope: none — all items complete.
 
@@ -698,52 +708,126 @@ Concrete next steps when this work begins:
 - [ ] Add the `'duplicate'` (and possibly `'replace'`) event type
       to the subscriber surface.
 
-### Queued: partition-aware `fill` (cross-entity correctness)
+### Shipped: cross-entity correctness via `partitionBy`
 
-`fill()` operates on the events-array as one chronological sequence.
-For multi-entity series (events for many hosts interleaved by time),
-`fill('linear')` will interpolate metric values **across host
-boundaries** — `host-A`'s missing cell at t=10 gets filled using
-`host-B`'s value at t=9 and `host-C`'s at t=11. Silent correctness
-hole — observed in three independent agent runs (Codex, Claude,
-Gemini) on the CSV-cleaner experiment.
+The cross-entity hazard turned out to be widespread — almost every
+stateful pond-ts transform (`fill`, `align`, `rolling`, `smooth`,
+`baseline`, `outliers`, `diff`, `rate`, `pctChange`, `cumulative`,
+`shift`, `aggregate`) silently mixes data across entities on a
+multi-entity series. Three independent agent runs (Codex, Claude,
+Gemini) converged on the issue via `fill('linear')` interpolating
+across host boundaries.
 
-The workaround that all three converged on:
+Initially scoped as a `fill({ partitionBy })` option. Reframed
+because the hazard isn't a `fill` quirk — it's class-wide. Adding
+a `partitionBy` option to every affected method would have meant
+twelve more options to maintain.
+
+**Solution: `series.partitionBy(col)` chainable primitive.** Returns
+a `PartitionedTimeSeries<S>` view with sugar methods for each
+affected operator — each one runs the underlying transform per
+partition and reassembles via `TimeSeries.concat`. One primitive,
+covers all twelve at-risk operators. Shipped in v0.9.0 (PR 1 of
+the v0.9.0 wave).
 
 ```ts
-const filled = TimeSeries.concat([
-  ...series.groupBy('host', (g) => g.fill({ cpu: 'linear' })).values(),
-]);
+ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
+ts.partitionBy('host').rolling('5m', { cpu: 'avg' }).collect();
+ts.partitionBy(['host', 'region']).aggregate(seq, { cpu: 'avg' }).collect();
+
+// Persistent partition — chained per-partition ops without re-partitioning:
+ts.partitionBy('host').dedupe(...).fill(...).rolling(...).collect();
+
+// Escape hatch — terminal, returns TimeSeries directly (no .collect):
+ts.partitionBy('host').apply((g) => g.fill(...).rolling(...));
 ```
 
-Two API shapes proposed by the agents:
+Decisions made:
 
-```ts
-// Shape A — new method (Codex, Claude flavors):
-series.fillBy('host', { cpu: 'linear' }, { maxGap: '3m' });
+- Chainable view (not an option on every method) for surface-area
+  discipline.
+- Sugar methods return another `PartitionedTimeSeries` so multi-step
+  per-partition workflows compose cleanly. `.collect()` is the
+  terminal materialize-to-`TimeSeries` step. Pivoted away from the
+  initial "always returns `TimeSeries`" design after agent feedback
+  showed multi-step chains as the common case.
+- Composite partitioning supported via array (`partitionBy(['a',
+'b'])`).
+- `apply(fn)` escape hatch is terminal (returns `TimeSeries<R>`
+  directly) for arbitrary per-partition transforms.
 
-// Shape B — option on existing method (Gemini):
-series.fill({ cpu: 'linear' }, { partitionBy: 'host', maxGap: '3m' });
-```
+**Bonus fix.** Discovered and fixed a pre-existing brand-check bug
+where `series.filter(...).diff(...)` and similar chains failed with
+"Receiver must be an instance of class TimeSeries." Root cause:
+`#diffOrRate` was a JS-`#`-private method, which fails the brand
+check on instances built via `#fromTrustedEvents` (which uses
+`Object.create` to bypass constructor validation). Surgical fix:
+demote `#diffOrRate` to TS-private (compile-only, no runtime brand
+check). Regression test added in
+`test/TimeSeries.diff-rate-brand.test.ts`.
 
-Shape B extends the existing surface; Shape A creates a parallel
-method. Lean Shape B for the partition story (less surface area)
-unless we also need `fillBy` to differ semantically from `fill`
-in other ways.
+### Queued: `fill` improvements (`maxGap`, all-or-nothing semantics)
 
-Codex's adjacent ask was a `maxGap` / `mode: 'all-or-nothing'`
-option — orthogonal to partitioning, but the same `fill` call site.
-Bundle both into one design pass.
+The original Codex friction on `fill` had two parts:
+
+- Cross-entity leakage — solved by `partitionBy`, see above.
+- **Long-gap policy** — `series.fill('linear', { limit: 3 })` today
+  fills 3 cells of a 30-cell gap, "fabricating" interpolated data
+  across what's actually a long outage. Codex wanted "don't fill at
+  all if the gap exceeds N."
+
+Plan for v0.9.0 PR 2 (`fill` improvements):
+
+- [ ] Add `maxGap: DurationInput` option as a duration-based gap
+      cap (existing `limit` is count-based; both compose).
+- [ ] Change `limit`/`maxGap` semantics from "fill up to the cap and
+      leave the rest" to "fill the gap if it fits under the cap,
+      otherwise leave the gap fully unfilled." Strictly behavioral
+      change for current `limit` callers — semantic break worth
+      flagging in the v0.9.0 release notes. The user's argument:
+      "a big gap is never going to benefit from a few points being
+      filled in" — partial fill was a confused default.
+- [ ] No `mode` option — always all-or-nothing.
+
+### Queued: live partitioning
+
+Same cross-entity hazard exists on the live side. `LiveRollingAggregation`,
+`LiveAggregation`, `LiveView.window()`, and live
+`diff`/`rate`/`pctChange`/`fill`/`cumulative` all read from neighboring
+events and silently mix entities on a multi-host stream. The batch
+answer (`partitionBy(col)`) doesn't trivially port — implementing it
+requires:
+
+- **Per-partition state buffers.** Each partition's transform needs
+  its own state (rolling window, running totals, last-seen value).
+  As events arrive, route to the right partition's transform.
+- **Output ordering.** Each partition emits independently. Probably
+  interleave-as-emitted (each emission flushed in arrival order), but
+  worth confirming against the late-event semantics queued above.
+- **Subscription lifecycle.** Dispose has to fan out to all partition
+  transforms. Eviction events from the source need to propagate to
+  the correct partition.
+
+This belongs in the same Phase 4 cluster as "Queued: live merge /
+join" and "Queued: late-event propagation" — they all share the
+per-source state-management story.
+
+For now: snapshot via `useSnapshot` (or `live.toTimeSeries()`) and
+use batch `partitionBy`. Throttled snapshots make this cheap enough
+for typical dashboard cadences; it's not free for high-frequency
+streams.
 
 Concrete next steps when this work begins:
 
-- [ ] Decide Shape A vs. Shape B by interviewing the next two
-      agent runs that hit it.
-- [ ] Spec `maxGap: DurationInput` and `mode: 'all-or-nothing'`
-      options separately from partitioning — they compose.
-- [ ] Add a `groupBy` doc callout that today's manual workaround
-      is `groupBy(col, g => g.fill(...))` + `concat(...)` — close
-      the discoverability gap until the primitive ships.
+- [ ] Decide the surface: `live.partitionBy(col)` returning a
+      `PartitionedLiveSource<S>` mirroring the batch view, or a
+      `partition` option on each affected live op. Lean toward the
+      view, matching the batch decision.
+- [ ] Per-partition state-buffer model — likely one nested `LiveSeries`
+      or per-transform state per partition, with input dispatch on
+      ingest.
+- [ ] Test matrix: per-partition rolling, aggregation, fill across
+      late events, eviction propagation, dispose.
 
 ### Batch → Live applicability
 

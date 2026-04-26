@@ -345,6 +345,70 @@ If you're composing a chart visible-range filter, you usually want
 `trim` so the rendered data doesn't leak outside the axis. If you're
 running analytics over a closed window, you usually want `within`.
 
+## Multi-entity series and the cross-partition hazard
+
+A common shape: events for many entities — hosts, regions, devices,
+sensors — interleaved in one `TimeSeries` by time. The first column
+is `time`, then a categorical column like `host` distinguishes
+producers, then the metrics (`cpu`, `requests`, …):
+
+```
+time     | cpu  | host
+0        | 0.5  | api-1
+0        | 0.7  | api-2
+60_000   | 0.6  | api-1
+60_000   | 0.8  | api-2
+...
+```
+
+This is fine for static analysis (`series.length`, `select('cpu')`,
+filtering by host), but it's a **footgun for stateful transforms**.
+`fill`, `rolling`, `smooth`, `align`, `diff`, `rate`, `pctChange`,
+`cumulative`, `shift`, `aggregate`, and `reduce` all read neighboring
+events when computing each output. On a multi-entity series, those
+neighbors silently cross entity boundaries:
+
+- `series.fill({ cpu: 'linear' })` would interpolate `api-1`'s missing
+  cell using `api-2`'s value as a "neighbor."
+- `series.rolling('5m', { cpu: 'avg' })` would average all hosts in
+  the window — likely not what you wanted.
+- `series.diff('cpu')` would diff `api-1`'s cpu against `api-2`'s
+  preceding cpu.
+
+The fix is `partitionBy`:
+
+```ts
+series.partitionBy('host').fill({ cpu: 'linear' }).collect(); // per-host fill
+series
+  .partitionBy('host')
+  .fill({ cpu: 'linear' })
+  .rolling('5m', { cpu: 'avg' }) // chained per-host ops
+  .collect();
+```
+
+`partitionBy(col)` returns a `PartitionedTimeSeries` view that
+scopes stateful transforms to within each entity's events. The view
+is **persistent across chains** — each method returns another
+partitioned view, so multi-step per-partition workflows compose
+cleanly. `.collect()` at the end materializes back to a regular
+`TimeSeries`. Composite partitioning works via array:
+`partitionBy(['host', 'region'])`.
+
+The per-event ops (`map`, `filter`, `select`, `rename`, `collapse`)
+are not affected — they look at one event at a time.
+
+See [Reshape → partitionBy](../pond-ts/transforms/reshape#partitionby)
+for the full reference.
+
+:::caution[Live transforms have the same hazard]
+The cross-entity issue isn't unique to batch. `LiveRollingAggregation`,
+`LiveAggregation`, `LiveView.window()`, and live
+`diff`/`rate`/`fill`/`cumulative` all carry the same risk. A
+`live.partitionBy(col)` primitive is queued (see PLAN.md "Queued:
+live partitioning"); for now, snapshot to a `TimeSeries` via
+`useSnapshot` (or `live.toTimeSeries()`) and use batch `partitionBy`.
+:::
+
 ## Getting data in and out
 
 pond-ts is not a chart library — the actual rendering is yours. But
