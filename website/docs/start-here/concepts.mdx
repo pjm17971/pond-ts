@@ -23,41 +23,6 @@ Everything else — `aggregate`, `rolling`, `smooth`, `reduce`, the whole
 `LiveSeries` side — operates on these. Read this page top-to-bottom
 once; then the transform pages assume the vocabulary.
 
-## Five-minute quickstart
-
-Array of raw rows → typed `TimeSeries` → one transform → chart-ready
-points:
-
-```ts
-import { TimeSeries, Sequence } from 'pond-ts';
-
-const schema = [
-  { name: 'time', kind: 'time' },
-  { name: 'cpu', kind: 'number' },
-] as const;
-
-// 1. Construct from flat rows (time as ms since epoch).
-const cpu = new TimeSeries({
-  name: 'cpu',
-  schema,
-  rows: Array.from({ length: 60 }, (_, i) => [
-    i * 1000,
-    0.4 + Math.random() * 0.3,
-  ]),
-});
-
-// 2. Bucket into 10-second averages.
-const buckets = cpu.aggregate(Sequence.every('10s'), { cpu: 'avg' });
-
-// 3. Flat wide rows for any chart library.
-const points = buckets.toPoints();
-// [{ ts: 0, cpu: 0.514 }, { ts: 10000, cpu: 0.522 }, …]
-```
-
-That's the shape. If you're coming from React and just want a chart,
-`toPoints()` is the bridge — see
-[Getting data in and out](#getting-data-in-and-out) below.
-
 :::note[Coming from pandas?]
 
 pandas's `.resample()` covers both directions; pond-ts splits them:
