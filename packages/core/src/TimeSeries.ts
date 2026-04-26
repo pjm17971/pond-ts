@@ -1890,7 +1890,7 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.diffOrRateImpl('diff', columns, options);
+    return TimeSeries.#diffOrRate(this, 'diff', columns, options);
   }
 
   /**
@@ -1910,7 +1910,7 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.diffOrRateImpl('rate', columns, options);
+    return TimeSeries.#diffOrRate(this, 'rate', columns, options);
   }
 
   /**
@@ -1924,18 +1924,25 @@ export class TimeSeries<S extends SeriesSchema> {
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
   ): TimeSeries<DiffSchema<S, Target>> {
-    return this.diffOrRateImpl('pctChange', columns, options);
+    return TimeSeries.#diffOrRate(this, 'pctChange', columns, options);
   }
 
-  // Marked TS-private (not # private) so it stays accessible on
-  // instances built via #fromTrustedEvents (which bypasses the
-  // constructor's private-field initialization).
-  private diffOrRateImpl<Target extends NumericColumnNameForSchema<S>>(
+  // Static private — the brand check is on the class itself, which
+  // exists regardless of how individual instances were constructed.
+  // This keeps the impl runtime-private (not reachable via
+  // `series.diffOrRateImpl(...)` like a TS-only `private` field would
+  // have been) while still working on instances built via
+  // `#fromTrustedEvents`.
+  static #diffOrRate<
+    SX extends SeriesSchema,
+    Target extends NumericColumnNameForSchema<SX>,
+  >(
+    series: TimeSeries<SX>,
     mode: 'diff' | 'rate' | 'pctChange',
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): TimeSeries<DiffSchema<S, Target>> {
-    type OutSchema = DiffSchema<S, Target>;
+  ): TimeSeries<DiffSchema<SX, Target>> {
+    type OutSchema = DiffSchema<SX, Target>;
 
     const cols = typeof columns === 'string' ? [columns] : columns;
     const drop = options?.drop === true;
@@ -1947,7 +1954,7 @@ export class TimeSeries<S extends SeriesSchema> {
     const targetSet = new Set<string>(cols);
 
     const outSchema = Object.freeze(
-      this.schema.map((col, i) => {
+      series.schema.map((col, i) => {
         if (i === 0) return col;
         if (targetSet.has(col.name)) {
           return { ...col, kind: 'number' as const, required: false as const };
@@ -1956,9 +1963,13 @@ export class TimeSeries<S extends SeriesSchema> {
       }),
     ) as unknown as OutSchema;
 
-    const events = this.events;
+    const events = series.events;
     if (events.length === 0) {
-      return TimeSeries.#fromTrustedEvents<OutSchema>(this.name, outSchema, []);
+      return TimeSeries.#fromTrustedEvents<OutSchema>(
+        series.name,
+        outSchema,
+        [],
+      );
     }
 
     const resultEvents: EventForSchema<OutSchema>[] = [];
@@ -2008,7 +2019,7 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     return TimeSeries.#fromTrustedEvents<OutSchema>(
-      this.name,
+      series.name,
       outSchema,
       resultEvents,
     );

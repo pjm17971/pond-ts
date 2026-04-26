@@ -165,8 +165,11 @@ Completed:
       the cross-entity correctness hazard surfaced by all three CSV-cleaner
       agents. Sugar for `fill` / `align` / `rolling` / `smooth` / `baseline` /
       `outliers` / `diff` / `rate` / `pctChange` / `cumulative` / `shift` /
-      `aggregate` plus `apply(fn)` escape hatch. Returns `TimeSeries` (chains
-      break the partition by design). Shipped in v0.9.0 (PR 1 of the wave).
+      `aggregate` plus `apply(fn)` escape hatch. Sugar methods return another
+      `PartitionedTimeSeries` (persistent across chains, e.g.
+      `ts.partitionBy('host').dedupe(...).fill(...).collect()`); `.collect()`
+      materializes back to a regular `TimeSeries`. Shipped in v0.9.0 (PR 1
+      of the wave).
 
 Scope: none — all items complete.
 
@@ -728,21 +731,30 @@ covers all twelve at-risk operators. Shipped in v0.9.0 (PR 1 of
 the v0.9.0 wave).
 
 ```ts
-series.partitionBy('host').fill({ cpu: 'linear' });
-series.partitionBy('host').rolling('5m', { cpu: 'avg' });
-series.partitionBy(['host', 'region']).aggregate(seq, { cpu: 'avg' });
-series.partitionBy('host').apply((g) => g.fill(...).rolling(...)); // arbitrary
+ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
+ts.partitionBy('host').rolling('5m', { cpu: 'avg' }).collect();
+ts.partitionBy(['host', 'region']).aggregate(seq, { cpu: 'avg' }).collect();
+
+// Persistent partition — chained per-partition ops without re-partitioning:
+ts.partitionBy('host').dedupe(...).fill(...).rolling(...).collect();
+
+// Escape hatch — terminal, returns TimeSeries directly (no .collect):
+ts.partitionBy('host').apply((g) => g.fill(...).rolling(...));
 ```
 
 Decisions made:
 
 - Chainable view (not an option on every method) for surface-area
   discipline.
-- Return type is `TimeSeries`, not `PartitionedTimeSeries` — chains
-  break the partition by design; re-`partitionBy` to keep it.
+- Sugar methods return another `PartitionedTimeSeries` so multi-step
+  per-partition workflows compose cleanly. `.collect()` is the
+  terminal materialize-to-`TimeSeries` step. Pivoted away from the
+  initial "always returns `TimeSeries`" design after agent feedback
+  showed multi-step chains as the common case.
 - Composite partitioning supported via array (`partitionBy(['a',
 'b'])`).
-- `apply(fn)` escape hatch for arbitrary per-partition transforms.
+- `apply(fn)` escape hatch is terminal (returns `TimeSeries<R>`
+  directly) for arbitrary per-partition transforms.
 
 **Bonus fix.** Discovered and fixed a pre-existing brand-check bug
 where `series.filter(...).diff(...)` and similar chains failed with

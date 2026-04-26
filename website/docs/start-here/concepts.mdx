@@ -378,16 +378,21 @@ neighbors silently cross entity boundaries:
 The fix is `partitionBy`:
 
 ```ts
-series.partitionBy('host').fill({ cpu: 'linear' }); // per-host fill
-series.partitionBy('host').rolling('5m', { cpu: 'avg' }); // per-host rolling
-series.partitionBy('host').diff('cpu'); // per-host diff
+series.partitionBy('host').fill({ cpu: 'linear' }).collect(); // per-host fill
+series
+  .partitionBy('host')
+  .fill({ cpu: 'linear' })
+  .rolling('5m', { cpu: 'avg' }) // chained per-host ops
+  .collect();
 ```
 
-`partitionBy(col)` returns a view that scopes the next stateful
-transform to within each entity's events, then reassembles the
-output. Composite partitioning works too: `partitionBy(['host',
-'region'])`. Returns a regular `TimeSeries`, not the view — chains
-re-`partitionBy` if you need to keep partitioning.
+`partitionBy(col)` returns a `PartitionedTimeSeries` view that
+scopes stateful transforms to within each entity's events. The view
+is **persistent across chains** — each method returns another
+partitioned view, so multi-step per-partition workflows compose
+cleanly. `.collect()` at the end materializes back to a regular
+`TimeSeries`. Composite partitioning works via array:
+`partitionBy(['host', 'region'])`.
 
 The per-event ops (`map`, `filter`, `select`, `rename`, `collapse`)
 are not affected — they look at one event at a time.

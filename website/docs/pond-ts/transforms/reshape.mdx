@@ -333,52 +333,83 @@ region, device, …), those neighbors silently cross entity boundaries:
 series.fill({ cpu: 'linear' });
 
 // With partitioning: each host fills against its own events only.
-series.partitionBy('host').fill({ cpu: 'linear' });
+series.partitionBy('host').fill({ cpu: 'linear' }).collect();
 ```
 
-The `PartitionedTimeSeries` view exposes sugar for the affected
-operators — each runs the corresponding `TimeSeries` method
-independently per partition and reassembles the output via
-[`TimeSeries.concat`](#concat). The return type is always
-`TimeSeries`, not the view, so chains break the partition by
-design — re-`partitionBy` after to chain another partitioned op.
+### Persistent partition + `.collect()`
+
+The view is **persistent across chains** — each sugar method returns
+another `PartitionedTimeSeries`, so multi-step per-partition
+workflows compose cleanly. Call `.collect()` at the end to
+materialize back to a regular `TimeSeries`:
+
+```ts
+const cleaned = ts
+  .partitionBy('host')
+  .dedupe({ keep: 'last' }) // (when shipped — per-host)
+  .fill({ cpu: 'linear' }) // per-host
+  .rolling('5m', { cpu: 'avg', host: 'last' }) // per-host
+  .collect(); // back to TimeSeries<S>
+```
+
+Without `.collect()` you stay in partition view. Single-shot ops
+need it too:
+
+```ts
+// Single per-host fill — explicit collect
+const filled = ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
+```
+
+The ceremony is consistent — every chain ends with `.collect()`.
+
+### Sugar methods
 
 ```ts
 // Per-host fill (linear interp uses neighbors within each host)
-series.partitionBy('host').fill({ cpu: 'linear' });
+ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
 
 // Per-host rolling avg (window contains only same-host events)
-series.partitionBy('host').rolling('5m', { cpu: 'avg' });
+ts.partitionBy('host').rolling('5m', { cpu: 'avg' }).collect();
 
 // Per-host bucketed aggregation
-series.partitionBy('host').aggregate(Sequence.every('1m'), {
-  cpu: 'avg',
-  host: 'last', // keep host in the output for downstream filtering
-});
+ts.partitionBy('host')
+  .aggregate(Sequence.every('1m'), {
+    cpu: 'avg',
+    host: 'last', // keep host in the output for downstream filtering
+  })
+  .collect();
 
 // Composite partitioning — by host AND region
-series.partitionBy(['host', 'region']).fill({ cpu: 'linear' });
-
-// Custom composition via .apply()
-series
-  .partitionBy('host')
-  .apply((g) => g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }));
+ts.partitionBy(['host', 'region']).fill({ cpu: 'linear' }).collect();
 ```
 
-**The escape hatch — `apply(fn)`.** For ops not exposed as sugar on
-the view (or for arbitrary chained transforms within each partition),
-`apply(fn)` runs `fn` on each partition and reassembles. The sugar
-methods are themselves built on `apply`.
+### Escape hatch: `apply(fn)`
 
-**On `groupBy` vs `partitionBy`.** Both partition by column value.
-`groupBy(col)` returns a `Map<groupKey, TimeSeries<S>>` for callers
-that want the per-group sub-series explicitly (e.g. to render N
-separate charts). `partitionBy(col).<method>(...)` runs the
-operation per-group and reassembles the output back into one
-`TimeSeries<S>` — the inverse of `concat` happens for free. Reach
-for `groupBy` when you want N outputs; for `partitionBy` when you
-want one output with the per-partition computation correctly
-scoped.
+For ops not exposed as sugar (or for transforms that need full
+control of the per-partition pipeline), `apply(fn)` runs `fn` on
+each partition and **reassembles directly to a `TimeSeries`** — no
+`.collect()` needed. It's the terminal escape hatch.
+
+```ts
+const out = ts
+  .partitionBy('host')
+  .apply((g) => g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }));
+// `out` is TimeSeries<...> — no .collect()
+```
+
+Use the sugar chain when you want partition state to persist;
+`apply` when you've got a one-off composition you'd rather express
+inline.
+
+### `groupBy` vs `partitionBy`
+
+Both partition by column value. `groupBy(col)` returns a
+`Map<groupKey, TimeSeries<S>>` for callers that want the per-group
+sub-series explicitly (e.g. render N separate charts).
+`partitionBy(col).<method>(...).collect()` runs the operation
+per-group and reassembles back to one `TimeSeries<S>`. Reach for
+`groupBy` when you want N outputs; for `partitionBy` when you want
+one output with per-partition computation correctly scoped.
 
 :::tip[Live-side hazard is the same — primitive is queued]
 The same cross-entity hazard applies to live transforms

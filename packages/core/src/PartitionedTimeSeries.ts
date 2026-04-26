@@ -7,6 +7,7 @@ import type {
   AggregateMap,
   AggregateOutputMap,
   AggregateSchema,
+  AlignSchema,
   BaselineSchema,
   DiffSchema,
   EventDataForSchema,
@@ -31,43 +32,43 @@ type AlignMethod = 'hold' | 'linear';
 type AlignSample = 'begin' | 'center' | 'end';
 
 /**
- * View over a `TimeSeries` that scopes stateful transforms to within each
- * partition (defined by one or more value-column values). Created by
- * `TimeSeries.partitionBy(by)`.
+ * View over a `TimeSeries` that scopes stateful transforms to within
+ * each partition. Created by `TimeSeries.partitionBy(by)`.
  *
- * Most pond-ts stateful operators — `fill`, `align`, `rolling`, `smooth`,
- * `baseline`, `outliers`, `diff`, `rate`, `pctChange`, `cumulative`,
- * `shift`, `aggregate` — read from neighboring events when computing each
- * output. When a series interleaves multiple entities (host, region,
- * device, …), those neighbors silently cross entity boundaries: a
- * `fill('linear')` for `host-A` would interpolate using `host-B`'s
- * value as a "neighbor", and a `rolling('5m', { cpu: 'avg' })` would
- * average across all hosts in the window.
+ * Most pond-ts stateful operators read from neighboring events when
+ * computing each output. On a multi-entity series (events for many
+ * hosts interleaved by time), those neighbors silently cross entity
+ * boundaries: a `fill('linear')` for `host-A` would interpolate using
+ * `host-B`'s value as a "neighbor"; a `rolling('5m', { cpu: 'avg' })`
+ * would average across all hosts in the window.
  *
  * `partitionBy` runs the transform independently on each partition's
- * events and reassembles the output back into one `TimeSeries`. The
- * return type is always `TimeSeries`, not `PartitionedTimeSeries` —
- * each operation is a single step. Re-`partitionBy` after to chain
- * another partitioned op; this is by design (chains that cross the
- * partition boundary are honest about what's per-partition vs.
- * cross-partition).
+ * events. The view is **persistent across chains** — each sugar method
+ * returns another `PartitionedTimeSeries` carrying the same partition
+ * columns, so multi-step per-partition workflows compose cleanly:
  *
- * For ops that aren't on the sugar surface (or for arbitrary
- * compositions), use {@link PartitionedTimeSeries.apply} — it runs `fn`
- * on each partition and reassembles.
+ * ```ts
+ * const cleaned = ts
+ *   .partitionBy('host')
+ *   .dedupe({ keep: 'last' })   // per-host
+ *   .fill({ cpu: 'linear' })    // per-host
+ *   .rolling('5m', { cpu: 'avg' })  // per-host
+ *   .collect();                 // back to TimeSeries<S>
+ * ```
+ *
+ * Call `.collect()` (or `.apply(fn)` for arbitrary transforms) to
+ * materialize back to a regular `TimeSeries`. Without `.collect()`,
+ * the chain stays in partition view.
  *
  * @example
  * ```ts
- * // per-host fill (no interpolation across hosts)
- * const filled = series.partitionBy('host').fill({ cpu: 'linear' });
+ * // Per-host fill
+ * const filled = series.partitionBy('host').fill({ cpu: 'linear' }).collect();
  *
- * // per-host rolling avg
- * const smoothed = series.partitionBy('host').rolling('5m', { cpu: 'avg' });
+ * // Composite partitioning by host + region
+ * const filled = series.partitionBy(['host', 'region']).fill({ cpu: 'linear' }).collect();
  *
- * // composite partitioning by host + region
- * const filled = series.partitionBy(['host', 'region']).fill({ cpu: 'linear' });
- *
- * // arbitrary transform via apply()
+ * // Arbitrary transform via apply (terminal — returns TimeSeries directly)
  * const custom = series.partitionBy('host').apply(g =>
  *   g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }),
  * );
@@ -102,13 +103,37 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   }
 
   /**
-   * Run a transform `fn` independently on each partition and reassemble
-   * the outputs into one `TimeSeries`. The escape hatch for
-   * compositions or operators not exposed as sugar on this view.
+   * Materialize the partitioned view back into a regular `TimeSeries`.
+   * Terminal operation — call this at the end of a chain to "collect"
+   * the per-partition results. Equivalent to `.apply(g => g)` but
+   * cheaper (no fn dispatch, just returns the source as-is).
    *
    * @example
    * ```ts
-   * // chain two stateful ops within each partition
+   * const cleaned = ts
+   *   .partitionBy('host')
+   *   .fill({ cpu: 'linear' })
+   *   .rolling('5m', { cpu: 'avg' })
+   *   .collect();  // <- TimeSeries<S>
+   * ```
+   */
+  collect(): TimeSeries<S> {
+    return this.source;
+  }
+
+  /**
+   * Run a transform `fn` independently on each partition and return a
+   * `TimeSeries<R>` directly (terminal — does not stay in the
+   * partitioned view). The escape hatch for compositions or operators
+   * not exposed as sugar.
+   *
+   * To keep the partition after a custom transform, use the sugar
+   * methods (which preserve partition state) or call `.partitionBy(...)`
+   * again on the result.
+   *
+   * @example
+   * ```ts
+   * // chain two stateful ops within each partition (one shot)
    * const out = series.partitionBy('host').apply(g =>
    *   g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }),
    * );
@@ -117,37 +142,49 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   apply<R extends SeriesSchema>(
     fn: (group: TimeSeries<S>) => TimeSeries<R>,
   ): TimeSeries<R> {
-    // Empty source: apply fn to an empty group so the output schema and
-    // name come from fn, not from inferring R structurally.
-    if (this.source.events.length === 0) {
+    return PartitionedTimeSeries.applyToSource(this.source, this.by, fn);
+  }
+
+  // Internal helper used by both `apply` (terminal) and the sugar
+  // methods (which re-wrap the result back into a partitioned view).
+  private static applyToSource<SX extends SeriesSchema, R extends SeriesSchema>(
+    source: TimeSeries<SX>,
+    by: ReadonlyArray<keyof EventDataForSchema<SX> & string>,
+    fn: (group: TimeSeries<SX>) => TimeSeries<R>,
+  ): TimeSeries<R> {
+    // Empty source: apply fn to an empty group so the output schema
+    // and name come from fn, not from inferring R structurally.
+    if (source.events.length === 0) {
       const empty = TimeSeries.fromEvents(
-        [] as ReadonlyArray<EventForSchema<S>>,
+        [] as ReadonlyArray<EventForSchema<SX>>,
         {
-          schema: this.source.schema,
-          name: this.source.name,
+          schema: source.schema,
+          name: source.name,
         },
       );
       return fn(empty);
     }
 
-    const compositeKey = (event: EventForSchema<S>): string => {
+    const compositeKey = (event: EventForSchema<SX>): string => {
       const data = event.data() as Record<string, unknown>;
-      // Single-column case: avoid the join overhead.
-      if (this.by.length === 1) {
-        const v = data[this.by[0]!];
-        return v === undefined ? 'undefined' : String(v);
+      // Single-column case: avoid the encoding overhead.
+      if (by.length === 1) {
+        const v = data[by[0]!];
+        return v === undefined ? ' undefined' : `${String(v)}`;
       }
-      const parts: string[] = new Array(this.by.length);
-      for (let i = 0; i < this.by.length; i += 1) {
-        const v = data[this.by[i]!];
-        parts[i] = v === undefined ? 'undefined' : String(v);
+      // Multi-column case: JSON.stringify guarantees no collision
+      // because it encodes strings with quotes and escapes. A naive
+      // separator approach (e.g. join('|')) would collide on values
+      // containing the separator.
+      const parts: unknown[] = new Array(by.length);
+      for (let i = 0; i < by.length; i += 1) {
+        parts[i] = data[by[i]!] ?? null;
       }
-      // Use a separator unlikely to collide with stringified column values.
-      return parts.join(' ');
+      return JSON.stringify(parts);
     };
 
-    const buckets = new Map<string, EventForSchema<S>[]>();
-    for (const event of this.source.events) {
+    const buckets = new Map<string, EventForSchema<SX>[]>();
+    for (const event of source.events) {
       const key = compositeKey(event);
       let bucket = buckets.get(key);
       if (!bucket) {
@@ -160,8 +197,8 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     const transformed: TimeSeries<R>[] = [];
     for (const events of buckets.values()) {
       const sub = TimeSeries.fromEvents(events, {
-        schema: this.source.schema,
-        name: this.source.name,
+        schema: source.schema,
+        name: source.name,
       });
       transformed.push(fn(sub));
     }
@@ -169,18 +206,39 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     return TimeSeries.concat(transformed);
   }
 
+  // Wrap a transform result back into a PartitionedTimeSeries with the
+  // same partition columns. Used by the sugar methods to keep the chain
+  // in partition view. Cast at the boundary because R may not preserve
+  // the partition columns type-narrowly (e.g. RollingSchema<S, M> may
+  // drop columns); runtime constructor validates that the partition
+  // columns are still present in the result schema.
+  private rewrap<R extends SeriesSchema>(
+    out: TimeSeries<R>,
+  ): PartitionedTimeSeries<R> {
+    return new PartitionedTimeSeries(
+      out,
+      this.by as unknown as ReadonlyArray<keyof EventDataForSchema<R> & string>,
+    );
+  }
+
   // ─── Sugar: stateful ops, applied per partition ─────────────────────
   //
   // Each method's overload signatures mirror the corresponding
-  // `TimeSeries` method exactly so callers see identical narrowing.
-  // The implementation in each case is `this.apply(g => g.method(...))`.
+  // `TimeSeries` method but return `PartitionedTimeSeries<NewSchema>`
+  // instead of `TimeSeries<NewSchema>`, so the chain stays in partition
+  // view. Call `.collect()` to materialize back. Each impl runs the
+  // underlying op per-partition via `applyToSource` and re-wraps.
 
   /** Per-partition `fill`. See {@link TimeSeries.fill}. */
   fill(
     strategy: FillStrategy | FillMapping<S>,
     options?: { limit?: number },
-  ): TimeSeries<S> {
-    return this.apply((g) => g.fill(strategy, options));
+  ): PartitionedTimeSeries<S> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.fill(strategy, options),
+      ),
+    );
   }
 
   /** Per-partition `align`. See {@link TimeSeries.align}. */
@@ -191,12 +249,12 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): TimeSeries<S> {
-    // Cast: AlignSchema<S> is structurally a TimeSeries<S> with the
-    // value columns optionalized; concat preserves that.
-    return this.apply((g) =>
-      g.align(sequence, options),
-    ) as unknown as TimeSeries<S>;
+  ): PartitionedTimeSeries<AlignSchema<S>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.align(sequence, options),
+      ),
+    );
   }
 
   /** Per-partition `rolling`. See {@link TimeSeries.rolling}. */
@@ -204,12 +262,12 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
-  ): TimeSeries<RollingSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<RollingSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
-  ): TimeSeries<RollingOutputMapSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<RollingOutputMapSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -219,7 +277,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): TimeSeries<AggregateSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -229,11 +287,15 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): TimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rolling(...args: any[]): any {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.apply((g) => (g.rolling as any)(...args));
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (g.rolling as any)(...args),
+      ),
+    );
   }
 
   /** Per-partition `smooth`. See {@link TimeSeries.smooth}. */
@@ -247,12 +309,16 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       | { alpha: number; warmup?: number; output?: Output }
       | { window: DurationInput; alignment?: RollingAlignment; output?: Output }
       | { span: number; output?: Output },
-  ): TimeSeries<
+  ): PartitionedTimeSeries<
     Output extends string
       ? SmoothAppendSchema<S, Output>
       : SmoothSchema<S, Target>
   > {
-    return this.apply((g) => g.smooth(column, method, options));
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.smooth(column, method, options),
+      ),
+    );
   }
 
   /** Per-partition `baseline`. See {@link TimeSeries.baseline}. */
@@ -275,8 +341,14 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
         lower?: LowerName;
       };
     },
-  ): TimeSeries<BaselineSchema<S, AvgName, SdName, UpperName, LowerName>> {
-    return this.apply((g) => g.baseline(col, options));
+  ): PartitionedTimeSeries<
+    BaselineSchema<S, AvgName, SdName, UpperName, LowerName>
+  > {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.baseline(col, options),
+      ),
+    );
   }
 
   /** Per-partition `outliers`. See {@link TimeSeries.outliers}. */
@@ -287,32 +359,48 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sigma: number;
       alignment?: RollingAlignment;
     },
-  ): TimeSeries<S> {
-    return this.apply((g) => g.outliers(col, options));
+  ): PartitionedTimeSeries<S> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.outliers(col, options),
+      ),
+    );
   }
 
   /** Per-partition `diff`. See {@link TimeSeries.diff}. */
   diff<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): TimeSeries<DiffSchema<S, Target>> {
-    return this.apply((g) => g.diff(columns, options));
+  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.diff(columns, options),
+      ),
+    );
   }
 
   /** Per-partition `rate`. See {@link TimeSeries.rate}. */
   rate<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): TimeSeries<DiffSchema<S, Target>> {
-    return this.apply((g) => g.rate(columns, options));
+  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.rate(columns, options),
+      ),
+    );
   }
 
   /** Per-partition `pctChange`. See {@link TimeSeries.pctChange}. */
   pctChange<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): TimeSeries<DiffSchema<S, Target>> {
-    return this.apply((g) => g.pctChange(columns, options));
+  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.pctChange(columns, options),
+      ),
+    );
   }
 
   /** Per-partition `cumulative`. See {@link TimeSeries.cumulative}. */
@@ -323,16 +411,24 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       | 'min'
       | 'count'
       | ((acc: number, value: number) => number);
-  }): TimeSeries<DiffSchema<S, Targets>> {
-    return this.apply((g) => g.cumulative(spec));
+  }): PartitionedTimeSeries<DiffSchema<S, Targets>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.cumulative(spec),
+      ),
+    );
   }
 
   /** Per-partition `shift`. See {@link TimeSeries.shift}. */
   shift<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     n: number,
-  ): TimeSeries<DiffSchema<S, Target>> {
-    return this.apply((g) => g.shift(columns, n));
+  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.shift(columns, n),
+      ),
+    );
   }
 
   /** Per-partition `aggregate`. See {@link TimeSeries.aggregate}. */
@@ -340,15 +436,19 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
-  ): TimeSeries<AggregateSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>>;
   aggregate<const Mapping extends AggregateOutputMap<S>>(
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
-  ): TimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   aggregate(...args: any[]): any {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.apply((g) => (g.aggregate as any)(...args));
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (g.aggregate as any)(...args),
+      ),
+    );
   }
 }

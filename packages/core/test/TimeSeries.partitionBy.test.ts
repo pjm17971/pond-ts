@@ -86,7 +86,10 @@ describe('TimeSeries.partitionBy', () => {
     });
 
     it('isolates per-partition state — no cross-partition leakage', () => {
-      // Cross-host fill leakage scenario from the CSV-cleaner agent runs
+      // Cross-host fill leakage scenario from the CSV-cleaner agent runs.
+      // Compare partitioned vs un-partitioned to prove the partitioning
+      // changes the result (not just that the partitioned value is 0.6
+      // by coincidence).
       const ts = makeSeries([
         [0, 0.5, 'a'],
         [60_000, undefined, 'a'],
@@ -95,18 +98,32 @@ describe('TimeSeries.partitionBy', () => {
         [120_000, 1.0, 'b'],
       ]);
 
-      // Without partitioning, fill('linear') would interpolate api-a@60k
-      // using b@60k=0.9 as a "neighbor" — wrong.
+      // Without partitioning: linear-fill walks the events array
+      // chronologically. `a`@60k's missing cpu sits between `a`@0=0.5
+      // and `b`@60k=0.9 — interp gives ~0.7 (1/3 of the way through
+      // the timestamp gap). Different from the per-host correct value.
+      const unpartitioned = ts.fill({ cpu: 'linear' });
+      const aAt60kUnpartitioned = unpartitioned
+        .toPoints()
+        .find((p) => p.ts === 60_000 && p.host === 'a');
+
+      // With partitioning: linear fill within host 'a' uses 0.5 and 0.7
+      // as neighbors — interp gives 0.6.
       const partitioned = ts
         .partitionBy('host')
         .apply((g) => g.fill({ cpu: 'linear' }));
-
-      // a@60k should be 0.6 (linear between 0.5 and 0.7), not anything
-      // from host b.
-      const aAt60k = partitioned
+      const aAt60kPartitioned = partitioned
         .toPoints()
         .find((p) => p.ts === 60_000 && p.host === 'a');
-      expect(aAt60k?.cpu).toBeCloseTo(0.6, 5);
+
+      // The partitioned value is the per-host correct one.
+      expect(aAt60kPartitioned?.cpu).toBeCloseTo(0.6, 5);
+      // And the partitioned result differs from the unpartitioned one —
+      // proving partitioning actually changed something.
+      expect(aAt60kPartitioned?.cpu).not.toBeCloseTo(
+        aAt60kUnpartitioned?.cpu ?? NaN,
+        2,
+      );
     });
 
     it('returns empty series when source is empty', () => {
@@ -124,6 +141,31 @@ describe('TimeSeries.partitionBy', () => {
         return g;
       });
       expect(called).toBe(true);
+    });
+
+    it('composite-key encoding does not collide on values containing separators', () => {
+      // Naive `parts.join(' ')` would collapse these to the same key:
+      //   ['a b', 'c'] and ['a', 'b c'] both → 'a b c'
+      // Real risk for region names like 'us east'. JSON-encoding fixes it.
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema: compositeSchema,
+        rows: [
+          [0, 0.5, 'a b', 'c'], // composite key A
+          [0, 0.9, 'a', 'b c'], // composite key B — must NOT collide with A
+          [60_000, 0.6, 'a b', 'c'],
+          [60_000, 1.0, 'a', 'b c'],
+        ],
+      });
+
+      // Build per-partition counts to verify the partitions stayed
+      // separate.
+      let partitionCount = 0;
+      ts.partitionBy(['host', 'region']).apply((g) => {
+        partitionCount += 1;
+        return g;
+      });
+      expect(partitionCount).toBe(2);
     });
 
     it('handles composite partition keys', () => {
@@ -162,7 +204,7 @@ describe('TimeSeries.partitionBy', () => {
         [120_000, 1.0, 'b'],
       ]);
 
-      const out = ts.partitionBy('host').fill({ cpu: 'linear' });
+      const out = ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
       const aAt60k = out
         .toPoints()
         .find((p) => p.ts === 60_000 && p.host === 'a');
@@ -174,7 +216,7 @@ describe('TimeSeries.partitionBy', () => {
         [0, 0.5, 'a'],
         [60_000, 0.6, 'a'],
       ]);
-      const out = ts.partitionBy('host').fill('hold');
+      const out = ts.partitionBy('host').fill('hold').collect();
       expect(out.schema).toEqual(schema);
     });
   });
@@ -194,7 +236,8 @@ describe('TimeSeries.partitionBy', () => {
       // for assertion purposes — rolling drops columns not in the mapping.
       const out = ts
         .partitionBy('host')
-        .rolling('5m', { cpu: 'avg', host: 'last' }, { alignment: 'trailing' });
+        .rolling('5m', { cpu: 'avg', host: 'last' }, { alignment: 'trailing' })
+        .collect();
 
       // For host 'a' at 120k, rolling avg over [0, 60k, 120k] = 2.0
       // (NOT mixed with b's 10/20/30 which would be 11.0)
@@ -218,7 +261,7 @@ describe('TimeSeries.partitionBy', () => {
         [120_000, 2.0, 'a'],
       ]);
 
-      const out = ts.partitionBy('host').diff('cpu');
+      const out = ts.partitionBy('host').diff('cpu').collect();
       // For host 'a' at 120k, diff = 2.0 - 1.0 = 1.0
       // (NOT 2.0 - 100.0 = -98.0 from cross-host)
       const aAt120k = out
@@ -237,7 +280,7 @@ describe('TimeSeries.partitionBy', () => {
         [180_000, 200.0, 'b'],
       ]);
 
-      const out = ts.partitionBy('host').cumulative({ cpu: 'sum' });
+      const out = ts.partitionBy('host').cumulative({ cpu: 'sum' }).collect();
 
       const aPoints = out.toPoints().filter((p) => p.host === 'a');
       const bPoints = out.toPoints().filter((p) => p.host === 'b');
@@ -263,7 +306,8 @@ describe('TimeSeries.partitionBy', () => {
       // per-host assertion.
       const out = ts
         .partitionBy('host')
-        .aggregate(Sequence.every('1m'), { cpu: 'avg', host: 'last' });
+        .aggregate(Sequence.every('1m'), { cpu: 'avg', host: 'last' })
+        .collect();
 
       // Each host's bucket [0, 60k) averages its own events
       const aPoints = out.toPoints().filter((p) => p.host === 'a');
@@ -290,10 +334,51 @@ describe('TimeSeries.partitionBy', () => {
       ]);
 
       // New (sugar):
-      const sugared = ts.partitionBy('host').fill({ cpu: 'linear' });
+      const sugared = ts.partitionBy('host').fill({ cpu: 'linear' }).collect();
 
       // Same result
       expect(sugared.toPoints()).toEqual(manual.toPoints());
+    });
+  });
+
+  describe('persistent partition: chained per-partition ops', () => {
+    it('chains multiple stateful ops without re-partitioning', () => {
+      // The use case the persistent-partition design exists for.
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [0, 1.5, 'b'],
+        [60_000, undefined, 'a'],
+        [60_000, undefined, 'b'],
+        [120_000, 0.7, 'a'],
+        [120_000, 1.7, 'b'],
+      ]);
+
+      const out = ts
+        .partitionBy('host')
+        .fill({ cpu: 'linear' })
+        .rolling('5m', { cpu: 'avg', host: 'last' }, { alignment: 'trailing' })
+        .collect();
+
+      // Per-host fill + rolling. After fill, host 'a' has cpu values
+      // [0.5, 0.6, 0.7]. Trailing-5m rolling avg at 120k (which sees
+      // all three) is 0.6.
+      const aAt120k = out
+        .toPoints()
+        .find((p) => p.ts === 120_000 && p.host === 'a');
+      expect(aAt120k?.cpu).toBeCloseTo(0.6, 5);
+    });
+
+    it('collect() returns a TimeSeries with the same schema', () => {
+      const ts = makeSeries([[0, 0.5, 'a']]);
+      const out = ts.partitionBy('host').collect();
+      expect(out).toBeInstanceOf(TimeSeries);
+      expect(out.schema).toEqual(schema);
+    });
+
+    it('apply() exits the partition view (returns TimeSeries directly)', () => {
+      const ts = makeSeries([[0, 0.5, 'a']]);
+      const out = ts.partitionBy('host').apply((g) => g);
+      expect(out).toBeInstanceOf(TimeSeries);
     });
   });
 });
