@@ -7,9 +7,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.9.1...HEAD
 
 ## [Unreleased]
+
+## [0.9.1] — 2026-04-26
+
+Strictly additive over v0.9.0. Closes a sugar-method type bug
+identified independently by two agents (a fresh CSV-cleaner eval
+against v0.9.0 and Codex on a v0.9.0 retest), plus folds in two
+fresh-agent doc improvements.
+
+### Fixed
+
+- **`PartitionedTimeSeries.fill` now accepts `maxGap`.** PR #78
+  added `maxGap` to `TimeSeries.fill` for v0.9.0 but the partitioned
+  sugar's option type was not widened, so the headline v0.9.0 chain —
+  `partitionBy('host').fill('linear', { maxGap: '5m' })` — failed
+  type checking and forced callers into `.apply()`. The underlying
+  impl already passed options through, so this is a one-line type
+  widening: `{ limit?: number; maxGap?: DurationInput }`.
+
+### Added
+
+- **9 new tests** under `TimeSeries.partitionBy.test.ts`:
+  - 4 regression tests pinning the partitioned `fill(maxGap)` chain
+    works (bare `maxGap`, all-or-nothing per-partition span,
+    `limit + maxGap` composition, full `partitionBy + dedupe +
+    fill(maxGap)` chain).
+  - 5 composite-key round-trip tests addressing a refinement flagged
+    by the dashboard agent: `partitionBy(['host', 'region'])`
+    preserves both key columns in the schema, on every output event,
+    keeps `(host, region)` tuples distinct (no collapse on host
+    alone), and round-trips through `apply()` and the full chain.
+- **`cleaning.mdx` "Schema first — `required: false`" section.**
+  Leads the page; documents why optional cells need the flag and
+  surfaces the `fromJSON`/`null` workaround for the known
+  `RowForSchema` variance limitation. Previously this prose only
+  lived in the 0.8.2 changelog (fresh-agent feedback).
+- **`cleaning.mdx` "End-to-end multi-entity cleaning pipeline"
+  section.** The unified `partitionBy + dedupe + fill(maxGap)`
+  chain in one place plus a step-by-step hazard table.
+  Previously split across three sections (fresh-agent feedback).
+
+[0.9.1]: https://github.com/pjm17971/pond-ts/compare/v0.9.0...v0.9.1
 
 ## [0.9.0] — 2026-04-26
 
