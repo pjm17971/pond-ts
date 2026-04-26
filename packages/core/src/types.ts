@@ -298,6 +298,35 @@ export type FillMapping<S extends SeriesSchema> = {
 };
 
 /**
+ * Resolution policy for `TimeSeries.dedupe({ keep })`. Determines which
+ * event survives when multiple events share a key (timestamp for the
+ * batch operator; timestamp + partition columns for
+ * `partitionBy(...).dedupe(...)`).
+ *
+ * - `'first'` — keep the first event encountered at each key.
+ * - `'last'` — keep the last event encountered (default, matches the
+ *   "WebSocket replay" / "newer wins" intuition for retried ingest).
+ * - `'error'` — throw on any duplicate key. Useful for ingestion paths
+ *   that want a hard failure on data-shape violations.
+ * - `'drop'` — discard every event at any duplicate key. Conservative;
+ *   the value of `'1.5 events at this timestamp'` is rarely defensible.
+ * - `{ min: col }` / `{ max: col }` — keep the event with the smallest
+ *   / largest value at the named numeric column. Ties keep the first
+ *   tied event encountered.
+ * - function — custom resolver. Receives all events sharing the key
+ *   (always length ≥ 2 by the time it's invoked) and returns one. Use
+ *   for merge logic that combines fields across duplicates.
+ */
+export type DedupeKeep<S extends SeriesSchema> =
+  | 'first'
+  | 'last'
+  | 'error'
+  | 'drop'
+  | { min: NumericColumnNameForSchema<S> }
+  | { max: NumericColumnNameForSchema<S> }
+  | ((events: ReadonlyArray<EventForSchema<S>>) => EventForSchema<S>);
+
+/**
  * Resolves the `kind` of the value column named `V` on schema `S`. Used by
  * the typed `pivotByGroup` overload to propagate the source value column's
  * kind to every output column in the wide schema.

@@ -9,6 +9,7 @@ import type {
   AggregateSchema,
   AlignSchema,
   BaselineSchema,
+  DedupeKeep,
   DiffSchema,
   EventDataForSchema,
   EventForSchema,
@@ -237,6 +238,22 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.fill(strategy, options),
+      ),
+    );
+  }
+
+  /**
+   * Per-partition `dedupe`. The duplicate key becomes "same partition
+   * columns AND same timestamp" — `partitionBy` provides the partition
+   * segregation, `dedupe` handles the within-partition timestamp
+   * collapse. The most common dedupe shape for multi-entity ingest.
+   *
+   * See {@link TimeSeries.dedupe}.
+   */
+  dedupe(options?: { keep?: DedupeKeep<S> }): PartitionedTimeSeries<S> {
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
+        g.dedupe(options),
       ),
     );
   }
