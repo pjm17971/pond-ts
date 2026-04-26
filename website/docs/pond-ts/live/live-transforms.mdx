@@ -211,15 +211,9 @@ Use this shape for stat cards, alert decisions, and the top-of-dashboard
 
 #### In React: `useCurrent`
 
-:::tip[React users]
-`@pond-ts/react` packages the `subscribe + tail + reduce` dance into a
-single hook — this subsection is a forward reference. When the
-[@pond-ts/react](../../react) section lands with full per-hook prose,
-the example below will move there and this page will link to it.
-:::
-
-`@pond-ts/react` ships a thin wrapper that combines the subscription,
-the `tail`, and the `reduce` into one hook:
+For React consumers, `@pond-ts/react` packages the
+`subscribe + tail + reduce` dance into a single hook. Full reference:
+[`useCurrent`](../../react/hooks#usecurrent). The short version:
 
 ```tsx
 import { useCurrent } from '@pond-ts/react';
