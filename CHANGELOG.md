@@ -7,9 +7,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.9.0...HEAD
 
 ## [Unreleased]
+
+## [0.9.0] — 2026-04-26
+
+The "cross-entity correctness + cleaning hygiene" release. Three
+independent CSV-cleaner agent runs (Codex, Claude, Gemini) all hit
+the same shape: stateful transforms (`fill('linear')`, `rolling`,
+`diff`, etc.) silently mix data across entities on multi-host
+series, and `fill('linear', { limit: 3 })` fabricates interpolated
+data across long outages instead of leaving the unknown unknown.
+
+v0.9.0 ships three operator-level fixes plus a discoverability pass
+on every affected method's JSDoc.
+
+### Added
+
+- **`series.partitionBy(col).<op>(...).collect()`** — chainable
+  per-partition view over `TimeSeries`. Sugar methods for every
+  stateful operator (`fill`, `align`, `rolling`, `smooth`,
+  `baseline`, `outliers`, `diff`, `rate`, `pctChange`, `cumulative`,
+  `shift`, `aggregate`, `dedupe`) run the underlying transform per
+  partition. `.collect()` materializes back to `TimeSeries<S>`.
+  `.apply(g => /* arbitrary chain */)` is the terminal escape hatch.
+  One primitive covers the cross-entity hazard for every at-risk
+  method, instead of adding a `partitionBy` option to each.
+- **`series.dedupe({ keep })`** — first-class deduplication with
+  policies: `'first' | 'last' | 'error' | 'drop' | { min: col } |
+  { max: col } | (events) => Event`. Default key is the full event
+  key (`begin` for time-keyed, `begin+end` for time-range,
+  `begin+end+value` for interval-keyed); default resolution is
+  `'last'`. `partitionBy('host').dedupe()` is the multi-entity
+  pattern.
+- **`fill(strategy, { maxGap })`** — duration-based gap cap,
+  complements the existing count-based `limit`. Both compose; most
+  restrictive wins.
+
+### Changed
+
+- **`fill` is now all-or-nothing.** A gap either fits both caps and
+  is filled entirely, or exceeds either cap and is left fully
+  unfilled. Previously `limit: 3` on a 5-cell gap filled 3 cells and
+  left 2 unfilled — propagating stale `'hold'` values past their
+  useful lifetime and inventing misleading `'linear'` slopes across
+  long outages. Existing `limit` callers see strictly more
+  conservative behavior; to opt back in to partial fill, set
+  `limit`/`maxGap` larger than any gap you want filled.
+- **Every stateful TimeSeries method's JSDoc** now includes a
+  `**Multi-entity series:**` warning paragraph naming the operator's
+  specific cross-entity hazard and pointing at the
+  `partitionBy(col).<method>(...).collect()` pattern. Discoverable
+  in LSP hover, IDE quick-help, and any tool that reads type
+  definitions.
+- **`PartitionedTimeSeries` view** preserves partition state across
+  every sugar call, so multi-step per-partition chains compose
+  cleanly without re-partitioning at each step.
+
+### Fixed
+
+- Pre-existing brand-check bug on `series.filter(...).diff(...)`
+  and similar chains: events constructed via
+  `#fromTrustedEvents` (which uses `Object.create` to bypass the
+  constructor) hit a JS-private brand check on `#diffOrRate` and
+  threw. Refactored to a class-static private (`static
+  #diffOrRate`) — runtime-private without the per-instance brand
+  failure.
+
+[0.9.0]: https://github.com/pjm17971/pond-ts/compare/v0.8.2...v0.9.0
 
 ## [0.8.2] — 2026-04-26
 
