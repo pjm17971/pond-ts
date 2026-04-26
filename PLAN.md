@@ -698,6 +698,53 @@ Concrete next steps when this work begins:
 - [ ] Add the `'duplicate'` (and possibly `'replace'`) event type
       to the subscriber surface.
 
+### Queued: partition-aware `fill` (cross-entity correctness)
+
+`fill()` operates on the events-array as one chronological sequence.
+For multi-entity series (events for many hosts interleaved by time),
+`fill('linear')` will interpolate metric values **across host
+boundaries** — `host-A`'s missing cell at t=10 gets filled using
+`host-B`'s value at t=9 and `host-C`'s at t=11. Silent correctness
+hole — observed in three independent agent runs (Codex, Claude,
+Gemini) on the CSV-cleaner experiment.
+
+The workaround that all three converged on:
+
+```ts
+const filled = TimeSeries.concat([
+  ...series.groupBy('host', (g) => g.fill({ cpu: 'linear' })).values(),
+]);
+```
+
+Two API shapes proposed by the agents:
+
+```ts
+// Shape A — new method (Codex, Claude flavors):
+series.fillBy('host', { cpu: 'linear' }, { maxGap: '3m' });
+
+// Shape B — option on existing method (Gemini):
+series.fill({ cpu: 'linear' }, { partitionBy: 'host', maxGap: '3m' });
+```
+
+Shape B extends the existing surface; Shape A creates a parallel
+method. Lean Shape B for the partition story (less surface area)
+unless we also need `fillBy` to differ semantically from `fill`
+in other ways.
+
+Codex's adjacent ask was a `maxGap` / `mode: 'all-or-nothing'`
+option — orthogonal to partitioning, but the same `fill` call site.
+Bundle both into one design pass.
+
+Concrete next steps when this work begins:
+
+- [ ] Decide Shape A vs. Shape B by interviewing the next two
+      agent runs that hit it.
+- [ ] Spec `maxGap: DurationInput` and `mode: 'all-or-nothing'`
+      options separately from partitioning — they compose.
+- [ ] Add a `groupBy` doc callout that today's manual workaround
+      is `groupBy(col, g => g.fill(...))` + `concat(...)` — close
+      the discoverability gap until the primitive ships.
+
 ### Batch → Live applicability
 
 Not every batch `TimeSeries` method needs a live equivalent. The live layer is
