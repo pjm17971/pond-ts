@@ -1390,6 +1390,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * - `Sequence.every("1m")` defines an epoch-anchored minute grid
    * - `series.align(Sequence.every("1m"))` aligns onto the slice of that minute grid spanning the
    *   current series extent
+   *
+   * **Multi-entity series:** alignment samples cross entity boundaries —
+   * `host-A`'s aligned bucket would interpolate or hold against
+   * `host-B`'s value. On a series carrying multiple entities (host,
+   * region, device id), use
+   * `series.partitionBy(col).align(...).collect()` to scope per entity.
+   * See {@link TimeSeries.partitionBy}.
    */
   align(
     sequence: SequenceLike,
@@ -1501,6 +1508,13 @@ export class TimeSeries<S extends SeriesSchema> {
    *   { value: "avg" },
    * );
    * ```
+   *
+   * **Multi-entity series:** every entity's events go into the same
+   * bucket and are aggregated together — the result is one number per
+   * bucket spanning *all* entities, not per-entity. On a series
+   * carrying multiple entities (host, region, device id), use
+   * `series.partitionBy(col).aggregate(seq, mapping).collect()` to
+   * aggregate per entity. See {@link TimeSeries.partitionBy}.
    */
   aggregate<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
@@ -1886,6 +1900,13 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Example: `series.diff("requests", { drop: true })`.
    * Drops the first event instead of keeping it with undefined values.
+   *
+   * **Multi-entity series:** the "previous event" may belong to a
+   * different entity, producing meaningless deltas across entity
+   * boundaries. On a series carrying multiple entities (host, region,
+   * device id), use
+   * `series.partitionBy(col).diff(...).collect()` to scope per entity.
+   * See {@link TimeSeries.partitionBy}.
    */
   diff<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
@@ -1906,6 +1927,13 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Example: `series.rate("requests", { drop: true })`.
    * Drops the first event instead of keeping it with undefined values.
+   *
+   * **Multi-entity series:** the "previous event" may belong to a
+   * different entity, producing meaningless rates across entity
+   * boundaries. On a series carrying multiple entities (host, region,
+   * device id), use
+   * `series.partitionBy(col).rate(...).collect()` to scope per entity.
+   * See {@link TimeSeries.partitionBy}.
    */
   rate<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
@@ -1920,6 +1948,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * numeric columns. Non-specified columns pass through unchanged. The first
    * event gets `undefined` in affected columns unless `{ drop: true }` is
    * passed.
+   *
+   * **Multi-entity series:** the "previous event" may belong to a
+   * different entity, producing meaningless percentages across entity
+   * boundaries. On a series carrying multiple entities (host, region,
+   * device id), use
+   * `series.partitionBy(col).pctChange(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   pctChange<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
@@ -2033,6 +2068,13 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Built-in accumulators: `"sum"`, `"max"`, `"min"`, `"count"`.
    * Custom accumulators: `(acc: number, value: number) => number`.
+   *
+   * **Multi-entity series:** the running accumulation interleaves
+   * across entities — `host-A`'s next event sums on top of
+   * `host-B`'s last value rather than `host-A`'s. On a series carrying
+   * multiple entities (host, region, device id), use
+   * `series.partitionBy(col).cumulative(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   cumulative<const Targets extends NumericColumnNameForSchema<S>>(spec: {
     [K in Targets]:
@@ -2145,6 +2187,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * Example: `series.shift("value", 1)`.
    * Lags column values by N events (positive N) or leads them (negative N).
    * Vacated positions get `undefined`.
+   *
+   * **Multi-entity series:** the value pulled in from N positions away
+   * may belong to a different entity, producing meaningless lagged
+   * values across entity boundaries. On a series carrying multiple
+   * entities (host, region, device id), use
+   * `series.partitionBy(col).shift(...).collect()` to scope per entity.
+   * See {@link TimeSeries.partitionBy}.
    */
   shift<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
@@ -2235,6 +2284,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * trailing gap (leading has no prior value). `"bfill"` fills any
    * internal or leading gap (trailing has no next value). `"zero"`
    * and literal fills work on any gap that fits the size caps.
+   *
+   * **Multi-entity series:** fill walks one chronological event
+   * sequence — `host-A`'s missing cell would `linear`-interpolate or
+   * `hold`-carry against `host-B`'s neighboring value. On a series
+   * carrying multiple entities (host, region, device id), use
+   * `series.partitionBy(col).fill(...).collect()` to scope per entity.
+   * See {@link TimeSeries.partitionBy}.
    */
   fill(
     strategy: FillStrategy | FillMapping<S>,
@@ -2415,9 +2471,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * series. Two events with the same full key are treated as
    * duplicates. The default resolution is `'last'` wins.
    *
-   * For multi-entity series (events for many hosts/regions interleaved
-   * by time), call this on a partitioned view so the partition column
-   * is part of the duplicate identity:
+   * **Multi-entity series:** events from different entities at the
+   * same key collapse as if they were duplicates of each other —
+   * `host-A`@t and `host-B`@t collide on the timestamp alone. On a
+   * series carrying multiple entities (host, region, device id), use
+   * `series.partitionBy(col).dedupe(...).collect()` so the partition
+   * column is part of the duplicate identity. See
+   * {@link TimeSeries.partitionBy}.
    *
    * ```ts
    * // Per-host dedupe — same time AND same host is the duplicate key.
@@ -2582,6 +2642,13 @@ export class TimeSeries<S extends SeriesSchema> {
    * - `alignment`: `"trailing"`
    * - sequence-driven only: `sample: "begin"`
    * - sequence-driven only: `range: series.timeRange()`
+   *
+   * **Multi-entity series:** the rolling window includes events from
+   * every entity within the window — `host-A`'s rolling average mixes
+   * `host-B`'s and `host-C`'s values into the same number. On a
+   * series carrying multiple entities (host, region, device id), use
+   * `series.partitionBy(col).rolling(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   rolling<const Mapping extends AggregateMap<S>>(
     window: DurationInput,
@@ -2937,6 +3004,13 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * When `output` is omitted, the smoothed values replace the target column. When `output` is
    * supplied, the smoothed values are appended as a new optional numeric column.
+   *
+   * **Multi-entity series:** the smoothing window pulls values from
+   * every entity into each smoothed point — `host-A`'s smoothed value
+   * is blended with `host-B`'s and `host-C`'s. On a series carrying
+   * multiple entities (host, region, device id), use
+   * `series.partitionBy(col).smooth(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   smooth<
     const Target extends NumericColumnNameForSchema<S>,
@@ -3919,6 +3993,15 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Internally a single `rolling(window, { avg, sd })` pass over the
    * source; band edges are derived arithmetically per event.
+   *
+   * **Multi-entity series:** the baseline window aggregates across
+   * every entity, so `host-A`'s `avg`/`sd` reflect the cross-entity
+   * mean/spread rather than `host-A`'s own. Anomaly detection on a
+   * multi-entity baseline flags events relative to the wrong
+   * population. On a series carrying multiple entities (host, region,
+   * device id), use
+   * `series.partitionBy(col).baseline(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   baseline<
     const Col extends NumericColumnNameForSchema<S>,
@@ -4036,6 +4119,14 @@ export class TimeSeries<S extends SeriesSchema> {
    * Internally: computes `rolling(window, { avg, sd })` using the
    * output-map form, zips with the source events by index, and keeps
    * events where `|value - avg| > sigma * sd`.
+   *
+   * **Multi-entity series:** the rolling baseline aggregates across
+   * every entity, so the deviation threshold reflects the wrong
+   * population — `host-A`'s "outlier" status is decided against the
+   * cross-entity mean rather than `host-A`'s own. On a series carrying
+   * multiple entities (host, region, device id), use
+   * `series.partitionBy(col).outliers(...).collect()` to scope per
+   * entity. See {@link TimeSeries.partitionBy}.
    */
   outliers<const Col extends NumericColumnNameForSchema<S>>(
     col: Col,
