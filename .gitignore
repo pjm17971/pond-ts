@@ -6,3 +6,6 @@ coverage/
 .DS_Store
 *.log
 *.tsbuildinfo
+
+# Scratch agent-run materials — prompts, fixtures, rubrics. Not shipped.
+experiments/

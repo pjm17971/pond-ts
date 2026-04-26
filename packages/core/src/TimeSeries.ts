@@ -75,6 +75,7 @@ import type {
   TimeRangeInput,
   TimestampInput,
 } from './temporal.js';
+import { compareEventKeys } from './temporal.js';
 import { Event } from './Event.js';
 import { Sequence } from './Sequence.js';
 import { validateAndNormalize } from './validate.js';
@@ -919,6 +920,122 @@ export class TimeSeries<S extends SeriesSchema> {
       schema: input.schema,
       rows: parseJsonRows(input.schema, input.rows, input.parse),
     });
+  }
+
+  /**
+   * Example: `TimeSeries.fromEvents(events, { schema, name })`.
+   * Builds a typed series from an array of `Event` instances. The events
+   * are sorted by key before construction, so callers don't need to
+   * pre-sort. The schema is taken on trust — callers should pass the
+   * same schema the events were originally produced under.
+   *
+   * **Trust contract:** no validation against the declared schema. If
+   * the caller passes events from a different schema, the series
+   * builds successfully and downstream `event.get('col')` calls will
+   * return undefined / produce confusing errors at access time. Most
+   * callers come from `groupBy(...).values()` or other pond-ts
+   * transforms and can't hit this; if you're constructing events by
+   * hand, prefer `new TimeSeries({ schema, rows })` or
+   * `TimeSeries.fromJSON(...)`, both of which validate.
+   *
+   * Closes the round-trip after `groupBy(col, fn)` + per-group transforms:
+   *
+   * ```ts
+   * const groups = series.groupBy('host', (g) =>
+   *   g.fill({ cpu: 'linear' }, { limit: 2 }),
+   * );
+   * const allEvents = [...groups.values()].flatMap((g) => [...g.events]);
+   * const merged = TimeSeries.fromEvents(allEvents, {
+   *   name: series.name,
+   *   schema: series.schema,
+   * });
+   * ```
+   *
+   * For combining multiple same-schema series in one call, prefer
+   * `TimeSeries.concat([...])` — it does the events-spread for you.
+   */
+  static fromEvents<S extends SeriesSchema>(
+    events: ReadonlyArray<EventForSchema<S>>,
+    options: { schema: S; name: string },
+  ): TimeSeries<S> {
+    const sorted = [...events].sort((a, b) =>
+      compareEventKeys(a.key(), b.key()),
+    );
+    return TimeSeries.#fromTrustedEvents(options.name, options.schema, sorted);
+  }
+
+  /**
+   * Example: `TimeSeries.concat([s1, s2, s3])`.
+   * Concatenates the events of N same-schema `TimeSeries` instances and
+   * returns one wider series with all events sorted by key. This is the
+   * "row-append" / vertical-stack counterpart to `joinMany` (column-merge
+   * by key) and the inverse of the per-group fan-out pattern from
+   * `groupBy(col, fn)`. Matches `Array.prototype.concat` /
+   * `pandas.concat(axis=0)` / SQL `UNION ALL` semantics.
+   *
+   * Schemas must match column-by-column on `name` and `kind` only —
+   * the `required` flag is intentionally not part of the structural
+   * check, since `required: false` only widens cell types and doesn't
+   * affect the concat contract. Other mismatches throw upfront. The
+   * concatenated series's `name` is taken from the first input.
+   *
+   * Event references survive the concat unchanged (no clones), so
+   * `concat.at(0)` is the same `Event` instance as the corresponding
+   * source-series event. Tied keys preserve input order via stable
+   * sort — `concat([a, b])` puts a's events before b's at any shared
+   * key.
+   *
+   * Coming from pondjs: `TimeSeries.timeSeriesListMerge(...)`'s
+   * concatenation case maps to `TimeSeries.concat([...])`. Its
+   * column-union case maps to `TimeSeries.joinMany([...])`.
+   *
+   * ```ts
+   * const groups = series.groupBy('host', (g) =>
+   *   g.fill({ cpu: 'linear' }, { limit: 2 }),
+   * );
+   * const concat = TimeSeries.concat([...groups.values()]);
+   * // same schema as the source; events from all hosts re-sorted by time.
+   * ```
+   *
+   * For combining series with different schemas (e.g. CPU and memory
+   * sources) by joining on the time key, use `TimeSeries.joinMany([...])`
+   * instead.
+   */
+  static concat<S extends SeriesSchema>(
+    series: ReadonlyArray<TimeSeries<S>>,
+  ): TimeSeries<S> {
+    if (series.length === 0) {
+      throw new TypeError(
+        'TimeSeries.concat requires at least one input series.',
+      );
+    }
+    const head = series[0]!;
+    for (let i = 1; i < series.length; i += 1) {
+      const other = series[i]!;
+      if (other.schema.length !== head.schema.length) {
+        throw new TypeError(
+          `TimeSeries.concat: schema length mismatch at index ${i} ` +
+            `(${head.schema.length} vs ${other.schema.length}).`,
+        );
+      }
+      for (let c = 0; c < head.schema.length; c += 1) {
+        const headCol = head.schema[c]!;
+        const otherCol = other.schema[c]!;
+        if (headCol.name !== otherCol.name || headCol.kind !== otherCol.kind) {
+          throw new TypeError(
+            `TimeSeries.concat: schema mismatch at column ${c} ` +
+              `("${headCol.name}: ${headCol.kind}" vs ` +
+              `"${otherCol.name}: ${otherCol.kind}").`,
+          );
+        }
+      }
+    }
+    const allEvents: EventForSchema<S>[] = [];
+    for (const s of series) {
+      for (const event of s.events) allEvents.push(event);
+    }
+    allEvents.sort((a, b) => compareEventKeys(a.key(), b.key()));
+    return TimeSeries.#fromTrustedEvents(head.name, head.schema, allEvents);
   }
 
   /** Example: `new TimeSeries({ name, schema, rows })`. Creates an immutable time series from a schema and row-oriented input data. */
