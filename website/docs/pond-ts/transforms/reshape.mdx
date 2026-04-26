@@ -135,6 +135,28 @@ The two forms coexist in one method via overload — the typed
 variant is opt-in via the `groups` option, and the untyped form
 stays as the open-set discovery path.
 
+:::tip[`as const` is load-bearing on `groups`]
+Without `as const` on the array, TypeScript widens `Groups` to
+`readonly string[]`, the recursive schema helper falls through, and
+the typed output collapses to just the time column — downstream
+`baseline('api-1_cpu', ...)` then fails with no specific
+column-name hint. Two safe shapes:
+
+```ts
+// Inline literal — the const modifier kicks in automatically:
+long.pivotByGroup('host', 'cpu', { groups: ['api-1', 'api-2'] });
+
+// Pre-declared variable — explicit `as const`:
+const HOSTS = ['api-1', 'api-2'] as const;
+long.pivotByGroup('host', 'cpu', { groups: HOSTS });
+```
+
+`const HOSTS = ['api-1', 'api-2']` (no `as const`) gives a widened
+`string[]` and silently degrades the typed output. If your output
+schema unexpectedly looks like `[time]` and nothing else, check
+here first.
+:::
+
 ## `unpivot` \{#unpivot\}
 
 :::caution[Sketch — not yet implemented]

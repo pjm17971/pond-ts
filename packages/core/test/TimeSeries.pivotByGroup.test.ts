@@ -366,12 +366,22 @@ describe('TimeSeries.pivotByGroup', () => {
           [0, 0.52, 'api-rogue'],
         ],
       });
-      expect(() =>
+      let captured: Error | undefined;
+      try {
         ts.pivotByGroup('host', 'cpu', {
           groups: ['api-1', 'api-2'] as const,
-        }),
-      ).toThrow(
-        /encountered group value "api-rogue" that is not in declared groups/,
+        });
+      } catch (e) {
+        captured = e as Error;
+      }
+      expect(captured).toBeInstanceOf(TypeError);
+      // Pin the three load-bearing pieces of the error message:
+      // the offending value, the declared set, and the suggested fix.
+      expect(captured!.message).toContain('"api-rogue"');
+      expect(captured!.message).toContain('"api-1"');
+      expect(captured!.message).toContain('"api-2"');
+      expect(captured!.message).toMatch(
+        /Drop the `groups` option|add this value to the declared set/,
       );
     });
 
@@ -392,12 +402,27 @@ describe('TimeSeries.pivotByGroup', () => {
       expect(wide.toPoints()[0]['api-1_cpu']).toBeCloseTo(0.4, 5);
     });
 
-    it('produces a fully-empty schema when an empty groups array is passed', () => {
+    it('declared empty groups + empty source produces a time-only schema', () => {
       const ts = new TimeSeries({ name: 'empty', schema, rows: [] });
       const wide = ts.pivotByGroup('host', 'cpu', {
         groups: [] as const,
       });
       expect(wide.schema.map((c) => c.name)).toEqual(['time']);
+    });
+
+    it('declared empty groups throws on any source row (not silent fallback)', () => {
+      // Pins the difference between "declared empty respected (everything is
+      // an extra value, throw)" and "alphabetical fallback over an empty
+      // declared set (silently produce time-only schema)". The former is
+      // the contract; the latter would be a silent bug.
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema,
+        rows: [[0, 0.31, 'api-1']],
+      });
+      expect(() =>
+        ts.pivotByGroup('host', 'cpu', { groups: [] as const }),
+      ).toThrow(/encountered group value "api-1"/);
     });
 
     it('still emits declared columns when source is empty', () => {
