@@ -89,14 +89,43 @@ column to that value:
 series.fill({ cpu: 0, host: 'unknown' });
 ```
 
-### `limit` cap
+### Gap caps — `limit` (cells) and `maxGap` (duration)
 
-Caps consecutive fills per column:
+`fill()` operates on **gaps** — runs of consecutive `undefined` cells
+in one column. Both options cap how big a gap can be before fill
+gives up:
 
 ```ts
+// Count-based: gap of at most 3 cells fits the cap
 series.fill('hold', { limit: 3 });
-// No more than 3 consecutive undefined values get filled. Longer gaps
-// stay undefined past the limit.
+
+// Duration-based: gap whose temporal span (prev-known to next-known)
+// is at most 5 minutes fits the cap
+series.fill('linear', { maxGap: '5m' });
+
+// Both — the more restrictive wins
+series.fill('linear', { limit: 3, maxGap: '5m' });
+```
+
+**All-or-nothing semantics.** A gap either fits the caps or it
+doesn't:
+
+- Gap fits → fill the entire gap with the strategy.
+- Gap exceeds either cap → leave the entire gap unfilled.
+
+This is the v0.9.0 default. Earlier versions partially filled
+(`limit: 3` on a 5-cell gap filled 3, left 2 unfilled). Partial
+fill propagated stale `'hold'` values past their useful lifetime
+and produced misleading `'linear'` interpolations across long
+outages. All-or-nothing is honest: if the gap is too big to bridge,
+leave the unknown unknown.
+
+```ts
+// Series with one 10-minute outage gap:
+const cpu = series.fill('linear', { maxGap: '5m' });
+// 10-min gap exceeds 5-min cap → outage remains undefined.
+// A naive linear interp would have invented a smooth slope across
+// data we don't have.
 ```
 
 ### Typical post-aggregate pipeline
@@ -104,8 +133,25 @@ series.fill('hold', { limit: 3 });
 ```ts
 const hourly = series
   .aggregate(Sequence.every('1h'), { cpu: 'avg', host: 'last' })
-  .fill({ cpu: 'linear', host: 'hold' });
+  .fill({ cpu: 'linear', host: 'hold' }, { maxGap: '3h' });
 ```
+
+### Multi-entity series — see `partitionBy`
+
+`fill()` walks one chronological event sequence. On a multi-entity
+series (events for multiple hosts interleaved by time), neighbors
+cross entity boundaries — `host-A`'s missing cell would interpolate
+against `host-B`'s value as a "neighbor."
+
+Use [`partitionBy(col)`](./reshape#partitionby) to scope `fill` to
+within each entity:
+
+```ts
+series.partitionBy('host').fill({ cpu: 'linear' }).collect();
+```
+
+See [Concepts → Multi-entity series](../../start-here/concepts#multi-entity-series-and-the-cross-partition-hazard)
+for the full hazard discussion.
 
 ## Deduplicate \{#deduplicate\}
 

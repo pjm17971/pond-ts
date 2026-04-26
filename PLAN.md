@@ -766,28 +766,35 @@ demote `#diffOrRate` to TS-private (compile-only, no runtime brand
 check). Regression test added in
 `test/TimeSeries.diff-rate-brand.test.ts`.
 
-### Queued: `fill` improvements (`maxGap`, all-or-nothing semantics)
+### Shipped: `fill` improvements (`maxGap`, all-or-nothing semantics)
 
 The original Codex friction on `fill` had two parts:
 
 - Cross-entity leakage — solved by `partitionBy`, see above.
-- **Long-gap policy** — `series.fill('linear', { limit: 3 })` today
-  fills 3 cells of a 30-cell gap, "fabricating" interpolated data
-  across what's actually a long outage. Codex wanted "don't fill at
-  all if the gap exceeds N."
+- **Long-gap policy** — `series.fill('linear', { limit: 3 })`
+  formerly filled 3 cells of a 30-cell gap, "fabricating" interpolated
+  data across what's actually a long outage. Codex wanted "don't fill
+  at all if the gap exceeds N."
 
-Plan for v0.9.0 PR 2 (`fill` improvements):
+Shipped in v0.9.0 PR 2:
 
-- [ ] Add `maxGap: DurationInput` option as a duration-based gap
-      cap (existing `limit` is count-based; both compose).
-- [ ] Change `limit`/`maxGap` semantics from "fill up to the cap and
-      leave the rest" to "fill the gap if it fits under the cap,
-      otherwise leave the gap fully unfilled." Strictly behavioral
-      change for current `limit` callers — semantic break worth
-      flagging in the v0.9.0 release notes. The user's argument:
+- [x] `maxGap: DurationInput` option as a duration-based gap cap.
+      `limit` is count-based, `maxGap` is time-based, both compose
+      (most restrictive wins).
+- [x] All-or-nothing semantics: a gap either fits the caps and gets
+      filled entirely, or exceeds them and is left fully unfilled.
+      Strictly behavioral change for callers who relied on partial
+      fill — flagged in the v0.9.0 release notes.
+- [x] No `mode` option — always all-or-nothing. The user's argument:
       "a big gap is never going to benefit from a few points being
-      filled in" — partial fill was a confused default.
-- [ ] No `mode` option — always all-or-nothing.
+      filled in." Partial fill was a confused default.
+
+Implementation: replaced the per-strategy switch (which tracked
+`consecutive` per cell) with a unified gap-walker. Each gap is
+detected once; size caps and strategy-feasibility (linear needs both
+neighbors, hold needs prev, bfill needs next) are checked once;
+the gap is filled or skipped atomically. ~50 LOC reduction net,
+clearer code.
 
 ### Queued: live partitioning
 
