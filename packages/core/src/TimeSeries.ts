@@ -2209,19 +2209,35 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Example: `series.fill({ cpu: "linear", host: "hold" })`.
    * Per-column fill strategies. Unmentioned columns are left as-is.
-   * Strategy names: `"hold"` (forward fill), `"linear"` (time-interpolated),
-   * `"zero"` (fill with 0). A non-string value is used as a literal fill value.
+   * Strategy names: `"hold"` (forward fill), `"bfill"` (backward fill),
+   * `"linear"` (time-interpolated), `"zero"` (fill with 0). A non-string
+   * value is used as a literal fill value.
    *
-   * Example: `series.fill("hold", { limit: 3 })`.
-   * Caps consecutive fills per column. After `limit` consecutive fills, further
-   * `undefined` values are left as-is until a real value resets the counter.
+   * **Gap semantics — all-or-nothing.** A "gap" is a run of consecutive
+   * `undefined` cells in one column. For each gap:
+   * - With no options: fill the whole gap (existing default).
+   * - With `{ limit: N }`: fill only if the gap length is at most N
+   *   cells. Otherwise leave the gap fully unfilled.
+   * - With `{ maxGap: '3m' }`: fill only if the gap's *temporal* span
+   *   (from the prior known value to the next known value) is at most
+   *   the duration. Otherwise leave the gap fully unfilled.
+   * - With both: fill only if both caps are met.
    *
-   * `"linear"` requires known values on both sides of a gap to interpolate.
-   * Leading and trailing `undefined` runs are left unfilled.
+   * The all-or-nothing semantic is the v0.9.0 default. Earlier
+   * versions partially filled (`limit: 3` on a 5-cell gap filled 3,
+   * left 2 unfilled). The new semantic avoids fabricating data
+   * across what's actually a long outage — partial fills propagate
+   * stale values past their useful lifetime.
+   *
+   * `"linear"` requires known values on both sides of a gap; leading
+   * and trailing gaps are unfilled. `"hold"` fills any internal or
+   * trailing gap (leading has no prior value). `"bfill"` fills any
+   * internal or leading gap (trailing has no next value). `"zero"`
+   * and literal fills work on any gap that fits the size caps.
    */
   fill(
     strategy: FillStrategy | FillMapping<S>,
-    options?: { limit?: number },
+    options?: { limit?: number; maxGap?: DurationInput },
   ): TimeSeries<S> {
     if (this.events.length === 0) {
       return this;
@@ -2251,6 +2267,8 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     const limit = options?.limit;
+    const maxGapMs =
+      options?.maxGap === undefined ? undefined : parseDuration(options.maxGap);
     const n = this.events.length;
 
     const columns: Record<string, (ScalarValue | undefined)[]> = {};
@@ -2271,99 +2289,101 @@ export class TimeSeries<S extends SeriesSchema> {
       times[i] = this.events[i]!.begin();
     }
 
+    // Walk each column and apply per-strategy fill on a per-gap basis,
+    // with all-or-nothing limit / maxGap checks.
     for (const [name, spec] of specs) {
       const col = columns[name];
       if (!col) continue;
 
-      switch (spec.mode) {
-        case 'hold': {
-          let last: ScalarValue | undefined;
-          let consecutive = 0;
-          for (let i = 0; i < n; i++) {
-            if (col[i] !== undefined) {
-              last = col[i];
-              consecutive = 0;
-            } else if (last !== undefined) {
-              consecutive++;
-              if (limit === undefined || consecutive <= limit) {
-                col[i] = last;
-              }
-            }
-          }
-          break;
+      let i = 0;
+      while (i < n) {
+        if (col[i] !== undefined) {
+          i += 1;
+          continue;
         }
-        case 'bfill': {
-          let next: ScalarValue | undefined;
-          let consecutive = 0;
-          for (let i = n - 1; i >= 0; i--) {
-            if (col[i] !== undefined) {
-              next = col[i];
-              consecutive = 0;
-            } else if (next !== undefined) {
-              consecutive++;
-              if (limit === undefined || consecutive <= limit) {
-                col[i] = next;
-              }
-            }
-          }
-          break;
+        // Found the start of a gap.
+        const start = i;
+        while (i < n && col[i] === undefined) i += 1;
+        const end = i; // exclusive
+        const length = end - start;
+        const hasPrev = start > 0;
+        const hasNext = end < n;
+
+        // Strategy-level fillability: do we have the neighbors required?
+        let strategyOk: boolean;
+        switch (spec.mode) {
+          case 'linear':
+            strategyOk = hasPrev && hasNext;
+            break;
+          case 'hold':
+            strategyOk = hasPrev;
+            break;
+          case 'bfill':
+            strategyOk = hasNext;
+            break;
+          default:
+            strategyOk = true; // zero, literal — no neighbor needed
         }
-        case 'zero': {
-          let consecutive = 0;
-          for (let i = 0; i < n; i++) {
-            if (col[i] !== undefined) {
-              consecutive = 0;
-            } else {
-              consecutive++;
-              if (limit === undefined || consecutive <= limit) {
-                col[i] = 0;
-              }
-            }
+        if (!strategyOk) continue;
+
+        // Size caps: count and temporal span.
+        if (limit !== undefined && length > limit) continue;
+        if (maxGapMs !== undefined) {
+          // Span = time from the last known value to the next known
+          // value. For internal gaps this uses both neighbors; for
+          // edge-only gaps (hold trailing, bfill leading), use the
+          // available neighbor and the gap's own first/last timestamp
+          // as the other end so maxGap caps the carry-forward distance.
+          let span: number;
+          if (hasPrev && hasNext) {
+            span = times[end]! - times[start - 1]!;
+          } else if (hasPrev) {
+            // trailing gap (hold): cap distance from prev known to last gap cell
+            span = times[end - 1]! - times[start - 1]!;
+          } else if (hasNext) {
+            // leading gap (bfill): cap distance from first gap cell to next known
+            span = times[end]! - times[start]!;
+          } else {
+            span = 0; // unreachable given strategyOk above, but safe
           }
-          break;
+          if (span > maxGapMs) continue;
         }
-        case 'literal': {
-          let consecutive = 0;
-          for (let i = 0; i < n; i++) {
-            if (col[i] !== undefined) {
-              consecutive = 0;
-            } else {
-              consecutive++;
-              if (limit === undefined || consecutive <= limit) {
-                col[i] = spec.value;
+
+        // Fill the gap per strategy.
+        switch (spec.mode) {
+          case 'hold': {
+            const v = col[start - 1];
+            for (let j = start; j < end; j++) col[j] = v;
+            break;
+          }
+          case 'bfill': {
+            const v = col[end];
+            for (let j = start; j < end; j++) col[j] = v;
+            break;
+          }
+          case 'zero': {
+            for (let j = start; j < end; j++) col[j] = 0;
+            break;
+          }
+          case 'literal': {
+            for (let j = start; j < end; j++) col[j] = spec.value;
+            break;
+          }
+          case 'linear': {
+            const before = col[start - 1] as number;
+            const after = col[end] as number;
+            const t0 = times[start - 1]!;
+            const t1 = times[end]!;
+            const tspan = t1 - t0;
+            for (let j = start; j < end; j++) {
+              if (tspan === 0) {
+                col[j] = before;
+              } else {
+                col[j] = before + (after - before) * ((times[j]! - t0) / tspan);
               }
             }
+            break;
           }
-          break;
-        }
-        case 'linear': {
-          let gapStart = -1;
-          for (let i = 0; i < n; i++) {
-            if (col[i] !== undefined) {
-              if (gapStart >= 0 && gapStart > 0) {
-                const before = col[gapStart - 1] as number;
-                const after = col[i] as number;
-                const t0 = times[gapStart - 1]!;
-                const t1 = times[i]!;
-                const span = t1 - t0;
-                const gapLen = i - gapStart;
-                for (let j = gapStart; j < i; j++) {
-                  const fillIndex = j - gapStart + 1;
-                  if (limit !== undefined && fillIndex > limit) break;
-                  if (span === 0) {
-                    col[j] = before;
-                  } else {
-                    const ratio = (times[j]! - t0) / span;
-                    col[j] = before + (after - before) * ratio;
-                  }
-                }
-              }
-              gapStart = -1;
-            } else if (gapStart < 0) {
-              gapStart = i;
-            }
-          }
-          break;
         }
       }
     }
