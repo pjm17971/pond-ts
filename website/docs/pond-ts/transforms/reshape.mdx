@@ -94,6 +94,47 @@ actually-undefined values collapses both into a single
 it.
 :::
 
+### Typed variant via declared `groups` \{#pivotbygroup-typed\}
+
+When you know the group set up front (which is true for most
+dashboards even when they pretend otherwise), pass `groups` and the
+output schema becomes literal-typed — every wide column has a known
+name, every downstream transform narrows correctly:
+
+```ts
+const HOSTS = ['api-1', 'api-2'] as const;
+const wide = long.pivotByGroup('host', 'cpu', { groups: HOSTS });
+// wide.schema is now:
+//   readonly [
+//     { name: 'time', kind: 'time' },
+//     { name: 'api-1_cpu', kind: 'number', required: false },
+//     { name: 'api-2_cpu', kind: 'number', required: false },
+//   ]
+
+// No `as never` needed — 'api-1_cpu' is a known column name:
+const banded = wide.baseline('api-1_cpu', { window: '1m', sigma: 2 });
+
+// toPoints rows narrow too:
+const point = wide.toPoints()[0];
+const value: number | undefined = point['api-1_cpu'];
+```
+
+Behavior changes when `groups` is supplied:
+
+- **Output column order = declaration order**, not alphabetical. The
+  declaration is the user's intent; preserving it makes column
+  layouts stable across runs.
+- **Declared groups with no events still produce a column** (with
+  all-undefined cells). The schema is stable regardless of which
+  hosts happen to have data on a given run.
+- **Runtime values not in `groups` throw upfront.** Strict by default;
+  drop the option to discover groups dynamically and accept the
+  loose `TimeSeries<SeriesSchema>` return type.
+
+The two forms coexist in one method via overload — the typed
+variant is opt-in via the `groups` option, and the untyped form
+stays as the open-set discovery path.
+
 ## `unpivot` \{#unpivot\}
 
 :::caution[Sketch — not yet implemented]

@@ -244,6 +244,16 @@ multiple producers"). A multi-value-column variant
 `api-1_cpu`, `api-1_memory`, ...) is a candidate follow-up if a real
 need appears; today's workaround is two `pivotByGroup` calls + `join`.
 
+A typed-output overload ships in v0.9.0: `pivotByGroup(group, value,
+{ groups: [...] as const })` propagates the declared group set to the
+output schema as literal column names, so downstream `baseline` /
+`rolling` / `toPoints` calls narrow without `as never` casts. The
+declared form also preserves declaration order (not alphabetical) and
+emits columns for declared-but-empty groups so the schema is stable
+across runs. The untyped form remains as the open-set discovery path
+returning `TimeSeries<SeriesSchema>`. Both live behind one method via
+overload.
+
 **Per-column alignment**: extend `align()` to accept a per-column map. Default
 (`'hold'`) applies to any column not in the map:
 

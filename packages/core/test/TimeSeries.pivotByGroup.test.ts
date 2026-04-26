@@ -313,6 +313,106 @@ describe('TimeSeries.pivotByGroup', () => {
     });
   });
 
+  describe('typed variant (declared groups)', () => {
+    it('uses declaration order, not alphabetical, for output columns', () => {
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema,
+        rows: [
+          [0, 0.31, 'zeta'],
+          [0, 0.52, 'alpha'],
+          [0, 0.4, 'mu'],
+        ],
+      });
+      const wide = ts.pivotByGroup('host', 'cpu', {
+        groups: ['zeta', 'alpha', 'mu'] as const,
+      });
+      expect(wide.schema.slice(1).map((c) => c.name)).toEqual([
+        'zeta_cpu',
+        'alpha_cpu',
+        'mu_cpu',
+      ]);
+    });
+
+    it('emits a column for declared groups even when the group has no events', () => {
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema,
+        rows: [
+          [0, 0.31, 'api-1'],
+          [60_000, 0.44, 'api-1'],
+        ],
+      });
+      const wide = ts.pivotByGroup('host', 'cpu', {
+        groups: ['api-1', 'api-2', 'api-3'] as const,
+      });
+      expect(wide.schema.slice(1).map((c) => c.name)).toEqual([
+        'api-1_cpu',
+        'api-2_cpu',
+        'api-3_cpu',
+      ]);
+      const row = wide.toPoints()[0];
+      expect(row['api-1_cpu']).toBe(0.31);
+      expect(row['api-2_cpu']).toBeUndefined();
+      expect(row['api-3_cpu']).toBeUndefined();
+    });
+
+    it('throws when runtime data has a group not in the declared set', () => {
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema,
+        rows: [
+          [0, 0.31, 'api-1'],
+          [0, 0.52, 'api-rogue'],
+        ],
+      });
+      expect(() =>
+        ts.pivotByGroup('host', 'cpu', {
+          groups: ['api-1', 'api-2'] as const,
+        }),
+      ).toThrow(
+        /encountered group value "api-rogue" that is not in declared groups/,
+      );
+    });
+
+    it('passes aggregator through alongside groups', () => {
+      const ts = new TimeSeries({
+        name: 'metrics',
+        schema,
+        rows: [
+          [0, 0.3, 'api-1'],
+          [0, 0.5, 'api-1'], // duplicate
+          [0, 0.7, 'api-2'],
+        ],
+      });
+      const wide = ts.pivotByGroup('host', 'cpu', {
+        groups: ['api-1', 'api-2'] as const,
+        aggregate: 'avg',
+      });
+      expect(wide.toPoints()[0]['api-1_cpu']).toBeCloseTo(0.4, 5);
+    });
+
+    it('produces a fully-empty schema when an empty groups array is passed', () => {
+      const ts = new TimeSeries({ name: 'empty', schema, rows: [] });
+      const wide = ts.pivotByGroup('host', 'cpu', {
+        groups: [] as const,
+      });
+      expect(wide.schema.map((c) => c.name)).toEqual(['time']);
+    });
+
+    it('still emits declared columns when source is empty', () => {
+      const ts = new TimeSeries({ name: 'empty', schema, rows: [] });
+      const wide = ts.pivotByGroup('host', 'cpu', {
+        groups: ['api-1', 'api-2'] as const,
+      });
+      expect(wide.schema.slice(1).map((c) => c.name)).toEqual([
+        'api-1_cpu',
+        'api-2_cpu',
+      ]);
+      expect(wide.length).toBe(0);
+    });
+  });
+
   describe('composition', () => {
     it('chains with rolling for per-host smoothing', () => {
       const wide = longSeries().pivotByGroup('host', 'cpu');
