@@ -239,20 +239,29 @@ Duplicate `(timestamp, group)` pairs throw by default; opt-in with
 and `pN` / `topN` parsed names). Requires a time-keyed input.
 
 The single-value-column form covers the dashboard case ("one metric,
-multiple producers"). A multi-value-column variant
-(`pivotByGroup('host', ['cpu', 'memory'])` → schema with
-`api-1_cpu`, `api-1_memory`, ...) is a candidate follow-up if a real
-need appears; today's workaround is two `pivotByGroup` calls + `join`.
+multiple producers"). A typed-output overload ships in v0.8.1:
+`pivotByGroup(group, value, { groups: [...] as const })` propagates the
+declared group set to the output schema as literal column names, so
+downstream `baseline` / `rolling` / `toPoints` calls narrow without
+`as never` casts. The declared form also preserves declaration order
+(not alphabetical) and emits columns for declared-but-empty groups so
+the schema is stable across runs. The untyped form remains as the
+open-set discovery path returning `TimeSeries<SeriesSchema>`. Both
+live behind one method via overload.
 
-A typed-output overload ships in v0.9.0: `pivotByGroup(group, value,
-{ groups: [...] as const })` propagates the declared group set to the
-output schema as literal column names, so downstream `baseline` /
-`rolling` / `toPoints` calls narrow without `as never` casts. The
-declared form also preserves declaration order (not alphabetical) and
-emits columns for declared-but-empty groups so the schema is stable
-across runs. The untyped form remains as the open-set discovery path
-returning `TimeSeries<SeriesSchema>`. Both live behind one method via
-overload.
+Rejected follow-ups (from v0.8.0 dashboard-agent feedback):
+
+- **Multi-value-column pivot** — `pivotByGroup('host', ['cpu', 'memory'])`.
+  Cross-host-cross-metric layouts hit this, but the workaround
+  (two pivots + `join`) is one extra line and stays inside the typed
+  contract. Not earning the API surface.
+- **`baselineMany` / multi-column `baseline`** — replacing the
+  chained `wide = wide.baseline(...)` reassignment with a single
+  multi-column call. Cosmetic — the chain is idiomatic immutable-API
+  code and reads fine in practice.
+
+Both rejections will be revisited only if a second concrete case
+lands.
 
 **Per-column alignment**: extend `align()` to accept a per-column map. Default
 (`'hold'`) applies to any column not in the map:
@@ -456,9 +465,10 @@ Definition of done:
 
 ## Phase 4: Live composition
 
-Status: core primitives complete; late-event propagation through live
-transforms and live merge / join across sources are known scope gaps (see
-below).
+Status: core primitives complete; **two queued workstreams** —
+late-event propagation through live transforms and live merge / join
+across sources. Both are committed for upcoming work (no longer in
+"deferred" status) but are large enough to ship as their own phases.
 
 Goal: validate the live composition model before building UI integrations on top
 of it.
@@ -488,7 +498,7 @@ Remaining:
 - [x] carry-forward views: `fill`, `cumulative` (small state per column)
 - [x] docs page for live transforms
 
-### Known scope gap: late-event propagation
+### Queued: late-event propagation
 
 `graceWindow` is honored at two boundaries and nowhere else:
 
@@ -534,7 +544,7 @@ Concrete next steps when this work begins:
 - [ ] Test matrix: `graceWindow + retention`, `graceWindow + rolling`,
       `graceWindow + window view`, `graceWindow + nested transforms`
 
-### Known scope gap: live merge / join
+### Queued: live merge / join
 
 Multiple `LiveSeries` instances cannot be combined into a single live source
 today. There is no `LiveSeries.merge(a, b)` (interleave events from same-schema
@@ -591,6 +601,57 @@ Concrete next steps when this work begins:
       — defer to the late-event work above, or carve out an in-order-only
       contract for the first cut.
 
+### Queued: deduping strategy (batch + live)
+
+Real-world ingest produces duplicate events: WebSocket replays, kafka
+at-least-once semantics, retried HTTP fetches, polling overlaps. There
+is no first-class dedupe primitive today — callers either pre-filter
+upstream or live with duplicates downstream.
+
+Both batch and live need a story.
+
+**Batch:** `series.dedupe(options?)` returns a new `TimeSeries<S>` with
+duplicates collapsed.
+
+**Live:** an ingest-time policy on `LiveSeries`, surfaced either as a
+new `ordering` mode (`'append' | 'reorder' | 'dedupe'`) or as a
+separate `dedupe: 'last-wins' | 'first-wins' | 'error'` option.
+
+Design questions to settle before implementation:
+
+- **What counts as a duplicate?** Same key only, or same key + same
+  payload? Same-key-different-payload is the interesting case
+  (resolver: first-wins, last-wins, merge). The conservative default
+  is probably "same key, last-wins" — matches how WebSocket replay
+  feels intuitively — but "same key only with custom resolver" is
+  the most flexible.
+- **Live update vs. emit?** When a duplicate-key event arrives in
+  last-wins mode, do we update the in-place event (and notify
+  subscribers via a separate `'replace'` event), or treat the new
+  one as the canonical event and the old one as evicted? The
+  in-place mutation breaks immutability; the evict-and-emit path
+  is heavier but stays consistent with the rest of the model.
+- **Interaction with grace + retention.** A late event whose key
+  already exists in the buffer is a duplicate by definition under
+  this design. Does the late-event-propagation work treat it
+  identically to any other dedup case, or is there a "late
+  duplicate" special case worth distinguishing?
+- **Subscribers:** does dedupe surface a `'duplicate'` event so
+  metrics / logging can react? Probably yes.
+
+Concrete next steps when this work begins:
+
+- [ ] Spec batch `dedupe(options?)`: default behavior, exact-key vs.
+      key+payload, custom resolver shape.
+- [ ] Decide the live API shape: separate `dedupe` option vs. third
+      `ordering` mode. Lean separate-option since dedupe is
+      orthogonal to ordering.
+- [ ] Plumb through `LiveAggregation` / `LiveRollingAggregation` —
+      a duplicate that arrives after a bucket closes is a special
+      case (modify or ignore?).
+- [ ] Add the `'duplicate'` (and possibly `'replace'`) event type
+      to the subscriber surface.
+
 ### Batch → Live applicability
 
 Not every batch `TimeSeries` method needs a live equivalent. The live layer is
@@ -614,7 +675,8 @@ toolkit, snapshot to `TimeSeries` and use the batch API.
 | `smooth()`        | covered  | EMA is a closure in `map()`; MA is rolling avg           |
 | `shift(col, n)`   | maybe    | needs lookback buffer, niche for live                    |
 | `align()`         | no       | resampling assumes complete data                         |
-| `join()`          | **gap**  | real ask, deferred — see "live merge / join" above       |
+| `join()`          | **gap**  | real ask, queued — see "live merge / join" above         |
+| `dedupe()`        | **gap**  | new primitive needed both sides — see "deduping" above   |
 | `groupBy()`       | no       | partitioning is a source-level concern                   |
 | `within/trim`     | no       | temporal selection — snapshot then slice                 |
 | `reduce()`        | no       | whole-series → scalar — that's `LiveRollingAggregation`  |

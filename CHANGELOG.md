@@ -7,9 +7,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.8.1...HEAD
 
 ## [Unreleased]
+
+## [0.8.1] — 2026-04-26
+
+Strictly additive over v0.8.0 — typed overload narrows result types when
+opted in via `groups`; untyped form is unchanged. Plus a docs reorg.
+
+### Added
+
+- **`pivotByGroup` typed overload** — pass `{ groups: [...] as const }`
+  and the output schema becomes literal-typed, so downstream
+  `baseline` / `rolling` / `toPoints` calls narrow without `as never`
+  casts. Eliminates the dashboard friction reported on v0.8.0.
+
+  ```ts
+  const HOSTS = ['api-1', 'api-2'] as const;
+  const wide = long.pivotByGroup('host', 'cpu', { groups: HOSTS });
+  // wide.schema is now literal-typed:
+  //   [time, { name: 'api-1_cpu', kind: 'number', required: false },
+  //          { name: 'api-2_cpu', kind: 'number', required: false }]
+  wide.baseline('api-1_cpu', { window: '1m', sigma: 2 }); // no cast
+  ```
+
+  Behavior in the typed path: declaration order (not alphabetical),
+  declared-but-empty groups still emit columns, runtime values not
+  in the declared set throw upfront. Untyped form (no `groups`)
+  keeps existing alphabetical / dynamic-discovery / loose-output
+  behavior.
+
+### Changed
+
+- **Docs site reorganized.** `Transforms` → **TimeSeries**;
+  `Live` → **LiveSeries**; new **Advanced** section for charting and
+  array columns. Concepts moves to `Start here`. New **Reshaping**
+  page splits `pivotByGroup` / `groupBy` / `join` / `joinMany` from
+  Aggregation, plus a new **Queries** page covering `at` / `first` /
+  `timeRange` / `includesKey` / `intersection` / iterators / output
+  forms — everything that interrogates a series rather than
+  transforming it. JSON ingest renamed to **Ingest** and slotted as
+  the first page under TimeSeries.
 
 ## [0.8.0] — 2026-04-25
 
@@ -191,6 +230,7 @@ type-level changes; patch bumps are strictly additive.
   two-pass pattern with one call. Custom column names via `{ names }` if the
   defaults collide.
 
+[0.8.1]: https://github.com/pjm17971/pond-ts/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/pjm17971/pond-ts/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pjm17971/pond-ts/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/pjm17971/pond-ts/compare/v0.5.11...v0.6.0
