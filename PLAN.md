@@ -913,7 +913,7 @@ non-`TimeSeries` shapes — `toJSON`, `toRows`, `toPoints`).
       grid, sub-bucket events with each `select` mode, empty
       buckets, off-grid events, partitioned variant preserves
       partition values, full chain (`partitionBy + dedupe +
-  materialize + fill(maxGap) + collect`).
+materialize + fill(maxGap) + collect`).
 - [ ] Cleaning page rewritten to lead with the
       `partitionBy + dedupe + materialize + fill` chain as the
       canonical multi-host cleaner.
@@ -1307,6 +1307,18 @@ Later, only after the previous phases are stable:
 
 - `@pond-ts/charts` — first-party chart components built directly on the
   `pond-ts` data model, successor to `react-timeseries-charts`
+- **gRPC stream processor experiment** — exploratory: a server-side
+  binary that consumes a gRPC event stream and routes it through a
+  pond-ts `LivePartitionedSeries` pipeline (e.g. dedupe + fill +
+  rolling) per tenant or stream. Built primarily as a
+  performance/correctness testbed: real high-throughput workload
+  would surface routing-overhead bottlenecks with actual data
+  (currently the partition routing path is ~0.8 µs/event due to
+  row revalidation in `LiveSeries.push`; we deferred the
+  optimization for v0.11 because synthetic measurements weren't
+  enough signal). Could also become a reference deployment shape
+  for users who want pond-ts pipelines in their own services.
+  Separate package or repo (not part of the npm packages).
 
 ### Package structure
 

@@ -7,9 +7,125 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.0...HEAD
 
 ## [Unreleased]
+
+## [0.11.0] — 2026-04-27
+
+The "live partitioning" release. Closes the cross-entity
+correctness story end-to-end — the per-partition primitives we
+shipped in v0.9.0 / v0.10.0 for batch now have a live counterpart
+that handles ingestion, retention, grace, and stateful pipelines
+on multi-host streams.
+
+Without this, every multi-host live pipeline (rolling avg, fill,
+diff, rate, cumulative, pctChange) silently mixes data across
+entities — the same hazard the partitionBy work resolved for
+batch, but live-side. Dashboard agent's v0.9.0 round-2 feedback
+explicitly named "LivePartitionedSeries would be the obvious next
+step" as the missing piece.
+
+### Added
+
+- **`liveSeries.partitionBy(col, options?)`** — returns
+  `LivePartitionedSeries<S, K>`, the live counterpart to
+  `PartitionedTimeSeries`. Routes events from a source
+  `LiveSource<S>` into per-partition `LiveSeries<S>` sub-buffers,
+  each with its own retention, grace window, and stateful
+  operator pipeline.
+
+  Per-partition semantics (settled in design):
+  - Retention applies per partition (a chatty host can't squeeze
+    a quiet one out of the buffer)
+  - Grace windows apply per partition (late events touch only
+    their own partition)
+  - Aggregation timing is per partition (one host's rolling avg
+    fires when that host has enough data)
+  - Auto-spawn on new partition values; optional `groups` for
+    typed declared partitions (mirrors batch typed-groups)
+
+  Terminals:
+  - `.toMap()` → `Map<K, LiveSource<S>>` for direct per-partition
+    subscription
+  - `.collect()` → unified `LiveSeries<S>` (append-only fan-in)
+  - `.apply(factory)` → unified `LiveSeries<R>` with per-
+    partition operator chains
+  - `.dispose()` cleans up source subscription, all per-partition
+    pipeline subscribers, and `toMap`-created factory chains
+
+- **Typed chainable sugar** — `partitioned.fill(...).rolling(...).collect()`
+  matches the batch chainable view. Sugar coverage on both
+  `LivePartitionedSeries` and the chained `LivePartitionedView`:
+  `fill`, `diff`, `rate`, `pctChange`, `cumulative`, `rolling`.
+
+  ```ts
+  const cpuSmoothed = live
+    .partitionBy('host')
+    .fill({ cpu: 'hold' })
+    .rolling('1m', { cpu: 'avg', host: 'last' })
+    .collect();
+  ```
+
+  `LivePartitionedView<SBase, R, K>` is a lazy chain step holding
+  a composed factory; terminals delegate to the root partitioned
+  series. Auto-spawn flows through the chain — a new partition
+  triggers a fresh factory invocation.
+
+- **`LivePartitionedView`** exported from package root.
+
+- **`ARCHITECTURE.md`** at repo root — first-pass document for
+  contributors (human or AI) reading the codebase cold. Covers
+  layered model, stateful primitives, recurring patterns
+  (typed-groups, trusted construction via `static #foo`,
+  factory-based per-partition state, append-only fan-in vs
+  mirrored materialization, per-method JSDoc warnings, perf-
+  check discipline), decision log, and conventions.
+
+### Changed
+
+- **CLAUDE.md** points to `ARCHITECTURE.md` so future sessions
+  discover it alongside `PLAN.md`.
+
+### Notes
+
+- **Append-only fan-in semantics** for `collect()` and `apply()`
+  on `LivePartitionedSeries` — per-partition retention/grace
+  evictions do NOT propagate to the unified buffer. Documented
+  via JSDoc; the unified buffer's own retention is independent.
+  Use `toMap()` for current per-partition state.
+
+- **Post-commit error semantics for partition rejection** — when
+  the partition view throws inside the source's event listener
+  (rogue value, partition ordering rejection), the source has
+  already committed the event. Documented in
+  `LiveSeries.partitionBy` JSDoc; recommend upstream input
+  validation if source/partition atomicity matters.
+
+- **Rolling drops partition column unless explicitly added.**
+  `LiveSeries.rolling` (and the partitioned chain via it) only
+  retains columns named in `mapping` — include `host: 'last'` (or
+  similar) to keep the partition tag visible in the unified
+  output. Documented in `rolling`'s JSDoc on both the
+  `LivePartitionedSeries` and `LivePartitionedView` surfaces.
+
+### Performance
+
+- Routing overhead measured at ~88ms for 100k events × 10 hosts
+  (50ms over bare push). Apples-to-apples vs equivalent un-
+  partitioned operator chains: ~1.8-2.6× cost. Constant per
+  event (~0.8 µs); cardinality scales flat (Map lookup is O(1)).
+  See `scripts/perf-live-partitioned.mjs`.
+
+- An `_acceptEvent` private-method optimization to bypass row
+  re-validation in partition routing was scoped and rejected for
+  v0.11 — the benefit (~0.3-0.4 µs/event saved) is marginal for
+  typical telemetry workloads (1-10k events/sec) and the cost
+  (validation-bypass primitive on the public API surface) wasn't
+  justified. May revisit if a high-throughput user surfaces the
+  bottleneck with real workload data.
+
+[0.11.0]: https://github.com/pjm17971/pond-ts/compare/v0.10.1...v0.11.0
 
 ## [0.10.1] — 2026-04-27
 
@@ -180,7 +296,7 @@ fresh-agent doc improvements.
   - 4 regression tests pinning the partitioned `fill(maxGap)` chain
     works (bare `maxGap`, all-or-nothing per-partition span,
     `limit + maxGap` composition, full `partitionBy + dedupe +
-    fill(maxGap)` chain).
+fill(maxGap)` chain).
   - 5 composite-key round-trip tests addressing a refinement flagged
     by the dashboard agent: `partitionBy(['host', 'region'])`
     preserves both key columns in the schema, on every output event,
@@ -223,7 +339,7 @@ on every affected method's JSDoc.
   method, instead of adding a `partitionBy` option to each.
 - **`series.dedupe({ keep })`** — first-class deduplication with
   policies: `'first' | 'last' | 'error' | 'drop' | { min: col } |
-  { max: col } | (events) => Event`. Default key is the full event
+{ max: col } | (events) => Event`. Default key is the full event
   key (`begin` for time-keyed, `begin+end` for time-range,
   `begin+end+value` for interval-keyed); default resolution is
   `'last'`. `partitionBy('host').dedupe()` is the multi-entity
@@ -259,7 +375,7 @@ on every affected method's JSDoc.
   `#fromTrustedEvents` (which uses `Object.create` to bypass the
   constructor) hit a JS-private brand check on `#diffOrRate` and
   threw. Refactored to a class-static private (`static
-  #diffOrRate`) — runtime-private without the per-instance brand
+#diffOrRate`) — runtime-private without the per-instance brand
   failure.
 
 [0.9.0]: https://github.com/pjm17971/pond-ts/compare/v0.8.2...v0.9.0
