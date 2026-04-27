@@ -1,5 +1,6 @@
 import type {
   AlignSchema,
+  MaterializeSchema,
   ArrayAggregateAppendSchema,
   ArrayAggregateReplaceSchema,
   ArrayColumnNameForSchema,
@@ -396,6 +397,18 @@ function makeAlignedSchema<S extends SeriesSchema>(schema: S): AlignSchema<S> {
       required: false as const,
     })),
   ]) as AlignSchema<S>;
+}
+
+function makeMaterializedSchema<S extends SeriesSchema>(
+  schema: S,
+): MaterializeSchema<S> {
+  return Object.freeze([
+    { name: 'time', kind: 'time' as const },
+    ...schema.slice(1).map((column) => ({
+      ...column,
+      required: false as const,
+    })),
+  ]) as MaterializeSchema<S>;
 }
 
 function sampleTime(interval: Interval, sample: AlignSample): number {
@@ -1469,6 +1482,160 @@ export class TimeSeries<S extends SeriesSchema> {
       schema: resultSchema as unknown as SeriesSchema,
       rows: alignedRows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
     }) as unknown as TimeSeries<AlignSchema<S>>;
+  }
+
+  /**
+   * Example: `series.materialize(Sequence.every("1m"))`.
+   * Materializes the series onto a sequence grid, emitting one
+   * **time-keyed** row per bucket. For each bucket, populate value
+   * columns from a chosen source event whose `begin()` falls in
+   * `[bucket.begin, bucket.end)`; for empty buckets, emit a row with
+   * all value columns `undefined`.
+   *
+   * The natural pre-step to gap-capped fill — `materialize` only
+   * regularizes the grid, leaving fill policy as a separate decision:
+   *
+   * ```ts
+   * series
+   *   .partitionBy('host')
+   *   .dedupe({ keep: 'last' })
+   *   .materialize(Sequence.every('1m'))           // regularize, undefined for empty
+   *   .fill({ cpu: 'linear' }, { maxGap: '3m' })   // explicit fill policy
+   *   .collect();
+   * ```
+   *
+   * Distinct from `align()` (which mandates a `'hold'` or `'linear'`
+   * fill method and returns interval-keyed) and `aggregate()` (which
+   * applies a per-column reducer). `materialize` does only the grid
+   * step; fill is a separate composition.
+   *
+   * Options:
+   *
+   * - **`sample`** (`'begin' | 'center' | 'end'`, default `'begin'`)
+   *   — bucket anchor for the output time. Matches `align`'s
+   *   convention.
+   * - **`select`** (`'first' | 'last' | 'nearest'`, default `'last'`)
+   *   — which source event in each bucket wins. `'first'` /
+   *   `'last'` pick the boundary event by `begin()` order.
+   *   `'nearest'` picks the source event whose `begin()` is closest
+   *   to the bucket's sample time **among events in the bucket**.
+   *   All three use half-open `[bucket.begin, bucket.end)`
+   *   membership; an empty bucket emits `undefined` regardless of
+   *   `select`.
+   * - **`range`** (`TemporalLike`, default `series.timeRange()`) —
+   *   bounded slice for procedural sequences (`Sequence.every(...)`).
+   *   When a `BoundedSequence` is supplied directly, its intervals
+   *   are used as-is.
+   *
+   * **Multi-entity series:** every cell of an empty-bucket row is
+   * `undefined` — including string/categorical columns like `host`.
+   * On a series carrying multiple entities, use
+   * `series.partitionBy(col).materialize(seq).collect()` so the
+   * partition column auto-populates on every output row (including
+   * empty buckets) — `host`'s value is known per partition.
+   * See {@link TimeSeries.partitionBy}.
+   */
+  materialize(
+    sequence: SequenceLike,
+    options: {
+      sample?: AlignSample;
+      select?: 'first' | 'last' | 'nearest';
+      range?: TemporalLike;
+    } = {},
+  ): TimeSeries<MaterializeSchema<S>> {
+    const sample = options.sample ?? 'begin';
+    const select = options.select ?? 'last';
+    const range = options.range ?? this.timeRange();
+    const resultSchema = makeMaterializedSchema(this.schema);
+
+    if (!range) {
+      return new TimeSeries({
+        name: this.name,
+        schema: resultSchema as unknown as SeriesSchema,
+        rows: [],
+      }) as unknown as TimeSeries<MaterializeSchema<S>>;
+    }
+
+    const intervals = toBoundedSequence(sequence, range, sample).intervals();
+    const valueColumnNames = this.schema.slice(1).map((c) => c.name);
+    const sourceEvents = this.events;
+
+    // Single forward cursor over source events. Each bucket advances
+    // it past events whose begin() < bucket.begin(); within the
+    // bucket, scan to the end of the membership window.
+    let cursor = 0;
+    const rows: unknown[][] = new Array(intervals.length);
+
+    for (let i = 0; i < intervals.length; i += 1) {
+      const interval = intervals[i]!;
+      const bStart = interval.begin();
+      const bEnd = interval.end();
+      const sampleAt = sampleTime(interval, sample);
+
+      // Skip events before this bucket's start.
+      while (
+        cursor < sourceEvents.length &&
+        sourceEvents[cursor]!.begin() < bStart
+      ) {
+        cursor += 1;
+      }
+
+      // Collect events in [bStart, bEnd). Track the cursor advance separately
+      // so we don't lose events that span buckets (point events can't, but
+      // future-proofs against interval-keyed sources).
+      let scan = cursor;
+      const inBucket: number[] = [];
+      while (scan < sourceEvents.length && sourceEvents[scan]!.begin() < bEnd) {
+        inBucket.push(scan);
+        scan += 1;
+      }
+
+      const row = new Array(valueColumnNames.length + 1);
+      row[0] = new Time(sampleAt);
+
+      if (inBucket.length === 0) {
+        // Empty bucket — every value column is undefined.
+        for (let j = 0; j < valueColumnNames.length; j += 1) {
+          row[j + 1] = undefined;
+        }
+      } else {
+        // Pick the chosen event according to `select`.
+        let pick: number;
+        if (select === 'first') {
+          pick = inBucket[0]!;
+        } else if (select === 'last') {
+          pick = inBucket[inBucket.length - 1]!;
+        } else {
+          // 'nearest' — closest begin() to sampleAt among in-bucket events.
+          // Ties keep the earliest tied event (pick stays at first match).
+          pick = inBucket[0]!;
+          let bestDist = Math.abs(sourceEvents[pick]!.begin() - sampleAt);
+          for (let k = 1; k < inBucket.length; k += 1) {
+            const idx = inBucket[k]!;
+            const d = Math.abs(sourceEvents[idx]!.begin() - sampleAt);
+            if (d < bestDist) {
+              pick = idx;
+              bestDist = d;
+            }
+          }
+        }
+        const data = sourceEvents[pick]!.data() as Record<string, unknown>;
+        for (let j = 0; j < valueColumnNames.length; j += 1) {
+          row[j + 1] = data[valueColumnNames[j]!];
+        }
+      }
+
+      rows[i] = row;
+      // Advance cursor only past events strictly before this bucket's end —
+      // an event whose begin() === bEnd belongs to the next bucket
+      // (half-open membership).
+    }
+
+    return new TimeSeries({
+      name: this.name,
+      schema: resultSchema as unknown as SeriesSchema,
+      rows: rows as unknown as TimeSeriesInput<SeriesSchema>['rows'],
+    }) as unknown as TimeSeries<MaterializeSchema<S>>;
   }
 
   /**

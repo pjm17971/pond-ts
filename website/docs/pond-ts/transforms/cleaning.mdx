@@ -18,6 +18,8 @@ What's covered:
 - [**Fill the gaps**](#fill-gaps) — `.fill()` strategies.
 - [**Deduplicate**](#deduplicate) — `.dedupe()` policies and the
   multi-entity story.
+- [**Regularize to a grid**](#materialize) — `.materialize()` to
+  emit one row per sequence bucket without picking a fill policy.
 - [**End-to-end multi-entity cleaning pipeline**](#end-to-end) — the
   full `partitionBy + dedupe + fill(maxGap)` chain in one place.
 - [**Ingest edges**](#ingest-edges) — pointers to where wall-clock
@@ -262,6 +264,67 @@ events
   .fill({ cpu: 'linear' })
   .rolling('5m', { cpu: 'avg' })
   .collect();
+```
+
+## Regularize to a grid — `materialize` \{#materialize\}
+
+When source events arrive at irregular times — polling drift, mixed
+sample rates, sparse alerts — you often want to project the data
+onto a regular grid (one row per minute, one row per second, etc.)
+before downstream interpolation, charting, or alignment with another
+series. `materialize` does exactly this: emit one **time-keyed** row
+per sequence bucket, populated from a chosen source event in the
+bucket, with `undefined` cells where no source event existed.
+
+```ts
+series.materialize(Sequence.every('1m'));
+// → one row per minute. Empty buckets emit undefined for all
+//   value columns. No fill policy applied — that's a separate step.
+```
+
+`materialize` is the missing piece between `dedupe` and `fill`:
+
+| Operator      | Creates rows? | Picks fill values?  |
+| ------------- | :-----------: | :-----------------: |
+| `dedupe`      |      no       | no (keeps survivor) |
+| `materialize` |    **yes**    |         no          |
+| `fill`        |      no       |       **yes**       |
+| `align`       |      yes      |   yes (mandatory)   |
+
+`align` smooshes "make the grid" with "choose how to fill it" — the
+fill method (`'hold'` or `'linear'`) is mandatory. `materialize`
+does only the first step, leaving fill policy as an explicit
+follow-up. Use `align` when you want both at once; use
+`materialize` when you want gap-capped `fill` afterwards.
+
+### Options
+
+- **`sample`** (`'begin' | 'center' | 'end'`, default `'begin'`) —
+  bucket anchor for the output time. Mirrors `align`'s convention.
+- **`select`** (`'first' | 'last' | 'nearest'`, default `'last'`) —
+  which source event in each bucket wins. `'first'` / `'last'`
+  pick the boundary event by `begin()` order. `'nearest'` picks
+  the source event whose `begin()` is closest to the bucket's
+  sample time. All three use half-open `[bucket.begin, bucket.end)`
+  membership.
+- **`range`** (`TemporalLike`, default `series.timeRange()`) —
+  bounded slice for procedural sequences (`Sequence.every(...)`).
+
+### Multi-entity — partition first
+
+On a series carrying multiple entities, the partitioned variant
+auto-populates the partition column on every output row, including
+rows from buckets where the partition had no source event:
+
+```ts
+events
+  .partitionBy('host')
+  .materialize(Sequence.every('1m'))
+  .fill({ cpu: 'linear' }, { maxGap: '3m' })
+  .collect();
+// Every row carries its host even on empty buckets — no need for
+// a follow-up `.fill({ host: 'hold' })` step that would fail when
+// every event in a partition lies in a long-outage gap.
 ```
 
 ## End-to-end multi-entity cleaning pipeline \{#end-to-end\}
