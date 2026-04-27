@@ -510,9 +510,9 @@ export class LivePartitionedSeries<
 
   /**
    * @internal — register a cleanup callback to be fired when this
-   * leaf is disposed. Used by `LivePartitionedView.toMap()` to
-   * track factory-output subscriptions that would otherwise leak
-   * across repeated calls.
+   * root partitioned series is disposed. Used by
+   * `LivePartitionedView.toMap()` to track factory-output
+   * subscriptions that would otherwise leak across repeated calls.
    */
   _addDisposer(fn: () => void): void {
     this.#disposers.add(fn);
@@ -571,19 +571,21 @@ function eventToRow<S extends SeriesSchema>(
 
 /**
  * Chained typed view over a {@link LivePartitionedSeries}. Returned
- * by every sugar method on the leaf and on this view, composing the
- * operator factory at each step.
+ * by every sugar method on the root partitioned series and on this
+ * view, composing the operator factory at each step.
  *
  * The view is **lazy**: factories aren't run until a terminal
  * (`collect()`, `apply()`, `toMap()`) is called. Each terminal
- * delegates back to the leaf's per-partition state, applying the
+ * delegates back to the root's per-partition state, applying the
  * composed factory chain to each partition's `LiveSeries`.
  *
- * Dispose is **inherited** from the leaf — chained views don't
- * register their own subscriptions on the source, so there's
- * nothing for them to unsubscribe from. Disposing the leaf disposes
- * everything (terminals subscribed to factory outputs are tracked
- * on the leaf's internal disposers).
+ * **Lifecycle.** All real state lives on the root
+ * `LivePartitionedSeries` — chained views are just deferred
+ * factories that point back at the root. They don't register their
+ * own subscriptions on the source. Disposing the root disposes
+ * everything: terminals subscribed to factory outputs are tracked
+ * on the root's internal disposers, including outputs created by
+ * `view.toMap()`.
  *
  * @example
  * ```ts
@@ -656,18 +658,18 @@ export class LivePartitionedView<
   /**
    * Materialize the chained view per-partition as a
    * `Map<K, LiveSource<R>>`. Runs the composed factory once per
-   * existing partition; auto-spawn from the leaf is *not*
-   * propagated into this map (the snapshot reflects partitions at
-   * the time of the call).
+   * existing partition; auto-spawn from the root partitioned
+   * series is *not* propagated into this map (the snapshot
+   * reflects partitions at the time of the call).
    *
    * Each factory output (a `LiveView` / `LiveRollingAggregation` /
    * etc.) holds an internal subscription to its source. To avoid
    * accumulating listeners across repeated calls, every factory
-   * output's `dispose()` is registered on the leaf's disposer set
-   * — calling `partitioned.dispose()` on the leaf cleans up every
+   * output's `dispose()` is registered on the root's disposer set
+   * — calling `partitioned.dispose()` on the root cleans up every
    * `toMap`-created subscription chain.
    *
-   * For a live-updating per-partition view, subscribe to the leaf's
+   * For a live-updating per-partition view, subscribe to the root
    * `partitionBy` directly with `toMap()` and call the factory
    * yourself, or use `collect()` for a unified buffer.
    */
@@ -677,7 +679,7 @@ export class LivePartitionedView<
     for (const [key, sub] of partitions) {
       const out = this.#factory(sub as LiveSeries<SBase>);
       result.set(key, out);
-      // Register the factory output's dispose so leaf.dispose()
+      // Register the factory output's dispose so root.dispose()
       // tears down the subscription chain. Without this, repeated
       // toMap() calls accumulate listeners on the partition
       // LiveSeries that nothing else references but never get
