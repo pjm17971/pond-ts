@@ -7,9 +7,133 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.10.0...HEAD
 
 ## [Unreleased]
+
+## [0.10.0] — 2026-04-27
+
+The "round-2 dashboard agent feedback" release. After v0.9.0
+shipped the cross-entity correctness wave, three independent
+agents (Codex CSV-cleaner, fresh CSV-cleaner eval, dashboard
+agent) flagged refinements. v0.10 delivers all three:
+
+- A grid-completion primitive that doesn't pre-pick a fill method
+  (Codex's "regularize without filling" friction)
+- A terminal `toMap` that materializes the partition view directly
+  to a Map keyed by partition value (dashboard agent's
+  `.collect().groupBy(col, fn)` chain pain)
+- Typed partition declaration via `groups` for narrowed Map keys
+  and declared-order iteration (dashboard agent's third
+  refinement; mirrors `pivotByGroup({ groups })`)
+
+Strictly additive over v0.9.x — no behavior changes for existing
+callers.
+
+### Added
+
+- **`series.materialize(sequence, options?)`** — emits one
+  time-keyed row per sequence bucket, populating value columns
+  from a chosen source event in the bucket (or `undefined` for
+  empty buckets). Does only the grid step; pairs naturally with
+  `fill()` for explicit fill-policy control:
+
+  ```ts
+  series
+    .partitionBy('host')
+    .materialize(Sequence.every('1m'))
+    .fill({ cpu: 'linear' }, { maxGap: '3m' })
+    .collect();
+  ```
+
+  Three `select` modes: `'first'` / `'last'` (default) /
+  `'nearest'` — all bucket-bounded; empty buckets emit
+  `undefined` regardless. Three `sample` anchors:
+  `'begin'` (default) / `'center'` / `'end'`. Output schema
+  widens value columns to optional (`MaterializeSchema<S>`).
+
+  The `PartitionedTimeSeries.materialize` sugar auto-populates
+  the partition column on every output row, including
+  empty-bucket rows — without this, downstream code would need a
+  `.fill({ host: 'hold' })` step that fails for partitions where
+  every event sits in a long-outage gap.
+
+  Distinct from `align()` (which mandates a `'hold'` or
+  `'linear'` fill method and returns interval-keyed) and
+  `aggregate()` (which applies a per-column reducer). See
+  `cleaning.mdx` for the full operator-comparison table.
+
+- **`PartitionedTimeSeries.toMap(transform?)`** — terminal that
+  returns `Map<key, TimeSeries<S>>` (or `Map<key, R>` with a
+  transform) directly from the partition view. Replaces the
+  `.collect().groupBy(col, fn)` chain dashboard code was using.
+
+  Three overloads cover the common shapes: bare per-partition
+  `TimeSeries`, transform that returns `TimeSeries<R>`, and
+  transform that returns arbitrary `R`. Map iteration order
+  matches the order each partition was first encountered in the
+  source events (or declared order when `groups` is set).
+
+  Map keys are stringified partition values for single-column
+  partitions (preserving the natural string representation:
+  `'api-1'`, `'eu'`, etc.), or JSON arrays for composite
+  partitions (`'["api-1","eu"]'`). `undefined` partition values
+  use the leading-space sentinel `' undefined'` to avoid
+  collision with the literal string `'undefined'` — distinct
+  from `groupBy`'s bare `'undefined'` key, which silently
+  collapses the two cases. Documented as an intentional
+  improvement; migrators changing from `.get('undefined')` to
+  `.get(' undefined')`.
+
+  **3.3× faster than the `.collect().groupBy(col, fn)` chain it
+  replaces** at 100k events × 10 hosts (33 ms vs 108 ms,
+  measured by `scripts/perf-partitioned-toMap.mjs`).
+
+- **`series.partitionBy(col, { groups })` typed declaration**
+  — pre-declares the expected partition values, narrowing the
+  partition view's `K` type from `string` to the literal union.
+  Propagates through every sugar method's return type and through
+  `toMap`'s `Map` key:
+
+  ```ts
+  const HOSTS = ['api-1', 'api-2', 'api-3'] as const;
+  const byHost = series
+    .partitionBy('host', { groups: HOSTS })
+    .fill({ cpu: 'linear' })
+    .toMap();
+  // byHost: Map<'api-1' | 'api-2' | 'api-3', TimeSeries<S>>
+  ```
+
+  Mirrors `pivotByGroup({ groups })` — same design vocabulary,
+  same discipline: declared-order iteration, empty declared
+  groups produce empty entries, partition values not in `groups`
+  throw at construction time, empty `groups: []` and duplicate
+  values throw upfront, single-column only (composite + groups
+  throws). Numeric and boolean partition columns are stringified
+  by the encoder, so declared groups must be the stringified
+  form (`groups: ['1', '2']` for a numeric column).
+
+- **Per-method `**Multi-entity series:**` JSDoc warnings**
+  remain on every stateful operator (shipped in v0.9.0); the
+  v0.10 operators (`materialize`, `toMap`) inherit the same
+  discoverability.
+
+### Changed
+
+- **CLAUDE.md adds a perf-check policy.** New operators that walk
+  events, allocate per-event, or scale with input dimensions
+  must have an analytical complexity statement, a benchmark
+  script (`packages/core/scripts/perf-<operator>.mjs`), and
+  before/after numbers in the commit message. Surfaces in the
+  Layer 1 self-review checklist. Every v0.10 PR followed this:
+  `materialize` got `perf-materialize.mjs` (and two optimization
+  passes that landed –41% on the partitioned variant);
+  `toMap` got `perf-partitioned-toMap.mjs` (3.3× speedup
+  measurement); typed `groups` got `perf-partitionby-groups.mjs`
+  (zero chain-step regression via the class-private trusted
+  factory).
+
+[0.10.0]: https://github.com/pjm17971/pond-ts/compare/v0.9.1...v0.10.0
 
 ## [0.9.1] — 2026-04-26
 
