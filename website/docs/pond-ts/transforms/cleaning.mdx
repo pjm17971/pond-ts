@@ -305,8 +305,10 @@ follow-up. Use `align` when you want both at once; use
   which source event in each bucket wins. `'first'` / `'last'`
   pick the boundary event by `begin()` order. `'nearest'` picks
   the source event whose `begin()` is closest to the bucket's
-  sample time. All three use half-open `[bucket.begin, bucket.end)`
-  membership.
+  sample time **among events in the bucket** — it never reaches
+  across into a neighboring bucket. All three modes use half-open
+  `[bucket.begin, bucket.end)` membership; an empty bucket emits
+  `undefined` regardless of `select`.
 - **`range`** (`TemporalLike`, default `series.timeRange()`) —
   bounded slice for procedural sequences (`Sequence.every(...)`).
 

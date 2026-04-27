@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { Sequence, TimeSeries } from '../src/index.js';
+import {
+  BoundedSequence,
+  Interval,
+  Sequence,
+  TimeSeries,
+} from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -250,6 +255,72 @@ describe('TimeSeries.materialize', () => {
     });
   });
 
+  describe('non-contiguous BoundedSequence', () => {
+    it('uses intervals as-is and drops events that fall in inter-interval gaps', () => {
+      // Two intervals with a gap between 60k and 120k. An event at 80k
+      // (in the gap) should not appear in any output bucket.
+      const seq = new BoundedSequence([
+        new Interval({ value: 'a', start: 0, end: 60_000 }),
+        new Interval({ value: 'b', start: 120_000, end: 180_000 }),
+      ]);
+      const ts = make([
+        [0, 0.5, 'a'], // bucket 1
+        [80_000, 0.7, 'a'], // in the gap — should be dropped
+        [120_000, 0.9, 'a'], // bucket 2
+      ]);
+      const out = ts.materialize(seq);
+      expect(out.length).toBe(2);
+      expect(out.at(0)?.begin()).toBe(0);
+      expect(out.at(0)?.get('cpu')).toBe(0.5);
+      expect(out.at(1)?.begin()).toBe(120_000);
+      expect(out.at(1)?.get('cpu')).toBe(0.9);
+    });
+
+    it('emits undefined for an empty interval in a non-contiguous sequence', () => {
+      const seq = new BoundedSequence([
+        new Interval({ value: 'a', start: 0, end: 60_000 }),
+        new Interval({ value: 'b', start: 120_000, end: 180_000 }),
+      ]);
+      // Source has only an event in the second interval. First interval is
+      // empty and should emit undefined.
+      const ts = make([[150_000, 0.9, 'a']]);
+      const out = ts.materialize(seq);
+      expect(out.length).toBe(2);
+      expect(out.at(0)?.get('cpu')).toBeUndefined();
+      expect(out.at(1)?.get('cpu')).toBe(0.9);
+    });
+  });
+
+  describe('duplicate-timestamp source events', () => {
+    it('with select: last picks the later index for events sharing begin()', () => {
+      // Two events at exactly t=0. select='last' must pick the second one.
+      const ts = make([
+        [0, 0.5, 'a'],
+        [0, 0.7, 'b'], // same timestamp, later in the input
+      ]);
+      const out = ts.materialize(Sequence.every('1m'), {
+        range: { start: 0, end: 60_000 },
+        select: 'last',
+      });
+      expect(out.length).toBe(2);
+      expect(out.at(0)?.get('cpu')).toBe(0.7);
+      expect(out.at(0)?.get('host')).toBe('b');
+    });
+
+    it('with select: first picks the earlier index for events sharing begin()', () => {
+      const ts = make([
+        [0, 0.5, 'a'],
+        [0, 0.7, 'b'],
+      ]);
+      const out = ts.materialize(Sequence.every('1m'), {
+        range: { start: 0, end: 60_000 },
+        select: 'first',
+      });
+      expect(out.at(0)?.get('cpu')).toBe(0.5);
+      expect(out.at(0)?.get('host')).toBe('a');
+    });
+  });
+
   describe('composes with fill(maxGap)', () => {
     it('full pipeline: materialize then fill linear with maxGap', () => {
       const ts = make([
@@ -382,7 +453,7 @@ describe('TimeSeries.materialize', () => {
       }
     });
 
-    it('partitioned materialize preserves schema (host stays required: true)', () => {
+    it('output schema widens all value columns to optional; partition fill is a runtime guarantee', () => {
       const ts = new TimeSeries({
         name: 'm',
         schema: partSchema,
@@ -394,13 +465,19 @@ describe('TimeSeries.materialize', () => {
           range: { start: 0, end: 60_000 },
         })
         .collect();
-      // The materialize value-column-widening flips required to false on
-      // non-key columns, but the partition sugar guarantees partition
-      // columns are populated on every row, so the runtime invariant holds.
-      // Schema-wise: cpu is widened to optional; host is too (the type
-      // system can't know the partition guarantee, just like apply).
+      // `MaterializeSchema<S>` flips `required: true` → `false` on every
+      // value column — the type system can't see that the partition
+      // sugar will populate the partition column at runtime. Both `cpu`
+      // and `host` are typed optional in the output.
       const cpuCol = out.schema.find((c) => c.name === 'cpu');
+      const hostCol = out.schema.find((c) => c.name === 'host');
       expect(cpuCol?.required).toBe(false);
+      expect(hostCol?.required).toBe(false);
+      // Runtime guarantee: every output row carries the partition column
+      // populated, even in empty buckets.
+      for (const event of out.events) {
+        expect(event.get('host')).toBe('a');
+      }
     });
   });
 });
