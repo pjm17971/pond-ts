@@ -1,6 +1,5 @@
 import { LiveSeries, type LiveSeriesOptions } from './LiveSeries.js';
 import {
-  EMITS_EVICT,
   type EventDataForSchema,
   type EventForSchema,
   type LiveSource,
@@ -50,7 +49,13 @@ function partitionKey(
  * - **Retention** applies to each partition independently. A
  *   chatty host can't squeeze a quiet one out of the buffer.
  * - **Grace windows** apply per partition. A late event for
- *   `host-A` does not perturb `host-B`'s emission.
+ *   `host-A` does not perturb `host-B`'s emission. **Caveat:**
+ *   per-partition grace is bounded by the source's grace
+ *   window. If the source rejects an event (because it's older
+ *   than the source's grace), it never reaches the partitioned
+ *   view. Setting `partitionBy('host', { graceWindow: '10m' })`
+ *   on a source with `graceWindow: '1m'` silently uses the
+ *   smaller window.
  * - **Aggregation timing** is per-partition. `host-A`'s rolling
  *   avg fires when `host-A` has enough data, regardless of
  *   `host-B`.
@@ -84,7 +89,13 @@ export class LivePartitionedSeries<
   S extends SeriesSchema,
   K extends string = string,
 > {
-  readonly [EMITS_EVICT] = true as const;
+  // NOTE: `LivePartitionedSeries` is intentionally NOT a `LiveSource` —
+  // it has no `on()` method and does not emit events directly.
+  // Consumers obtain a `LiveSource` from `collect()` (unified buffer),
+  // `apply()` (per-partition factory output), or `toMap()` (per-partition
+  // sources). We deliberately do not declare `EMITS_EVICT` so that
+  // `LiveView`'s duck-typed eviction subscription (`EMITS_EVICT in
+  // source`) doesn't trip on this class.
   readonly name: string;
   readonly schema: S;
   readonly by: keyof EventDataForSchema<S> & string;
@@ -171,6 +182,13 @@ export class LivePartitionedSeries<
    * Materialize the partitioned view as a single unified
    * `LiveSeries<S>`. Subscribes to every per-partition output and
    * fans events into a single buffer in arrival order.
+   *
+   * **Ordering caveat:** the unified `LiveSeries` defaults to
+   * `'strict'` ordering. If the source uses `ordering: 'reorder'`
+   * (i.e., accepts late events out-of-order), reordered events
+   * will arrive at the unified buffer out of order and throw.
+   * Pass `{ ordering: 'reorder', graceWindow: ... }` to `collect`
+   * when the source is in reorder mode.
    */
   collect(options?: Partial<LiveSeriesOptions<S>>): LiveSeries<S> {
     const unifiedOptions: LiveSeriesOptions<S> = {
@@ -231,6 +249,20 @@ export class LivePartitionedSeries<
    * pushes events as they arrive. Auto-spawn propagates: a new
    * partition value triggers a fresh factory invocation and the
    * resulting `LiveSource` is subscribed to.
+   *
+   * **Factory contract.** The factory must be **pure and
+   * re-runnable**: side-effect-free, no closure-captured state
+   * that mutates across calls, no external subscriptions on the
+   * input or output. The implementation invokes the factory once
+   * upfront on a stub `LiveSeries<S>` (to capture the output
+   * schema synchronously) and again once per partition (current
+   * and future). Factories that don't satisfy the contract may
+   * leak state across the stub call and the real per-partition
+   * calls.
+   *
+   * **Ordering caveat:** same as `collect()` — pass `{ ordering:
+   * 'reorder' }` if the source uses reorder mode and reordered
+   * events will reach the unified buffer.
    */
   apply<R extends SeriesSchema>(
     factory: (sub: LiveSeries<S>) => LiveSource<R>,
@@ -281,8 +313,16 @@ export class LivePartitionedSeries<
 
   /**
    * Dispose of the partitioned view: unsubscribe from the source,
-   * disconnect every per-partition pipeline subscriber, and drop
-   * spawn listeners. Safe to call multiple times.
+   * disconnect every per-partition pipeline subscriber (created
+   * by `collect()` and `apply()`), and drop spawn listeners. Safe
+   * to call multiple times.
+   *
+   * **Note:** this does not clear the per-partition `LiveSeries`
+   * sub-buffers themselves. Their event arrays linger until the
+   * `LivePartitionedSeries` instance becomes unreferenced and is
+   * garbage-collected. If you want to free the sub-buffer memory
+   * eagerly, drop your reference to the `LivePartitionedSeries`
+   * after `dispose()`.
    */
   dispose(): void {
     this.#unsubscribeSource();

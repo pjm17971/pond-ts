@@ -161,6 +161,43 @@ describe('LivePartitionedSeries', () => {
         times.push(aEvents.at(i)!.begin());
       expect(times).toEqual([0, 30_000, 60_000, 120_000]);
     });
+
+    it('per-host grace is independent: a late event for host_a does not affect host_b', () => {
+      // Two hosts, each with its own per-partition grace window.
+      // Push host_a far ahead, then a late host_b event whose
+      // timestamp is older than host_a's latest. host_b's
+      // partition has its own latest and grace, so the late
+      // host_b event is NOT compared to host_a's timeline.
+      const live = new LiveSeries({
+        name: 'metrics',
+        schema,
+        ordering: 'reorder',
+        graceWindow: '1h',
+      });
+      const partitioned = live.partitionBy('host', {
+        ordering: 'reorder',
+        graceWindow: '1h',
+      });
+
+      live.push([0, 0.3, 'b']);
+      live.push([60_000, 0.4, 'b']);
+      // host_a jumps ahead in time
+      live.push([3_600_000, 5.0, 'a']);
+      // Now a "late" event for host_b at t=120_000.
+      // Globally that's 1h behind 'a'; per-partition for 'b' it's
+      // only 60s after b's latest at 60_000. b's partition accepts.
+      live.push([120_000, 0.5, 'b']);
+
+      const m = partitioned.toMap();
+      const bEvents = m.get('b')!;
+      expect(bEvents.length).toBe(3); // [0, 60k, 120k]
+      const bTimes = [];
+      for (let i = 0; i < bEvents.length; i++)
+        bTimes.push(bEvents.at(i)!.begin());
+      expect(bTimes).toEqual([0, 60_000, 120_000]);
+      // host_a's timeline unaffected
+      expect(m.get('a')?.length).toBe(1);
+    });
   });
 
   describe('collect()', () => {
@@ -345,6 +382,36 @@ describe('LivePartitionedSeries', () => {
       const partitioned = live.partitionBy('host');
       partitioned.dispose();
       expect(() => partitioned.dispose()).not.toThrow();
+    });
+
+    it('disconnects apply() output after dispose', () => {
+      const live = makeLive();
+      const partitioned = live.partitionBy('host');
+      const filled = partitioned.apply((sub) => sub.fill({ cpu: 'hold' }));
+
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, undefined, 'a']);
+      expect(filled.length).toBe(2);
+
+      partitioned.dispose();
+      // Events pushed after dispose should not propagate through
+      // the partition routing or the apply() factory output.
+      live.push([120_000, 0.7, 'a']);
+      expect(filled.length).toBe(2); // unchanged
+    });
+  });
+
+  describe('construction-time validation', () => {
+    it('throws when source has events with values not in declared groups', () => {
+      const live = makeLive();
+      // Push events to source BEFORE constructing the partitioned view.
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, 0.3, 'rogue']);
+      // Constructor replays existing events through #routeEvent;
+      // 'rogue' is not in declared groups → throws.
+      expect(() =>
+        live.partitionBy('host', { groups: ['a', 'b'] as const }),
+      ).toThrow(/not in declared groups/);
     });
   });
 
