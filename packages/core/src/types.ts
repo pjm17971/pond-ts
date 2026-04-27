@@ -509,6 +509,18 @@ export type AlignSchema<S extends SeriesSchema> = readonly [
   ...OptionalizeColumns<ValueColumnsForSchema<S>>,
 ];
 
+/**
+ * Output schema of `TimeSeries.materialize(...)`. The first column is
+ * always `time` (regardless of input key kind — materialize emits one
+ * row per sequence bucket sample point, time-keyed by design). Value
+ * columns are widened to optional because empty buckets emit
+ * `undefined` cells.
+ */
+export type MaterializeSchema<S extends SeriesSchema> = readonly [
+  ColumnDef<'time', 'time'>,
+  ...OptionalizeColumns<ValueColumnsForSchema<S>>,
+];
+
 export type AggregateFunction =
   | 'sum'
   | 'avg'

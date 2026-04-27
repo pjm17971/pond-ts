@@ -15,6 +15,7 @@ import type {
   EventForSchema,
   FillMapping,
   FillStrategy,
+  MaterializeSchema,
   NumericColumnNameForSchema,
   RollingAlignment,
   RollingSchema,
@@ -271,6 +272,73 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.align(sequence, options),
       ),
+    );
+  }
+
+  /**
+   * Per-partition `materialize`. See {@link TimeSeries.materialize}.
+   *
+   * **Bonus over the bare `TimeSeries.materialize` call:** every
+   * output row, including empty-bucket rows, gets the partition
+   * columns auto-populated from the partition's known key values.
+   * Without this, empty buckets would emit rows with `undefined`
+   * partition columns — forcing a follow-up
+   * `.fill({ host: 'hold' })` step that fails for partitions where
+   * every event sits in a long-outage gap.
+   */
+  materialize(
+    sequence: SequenceLike,
+    options?: {
+      sample?: AlignSample;
+      select?: 'first' | 'last' | 'nearest';
+      range?: TemporalLike;
+    },
+  ): PartitionedTimeSeries<MaterializeSchema<S>> {
+    const partitionCols = this.by as ReadonlyArray<string>;
+    return this.rewrap(
+      PartitionedTimeSeries.applyToSource(this.source, this.by, (g) => {
+        const out = g.materialize(sequence, options);
+        if (g.events.length === 0) return out;
+
+        // Detect whether any output row needs partition-column patching
+        // (i.e., whether any bucket was empty). If the source covered
+        // the grid, every row already carries the partition columns
+        // from its source event — skip the map() pass entirely. This
+        // avoids the per-event closure-call + new event allocation
+        // cost when no patching is required.
+        const events = out.events;
+        let needsPatch = false;
+        outer: for (let i = 0; i < events.length; i += 1) {
+          const data = events[i]!.data() as Record<string, unknown>;
+          for (let c = 0; c < partitionCols.length; c += 1) {
+            if (data[partitionCols[c]!] === undefined) {
+              needsPatch = true;
+              break outer;
+            }
+          }
+        }
+        if (!needsPatch) return out;
+
+        // Patch partition columns where undefined (empty-bucket rows).
+        // All events in this partition share the partition columns —
+        // capture them once from the first source event.
+        const firstData = g.events[0]!.data() as Record<string, unknown>;
+        const partValues: Record<string, unknown> = {};
+        for (const col of partitionCols) {
+          partValues[col] = firstData[col];
+        }
+        return out.map(out.schema, (event) => {
+          const data = event.data() as Record<string, unknown>;
+          let result = event;
+          for (const col of partitionCols) {
+            if (data[col] === undefined) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              result = (result as any).set(col, partValues[col]);
+            }
+          }
+          return result;
+        });
+      }),
     );
   }
 
