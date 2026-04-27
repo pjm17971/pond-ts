@@ -822,6 +822,102 @@ neighbors, hold needs prev, bfill needs next) are checked once;
 the gap is filled or skipped atomically. ~50 LOC reduction net,
 clearer code.
 
+### Queued: `series.materialize(sequence, options?)` — regularize without filling (v0.10 PR 1)
+
+Round-2 agent feedback (Codex retest of v0.9.0) surfaced a real gap:
+`fill()` patches `undefined` cells in an existing event sequence
+but never creates new rows; `align()` materializes a grid AND picks
+a fill method (`hold` or `linear`) — there's no way to do the
+first without the second. This forced Codex to either accept
+`align`'s implicit fill choice or hand-roll a grid-completion
+pass before applying gap-capped `fill('linear', { maxGap: '3m' })`.
+
+`materialize` does only step one: emit one time-keyed row per
+sequence bucket, populate value columns from the chosen source
+event in that bucket, leave value columns `undefined` for empty
+buckets. The natural composition with `fill()`:
+
+```ts
+series
+  .partitionBy('host')
+  .dedupe({ keep: 'last' })
+  .materialize(Sequence.every('1m')) // regularize, undefined for empty buckets
+  .fill({ cpu: 'linear' }, { maxGap: '3m' }) // fill with explicit policy
+  .collect();
+```
+
+**Spec:**
+
+```ts
+materialize(
+  sequence: Sequence | BoundedSequence,
+  options?: {
+    sample?: 'begin' | 'center' | 'end';      // bucket anchor for output time
+    select?: 'first' | 'last' | 'nearest';    // which source event in each bucket wins
+    range?: TemporalLike;                      // bounded slice for procedural sequences
+  },
+): TimeSeries<MaterializeSchema<S>>
+```
+
+**Defaults:** `sample: 'begin'` (matches `align`), `select: 'last'`
+(matches `dedupe`'s "newer reading wins" intuition).
+
+**`select` semantics — bucket-bounded.** All three options use
+half-open `[bucket.begin, bucket.end)` membership. `'first'` /
+`'last'` pick the boundary source event in the bucket;
+`'nearest'` picks the source event closest to the `sample`
+timestamp **among events in the bucket**. Empty bucket → all
+value cells `undefined` regardless of `select`. Users who want
+to reach across empty buckets compose `fill('hold')`
+afterwards.
+
+**Schema:** `MaterializeSchema<S>` widens value columns to
+optional (parallel to `AlignSchema<S>`) since empty buckets emit
+`undefined` cells.
+
+**Partitioned variant — bonus.**
+`series.partitionBy('host').materialize(seq)` auto-populates the
+partition columns on every output row, including empty-bucket
+rows — `host`'s value is known by virtue of which partition we're
+in. Eliminates a sharp edge that would otherwise force a
+`.fill({ host: 'hold' })` step that fails for partitions where
+every event is in a long-outage gap. Tiny extra branch in the
+partitioned row builder.
+
+**Why a new primitive (not enrichment of existing ones):**
+
+- `align()` mandates a fill method; relaxing that contract is a
+  breaking semantic change.
+- `aggregate(seq, { *: 'last' }).asTime()` is mathematically
+  equivalent for `select: 'last'` (and would require a `'*'`
+  shorthand), but conflates "summarize this column" with
+  "regularize timestamps." Different intent at the call site.
+- The "regularize without choosing fill" use case is the natural
+  pre-step to `fill(maxGap)`, and clean composition is the whole
+  point.
+
+**Naming.** `materialize` reads naturally (parallel with the
+database-view sense of "make this concrete on a grid"). Survives
+the lazy-eval connotation since pond-ts is eager throughout.
+Better than the alternatives considered: `completeOn` (overlaps
+with promise terminology), `densify` (jargon-y, has prior art in
+geo libs), `toGrid` (pond-ts `to*` methods conventionally return
+non-`TimeSeries` shapes — `toJSON`, `toRows`, `toPoints`).
+
+**Concrete next steps when work begins (PR 1 of v0.10):**
+
+- [ ] Add `materialize` to `TimeSeries` and the `PartitionedTimeSeries`
+      sugar (with partition-column auto-fill).
+- [ ] `MaterializeSchema<S>` type — value columns widened to optional.
+- [ ] Test matrix: empty source, single source on a multi-bucket
+      grid, sub-bucket events with each `select` mode, empty
+      buckets, off-grid events, partitioned variant preserves
+      partition values, full chain (`partitionBy + dedupe +
+    materialize + fill(maxGap) + collect`).
+- [ ] Cleaning page rewritten to lead with the
+      `partitionBy + dedupe + materialize + fill` chain as the
+      canonical multi-host cleaner.
+
 ### Queued: live partitioning
 
 Same cross-entity hazard exists on the live side. `LiveRollingAggregation`,
