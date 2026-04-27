@@ -5,6 +5,7 @@ export { LiveAggregation } from './LiveAggregation.js';
 export type { LiveAggregationOptions } from './LiveAggregation.js';
 export {
   LivePartitionedSeries,
+  LivePartitionedView,
   type LivePartitionedOptions,
 } from './LivePartitionedSeries.js';
 export { LiveSeries } from './LiveSeries.js';
