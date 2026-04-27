@@ -1811,23 +1811,30 @@ export class TimeSeries<S extends SeriesSchema> {
    * Returns a {@link PartitionedTimeSeries} view that scopes stateful
    * transforms to within each partition. Most stateful operators
    * (`fill`, `align`, `rolling`, `smooth`, `baseline`, `outliers`,
-   * `diff`, `rate`, `pctChange`, `cumulative`, `shift`, `aggregate`)
-   * read neighboring events when computing each output and silently
-   * cross entity boundaries on multi-entity series — `partitionBy`
-   * fixes that by running the op independently per partition and
-   * reassembling.
+   * `diff`, `rate`, `pctChange`, `cumulative`, `shift`, `aggregate`,
+   * `dedupe`, `materialize`) read neighboring events when computing
+   * each output and silently cross entity boundaries on multi-entity
+   * series — `partitionBy` fixes that by running the op independently
+   * per partition and reassembling.
    *
    * Composite partitioning by multiple columns is supported by passing
    * an array: `series.partitionBy(['host', 'region'])`.
    *
-   * The return shape is always `TimeSeries`, not
-   * `PartitionedTimeSeries` — each operation is a single step. To
-   * chain another partitioned op, re-`partitionBy` after.
-   *
-   * Coming from pondjs / pandas: this is roughly the equivalent of
-   * `df.groupby(col)` returning an object whose methods auto-apply
-   * per group, but the return type is the regrouped frame, not the
-   * grouped view.
+   * **Typed groups (single-column only).** Passing
+   * `{ groups: HOSTS as const }` declares the expected partition values
+   * up front. The returned view's `K` type narrows from `string` to
+   * the literal union of declared values, propagating through
+   * `toMap()` so its return type becomes
+   * `Map<typeof HOSTS[number], TimeSeries<S>>`. Behavior changes:
+   * `toMap` iterates in declared order (not insertion order), empty
+   * declared groups still produce empty `TimeSeries` entries, and
+   * partition values not in the declared set throw at construction
+   * time. Mirrors {@link TimeSeries.pivotByGroup}'s typed-groups
+   * pattern. Composite partitions, empty `groups`, and duplicate
+   * values throw upfront. Numeric and boolean partition columns are
+   * stringified by the encoder, so declared groups must be the
+   * stringified form (`groups: ['1', '2'] as const` for a numeric
+   * column with values `1` and `2`).
    *
    * @example
    * ```ts
@@ -1837,18 +1844,39 @@ export class TimeSeries<S extends SeriesSchema> {
    * // Composite partitioning
    * series.partitionBy(['host', 'region']).rolling('5m', { cpu: 'avg' });
    *
+   * // Typed groups — narrows toMap key type
+   * const HOSTS = ['api-1', 'api-2', 'api-3'] as const;
+   * const byHost = series
+   *   .partitionBy('host', { groups: HOSTS })
+   *   .fill({ cpu: 'linear' })
+   *   .toMap();
+   * // byHost: Map<'api-1' | 'api-2' | 'api-3', TimeSeries<S>>
+   *
    * // Arbitrary composition via .apply()
    * series.partitionBy('host').apply(g =>
    *   g.fill({ cpu: 'linear' }).rolling('5m', { cpu: 'avg' }),
    * );
    * ```
    */
+  partitionBy<
+    Col extends keyof EventDataForSchema<S> & string,
+    const Groups extends ReadonlyArray<string>,
+  >(
+    by: Col | readonly [Col],
+    options: { groups: Groups },
+  ): PartitionedTimeSeries<S, Groups[number]>;
   partitionBy(
     by:
       | (keyof EventDataForSchema<S> & string)
       | ReadonlyArray<keyof EventDataForSchema<S> & string>,
+  ): PartitionedTimeSeries<S>;
+  partitionBy(
+    by:
+      | (keyof EventDataForSchema<S> & string)
+      | ReadonlyArray<keyof EventDataForSchema<S> & string>,
+    options?: { groups?: ReadonlyArray<string> },
   ): PartitionedTimeSeries<S> {
-    return new PartitionedTimeSeries(this, by);
+    return new PartitionedTimeSeries(this, by, options);
   }
 
   /**
