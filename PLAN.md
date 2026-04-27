@@ -913,50 +913,86 @@ non-`TimeSeries` shapes — `toJSON`, `toRows`, `toPoints`).
       grid, sub-bucket events with each `select` mode, empty
       buckets, off-grid events, partitioned variant preserves
       partition values, full chain (`partitionBy + dedupe +
-    materialize + fill(maxGap) + collect`).
+  materialize + fill(maxGap) + collect`).
 - [ ] Cleaning page rewritten to lead with the
       `partitionBy + dedupe + materialize + fill` chain as the
       canonical multi-host cleaner.
 
-### Queued: live partitioning
+### Queued: live partitioning — `LivePartitionedSeries` (v0.11 wave)
 
-Same cross-entity hazard exists on the live side. `LiveRollingAggregation`,
-`LiveAggregation`, `LiveView.window()`, and live
-`diff`/`rate`/`pctChange`/`fill`/`cumulative` all read from neighboring
-events and silently mix entities on a multi-host stream. The batch
-answer (`partitionBy(col)`) doesn't trivially port — implementing it
-requires:
+Same cross-entity hazard exists on the live side.
+`LiveRollingAggregation`, `LiveAggregation`, `LiveView.window()`,
+and live `diff`/`rate`/`pctChange`/`fill`/`cumulative` all read
+from neighboring events and silently mix entities on a multi-host
+stream. Dashboard-agent feedback (post-v0.9.0) flagged this
+explicitly: their workaround was a hand-rolled per-host filter
+view, which doesn't compose with the rest of the live API.
 
-- **Per-partition state buffers.** Each partition's transform needs
-  its own state (rolling window, running totals, last-seen value).
-  As events arrive, route to the right partition's transform.
-- **Output ordering.** Each partition emits independently. Probably
-  interleave-as-emitted (each emission flushed in arrival order), but
-  worth confirming against the late-event semantics queued above.
-- **Subscription lifecycle.** Dispose has to fan out to all partition
-  transforms. Eviction events from the source need to propagate to
-  the correct partition.
+**Design (settled):**
 
-This belongs in the same Phase 4 cluster as "Queued: live merge /
-join" and "Queued: late-event propagation" — they all share the
-per-source state-management story.
+Surface mirrors batch: `liveSeries.partitionBy(col)` returns
+`LivePartitionedSeries<S>` with chainable sugar for each affected
+operator. `.collect()` materializes back to a unified `LiveSeries`.
+`.apply(fn)` is the terminal escape hatch.
 
-For now: snapshot via `useSnapshot` (or `live.toTimeSeries()`) and
-use batch `partitionBy`. Throttled snapshots make this cheap enough
-for typical dashboard cadences; it's not free for high-frequency
-streams.
+```ts
+const live = useLiveSeries(source, { maxAge: '5m' });
 
-Concrete next steps when this work begins:
+const cpuSmoothed = live
+  .partitionBy('host')
+  .fill({ cpu: 'linear' })
+  .rolling('1m', { cpu: 'avg' })
+  .collect();
+// cpuSmoothed is a LiveSeries — events from all hosts interleaved
+// by arrival, each with its host's per-partition rolling avg.
+```
 
-- [ ] Decide the surface: `live.partitionBy(col)` returning a
-      `PartitionedLiveSource<S>` mirroring the batch view, or a
-      `partition` option on each affected live op. Lean toward the
-      view, matching the batch decision.
-- [ ] Per-partition state-buffer model — likely one nested `LiveSeries`
-      or per-transform state per partition, with input dispatch on
-      ingest.
-- [ ] Test matrix: per-partition rolling, aggregation, fill across
-      late events, eviction propagation, dispose.
+Decisions made in design review:
+
+- **Per-partition retention.** `maxAge: '5m'` applies to each
+  partition independently. A chatty host can't squeeze a quiet
+  one out of the buffer.
+- **Per-partition grace.** Late events route to their own
+  partition's grace window; a late event for host-A doesn't
+  perturb host-B's emission.
+- **Per-partition aggregation timing.** Host-A's rolling avg
+  fires when host-A has enough data, regardless of host-B.
+- **Auto-spawn on new partition values.** New host appears →
+  allocate a sub-buffer on first event. Optional `{ groups: HOSTS
+as const }` upfront for typed narrowing (mirrors the batch
+  typed-groups pattern from v0.10 PR 3).
+- **Unified eviction stream.** Subscribers see one `'evict'` event
+  stream with the partition column populated on each event;
+  consumers can filter if they want per-partition handling.
+
+**Cost model:** per-partition state means `N × per-window-buffer`
+for rolling/baseline, `N × prev-event` for diff/rate/cumulative,
+etc. For 1000 hosts × 1m rolling at 1Hz: ~60k floats. Fine for
+typical telemetry; document in the operator JSDocs alongside
+the existing per-method warnings.
+
+**Two-PR split:**
+
+**v0.11 PR 1 — `LivePartitionedSeries` view + four most-used
+sugar methods.** `fill`, `rolling`, `diff`, `rate` — the
+operators dashboard agent named explicitly. Chainable view +
+`.collect()` + `.apply()`. Per-partition state map on the source
+side; React hook `useLiveSeries(...).partitionBy(col)` works
+naturally without a new hook (the view is a property of
+`LiveSeries`).
+
+**v0.11 PR 2 — Remaining operator coverage.** `smooth`,
+`baseline`, `outliers`, `cumulative`, `shift`, `aggregate`,
+`dedupe`. Each follows the same pattern as PR 1 — state allocated
+per-partition, output aggregated per-partition, results
+interleaved by arrival.
+
+Then **v0.11.0 release** with the full live partitioning package.
+
+For now (until v0.11): snapshot via `useSnapshot` (or
+`live.toTimeSeries()`) and use batch `partitionBy`. Throttled
+snapshots make this cheap enough for typical dashboard cadences;
+it's not free for high-frequency streams.
 
 ### Batch → Live applicability
 
