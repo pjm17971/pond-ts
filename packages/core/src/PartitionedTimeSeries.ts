@@ -76,15 +76,28 @@ type AlignSample = 'begin' | 'center' | 'end';
  * );
  * ```
  */
-export class PartitionedTimeSeries<S extends SeriesSchema> {
+export class PartitionedTimeSeries<
+  S extends SeriesSchema,
+  K extends string = string,
+> {
   readonly source: TimeSeries<S>;
   readonly by: ReadonlyArray<keyof EventDataForSchema<S> & string>;
+  /**
+   * Declared partition values when `partitionBy(col, { groups })` was
+   * used. When set, `toMap` iterates in declared order (not insertion
+   * order), empty declared groups still appear as empty `TimeSeries`
+   * entries, and unknown partition values throw at construction time.
+   */
+  readonly groups?: ReadonlyArray<K>;
 
   constructor(
     source: TimeSeries<S>,
     by:
       | (keyof EventDataForSchema<S> & string)
       | ReadonlyArray<keyof EventDataForSchema<S> & string>,
+    options?: { groups?: ReadonlyArray<K> },
+    /** @internal — skip per-event groups validation; used by rewrap */
+    _trusted: boolean = false,
   ) {
     this.source = source;
     this.by = (Array.isArray(by) ? by : [by]) as ReadonlyArray<
@@ -99,6 +112,40 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       if (!source.schema.some((c) => c.name === col)) {
         throw new TypeError(
           `PartitionedTimeSeries: column "${String(col)}" not in schema`,
+        );
+      }
+    }
+    if (options?.groups) {
+      if (this.by.length > 1) {
+        throw new TypeError(
+          'PartitionedTimeSeries: typed `groups` option requires a single ' +
+            'partition column. Drop `groups` for composite partitions, or ' +
+            'narrow to a single column.',
+        );
+      }
+      this.groups = options.groups;
+      if (!_trusted) {
+        this.validateGroupMembership();
+      }
+    }
+  }
+
+  // Validate that every event's partition value appears in the
+  // declared groups. Mirrors the partition encoder so the comparison
+  // accepts the same string forms toMap will produce as keys.
+  private validateGroupMembership(): void {
+    if (!this.groups) return;
+    const col = this.by[0]!;
+    const declared = new Set<string>(this.groups);
+    const keyOf = PartitionedTimeSeries.partitionKeyOf<S>(this.by);
+    for (const event of this.source.events) {
+      const key = keyOf(event);
+      if (!declared.has(key)) {
+        throw new TypeError(
+          `PartitionedTimeSeries: encountered partition value ${JSON.stringify(
+            key,
+          )} for column "${String(col)}" which is not in declared groups ` +
+            `[${this.groups.map((g) => JSON.stringify(g)).join(', ')}].`,
         );
       }
     }
@@ -214,26 +261,42 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
    * const apiEu = byHostRegion.get('["api-1","eu"]');
    * ```
    */
-  toMap(): Map<string, TimeSeries<S>>;
+  toMap(): Map<K, TimeSeries<S>>;
   toMap<R extends SeriesSchema>(
     transform: (group: TimeSeries<S>) => TimeSeries<R>,
-  ): Map<string, TimeSeries<R>>;
-  toMap<R>(transform: (group: TimeSeries<S>) => R): Map<string, R>;
-  toMap(transform?: (group: TimeSeries<S>) => unknown): Map<string, unknown> {
-    const result = new Map<string, unknown>();
-    if (this.source.events.length === 0) {
+  ): Map<K, TimeSeries<R>>;
+  toMap<R>(transform: (group: TimeSeries<S>) => R): Map<K, R>;
+  toMap(transform?: (group: TimeSeries<S>) => unknown): Map<K, unknown> {
+    const result = new Map<K, unknown>();
+    const buckets =
+      this.source.events.length === 0
+        ? new Map<string, EventForSchema<S>[]>()
+        : PartitionedTimeSeries.bucketByPartition(this.source, this.by);
+
+    if (this.groups) {
+      // Declared-order iteration. Empty groups produce empty
+      // TimeSeries entries (consistent with pivotByGroup's typed
+      // groups behavior, which emits a column for every declared
+      // value even when no events match).
+      for (const g of this.groups) {
+        const events = buckets.get(g) ?? [];
+        const sub = TimeSeries.fromEvents(events, {
+          schema: this.source.schema,
+          name: this.source.name,
+        });
+        result.set(g, transform ? transform(sub) : sub);
+      }
       return result;
     }
-    const buckets = PartitionedTimeSeries.bucketByPartition(
-      this.source,
-      this.by,
-    );
+
+    // Insertion-order iteration (matches the order each partition was
+    // first encountered in the source events).
     for (const [key, events] of buckets) {
       const sub = TimeSeries.fromEvents(events, {
         schema: this.source.schema,
         name: this.source.name,
       });
-      result.set(key, transform ? transform(sub) : sub);
+      result.set(key as K, transform ? transform(sub) : sub);
     }
     return result;
   }
@@ -321,17 +384,26 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   }
 
   // Wrap a transform result back into a PartitionedTimeSeries with the
-  // same partition columns. Used by the sugar methods to keep the chain
-  // in partition view. Cast at the boundary because R may not preserve
-  // the partition columns type-narrowly (e.g. RollingSchema<S, M> may
-  // drop columns); runtime constructor validates that the partition
-  // columns are still present in the result schema.
+  // same partition columns and groups (if declared). Used by the sugar
+  // methods to keep the chain in partition view. Cast at the boundary
+  // because R may not preserve the partition columns type-narrowly
+  // (e.g. RollingSchema<S, M> may drop columns); runtime constructor
+  // validates that the partition columns are still present in the
+  // result schema.
+  //
+  // Passes `_trusted: true` so the per-event groups validation is
+  // skipped — the events came from this view's pre-validated source,
+  // and stateful per-partition transforms preserve the partition
+  // columns by construction. Skipping avoids O(N) re-validation per
+  // chain step.
   private rewrap<R extends SeriesSchema>(
     out: TimeSeries<R>,
-  ): PartitionedTimeSeries<R> {
-    return new PartitionedTimeSeries(
+  ): PartitionedTimeSeries<R, K> {
+    return new PartitionedTimeSeries<R, K>(
       out,
       this.by as unknown as ReadonlyArray<keyof EventDataForSchema<R> & string>,
+      this.groups ? { groups: this.groups } : undefined,
+      true,
     );
   }
 
@@ -347,7 +419,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   fill(
     strategy: FillStrategy | FillMapping<S>,
     options?: { limit?: number; maxGap?: DurationInput },
-  ): PartitionedTimeSeries<S> {
+  ): PartitionedTimeSeries<S, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.fill(strategy, options),
@@ -363,7 +435,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
    *
    * See {@link TimeSeries.dedupe}.
    */
-  dedupe(options?: { keep?: DedupeKeep<S> }): PartitionedTimeSeries<S> {
+  dedupe(options?: { keep?: DedupeKeep<S> }): PartitionedTimeSeries<S, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.dedupe(options),
@@ -379,7 +451,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): PartitionedTimeSeries<AlignSchema<S>> {
+  ): PartitionedTimeSeries<AlignSchema<S>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.align(sequence, options),
@@ -405,7 +477,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       select?: 'first' | 'last' | 'nearest';
       range?: TemporalLike;
     },
-  ): PartitionedTimeSeries<MaterializeSchema<S>> {
+  ): PartitionedTimeSeries<MaterializeSchema<S>, K> {
     const partitionCols = this.by as ReadonlyArray<string>;
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) => {
@@ -459,12 +531,12 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
-  ): PartitionedTimeSeries<RollingSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<RollingSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment },
-  ): PartitionedTimeSeries<RollingOutputMapSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<RollingOutputMapSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -474,7 +546,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     sequence: SequenceLike,
     window: DurationInput,
@@ -484,7 +556,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sample?: AlignSample;
       range?: TemporalLike;
     },
-  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>, K>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rolling(...args: any[]): any {
     return this.rewrap(
@@ -556,7 +628,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       sigma: number;
       alignment?: RollingAlignment;
     },
-  ): PartitionedTimeSeries<S> {
+  ): PartitionedTimeSeries<S, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.outliers(col, options),
@@ -568,7 +640,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   diff<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+  ): PartitionedTimeSeries<DiffSchema<S, Target>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.diff(columns, options),
@@ -580,7 +652,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   rate<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+  ): PartitionedTimeSeries<DiffSchema<S, Target>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.rate(columns, options),
@@ -592,7 +664,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   pctChange<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+  ): PartitionedTimeSeries<DiffSchema<S, Target>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.pctChange(columns, options),
@@ -608,7 +680,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       | 'min'
       | 'count'
       | ((acc: number, value: number) => number);
-  }): PartitionedTimeSeries<DiffSchema<S, Targets>> {
+  }): PartitionedTimeSeries<DiffSchema<S, Targets>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.cumulative(spec),
@@ -620,7 +692,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
   shift<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     n: number,
-  ): PartitionedTimeSeries<DiffSchema<S, Target>> {
+  ): PartitionedTimeSeries<DiffSchema<S, Target>, K> {
     return this.rewrap(
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) =>
         g.shift(columns, n),
@@ -633,12 +705,12 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
-  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateSchema<S, Mapping>, K>;
   aggregate<const Mapping extends AggregateOutputMap<S>>(
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
-  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
+  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>, K>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   aggregate(...args: any[]): any {
     return this.rewrap(
