@@ -415,6 +415,116 @@ describe('LivePartitionedSeries', () => {
     });
   });
 
+  describe('apply() history replay (Codex finding 1)', () => {
+    it('globally orders existing events when called after interleaved multi-partition history', () => {
+      // Source has interleaved history: a@0, b@60k, a@120k.
+      // apply() must replay existing factory-output events in
+      // global time order (not per-partition order), or unified's
+      // strict ordering throws on the second push.
+      const live = makeLive();
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, 0.3, 'b']);
+      live.push([120_000, 0.6, 'a']);
+
+      const partitioned = live.partitionBy('host');
+      // Identity factory — output events are the partition's own.
+      const unified = partitioned.apply((sub) => sub);
+
+      expect(unified.length).toBe(3);
+      const times = [];
+      for (let i = 0; i < unified.length; i++)
+        times.push(unified.at(i)!.begin());
+      expect(times).toEqual([0, 60_000, 120_000]);
+    });
+
+    it('apply() with a transforming factory globally orders existing events', () => {
+      // Same scenario but the factory transforms (fill).
+      const live = makeLive();
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, undefined, 'b']);
+      live.push([120_000, 0.6, 'a']);
+
+      const partitioned = live.partitionBy('host');
+      const unified = partitioned.apply((sub) => sub.fill({ cpu: 'hold' }));
+
+      expect(unified.length).toBe(3);
+      const times = [];
+      for (let i = 0; i < unified.length; i++)
+        times.push(unified.at(i)!.begin());
+      expect(times).toEqual([0, 60_000, 120_000]);
+    });
+  });
+
+  describe('append-only fan-in (Codex finding 3, documented)', () => {
+    // Per the v0.11 PR 1 design, collect()/apply() are fan-in sinks
+    // — per-partition retention does NOT propagate to the unified
+    // buffer. The unified buffer's own retention is independent.
+
+    it('collect() retains events even after per-partition retention evicts them', () => {
+      const live = makeLive();
+      const partitioned = live.partitionBy('host', {
+        retention: { maxEvents: 1 },
+      });
+      const unified = partitioned.collect();
+
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, 0.6, 'a']);
+
+      // Per-partition retention: 'a' has only 1 event left.
+      expect(partitioned.toMap().get('a')?.length).toBe(1);
+      // Unified is append-only: keeps both events.
+      expect(unified.length).toBe(2);
+    });
+
+    it('apply() output retains events even after per-partition retention evicts them', () => {
+      const live = makeLive();
+      const partitioned = live.partitionBy('host', {
+        retention: { maxEvents: 1 },
+      });
+      const unified = partitioned.apply((sub) => sub);
+
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, 0.6, 'a']);
+
+      expect(partitioned.toMap().get('a')?.length).toBe(1);
+      expect(unified.length).toBe(2); // append-only
+    });
+
+    it('unified retention can be set independently via collect() options', () => {
+      const live = makeLive();
+      const partitioned = live.partitionBy('host');
+      // Source has no retention; unified has its own maxEvents: 2.
+      const unified = partitioned.collect({ retention: { maxEvents: 2 } });
+
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, 0.6, 'a']);
+      live.push([120_000, 0.7, 'a']);
+
+      // Per-partition keeps everything.
+      expect(partitioned.toMap().get('a')?.length).toBe(3);
+      // Unified obeys its own retention.
+      expect(unified.length).toBe(2);
+    });
+  });
+
+  describe('post-commit error semantics (Codex finding 2, documented)', () => {
+    it('source state moves even when partition view rejects the event', () => {
+      const live = makeLive();
+      const _partitioned = live.partitionBy('host', {
+        groups: ['a', 'b'] as const,
+      });
+      void _partitioned;
+
+      expect(() => live.push([0, 0.5, 'rogue'])).toThrow(
+        /not in declared groups/,
+      );
+      // Source already committed the event before the listener threw.
+      // This is documented behavior; pin it so changes don't accidentally
+      // create a different inconsistency.
+      expect(live.length).toBe(1);
+    });
+  });
+
   describe('headline dashboard chain', () => {
     it('partitionBy + apply(fill + rolling) produces per-host smoothed values', () => {
       const live = makeLive();

@@ -179,9 +179,18 @@ export class LivePartitionedSeries<
   }
 
   /**
-   * Materialize the partitioned view as a single unified
-   * `LiveSeries<S>`. Subscribes to every per-partition output and
-   * fans events into a single buffer in arrival order.
+   * Fan in events from every partition into a single unified
+   * `LiveSeries<S>`. Subscribes to per-partition output `'event'`
+   * streams and pushes each event into the unified buffer.
+   *
+   * **Append-only semantics.** This is a fan-in sink, not a
+   * mirrored materialization. When per-partition retention or
+   * grace evicts events from a sub-buffer, those evictions are
+   * NOT propagated to the unified buffer. The unified buffer
+   * keeps every event it ever received until evicted by its own
+   * retention. To control its size, pass a `retention` option to
+   * `collect`. To inspect the current per-partition state, use
+   * `toMap()` and snapshot each partition independently.
    *
    * **Ordering caveat:** the unified `LiveSeries` defaults to
    * `'strict'` ordering. If the source uses `ordering: 'reorder'`
@@ -238,7 +247,7 @@ export class LivePartitionedSeries<
   }
 
   /**
-   * Apply `factory` per-partition and collect the outputs into a
+   * Apply `factory` per-partition and fan in the outputs into a
    * single unified `LiveSeries<R>`. The factory is called once per
    * partition (current and future); each call receives the
    * partition's `LiveSource<S>` and should return a `LiveSource<R>`
@@ -249,6 +258,19 @@ export class LivePartitionedSeries<
    * pushes events as they arrive. Auto-spawn propagates: a new
    * partition value triggers a fresh factory invocation and the
    * resulting `LiveSource` is subscribed to.
+   *
+   * **Append-only semantics.** Same as `collect()` — this is a
+   * fan-in sink. Per-partition output evictions (e.g. from a
+   * window operator inside the factory) are NOT propagated to
+   * the unified buffer. Use the `options` argument to set the
+   * unified buffer's own retention.
+   *
+   * **History replay.** When `apply()` is called on a partitioned
+   * view that already has events distributed across multiple
+   * partitions, existing factory-output events are gathered from
+   * every output, sorted globally by time, and pushed into the
+   * unified buffer in time order. This preserves strict ordering
+   * for the unified buffer.
    *
    * **Factory contract.** The factory must be **pure and
    * re-runnable**: side-effect-free, no closure-captured state
@@ -289,23 +311,50 @@ export class LivePartitionedSeries<
     if (options?.retention !== undefined) opts.retention = options.retention;
     const unified = new LiveSeries<R>(opts);
 
-    const wirePartition = (sub: LiveSeries<S>): void => {
-      const out = factory(sub);
-      // Replay output's existing events into the unified buffer.
+    // Build factory outputs for all existing partitions first, then
+    // globally sort their existing events by time and push them in
+    // order. Without this two-phase pass, the unified buffer would
+    // receive partition-A's history fully before partition-B's,
+    // producing out-of-order pushes and tripping unified's strict
+    // ordering when histories interleave (e.g. a@0, b@60k, a@120k).
+    const outputs: Array<{ key: K; out: LiveSource<R> }> = [];
+    for (const [key, partition] of this.#partitions) {
+      outputs.push({ key, out: factory(partition as LiveSeries<S>) });
+    }
+
+    type ExistingR = { time: number; event: EventForSchema<R>; outSchema: R };
+    const existing: ExistingR[] = [];
+    for (const { out } of outputs) {
       for (let i = 0; i < out.length; i++) {
-        unified.push(eventToRow(out.at(i)!, out.schema));
+        const e = out.at(i)!;
+        existing.push({ time: e.begin(), event: e, outSchema: out.schema });
       }
+    }
+    existing.sort((a, b) => a.time - b.time);
+    for (const { event, outSchema: s } of existing) {
+      unified.push(eventToRow(event, s));
+    }
+
+    // Subscribe each factory output to the unified buffer for live
+    // forwarding.
+    for (const { out } of outputs) {
       const unsub = out.on('event', (event) => {
         unified.push(eventToRow(event, out.schema));
       });
       this.#disposers.add(unsub);
-    };
-
-    for (const partition of this.#partitions.values()) {
-      wirePartition(partition as LiveSeries<S>);
     }
+
+    // Auto-spawn: when a new partition appears, run the factory
+    // for it and subscribe its output. The new partition is empty
+    // at spawn time (events are pushed AFTER spawn listeners fire),
+    // so no historical replay is needed for the new partition's
+    // factory output.
     this.#onSpawn.add((_, partition) => {
-      wirePartition(partition as LiveSeries<S>);
+      const out = factory(partition as LiveSeries<S>);
+      const unsub = out.on('event', (event) => {
+        unified.push(eventToRow(event, out.schema));
+      });
+      this.#disposers.add(unsub);
     });
 
     return unified;
