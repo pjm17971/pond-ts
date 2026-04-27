@@ -7,9 +7,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.10.1...HEAD
 
 ## [Unreleased]
+
+## [0.10.1] — 2026-04-27
+
+Strictly additive over v0.10.0. Closes the export gap surfaced by
+the Codex CSV-cleaner v0.10 retest:
+
+> `MaterializeSchema` exists in `dist/types.d.ts` but is not
+> exported from the package root, so the script had to spell out
+> the materialized schema locally for strict typing.
+
+### Added
+
+- **`MaterializeSchema<S>`** now exported from the package root.
+  Users typing `materialize` output (or composing it into wrapper
+  utilities) can import the type directly from `pond-ts` instead
+  of digging into the dist-types.
+- **`DedupeKeep<S>`** also exported (was the same gap — the type
+  for the `dedupe({ keep })` resolver function shape). Closes the
+  same friction for callers writing custom dedupe resolvers in
+  isolation.
+
+[0.10.1]: https://github.com/pjm17971/pond-ts/compare/v0.10.0...v0.10.1
 
 ## [0.10.0] — 2026-04-27
 
