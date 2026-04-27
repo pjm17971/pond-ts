@@ -1,12 +1,25 @@
 import { LiveSeries, type LiveSeriesOptions } from './LiveSeries.js';
+import { LiveRollingAggregation } from './LiveRollingAggregation.js';
 import {
+  makeCumulativeView,
+  makeDiffView,
+  makeFillView,
+  type LiveFillMapping,
+  type LiveFillStrategy,
+} from './LiveView.js';
+import {
+  type AggregateMap,
+  type DiffSchema,
   type EventDataForSchema,
   type EventForSchema,
   type LiveSource,
+  type NumericColumnNameForSchema,
+  type RollingSchema,
   type RowForSchema,
   type SeriesSchema,
 } from './types.js';
 import type { DurationInput } from './utils/duration.js';
+import type { RollingWindow } from './LiveRollingAggregation.js';
 
 type SpawnListener<S extends SeriesSchema, K extends string> = (
   key: K,
@@ -360,6 +373,121 @@ export class LivePartitionedSeries<
     return unified;
   }
 
+  // ─── Chainable typed sugar (returns LivePartitionedView) ──────
+  //
+  // Each sugar method returns a `LivePartitionedView<NewSchema, K>`
+  // — a chained view that composes the operator factory with any
+  // future chain steps. Use these when you want the full
+  // operator chain at the type level:
+  //
+  //   live.partitionBy('host').fill(...).rolling(...).collect()
+  //
+  // For one-shot per-partition factories (no chain), use `apply()`
+  // instead.
+
+  /** Per-partition `fill`. See {@link LiveSeries.fill}. */
+  fill(
+    strategy: LiveFillStrategy | LiveFillMapping<S>,
+    options?: { limit?: number },
+  ): LivePartitionedView<S, S, K> {
+    return new LivePartitionedView<S, S, K>(this, (sub) =>
+      makeFillView(sub, strategy, options),
+    );
+  }
+
+  /** Per-partition `diff`. See {@link LiveSeries.diff}. */
+  diff<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+      this,
+      (sub) =>
+        makeDiffView(sub, 'diff', columns, options) as unknown as LiveSource<
+          DiffSchema<S, Target>
+        >,
+    );
+  }
+
+  /** Per-partition `rate`. See {@link LiveSeries.rate}. */
+  rate<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+      this,
+      (sub) =>
+        makeDiffView(sub, 'rate', columns, options) as unknown as LiveSource<
+          DiffSchema<S, Target>
+        >,
+    );
+  }
+
+  /** Per-partition `pctChange`. See {@link LiveSeries.pctChange}. */
+  pctChange<const Target extends NumericColumnNameForSchema<S>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+      this,
+      (sub) =>
+        makeDiffView(
+          sub,
+          'pctChange',
+          columns,
+          options,
+        ) as unknown as LiveSource<DiffSchema<S, Target>>,
+    );
+  }
+
+  /** Per-partition `cumulative`. See {@link LiveSeries.cumulative}. */
+  cumulative<const Targets extends NumericColumnNameForSchema<S>>(spec: {
+    [P in Targets]:
+      | 'sum'
+      | 'max'
+      | 'min'
+      | 'count'
+      | ((acc: number, value: number) => number);
+  }): LivePartitionedView<S, DiffSchema<S, Targets>, K> {
+    return new LivePartitionedView<S, DiffSchema<S, Targets>, K>(
+      this,
+      (sub) =>
+        makeCumulativeView(sub, spec) as unknown as LiveSource<
+          DiffSchema<S, Targets>
+        >,
+    );
+  }
+
+  /**
+   * Per-partition `rolling`. See {@link LiveSeries.rolling}.
+   *
+   * **Partition column drops by default.** `rolling`'s output
+   * schema only retains columns named in `mapping`. Without
+   * including the partition column, the unified output of the
+   * chain loses the partition tag (e.g. `host` becomes
+   * `undefined`). To keep the partition column visible, include
+   * it in `mapping` with a passthrough reducer:
+   *
+   * ```ts
+   * partitioned.rolling('5m', { cpu: 'avg', host: 'last' })
+   * //                                       ^^^^^^^^^^^^^^
+   * ```
+   */
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+  ): LivePartitionedView<S, RollingSchema<S, M>, K> {
+    return new LivePartitionedView<S, RollingSchema<S, M>, K>(
+      this,
+      (sub) =>
+        new LiveRollingAggregation(
+          sub,
+          window,
+          mapping as AggregateMap<S>,
+        ) as unknown as LiveSource<RollingSchema<S, M>>,
+    );
+  }
+
   /**
    * Dispose of the partitioned view: unsubscribe from the source,
    * disconnect every per-partition pipeline subscriber (created
@@ -378,6 +506,16 @@ export class LivePartitionedSeries<
     for (const dispose of this.#disposers) dispose();
     this.#disposers.clear();
     this.#onSpawn.clear();
+  }
+
+  /**
+   * @internal — register a cleanup callback to be fired when this
+   * root partitioned series is disposed. Used by
+   * `LivePartitionedView.toMap()` to track factory-output
+   * subscriptions that would otherwise leak across repeated calls.
+   */
+  _addDisposer(fn: () => void): void {
+    this.#disposers.add(fn);
   }
 
   // ─── Internal ─────────────────────────────────────────────────
@@ -429,4 +567,231 @@ function eventToRow<S extends SeriesSchema>(
     row.push(event.get((schema[i] as { name: string }).name as never));
   }
   return row as RowForSchema<S>;
+}
+
+/**
+ * Chained typed view over a {@link LivePartitionedSeries}. Returned
+ * by every sugar method on the root partitioned series and on this
+ * view, composing the operator factory at each step.
+ *
+ * The view is **lazy**: factories aren't run until a terminal
+ * (`collect()`, `apply()`, `toMap()`) is called. Each terminal
+ * delegates back to the root's per-partition state, applying the
+ * composed factory chain to each partition's `LiveSeries`.
+ *
+ * **Lifecycle.** All real state lives on the root
+ * `LivePartitionedSeries` — chained views are just deferred
+ * factories that point back at the root. They don't register their
+ * own subscriptions on the source. Disposing the root disposes
+ * everything: terminals subscribed to factory outputs are tracked
+ * on the root's internal disposers, including outputs created by
+ * `view.toMap()`.
+ *
+ * @example
+ * ```ts
+ * const cpuSmoothed = live
+ *   .partitionBy('host')
+ *   .fill({ cpu: 'hold' })       // → LivePartitionedView<S, S, K>
+ *   .rolling('1m', { cpu: 'avg' }) // → LivePartitionedView<S, R, K>
+ *   .collect();                    // → LiveSeries<R>
+ * ```
+ *
+ * @typeParam SBase - schema of the root partitioned series's
+ *   per-partition `LiveSeries` (kept so the composed factory's
+ *   input type is correct).
+ * @typeParam R - schema of the current chained output.
+ * @typeParam K - partition key type.
+ */
+export class LivePartitionedView<
+  SBase extends SeriesSchema,
+  R extends SeriesSchema,
+  K extends string = string,
+> {
+  readonly #root: LivePartitionedSeries<SBase, K>;
+  readonly #factory: (sub: LiveSeries<SBase>) => LiveSource<R>;
+
+  /**
+   * Schema of the chained output. Captured by running the factory
+   * once on a stub `LiveSeries<SBase>` at construction.
+   */
+  readonly schema: R;
+
+  /** @internal — used by sugar methods to chain. */
+  constructor(
+    root: LivePartitionedSeries<SBase, K>,
+    factory: (sub: LiveSeries<SBase>) => LiveSource<R>,
+  ) {
+    this.#root = root;
+    this.#factory = factory;
+    // Capture output schema upfront via a stub invocation. The stub
+    // is never connected — same pattern as
+    // {@link LivePartitionedSeries.apply}.
+    const stub = new LiveSeries<SBase>({
+      name: `${root.name}/_stub`,
+      schema: root.schema,
+    });
+    const stubOut = factory(stub);
+    this.schema = stubOut.schema;
+  }
+
+  /** Same as {@link LivePartitionedSeries.collect}, applied through the factory chain. */
+  collect(options?: Partial<LiveSeriesOptions<R>>): LiveSeries<R> {
+    return this.#root.apply(this.#factory, options);
+  }
+
+  /**
+   * Apply a further per-partition transform on top of the existing
+   * factory chain. Equivalent to chaining one more sugar method
+   * via a custom function. Returns a unified `LiveSeries<R2>`.
+   */
+  apply<R2 extends SeriesSchema>(
+    factory: (sub: LiveSource<R>) => LiveSource<R2>,
+    options?: Partial<LiveSeriesOptions<R2>>,
+  ): LiveSeries<R2> {
+    const composed = this.#factory;
+    return this.#root.apply(
+      (sub) => factory(composed(sub)) as unknown as LiveSource<R2>,
+      options,
+    );
+  }
+
+  /**
+   * Materialize the chained view per-partition as a
+   * `Map<K, LiveSource<R>>`. Runs the composed factory once per
+   * existing partition; auto-spawn from the root partitioned
+   * series is *not* propagated into this map (the snapshot
+   * reflects partitions at the time of the call).
+   *
+   * Each factory output (a `LiveView` / `LiveRollingAggregation` /
+   * etc.) holds an internal subscription to its source. To avoid
+   * accumulating listeners across repeated calls, every factory
+   * output's `dispose()` is registered on the root's disposer set
+   * — calling `partitioned.dispose()` on the root cleans up every
+   * `toMap`-created subscription chain.
+   *
+   * For a live-updating per-partition view, subscribe to the root
+   * `partitionBy` directly with `toMap()` and call the factory
+   * yourself, or use `collect()` for a unified buffer.
+   */
+  toMap(): Map<K, LiveSource<R>> {
+    const result = new Map<K, LiveSource<R>>();
+    const partitions = this.#root.toMap();
+    for (const [key, sub] of partitions) {
+      const out = this.#factory(sub as LiveSeries<SBase>);
+      result.set(key, out);
+      // Register the factory output's dispose so root.dispose()
+      // tears down the subscription chain. Without this, repeated
+      // toMap() calls accumulate listeners on the partition
+      // LiveSeries that nothing else references but never get
+      // collected because the partition's listener Set holds them.
+      const outWithDispose = out as { dispose?: () => void };
+      if (typeof outWithDispose.dispose === 'function') {
+        this.#root._addDisposer(() => outWithDispose.dispose!());
+      }
+    }
+    return result;
+  }
+
+  // ─── Chainable sugar (composes the factory) ──────────────────
+
+  fill(
+    strategy: LiveFillStrategy | LiveFillMapping<R>,
+    options?: { limit?: number },
+  ): LivePartitionedView<SBase, R, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, R, K>(this.#root, (sub) =>
+      makeFillView(prev(sub), strategy, options),
+    );
+  }
+
+  diff<const Target extends NumericColumnNameForSchema<R>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+      this.#root,
+      (sub) =>
+        makeDiffView(
+          prev(sub),
+          'diff',
+          columns,
+          options,
+        ) as unknown as LiveSource<DiffSchema<R, Target>>,
+    );
+  }
+
+  rate<const Target extends NumericColumnNameForSchema<R>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+      this.#root,
+      (sub) =>
+        makeDiffView(
+          prev(sub),
+          'rate',
+          columns,
+          options,
+        ) as unknown as LiveSource<DiffSchema<R, Target>>,
+    );
+  }
+
+  pctChange<const Target extends NumericColumnNameForSchema<R>>(
+    columns: Target | readonly Target[],
+    options?: { drop?: boolean },
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+      this.#root,
+      (sub) =>
+        makeDiffView(
+          prev(sub),
+          'pctChange',
+          columns,
+          options,
+        ) as unknown as LiveSource<DiffSchema<R, Target>>,
+    );
+  }
+
+  cumulative<const Targets extends NumericColumnNameForSchema<R>>(spec: {
+    [P in Targets]:
+      | 'sum'
+      | 'max'
+      | 'min'
+      | 'count'
+      | ((acc: number, value: number) => number);
+  }): LivePartitionedView<SBase, DiffSchema<R, Targets>, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, DiffSchema<R, Targets>, K>(
+      this.#root,
+      (sub) =>
+        makeCumulativeView(prev(sub), spec) as unknown as LiveSource<
+          DiffSchema<R, Targets>
+        >,
+    );
+  }
+
+  /**
+   * **Partition column drops by default.** `rolling`'s output
+   * schema only retains columns named in `mapping`. Include the
+   * partition column with a passthrough reducer (e.g.
+   * `host: 'last'`) to keep it visible in the unified output.
+   */
+  rolling<const M extends AggregateMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+  ): LivePartitionedView<SBase, RollingSchema<R, M>, K> {
+    const prev = this.#factory;
+    return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
+      this.#root,
+      (sub) =>
+        new LiveRollingAggregation(
+          prev(sub),
+          window,
+          mapping as AggregateMap<R>,
+        ) as unknown as LiveSource<RollingSchema<R, M>>,
+    );
+  }
 }
