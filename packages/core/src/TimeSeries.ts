@@ -1559,10 +1559,13 @@ export class TimeSeries<S extends SeriesSchema> {
     const intervals = toBoundedSequence(sequence, range, sample).intervals();
     const valueColumnNames = this.schema.slice(1).map((c) => c.name);
     const sourceEvents = this.events;
+    const sourceLen = sourceEvents.length;
+    const colCount = valueColumnNames.length;
 
     // Single forward cursor over source events. Each bucket advances
     // it past events whose begin() < bucket.begin(); within the
-    // bucket, scan to the end of the membership window.
+    // bucket, scan inline to find the chosen event without buffering
+    // the bucket's event indexes in a temporary array.
     let cursor = 0;
     const rows: unknown[][] = new Array(intervals.length);
 
@@ -1573,62 +1576,60 @@ export class TimeSeries<S extends SeriesSchema> {
       const sampleAt = sampleTime(interval, sample);
 
       // Skip events before this bucket's start.
-      while (
-        cursor < sourceEvents.length &&
-        sourceEvents[cursor]!.begin() < bStart
-      ) {
+      while (cursor < sourceLen && sourceEvents[cursor]!.begin() < bStart) {
         cursor += 1;
       }
 
-      // Collect events in [bStart, bEnd). Track the cursor advance separately
-      // so we don't lose events that span buckets (point events can't, but
-      // future-proofs against interval-keyed sources).
-      let scan = cursor;
-      const inBucket: number[] = [];
-      while (scan < sourceEvents.length && sourceEvents[scan]!.begin() < bEnd) {
-        inBucket.push(scan);
-        scan += 1;
+      // Find the chosen event index in [bStart, bEnd) inline. -1 means
+      // empty bucket. Per-mode logic:
+      // - 'first': early-exit at the first in-bucket event — O(1)
+      // - 'last': walk forward, last index in-bucket wins — O(K_i)
+      // - 'nearest': walk forward, track min distance with strict `<`
+      //   so the earliest tied event wins — O(K_i)
+      let pick = -1;
+      if (select === 'first') {
+        if (cursor < sourceLen && sourceEvents[cursor]!.begin() < bEnd) {
+          pick = cursor;
+        }
+      } else if (select === 'last') {
+        let scan = cursor;
+        while (scan < sourceLen && sourceEvents[scan]!.begin() < bEnd) {
+          pick = scan;
+          scan += 1;
+        }
+      } else {
+        let scan = cursor;
+        let bestDist = Infinity;
+        while (scan < sourceLen && sourceEvents[scan]!.begin() < bEnd) {
+          const d = Math.abs(sourceEvents[scan]!.begin() - sampleAt);
+          if (d < bestDist) {
+            pick = scan;
+            bestDist = d;
+          }
+          scan += 1;
+        }
       }
 
-      const row = new Array(valueColumnNames.length + 1);
+      const row = new Array(colCount + 1);
       row[0] = new Time(sampleAt);
 
-      if (inBucket.length === 0) {
+      if (pick === -1) {
         // Empty bucket — every value column is undefined.
-        for (let j = 0; j < valueColumnNames.length; j += 1) {
+        for (let j = 0; j < colCount; j += 1) {
           row[j + 1] = undefined;
         }
       } else {
-        // Pick the chosen event according to `select`.
-        let pick: number;
-        if (select === 'first') {
-          pick = inBucket[0]!;
-        } else if (select === 'last') {
-          pick = inBucket[inBucket.length - 1]!;
-        } else {
-          // 'nearest' — closest begin() to sampleAt among in-bucket events.
-          // Ties keep the earliest tied event (pick stays at first match).
-          pick = inBucket[0]!;
-          let bestDist = Math.abs(sourceEvents[pick]!.begin() - sampleAt);
-          for (let k = 1; k < inBucket.length; k += 1) {
-            const idx = inBucket[k]!;
-            const d = Math.abs(sourceEvents[idx]!.begin() - sampleAt);
-            if (d < bestDist) {
-              pick = idx;
-              bestDist = d;
-            }
-          }
-        }
         const data = sourceEvents[pick]!.data() as Record<string, unknown>;
-        for (let j = 0; j < valueColumnNames.length; j += 1) {
+        for (let j = 0; j < colCount; j += 1) {
           row[j + 1] = data[valueColumnNames[j]!];
         }
       }
 
       rows[i] = row;
-      // Advance cursor only past events strictly before this bucket's end —
-      // an event whose begin() === bEnd belongs to the next bucket
-      // (half-open membership).
+      // Cursor stays at the first event of (or just past) the current
+      // bucket; the next iteration's skip-loop advances it past events
+      // < bStart_{i+1}. Half-open membership ensures an event at
+      // begin() === bEnd belongs to the next bucket, not this one.
     }
 
     return new TimeSeries({

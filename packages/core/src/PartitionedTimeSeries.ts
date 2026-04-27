@@ -299,6 +299,27 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       PartitionedTimeSeries.applyToSource(this.source, this.by, (g) => {
         const out = g.materialize(sequence, options);
         if (g.events.length === 0) return out;
+
+        // Detect whether any output row needs partition-column patching
+        // (i.e., whether any bucket was empty). If the source covered
+        // the grid, every row already carries the partition columns
+        // from its source event — skip the map() pass entirely. This
+        // avoids the per-event closure-call + new event allocation
+        // cost when no patching is required.
+        const events = out.events;
+        let needsPatch = false;
+        outer: for (let i = 0; i < events.length; i += 1) {
+          const data = events[i]!.data() as Record<string, unknown>;
+          for (let c = 0; c < partitionCols.length; c += 1) {
+            if (data[partitionCols[c]!] === undefined) {
+              needsPatch = true;
+              break outer;
+            }
+          }
+        }
+        if (!needsPatch) return out;
+
+        // Patch partition columns where undefined (empty-bucket rows).
         // All events in this partition share the partition columns —
         // capture them once from the first source event.
         const firstData = g.events[0]!.data() as Record<string, unknown>;
@@ -306,9 +327,6 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
         for (const col of partitionCols) {
           partValues[col] = firstData[col];
         }
-        // Patch partition columns where undefined (empty-bucket rows).
-        // Source-event-populated rows already carry the right values
-        // because the chosen event came from this partition.
         return out.map(out.schema, (event) => {
           const data = event.data() as Record<string, unknown>;
           let result = event;
