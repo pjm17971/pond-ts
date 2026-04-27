@@ -458,7 +458,21 @@ export class LivePartitionedSeries<
     );
   }
 
-  /** Per-partition `rolling`. See {@link LiveSeries.rolling}. */
+  /**
+   * Per-partition `rolling`. See {@link LiveSeries.rolling}.
+   *
+   * **Partition column drops by default.** `rolling`'s output
+   * schema only retains columns named in `mapping`. Without
+   * including the partition column, the unified output of the
+   * chain loses the partition tag (e.g. `host` becomes
+   * `undefined`). To keep the partition column visible, include
+   * it in `mapping` with a passthrough reducer:
+   *
+   * ```ts
+   * partitioned.rolling('5m', { cpu: 'avg', host: 'last' })
+   * //                                       ^^^^^^^^^^^^^^
+   * ```
+   */
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
@@ -492,6 +506,16 @@ export class LivePartitionedSeries<
     for (const dispose of this.#disposers) dispose();
     this.#disposers.clear();
     this.#onSpawn.clear();
+  }
+
+  /**
+   * @internal — register a cleanup callback to be fired when this
+   * leaf is disposed. Used by `LivePartitionedView.toMap()` to
+   * track factory-output subscriptions that would otherwise leak
+   * across repeated calls.
+   */
+  _addDisposer(fn: () => void): void {
+    this.#disposers.add(fn);
   }
 
   // ─── Internal ─────────────────────────────────────────────────
@@ -636,6 +660,13 @@ export class LivePartitionedView<
    * propagated into this map (the snapshot reflects partitions at
    * the time of the call).
    *
+   * Each factory output (a `LiveView` / `LiveRollingAggregation` /
+   * etc.) holds an internal subscription to its source. To avoid
+   * accumulating listeners across repeated calls, every factory
+   * output's `dispose()` is registered on the leaf's disposer set
+   * — calling `partitioned.dispose()` on the leaf cleans up every
+   * `toMap`-created subscription chain.
+   *
    * For a live-updating per-partition view, subscribe to the leaf's
    * `partitionBy` directly with `toMap()` and call the factory
    * yourself, or use `collect()` for a unified buffer.
@@ -644,7 +675,17 @@ export class LivePartitionedView<
     const result = new Map<K, LiveSource<R>>();
     const partitions = this.#root.toMap();
     for (const [key, sub] of partitions) {
-      result.set(key, this.#factory(sub as LiveSeries<SBase>));
+      const out = this.#factory(sub as LiveSeries<SBase>);
+      result.set(key, out);
+      // Register the factory output's dispose so leaf.dispose()
+      // tears down the subscription chain. Without this, repeated
+      // toMap() calls accumulate listeners on the partition
+      // LiveSeries that nothing else references but never get
+      // collected because the partition's listener Set holds them.
+      const outWithDispose = out as { dispose?: () => void };
+      if (typeof outWithDispose.dispose === 'function') {
+        this.#root._addDisposer(() => outWithDispose.dispose!());
+      }
     }
     return result;
   }
@@ -730,6 +771,12 @@ export class LivePartitionedView<
     );
   }
 
+  /**
+   * **Partition column drops by default.** `rolling`'s output
+   * schema only retains columns named in `mapping`. Include the
+   * partition column with a passthrough reducer (e.g.
+   * `host: 'last'`) to keep it visible in the unified output.
+   */
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,

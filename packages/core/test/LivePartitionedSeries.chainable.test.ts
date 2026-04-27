@@ -160,18 +160,142 @@ describe('LivePartitionedSeries chainable typed sugar', () => {
   });
 
   describe('LivePartitionedView.apply', () => {
-    it('apply on a chained view composes with the existing factory', () => {
+    it('apply on a chained view composes with the existing factory and emits the right values', () => {
       const live = makeLive();
-      // fill().apply(custom) — apply adds another transform on top
+      // fill().apply(custom) — apply adds another transform on top.
+      // The custom transform is identity so the output should match
+      // what fill() alone would produce: hold-fill of undefined cpu.
       const collected = live
         .partitionBy('host')
         .fill({ cpu: 'hold' })
-        .apply((sub) => sub); // identity transform
+        .apply((sub) => sub);
 
       live.push([0, 0.5, 'a']);
       live.push([60_000, undefined, 'a']);
 
       expect(collected.length).toBe(2);
+      // Pin the values, not just length. If apply discarded the
+      // prev factory, t=60k's cpu would be undefined.
+      expect(collected.at(0)?.get('cpu')).toBe(0.5);
+      expect(collected.at(1)?.get('cpu')).toBe(0.5); // hold-fill
+    });
+
+    it('apply on a chained view actually invokes the prev factory (not bypassed)', () => {
+      // If apply were a no-op of prev, it would still pass length
+      // checks. This test pins that prev's transform is in the
+      // pipeline by using fill+diff: after fill+diff, t=60k's cpu
+      // delta is 0 (held value 0.5 - prev 0.5 = 0). Without fill,
+      // t=60k cpu would be undefined and diff would emit undefined.
+      const live = makeLive();
+      const collected = live
+        .partitionBy('host')
+        .fill({ cpu: 'hold' })
+        .apply((sub) => sub.diff('cpu'));
+
+      live.push([0, 0.5, 'a']);
+      live.push([60_000, undefined, 'a']);
+
+      expect(collected.length).toBe(2);
+      expect(collected.at(0)?.get('cpu')).toBeUndefined(); // first event
+      // Held 0.5 - 0.5 = 0; if prev factory wasn't applied, this
+      // would be undefined.
+      expect(collected.at(1)?.get('cpu')).toBe(0);
+    });
+  });
+
+  describe('deep chain composition (3+ operators)', () => {
+    it('fill().diff().rate() chain produces same result as equivalent apply factory', () => {
+      const live1 = makeLive();
+      const sugar = live1
+        .partitionBy('host')
+        .fill({ cpu: 'hold' })
+        .diff('cpu')
+        .rate('cpu')
+        .collect();
+
+      const live2 = makeLive();
+      const apply = live2
+        .partitionBy('host')
+        .apply((sub) => sub.fill({ cpu: 'hold' }).diff('cpu').rate('cpu'));
+
+      const seq: Array<readonly [number, number | undefined, string]> = [
+        [0, 0.4, 'a'],
+        [0, 1.0, 'b'],
+        [1000, 0.6, 'a'],
+        [1000, 1.2, 'b'],
+        [2000, 0.8, 'a'],
+        [2000, 1.4, 'b'],
+      ];
+      for (const r of seq) live1.push(r as never);
+      for (const r of seq) live2.push(r as never);
+
+      const sugarValues = [...sugar.toTimeSeries().events].map((e) => [
+        e.begin(),
+        e.get('cpu'),
+        e.get('host'),
+      ]);
+      const applyValues = [...apply.toTimeSeries().events].map((e) => [
+        e.begin(),
+        e.get('cpu'),
+        e.get('host'),
+      ]);
+      expect(sugarValues).toEqual(applyValues);
+    });
+  });
+
+  describe('interleaved terminals on the same view', () => {
+    it('toMap() called twice does not accumulate listeners after dispose', () => {
+      // Per the toMap contract, factory outputs from each call are
+      // tracked on the leaf so leaf.dispose() cleans them up.
+      const live = makeLive();
+      const partitioned = live.partitionBy('host');
+      const view = partitioned.fill({ cpu: 'hold' });
+
+      live.push([0, 0.5, 'a']);
+
+      const m1 = view.toMap();
+      const m2 = view.toMap();
+      // Each call materializes fresh factory outputs (they're not
+      // cached). m1 and m2 are different Map instances but both
+      // reflect the same partition state.
+      expect(m1.size).toBe(1);
+      expect(m2.size).toBe(1);
+      expect(m1.get('a')).not.toBe(m2.get('a')); // fresh per call
+
+      // Dispose leaf — cleanup must propagate to BOTH toMap calls'
+      // factory outputs. Push another event; neither m1 nor m2
+      // should see it (their underlying subscriptions are gone).
+      let m1Saw = 0;
+      let m2Saw = 0;
+      m1.get('a')!.on('event', () => {
+        m1Saw += 1;
+      });
+      m2.get('a')!.on('event', () => {
+        m2Saw += 1;
+      });
+      partitioned.dispose();
+      live.push([60_000, 0.6, 'a']);
+      // Source push doesn't reach partitions after dispose, so
+      // neither toMap output sees the new event.
+      expect(m1Saw).toBe(0);
+      expect(m2Saw).toBe(0);
+    });
+
+    it('toMap() then collect() both work on the same view', () => {
+      const live = makeLive();
+      const view = live.partitionBy('host').fill({ cpu: 'hold' });
+
+      live.push([0, 0.5, 'a']);
+      live.push([0, 0.3, 'b']);
+
+      const m = view.toMap();
+      const collected = view.collect();
+
+      live.push([60_000, undefined, 'a']);
+
+      expect(m.size).toBe(2);
+      expect(collected.length).toBe(3); // 2 initial + 1 new
+      // Both terminals saw the events, independently.
     });
   });
 
