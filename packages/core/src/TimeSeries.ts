@@ -1830,8 +1830,11 @@ export class TimeSeries<S extends SeriesSchema> {
    * declared groups still produce empty `TimeSeries` entries, and
    * partition values not in the declared set throw at construction
    * time. Mirrors {@link TimeSeries.pivotByGroup}'s typed-groups
-   * pattern. Composite partitions don't accept `groups` — drop it
-   * for those.
+   * pattern. Composite partitions, empty `groups`, and duplicate
+   * values throw upfront. Numeric and boolean partition columns are
+   * stringified by the encoder, so declared groups must be the
+   * stringified form (`groups: ['1', '2'] as const` for a numeric
+   * column with values `1` and `2`).
    *
    * @example
    * ```ts
@@ -1859,7 +1862,7 @@ export class TimeSeries<S extends SeriesSchema> {
     Col extends keyof EventDataForSchema<S> & string,
     const Groups extends ReadonlyArray<string>,
   >(
-    by: Col,
+    by: Col | readonly [Col],
     options: { groups: Groups },
   ): PartitionedTimeSeries<S, Groups[number]>;
   partitionBy(

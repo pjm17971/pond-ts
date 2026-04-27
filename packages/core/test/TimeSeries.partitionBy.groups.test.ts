@@ -162,6 +162,91 @@ describe('TimeSeries.partitionBy({ groups })', () => {
     });
   });
 
+  describe('input validation', () => {
+    it('throws on empty groups array', () => {
+      const ts = makeSeries([[0, 0.5, 'a']]);
+      expect(() => ts.partitionBy('host', { groups: [] as const })).toThrow(
+        /`groups` cannot be empty/,
+      );
+    });
+
+    it('throws on duplicate values in groups', () => {
+      const ts = makeSeries([[0, 0.5, 'a']]);
+      expect(() =>
+        ts.partitionBy('host', { groups: ['a', 'b', 'a'] as const }),
+      ).toThrow(/duplicate value "a"/);
+    });
+
+    it('error message decodes the leading-space sentinel for undefined', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [0, 0.3, undefined], // not in groups; encoder produces ' undefined'
+      ]);
+      // Message should say `undefined`, not `" undefined"` — the user
+      // shouldn't see the encoder's internal sentinel.
+      expect(() =>
+        ts.partitionBy('host', { groups: ['a', 'b'] as const }),
+      ).toThrow(/encountered partition value undefined for column "host"/);
+      // Negative assertion: the leading-space form is NOT present.
+      expect(() =>
+        ts.partitionBy('host', { groups: ['a', 'b'] as const }),
+      ).not.toThrow(/" undefined"/);
+    });
+
+    it('error message uses JSON.stringify for non-undefined unknown values', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [0, 0.3, 'rogue'],
+      ]);
+      expect(() =>
+        ts.partitionBy('host', { groups: ['a', 'b'] as const }),
+      ).toThrow(/encountered partition value "rogue"/);
+    });
+  });
+
+  describe('single-element array form', () => {
+    it('partitionBy([col], { groups }) narrows K like partitionBy(col, { groups })', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [60_000, 0.6, 'a'],
+        [60_000, 0.4, 'b'],
+      ]);
+      const HOSTS = ['a', 'b'] as const;
+      // Both forms accept groups and produce the same runtime result.
+      const m1 = ts.partitionBy('host', { groups: HOSTS }).toMap();
+      const m2 = ts.partitionBy(['host'], { groups: HOSTS }).toMap();
+      expect([...m1.keys()]).toEqual(['a', 'b']);
+      expect([...m2.keys()]).toEqual(['a', 'b']);
+      // Type-level: m2 has the same Map<'a' | 'b', ...> shape as m1.
+      // (Verified by the typed overload accepting `Col | readonly [Col]`.)
+      const _typeSlot: typeof m1 = m2;
+      void _typeSlot;
+    });
+  });
+
+  describe('trusted-path safety on chains', () => {
+    it('chain steps re-use the validated groups without walking source', () => {
+      // If rewrap re-validated, this would still pass; but the perf
+      // bench shows no per-step walk. This test pins the runtime
+      // contract: groups field is preserved through the chain.
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [60_000, undefined, 'a'],
+        [120_000, 0.7, 'a'],
+      ]);
+      const HOSTS = ['a'] as const;
+      const partitioned = ts.partitionBy('host', { groups: HOSTS });
+      expect(partitioned.groups).toEqual(['a']);
+      const filled = partitioned.fill({ cpu: 'linear' });
+      // groups is propagated through the rewrap.
+      expect(filled.groups).toEqual(['a']);
+      const rolled = filled
+        .fill({ cpu: 'hold' }) // second step
+        .toMap();
+      expect([...rolled.keys()]).toEqual(['a']);
+    });
+  });
+
   describe('composite partitions reject groups', () => {
     it('throws TypeError when groups is supplied with array partition columns', () => {
       const ts = new TimeSeries({

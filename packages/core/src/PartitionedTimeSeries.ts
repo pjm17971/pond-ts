@@ -96,8 +96,6 @@ export class PartitionedTimeSeries<
       | (keyof EventDataForSchema<S> & string)
       | ReadonlyArray<keyof EventDataForSchema<S> & string>,
     options?: { groups?: ReadonlyArray<K> },
-    /** @internal — skip per-event groups validation; used by rewrap */
-    _trusted: boolean = false,
   ) {
     this.source = source;
     this.by = (Array.isArray(by) ? by : [by]) as ReadonlyArray<
@@ -115,7 +113,7 @@ export class PartitionedTimeSeries<
         );
       }
     }
-    if (options?.groups) {
+    if (options?.groups !== undefined) {
       if (this.by.length > 1) {
         throw new TypeError(
           'PartitionedTimeSeries: typed `groups` option requires a single ' +
@@ -123,10 +121,25 @@ export class PartitionedTimeSeries<
             'narrow to a single column.',
         );
       }
-      this.groups = options.groups;
-      if (!_trusted) {
-        this.validateGroupMembership();
+      if (options.groups.length === 0) {
+        throw new TypeError(
+          'PartitionedTimeSeries: `groups` cannot be empty. Drop the ' +
+            'option to allow any partition value, or list at least one ' +
+            'declared group.',
+        );
       }
+      const seen = new Set<string>();
+      for (const g of options.groups) {
+        if (seen.has(g)) {
+          throw new TypeError(
+            `PartitionedTimeSeries: duplicate value ${JSON.stringify(g)} ` +
+              `in \`groups\`. Each declared group must be unique.`,
+          );
+        }
+        seen.add(g);
+      }
+      this.groups = options.groups;
+      this.validateGroupMembership();
     }
   }
 
@@ -141,14 +154,38 @@ export class PartitionedTimeSeries<
     for (const event of this.source.events) {
       const key = keyOf(event);
       if (!declared.has(key)) {
+        // Decode the encoder's leading-space sentinel so the message
+        // shows the user-facing concept, not the internal encoding.
+        const display =
+          key === ' undefined' ? 'undefined' : JSON.stringify(key);
         throw new TypeError(
-          `PartitionedTimeSeries: encountered partition value ${JSON.stringify(
-            key,
-          )} for column "${String(col)}" which is not in declared groups ` +
+          `PartitionedTimeSeries: encountered partition value ${display} ` +
+            `for column "${String(col)}" which is not in declared groups ` +
             `[${this.groups.map((g) => JSON.stringify(g)).join(', ')}].`,
         );
       }
     }
+  }
+
+  // Class-private factory used by `rewrap` to construct a
+  // partitioned view from a per-partition transform output. Skips
+  // groups validation because the events came from this view's
+  // pre-validated source — partition values cannot change inside a
+  // per-partition transform. JS-private (`static #fromValidated`) so
+  // the trusted path is unreachable from outside the class.
+  static #fromValidated<SX extends SeriesSchema, KX extends string>(
+    source: TimeSeries<SX>,
+    by: ReadonlyArray<keyof EventDataForSchema<SX> & string>,
+    groups: ReadonlyArray<KX> | undefined,
+  ): PartitionedTimeSeries<SX, KX> {
+    const p = new PartitionedTimeSeries<SX, KX>(source, by);
+    if (groups !== undefined) {
+      // groups was already validated when the user constructed the
+      // upstream view; partition values are preserved through any
+      // per-partition transform.
+      (p as { groups?: ReadonlyArray<KX> }).groups = groups;
+    }
+    return p;
   }
 
   /**
@@ -391,19 +428,19 @@ export class PartitionedTimeSeries<
   // validates that the partition columns are still present in the
   // result schema.
   //
-  // Passes `_trusted: true` so the per-event groups validation is
-  // skipped — the events came from this view's pre-validated source,
-  // and stateful per-partition transforms preserve the partition
-  // columns by construction. Skipping avoids O(N) re-validation per
-  // chain step.
+  // Routes through the class-private `#fromValidated` factory so the
+  // per-event groups validation is skipped on chain steps — the events
+  // came from this view's pre-validated source, and stateful
+  // per-partition transforms preserve the partition columns by
+  // construction. The trusted path is class-private (JS `#`) so it
+  // can't be called from outside the class.
   private rewrap<R extends SeriesSchema>(
     out: TimeSeries<R>,
   ): PartitionedTimeSeries<R, K> {
-    return new PartitionedTimeSeries<R, K>(
+    return PartitionedTimeSeries.#fromValidated<R, K>(
       out,
       this.by as unknown as ReadonlyArray<keyof EventDataForSchema<R> & string>,
-      this.groups ? { groups: this.groups } : undefined,
-      true,
+      this.groups,
     );
   }
 
