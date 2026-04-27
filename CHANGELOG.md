@@ -7,9 +7,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.1...HEAD
 
 ## [Unreleased]
+
+## [0.11.1] — 2026-04-27
+
+Closes a packaging footgun the dashboard agent surfaced while
+upgrading from `pond-ts@0.10.1` to `pond-ts@0.11.0`.
+
+When users had `@pond-ts/react@0.10.1` (which declared
+`dependencies: { "pond-ts": "^0.10.0" }`) and bumped only
+`pond-ts` to `0.11.0`, npm satisfied the react package's `^0.10.0`
+range by nesting a _second_ copy of `pond-ts@0.10.1` under
+`@pond-ts/react/node_modules/`. Two pond-ts copies meant two
+distinct `Sequence` / `Time` / etc. classes with non-shared JS
+private (`#`) brands. TypeScript surfaced this as
+`Property '#private' refers to a different member`, which is
+opaque without the package context.
+
+### Changed
+
+- **`@pond-ts/react`**: moved `pond-ts` from `dependencies` to
+  `peerDependencies` (range unchanged: `^0.11.0`). With peer-dep
+  semantics, npm refuses to install a duplicate `pond-ts`; instead
+  it warns at install time about peer-version mismatch — concrete,
+  actionable feedback rather than a runtime brand-check failure.
+
+  This is the standard pattern for packages that wrap another
+  library's classes (`react-dom` peer-deps `react`, etc.):
+  `@pond-ts/react`'s hooks return and operate on `pond-ts`
+  instances, so they MUST share class identity with the consumer's
+  `pond-ts`.
+
+  **Mild break:** consumers who installed only `@pond-ts/react`
+  and relied on the transitive `pond-ts` will now get an npm
+  warning and need to add `pond-ts` to their direct dependencies.
+  In practice anyone using `@pond-ts/react` is already importing
+  `pond-ts` types/classes, so the typical setup already has it
+  declared explicitly.
+
+### Notes
+
+- **Why caret (`^0.11.0`) and not exact pin?** Pre-1.0 caret
+  semver only accepts patches within the same minor (so
+  `^0.11.0` matches 0.11.x but not 0.12.0). That already
+  enforces minor-level lockstep — exact pinning would force
+  consumers to bump both packages for every patch, even when one
+  package's bump is a lockstep no-op.
+
+[0.11.1]: https://github.com/pjm17971/pond-ts/compare/v0.11.0...v0.11.1
 
 ## [0.11.0] — 2026-04-27
 
