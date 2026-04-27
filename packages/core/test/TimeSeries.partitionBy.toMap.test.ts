@@ -147,6 +147,27 @@ describe('PartitionedTimeSeries.toMap', () => {
       expect(newWay.get('a')?.length).toBe(oldWay.get('a')?.length);
       expect(newWay.get('b')?.length).toBe(oldWay.get('b')?.length);
     });
+
+    it('transform throwing leaves no partial Map state visible', () => {
+      const ts = makeSeries([
+        [0, 0.5, 'a'],
+        [0, 0.3, 'b'],
+        [60_000, 0.6, 'a'],
+        [60_000, 0.4, 'b'],
+      ]);
+      let calls = 0;
+      expect(() =>
+        ts.partitionBy('host').toMap((g) => {
+          calls += 1;
+          if (calls === 2) throw new Error('boom');
+          return g.toPoints();
+        }),
+      ).toThrow(/boom/);
+      // The throw propagates without exposing a partial Map.
+      // The impl builds the Map locally and only returns on successful
+      // completion of every partition's transform — there's no
+      // intermediate visibility for the caller.
+    });
   });
 
   describe('composite partition keys', () => {
@@ -238,6 +259,34 @@ describe('PartitionedTimeSeries.toMap', () => {
       expect(m.has(' undefined')).toBe(true); // missing-value partition
       expect(m.get('undefined')?.length).toBe(2);
       expect(m.get(' undefined')?.length).toBe(2);
+    });
+
+    it('diverges from groupBy on undefined keys (intentional improvement)', () => {
+      // Pin the documented divergence between toMap and groupBy.
+      // groupBy uses bare 'undefined' for missing values — collides
+      // with the literal string 'undefined'. toMap's leading-space
+      // sentinel keeps them distinct.
+      //
+      // This is documented in toMap's JSDoc as an intentional
+      // improvement; migrating from groupBy to toMap requires
+      // updating any `.get('undefined')` lookup to `.get(' undefined')`.
+      const ts = makeSeries([
+        [0, 0.5, 'undefined'], // string literal
+        [0, 0.3, undefined], // missing
+        [60_000, 0.6, 'undefined'],
+        [60_000, 0.4, undefined],
+      ]);
+      // groupBy collapses both rows under key 'undefined' — wrong but
+      // historical. Verify by checking the bucket it produces.
+      const fromGroupBy = ts.groupBy('host');
+      expect(fromGroupBy.size).toBe(1); // collapsed
+      expect(fromGroupBy.get('undefined')?.length).toBe(4); // all 4 events
+
+      // toMap keeps them separate.
+      const fromToMap = ts.partitionBy('host').toMap();
+      expect(fromToMap.size).toBe(2); // distinct
+      expect(fromToMap.get('undefined')?.length).toBe(2); // string-value only
+      expect(fromToMap.get(' undefined')?.length).toBe(2); // missing only
     });
 
     it('composite: undefined becomes null in the JSON encoding', () => {

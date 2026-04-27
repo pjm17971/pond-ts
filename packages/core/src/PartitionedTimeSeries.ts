@@ -165,8 +165,35 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
    * partition was first encountered in the source events.
    *
    * `undefined` partition values become the literal `' undefined'`
-   * (with a leading space to avoid colliding with a string column
-   * whose value is `'undefined'`).
+   * with a **leading space** — this avoids colliding with a string
+   * column whose value happens to be the literal text `'undefined'`.
+   * The two are distinct buckets:
+   *
+   * ```ts
+   * series // events with host=undefined and host='undefined'
+   *   .partitionBy('host')
+   *   .toMap();
+   * // → 2 entries: ' undefined' (missing) vs 'undefined' (string literal)
+   * ```
+   *
+   * **Divergence from `series.groupBy(col)`:** `groupBy` uses bare
+   * `'undefined'` (no leading space) for missing values, so it
+   * collapses these two cases. `toMap`'s leading-space sentinel is
+   * an intentional improvement — the older `groupBy` shape silently
+   * loses the distinction between "missing" and "the string
+   * 'undefined'". Migrating from `groupBy` to `toMap` will produce
+   * different keys for partitions with `undefined` values; lookup
+   * code that previously did `.get('undefined')` should change to
+   * `.get(' undefined')` (note the leading space) to find the
+   * missing-value bucket.
+   *
+   * **Composite encoder.** For composite partitions, `JSON.stringify`
+   * with a `?? null` fallback emits both `null` and `undefined` as
+   * JSON `null`. In practice this only matters if event data
+   * contains explicit `null` values, which the standard
+   * validation/ingest paths convert to `undefined` upfront — so the
+   * single-column-vs-composite asymmetry is unreachable through the
+   * normal API.
    *
    * @example
    * ```ts
