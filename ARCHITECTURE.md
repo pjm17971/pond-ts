@@ -1,0 +1,502 @@
+# Architecture
+
+Living document covering pond-ts's internal structure. Aimed at future
+contributors (human or AI) reading the codebase cold — explains what
+exists, why it's shaped that way, and which patterns recur. Not a user
+guide; for that, see `website/docs/`.
+
+Updated alongside meaningful structural changes. If you change a layer
+boundary, add a new class to one of the layers, or introduce a new
+recurring pattern, update this file in the same pass.
+
+---
+
+## 1. Layered model
+
+Three layers, with snapshots crossing the boundary downward:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  Live layer (bounded buffers, push ingestion, subscription)        │
+│                                                                    │
+│   ┌──────────────────┐  ┌────────────────────┐                     │
+│   │  LiveSeries<S>   │  │ LivePartitioned    │                     │
+│   │  (bounded buffer)│←─│ Series<S, K>       │                     │
+│   └─────┬────────────┘  │ (per-partition     │                     │
+│         │               │  routing + sub-    │                     │
+│         │ (subscribes)  │  buffers)          │                     │
+│         │               └────────────────────┘                     │
+│         ▼                                                          │
+│   ┌──────────────────┐  ┌────────────────────┐  ┌────────────────┐ │
+│   │  LiveView<S>     │  │ LiveAggregation    │  │ LiveRolling    │ │
+│   │  (lazy derived;  │  │ <S, R>             │  │ Aggregation    │ │
+│   │  filter/map/fill │  │ (sequence-bucketed │  │ <S, R>         │ │
+│   │  /diff/rate/     │  │  windowed reduce)  │  │ (sliding       │ │
+│   │  cumulative)     │  │                    │  │  window)       │ │
+│   └──────────────────┘  └────────────────────┘  └────────────────┘ │
+│                                                                    │
+│   All implement LiveSource<S>: { name, schema, length, at, on }    │
+└────────────────────────────────────────────────────────────────────┘
+                              │
+                              │  liveSeries.toTimeSeries()
+                              ▼  (snapshot — Live → Batch)
+┌────────────────────────────────────────────────────────────────────┐
+│  Batch layer (immutable, complete data, full analytical surface)   │
+│                                                                    │
+│   ┌──────────────────┐         ┌──────────────────────────┐        │
+│   │  TimeSeries<S>   │ ──────► │ PartitionedTimeSeries    │        │
+│   │  (immutable      │         │ <S, K>                   │        │
+│   │  column-typed    │         │ (chainable per-          │        │
+│   │  series)         │         │  partition view)         │        │
+│   └──────────────────┘         └──────────────────────────┘        │
+└────────────────────────────────────────────────────────────────────┘
+                              │
+                              │  every event holds an EventKey
+                              ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  Core values (immutable, no behavior beyond their data)            │
+│                                                                    │
+│   Event<K, D>                              (one observation)       │
+│   Time / TimeRange / Interval              (event keys)            │
+│   Sequence / BoundedSequence               (recurrence rules)      │
+│                                                                    │
+│   types.ts: SeriesSchema, EventForSchema<S>, RollingSchema<S,M>,   │
+│             MaterializeSchema<S>, DedupeKeep<S>, etc.              │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Cardinal rule:** the live layer is for _ingestion and incremental
+computation_; the batch layer is for _analytical transforms over
+complete data_. When you need full analytical power on live data,
+snapshot to `TimeSeries` and use the batch API. Live operators only
+exist where incremental computation is genuinely cheaper than
+re-snapshotting.
+
+### Why three layers and not one?
+
+Because they have different invariants:
+
+- **Core values** are immutable and structural. An `Event` cannot be
+  mutated; you produce a new one.
+- **Batch** is whole-data. Every method has access to the full event
+  array and can sort, scan, or index freely.
+- **Live** is incremental. Each operator must produce its output on
+  every push without rescanning history; state is per-event-arrival.
+
+A single layer would force every operator to handle both modes, which
+either (a) bloats the API surface with mode flags or (b) restricts
+operators to the lowest common denominator (event-driven only).
+
+---
+
+## 2. Stateful primitives
+
+### `TimeSeries<S>` (`packages/core/src/TimeSeries.ts`)
+
+Immutable, column-typed series. Constructed with a `SeriesSchema` (the
+first column is one of `time`/`timeRange`/`interval`; the rest are
+value columns) and rows. Validation happens at construction via
+`validate.ts`; events are sorted by key, then frozen.
+
+Internally stores:
+
+- `name: string`
+- `schema: S` (frozen)
+- `events: ReadonlyArray<EventForSchema<S>>` (sorted by key)
+
+Most analytical methods (`fill`, `align`, `aggregate`, `rolling`,
+`smooth`, `baseline`, `diff`, `rate`, `dedupe`, `materialize`,
+`partitionBy`) return new typed `TimeSeries` instances with the right
+output schema. The output schema is captured by _narrowing types_
+(see §3).
+
+Internal construction shortcut: `static #fromTrustedEvents` skips
+validation when the caller has already produced valid events (e.g.
+chained transforms). See §3 for the trusted-construction pattern.
+
+### `PartitionedTimeSeries<S, K>` (`PartitionedTimeSeries.ts`)
+
+Chainable view that scopes stateful transforms per-partition. Returned
+by `series.partitionBy(col)` or `series.partitionBy(col, { groups })`.
+
+Persistent across chains: each sugar method (`fill`, `align`,
+`rolling`, …) returns another `PartitionedTimeSeries<NewSchema, K>`,
+preserving the partition state. Terminal methods materialize back:
+
+- `.collect()` → `TimeSeries<S>`
+- `.apply(fn)` → `TimeSeries<R>` (concat per-partition outputs of `fn`)
+- `.toMap()` → `Map<K, TimeSeries<R>>` (per-partition map)
+
+Internally:
+
+- `source: TimeSeries<S>` (the underlying series)
+- `by: ReadonlyArray<keyof S & string>` (single column or composite)
+- `groups?: ReadonlyArray<K>` (declared partitions for typed narrowing)
+
+Per-partition execution lives in `static applyToSource(source, by, fn)`,
+which buckets events by composite key (using `partitionKeyOf`),
+runs `fn` on each bucket's sub-series, and concats the result. Sugar
+methods all delegate through `applyToSource`.
+
+Trusted construction (`static #fromValidated`) used by `rewrap` to
+build chained views without re-walking the source for groups
+validation.
+
+### Stateful batch operators
+
+Every operator that reads neighboring events (`fill`, `align`,
+`rolling`, `smooth`, `baseline`, `outliers`, `diff`, `rate`,
+`pctChange`, `cumulative`, `shift`, `aggregate`, `dedupe`,
+`materialize`) carries a `**Multi-entity series:**` JSDoc paragraph
+naming the operator's specific cross-entity hazard and pointing at
+`partitionBy`. Discoverable via LSP hover, IDE quick-help, or any
+type-definition consumer (including AI agents).
+
+Notable internals:
+
+- **`fill`** uses a unified gap-walker. For each value column, scan
+  forward; on hitting `undefined`, find the gap's bounds (start, end,
+  length, span); check strategy feasibility (`linear` needs both
+  neighbors, `hold` needs prev, `bfill` needs next, `zero`/literal
+  need neither); check size caps (`limit`, `maxGap`); fill atomically
+  or skip (all-or-nothing).
+- **`materialize`** runs a forward cursor over the source events
+  alongside the bucket sequence. For each bucket, find events in
+  `[bucket.begin, bucket.end)`, pick one via `select`, emit a
+  time-keyed row at the bucket sample point.
+- **`dedupe`** buckets events by full event key (begin for time,
+  begin+end for timeRange, begin+end+value for interval), then
+  applies the `keep` policy per bucket.
+- **`rolling`** is the closest to a real algorithm — a sliding
+  deque with O(1) per-event add/remove, indexed by either time or
+  event count.
+
+### `LiveSeries<S>` (`LiveSeries.ts`)
+
+Bounded buffer for live ingestion. Configurable retention
+(`maxEvents` / `maxAge` / `maxBytes`), grace window (for late events
+in `'reorder'` ordering), and three subscription channels:
+`'event'`, `'batch'`, `'evict'`. Implements `LiveSource<S>`.
+
+Validation at ingest: `push(...rows)` runs each row through the same
+schema validation as `TimeSeries`. Eviction runs after each push to
+honor retention.
+
+`live.toTimeSeries()` snapshots to a batch series — the standard
+crossing point between layers.
+
+### `LiveView<S>` (`LiveView.ts`)
+
+Lazy derived view. Wraps a `LiveSource<S>` and a `process(event)`
+function that returns either a transformed event or `undefined` (to
+skip). Subscribes to source `'event'` and emits derived events as they
+arrive. Used by `filter`, `map`, `select`, `fill`, `diff`, `rate`,
+`pctChange`, `cumulative`.
+
+Mirrors source eviction (`'evict'`) when the source advertises
+`EMITS_EVICT`.
+
+### `LiveAggregation<S, R>` and `LiveRollingAggregation<S, R>`
+
+Stateful windowed aggregations. Each maintains internal reducer state
+across events and emits derived events as windows fire.
+
+- `LiveAggregation` — sequence-bucketed; events flush when their
+  bucket closes.
+- `LiveRollingAggregation` — sliding window; emits on every input
+  event with the current window's reduced value.
+
+### `LivePartitionedSeries<S, K>` (`LivePartitionedSeries.ts`)
+
+Live counterpart to `PartitionedTimeSeries`. Routes events from a
+source `LiveSource<S>` into per-partition `LiveSeries<S>` sub-buffers.
+
+Each partition is an independent `LiveSeries` with its own:
+
+- Retention (per-partition `maxEvents`/`maxAge`)
+- Grace window (per-partition late-event acceptance)
+- Subscription state
+
+Auto-spawns a new partition the first time a value is seen (or eagerly
+spawns all declared values when `groups` is set). Partition routing
+runs as a `'event'` listener on the source.
+
+Two terminals:
+
+- `.toMap()` → `Map<K, LiveSource<S>>` — per-partition sources for
+  direct subscription
+- `.collect()` → unified `LiveSeries<S>` — append-only fan-in (see §3
+  for why)
+- `.apply(factory)` → unified `LiveSeries<R>` — per-partition factory
+  composition
+
+**v0.11 PR 1 scope:** foundation only. Chainable typed sugar
+(`partitioned.fill().rolling().collect()`) deferred to PR 2; PR 1
+ships `apply((sub) => sub.fill().rolling())` as the chaining
+mechanism.
+
+---
+
+## 3. Recurring patterns
+
+### Schema generics and narrowing types (`types.ts`)
+
+The library is type-driven. Every operator captures its input schema
+as a generic `S extends SeriesSchema` and produces an output schema
+through type-level transforms:
+
+- `RollingSchema<S, M>` — replace value columns named in `M` with the
+  reducer's output kind
+- `MaterializeSchema<S>` — replace first column with `time`, widen
+  value columns to optional
+- `AlignSchema<S>` — replace first column with `interval`, widen value
+  columns to optional
+- `DiffSchema<S, T>` — replace columns named in `T` with the diff
+  result type
+- etc.
+
+Each type lives next to the operator it describes. `SeriesSchema` is
+`readonly [FirstColumn, ...ValueColumn[]]` — a tuple, not just an
+array, so the type system can preserve column order through chains.
+
+### Trusted construction via JS-private statics
+
+Pond-ts uses `static #foo` (JavaScript private static methods, not TS
+`private`) for internal constructors that bypass safety checks. The
+`#` syntax provides true runtime privacy — no `as any` cast or
+prototype walk can reach them.
+
+Three uses today:
+
+- **`TimeSeries.#fromTrustedEvents(name, schema, events)`** — skip
+  schema validation when the caller's events came from another
+  validated `TimeSeries`. Used by every chained transform's output.
+- **`TimeSeries.#diffOrRate(series, mode, columns, options)`** —
+  shared impl for `diff`/`rate`/`pctChange`. Was originally an
+  instance method but moved to `static #` after a brand-check bug:
+  `Object.create`'d instances (built via `#fromTrustedEvents`) failed
+  the JS-private brand check on instance methods. Static methods
+  brand-check the class, which always passes.
+- **`PartitionedTimeSeries.#fromValidated(source, by, groups?)`** —
+  build a chained partitioned view without re-walking the source for
+  groups validation. Used by `rewrap` after every sugar method.
+
+When to reach for it: your class has a public constructor with
+non-trivial validation, and an internal path needs to construct
+instances where validation is provably redundant. Don't expose this
+as a public API; the `static #` enforces that.
+
+### Typed groups pattern
+
+Operators that bucket data by a column value support an optional
+`{ groups }` declaration that narrows the output's key type from
+`string` to a literal union:
+
+```ts
+const HOSTS = ['api-1', 'api-2'] as const;
+
+series
+  .partitionBy('host', { groups: HOSTS }) // narrows K
+  .fill({ cpu: 'linear' })
+  .toMap();
+// Map<'api-1' | 'api-2', TimeSeries<S>>
+
+long.pivotByGroup('host', 'cpu', { groups: HOSTS });
+// schema literally: [time, 'api-1_cpu', 'api-2_cpu']
+```
+
+Properties when `groups` is declared:
+
+- Output enumerates in declared order (not insertion order)
+- Empty declared groups still appear (with empty `TimeSeries` /
+  `undefined` cells)
+- Runtime values not in `groups` throw at construction
+- Empty `groups: []` and duplicate values throw upfront
+- Numeric/boolean partition columns are stringified by the encoder, so
+  declared groups must be the stringified form (`['1', '2']`)
+
+### Per-partition state via factory pattern
+
+`LivePartitionedSeries.apply(factory)` and `PartitionedTimeSeries`'s
+sugar methods both spawn per-partition state by calling a factory
+function once per partition. The factory is the only thing that knows
+how to build the operator chain; the partitioned view just holds the
+map of per-partition outputs.
+
+Contract: factory must be **pure and re-runnable**. No closure-captured
+mutating state, no external subscriptions on input/output. The
+implementation may invoke the factory with stub inputs to capture
+output schemas synchronously, in addition to the real per-partition
+calls.
+
+### Append-only fan-in vs mirrored materialization
+
+`LivePartitionedSeries.collect()` and `.apply()` are **append-only
+fan-in sinks**, not mirrored materializations. Per-partition retention
+or grace evictions do not propagate to the unified buffer.
+
+Reasoning:
+
+- Mirroring evictions requires either a private selective-eviction
+  API on `LiveSeries` or per-event provenance tracking, both of which
+  are larger surgery
+- The "collect" / "apply" naming already implies fan-in
+- Users who want current per-partition state can use `.toMap()` and
+  snapshot
+- Users who want a bounded unified buffer can pass a `retention`
+  option to `collect()` for it to manage independently
+
+Documented as the contract; pinned by tests. May be revisited if real
+users hit the divergence.
+
+### Per-method JSDoc warnings for cross-entity hazards
+
+Every batch operator that reads neighboring events carries a
+`**Multi-entity series:**` paragraph in its JSDoc, naming the
+operator's specific hazard and pointing at `partitionBy`:
+
+```
+**Multi-entity series:** the rolling window includes events from
+every entity within the window — `host-A`'s rolling average mixes
+`host-B`'s and `host-C`'s values into the same number. On a series
+carrying multiple entities (host, region, device id), use
+`series.partitionBy(col).rolling(...).collect()` to scope per
+entity. See {@link TimeSeries.partitionBy}.
+```
+
+Discoverability is ambient: surfaces in LSP hover, IDE quick-help, and
+any type-definition consumer. We chose docs over runtime warnings
+because the warning would either need to detect "is this multi-
+entity?" (impossible without a declared schema flag) or fire on every
+call (false positive on legitimate single-entity use).
+
+### Performance discipline
+
+Every new operator that walks events, allocates per-event, or has any
+cost path that scales with input size must:
+
+1. State its asymptotic complexity in JSDoc and PR description
+2. Add a benchmark script at `packages/core/scripts/perf-<op>.mjs`
+   matching the existing format (`makeSeries` + `median` +
+   `benchmark` + JSON output, importing from compiled
+   `../dist/index.js`)
+3. Run the benchmark and pin before/after numbers in the commit
+   message
+
+Existing scripts:
+
+- `perf-aggregate.mjs`
+- `perf-align-linear.mjs`
+- `perf-derived-construction.mjs`
+- `perf-includes-key.mjs`
+- `perf-rolling.mjs`
+- `perf-smooth-loess.mjs`
+- `perf-smooth-moving-average.mjs`
+- `perf-materialize.mjs`
+- `perf-partitioned-toMap.mjs`
+- `perf-partitionby-groups.mjs`
+- `perf-live-partitioned.mjs`
+
+Policy in CLAUDE.md ("Performance check for new operators on large
+data") is enforced via Layer 1 self-review.
+
+---
+
+## 4. Decision log / non-goals
+
+### Out of scope (deliberate)
+
+- **CSV parsing / ingest helpers.** Pond-ts is what happens _after_
+  you have rows, not what gets you there. CSV agents repeatedly
+  reach for `TimeSeries.fromCSV` but the project's position is that
+  CSV parsing belongs in a separate module (or the user's own code).
+  The library accepts JSON via `fromJSON` and row arrays via `new
+TimeSeries`. Ingest-time normalization (timestamp parsing, missing-
+  token handling) is the user's responsibility.
+
+- **Runtime warnings on multi-entity unscoped operators.** We chose
+  per-method JSDoc warnings over runtime detection. A runtime
+  warning would either (a) require schema-level entity declaration
+  (new API surface) or (b) fire on every multi-entity call (false
+  positive on legitimate single-entity use after a `filter` or
+  `select`).
+
+- **Eviction mirroring in `LivePartitionedSeries.collect()/apply()`
+  (v0.11 PR 1).** Documented as append-only fan-in instead. May be
+  revisited if real usage hits the divergence.
+
+- **Two-phase commit at the `LiveSeries` level.** Partition view
+  errors throw post-source-commit. Documented; could be addressed by
+  `LiveSeries`-architecture changes (validate-then-commit-then-
+  notify, or listener-error isolation) but not in the v0.11 wave.
+
+### Type-level limitations (known, deferred)
+
+- **`TimeSeries<S>` variance issue.** `toJSON()` returns
+  `TimeSeriesJsonInput<SeriesSchema>` (loose) rather than
+  `TimeSeriesJsonInput<S>`. Tightening the return type breaks
+  overload-impl compatibility on `pivotByGroup` / `rolling` /
+  `arrayAggregate`. A class-wide variance refactor is required;
+  workaround: cast at the call site.
+
+- **`RowForSchema` doesn't honor `required: false`.** Rows passed to
+  `new TimeSeries({ rows })` reject `undefined` cells even when the
+  schema marks the column optional. Workaround: use `fromJSON` with
+  `null` cells. Documented in the cleaning page.
+
+### Patterns we deliberately don't generalize
+
+- **`{ groups }` as a runtime config object.** Each operator that
+  uses it (`pivotByGroup`, `partitionBy`) declares it independently.
+  Tempting to extract into a shared `TypedGroups<K>` helper, but the
+  semantics differ subtly per operator (output shape, runtime
+  validation, narrowing target). One-line copies are cheaper than a
+  premature abstraction.
+
+- **`static #fromValidated` pattern.** Three uses today, manually
+  duplicated per class. Worth a shared utility if a fourth use shows
+  up; not yet.
+
+---
+
+## 5. Where to find things
+
+| Concern                                        | File                                                 |
+| ---------------------------------------------- | ---------------------------------------------------- |
+| Core values (Event, Time, TimeRange, Interval) | `Event.ts`, `Time.ts`, `TimeRange.ts`, `Interval.ts` |
+| Sequences (recurrence, bounded)                | `Sequence.ts`, `BoundedSequence.ts`                  |
+| Schema types                                   | `types.ts`, `types-aggregate.ts`, `types-reduce.ts`  |
+| Validation                                     | `validate.ts`                                        |
+| Calendar / timezone parsing                    | `calendar.ts`, `temporal.ts`                         |
+| Reducers (built-in + custom)                   | `reducers/`                                          |
+| Batch core                                     | `TimeSeries.ts`                                      |
+| Batch partitioning                             | `PartitionedTimeSeries.ts`                           |
+| Live source interface                          | `types.ts` (`LiveSource<S>`, `EMITS_EVICT`)          |
+| Live buffer                                    | `LiveSeries.ts`                                      |
+| Live derived views                             | `LiveView.ts`                                        |
+| Live aggregation                               | `LiveAggregation.ts`, `LiveRollingAggregation.ts`    |
+| Live partitioning                              | `LivePartitionedSeries.ts`                           |
+| React hooks                                    | `packages/react/src/`                                |
+| Public exports                                 | `packages/core/src/index.ts`                         |
+| Plan / status / roadmap                        | `PLAN.md`                                            |
+| Process / discipline / release                 | `CLAUDE.md`                                          |
+| Release notes                                  | `CHANGELOG.md`                                       |
+
+---
+
+## 6. Conventions
+
+- **Public method JSDoc** starts with `Example: \`series.foo(...)\``
+  followed by a one-line description, then expanded behavior. The
+  example-first convention makes the docstring useful in every IDE
+  hover before the user reads the prose.
+- **Error messages** include the user-facing concept, not the
+  internal encoding. (E.g. unknown-partition errors decode the
+  ` undefined` sentinel back to "undefined" for the message.)
+- **Tests** live next to the source (`packages/core/test/`); each
+  operator has a dedicated `*.test.ts` with describe-block grouping
+  by behavior. New operators add a perf script in
+  `packages/core/scripts/`.
+- **Adversarial PR review** runs after CI passes via the agent
+  protocol in CLAUDE.md. The two-comment record (review + response)
+  is the durable trail.

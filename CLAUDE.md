@@ -14,6 +14,17 @@ the relevant section of PLAN.md in the same pass. Move items from "remaining" to
 "completed", add new design notes, or adjust phase scope as needed. Do not defer
 this — a lost session should not erase the current state of the project.
 
+## Architecture
+
+**Read [ARCHITECTURE.md](ARCHITECTURE.md) when working across the layered
+model.** Covers the live/batch/core layering, recurring patterns
+(typed-groups, trusted-construction via `static #foo`, factory-based
+per-partition state, append-only fan-in), and the decision log of what
+we deliberately didn't build.
+
+Update it when you change a layer boundary, add a new class to one of
+the layers, or introduce a new recurring pattern.
+
 ## Monorepo structure
 
 npm workspaces with two packages:
@@ -95,7 +106,6 @@ future regressions surface.
    convention used by `perf-aggregate.mjs`, `perf-rolling.mjs`,
    etc. — `makeSeries` + `median` + `benchmark` + JSON output,
    importing from compiled `../dist/index.js`. Cover at minimum:
-
    - Typical workload size (e.g. 100k events on a 1s grid)
    - Per-element overhead floor (~1 event per bucket — surfaces
      per-bucket fixed costs)
