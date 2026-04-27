@@ -2,6 +2,10 @@ import { Event } from './Event.js';
 import { Interval } from './Interval.js';
 import { LiveAggregation } from './LiveAggregation.js';
 import {
+  LivePartitionedSeries,
+  type LivePartitionedOptions,
+} from './LivePartitionedSeries.js';
+import {
   LiveView,
   makeDiffView,
   makeFillView,
@@ -411,6 +415,28 @@ export class LiveSeries<S extends SeriesSchema> {
       | ((acc: number, value: number) => number);
   }): LiveView<DiffSchema<S, Targets>> {
     return makeCumulativeView(this, spec);
+  }
+
+  /**
+   * Live counterpart to {@link TimeSeries.partitionBy}. Routes
+   * events into per-partition `LiveSeries` sub-buffers, each with
+   * its own retention, grace window, and stateful operator
+   * pipeline. Use `apply((sub) => sub.fill(...).rolling(...))` to
+   * compose live operators per partition; `collect()` to materialize
+   * the partitioned view into a unified `LiveSeries`.
+   *
+   * **Multi-entity series:** every stateful live operator
+   * (`rolling`, `fill`, `diff`, `rate`, `cumulative`, `pctChange`)
+   * silently mixes data across entities on a multi-host stream
+   * unless scoped per-partition first.
+   *
+   * See {@link LivePartitionedSeries}.
+   */
+  partitionBy<K extends string = string>(
+    by: keyof EventDataForSchema<S> & string,
+    options?: LivePartitionedOptions<K>,
+  ): LivePartitionedSeries<S, K> {
+    return new LivePartitionedSeries<S, K>(this, by, options);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;

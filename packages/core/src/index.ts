@@ -3,6 +3,10 @@ export { Event } from './Event.js';
 export { Interval } from './Interval.js';
 export { LiveAggregation } from './LiveAggregation.js';
 export type { LiveAggregationOptions } from './LiveAggregation.js';
+export {
+  LivePartitionedSeries,
+  type LivePartitionedOptions,
+} from './LivePartitionedSeries.js';
 export { LiveSeries } from './LiveSeries.js';
 export { LiveView } from './LiveView.js';
 export type { LiveFillMapping, LiveFillStrategy } from './LiveView.js';
