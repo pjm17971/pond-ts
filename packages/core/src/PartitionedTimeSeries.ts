@@ -147,6 +147,119 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
     return PartitionedTimeSeries.applyToSource(this.source, this.by, fn);
   }
 
+  /**
+   * Materialize the partitioned view as a `Map<key, TimeSeries<S>>`,
+   * one entry per partition. Terminal — exits the partition view.
+   *
+   * Use this when downstream code needs to iterate or look up per
+   * partition (typical in dashboards: one chart line per host, one
+   * tooltip per region). Without this, the equivalent dance was
+   * `.collect().groupBy(col, fn)` — two operators where one would do.
+   *
+   * The map key is the stringified partition value for single-column
+   * partitions, or a `JSON.stringify`'d array of values for composite
+   * partitions. The single-column form preserves the value's natural
+   * string representation (a `host` column with values `'api-1'`
+   * yields keys `'api-1'`); composite keys produce JSON like
+   * `'["api-1","eu"]'`. Map iteration order matches the order each
+   * partition was first encountered in the source events.
+   *
+   * `undefined` partition values become the literal `' undefined'`
+   * (with a leading space to avoid colliding with a string column
+   * whose value is `'undefined'`).
+   *
+   * @example
+   * ```ts
+   * // Per-host event lookup
+   * const byHost = events.partitionBy('host').toMap();
+   * const apiEvents = byHost.get('api-1');
+   *
+   * // With a transform — one-shot per-partition shape change
+   * const points = events.partitionBy('host').toMap((g) => g.toPoints());
+   * for (const [host, rows] of points) {
+   *   chart.addSeries(host, rows);
+   * }
+   *
+   * // Composite partition
+   * const byHostRegion = events
+   *   .partitionBy(['host', 'region'])
+   *   .toMap();
+   * const apiEu = byHostRegion.get('["api-1","eu"]');
+   * ```
+   */
+  toMap(): Map<string, TimeSeries<S>>;
+  toMap<R extends SeriesSchema>(
+    transform: (group: TimeSeries<S>) => TimeSeries<R>,
+  ): Map<string, TimeSeries<R>>;
+  toMap<R>(transform: (group: TimeSeries<S>) => R): Map<string, R>;
+  toMap(transform?: (group: TimeSeries<S>) => unknown): Map<string, unknown> {
+    const result = new Map<string, unknown>();
+    if (this.source.events.length === 0) {
+      return result;
+    }
+    const buckets = PartitionedTimeSeries.bucketByPartition(
+      this.source,
+      this.by,
+    );
+    for (const [key, events] of buckets) {
+      const sub = TimeSeries.fromEvents(events, {
+        schema: this.source.schema,
+        name: this.source.name,
+      });
+      result.set(key, transform ? transform(sub) : sub);
+    }
+    return result;
+  }
+
+  // Build the encoder that produces a string key for an event given
+  // the partition columns. Single-column case avoids the JSON encoding
+  // overhead. Multi-column uses JSON.stringify to guarantee no key
+  // collisions on values containing separators (e.g. region names with
+  // spaces) — a naive `parts.join('|')` would collide. `undefined` in a
+  // single-column key becomes the literal `' undefined'` (with the
+  // leading space ensuring it can never collide with a string column
+  // whose value is the literal `'undefined'`).
+  private static partitionKeyOf<SX extends SeriesSchema>(
+    by: ReadonlyArray<keyof EventDataForSchema<SX> & string>,
+  ): (event: EventForSchema<SX>) => string {
+    if (by.length === 1) {
+      const col = by[0]!;
+      return (event) => {
+        const v = (event.data() as Record<string, unknown>)[col];
+        return v === undefined ? ' undefined' : `${String(v)}`;
+      };
+    }
+    return (event) => {
+      const data = event.data() as Record<string, unknown>;
+      const parts: unknown[] = new Array(by.length);
+      for (let i = 0; i < by.length; i += 1) {
+        parts[i] = data[by[i]!] ?? null;
+      }
+      return JSON.stringify(parts);
+    };
+  }
+
+  // Group source events into buckets keyed by partition value. Returned
+  // Map iteration order = insertion order, which matches the order
+  // partitions were first seen in the source events array.
+  private static bucketByPartition<SX extends SeriesSchema>(
+    source: TimeSeries<SX>,
+    by: ReadonlyArray<keyof EventDataForSchema<SX> & string>,
+  ): Map<string, EventForSchema<SX>[]> {
+    const keyOf = PartitionedTimeSeries.partitionKeyOf<SX>(by);
+    const buckets = new Map<string, EventForSchema<SX>[]>();
+    for (const event of source.events) {
+      const key = keyOf(event);
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(key, bucket);
+      }
+      bucket.push(event);
+    }
+    return buckets;
+  }
+
   // Internal helper used by both `apply` (terminal) and the sugar
   // methods (which re-wrap the result back into a partitioned view).
   private static applyToSource<SX extends SeriesSchema, R extends SeriesSchema>(
@@ -167,35 +280,7 @@ export class PartitionedTimeSeries<S extends SeriesSchema> {
       return fn(empty);
     }
 
-    const compositeKey = (event: EventForSchema<SX>): string => {
-      const data = event.data() as Record<string, unknown>;
-      // Single-column case: avoid the encoding overhead.
-      if (by.length === 1) {
-        const v = data[by[0]!];
-        return v === undefined ? ' undefined' : `${String(v)}`;
-      }
-      // Multi-column case: JSON.stringify guarantees no collision
-      // because it encodes strings with quotes and escapes. A naive
-      // separator approach (e.g. join('|')) would collide on values
-      // containing the separator.
-      const parts: unknown[] = new Array(by.length);
-      for (let i = 0; i < by.length; i += 1) {
-        parts[i] = data[by[i]!] ?? null;
-      }
-      return JSON.stringify(parts);
-    };
-
-    const buckets = new Map<string, EventForSchema<SX>[]>();
-    for (const event of source.events) {
-      const key = compositeKey(event);
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        bucket = [];
-        buckets.set(key, bucket);
-      }
-      bucket.push(event);
-    }
-
+    const buckets = PartitionedTimeSeries.bucketByPartition(source, by);
     const transformed: TimeSeries<R>[] = [];
     for (const events of buckets.values()) {
       const sub = TimeSeries.fromEvents(events, {
