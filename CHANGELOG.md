@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.2...HEAD
 
 ## [Unreleased]
+
+## [0.11.2] — 2026-04-28
 
 ### Added
 
@@ -25,6 +27,8 @@ type-level changes; patch bumps are strictly additive.
   `baseline()`'s ±σ bands) to hide the warm-up region where a
   tiny-sample stdev would collapse the band tight enough to
   false-flag normal events.
+
+[0.11.2]: https://github.com/pjm17971/pond-ts/compare/v0.11.1...v0.11.2
 
 ## [0.11.1] — 2026-04-27
 
