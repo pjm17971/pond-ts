@@ -9,3 +9,6 @@ coverage/
 
 # Scratch agent-run materials — prompts, fixtures, rubrics. Not shipped.
 experiments/
+
+# Claude Code local state (worktrees, per-machine settings).
+.claude/

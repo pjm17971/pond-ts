@@ -2,6 +2,7 @@ import { Event } from './Event.js';
 import { LiveAggregation } from './LiveAggregation.js';
 import {
   LiveRollingAggregation,
+  type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
@@ -190,8 +191,14 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions,
   ): LiveRollingAggregation<S, RollingSchema<S, M>> {
-    return new LiveRollingAggregation(this, window, mapping as AggregateMap<S>);
+    return new LiveRollingAggregation(
+      this,
+      window,
+      mapping as AggregateMap<S>,
+      options,
+    );
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

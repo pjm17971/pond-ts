@@ -19,7 +19,10 @@ import {
   type SeriesSchema,
 } from './types.js';
 import type { DurationInput } from './utils/duration.js';
-import type { RollingWindow } from './LiveRollingAggregation.js';
+import type {
+  LiveRollingOptions,
+  RollingWindow,
+} from './LiveRollingAggregation.js';
 
 type SpawnListener<S extends SeriesSchema, K extends string> = (
   key: K,
@@ -476,6 +479,7 @@ export class LivePartitionedSeries<
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions,
   ): LivePartitionedView<S, RollingSchema<S, M>, K> {
     return new LivePartitionedView<S, RollingSchema<S, M>, K>(
       this,
@@ -484,6 +488,7 @@ export class LivePartitionedSeries<
           sub,
           window,
           mapping as AggregateMap<S>,
+          options,
         ) as unknown as LiveSource<RollingSchema<S, M>>,
     );
   }
@@ -782,6 +787,7 @@ export class LivePartitionedView<
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions,
   ): LivePartitionedView<SBase, RollingSchema<R, M>, K> {
     const prev = this.#factory;
     return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
@@ -791,6 +797,7 @@ export class LivePartitionedView<
           prev(sub),
           window,
           mapping as AggregateMap<R>,
+          options,
         ) as unknown as LiveSource<RollingSchema<R, M>>,
     );
   }

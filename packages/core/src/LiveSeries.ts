@@ -17,6 +17,7 @@ import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
 import {
   LiveRollingAggregation,
+  type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
@@ -374,8 +375,14 @@ export class LiveSeries<S extends SeriesSchema> {
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions,
   ): LiveRollingAggregation<S, RollingSchema<S, M>> {
-    return new LiveRollingAggregation(this, window, mapping as AggregateMap<S>);
+    return new LiveRollingAggregation(
+      this,
+      window,
+      mapping as AggregateMap<S>,
+      options,
+    );
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

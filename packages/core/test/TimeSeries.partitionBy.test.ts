@@ -251,6 +251,33 @@ describe('TimeSeries.partitionBy', () => {
         .find((p) => p.ts === 120_000 && p.host === 'b');
       expect(bAt120k?.cpu).toBeCloseTo(20.0, 5);
     });
+
+    it('threads minSamples through to per-partition rolling', () => {
+      const ts = makeSeries([
+        [0, 1.0, 'a'],
+        [0, 10.0, 'b'],
+        [60_000, 2.0, 'a'],
+        [60_000, 20.0, 'b'],
+        [120_000, 3.0, 'a'],
+        [120_000, 30.0, 'b'],
+      ]);
+
+      const out = ts
+        .partitionBy('host')
+        .rolling('10m', { cpu: 'avg', host: 'last' }, { minSamples: 3 })
+        .collect();
+
+      const points = out.toPoints();
+      // Per-partition counts: each host hits 3 samples only at t=120000.
+      // Earlier rows for either host should have undefined cpu.
+      for (const p of points) {
+        if (p.ts === 120_000) {
+          expect(typeof p.cpu).toBe('number');
+        } else {
+          expect(p.cpu).toBeUndefined();
+        }
+      }
+    });
   });
 
   describe('sugar: diff', () => {

@@ -290,4 +290,27 @@ describe('TimeSeries.baseline', () => {
       expect(b.at(i)!.begin()).toBe(src.at(i)!.begin());
     }
   });
+
+  it('honors minSamples — suppresses bands until window is warm', () => {
+    // 1s spaced events on a 10s window: index N has window count
+    // min(N+1, 10). minSamples: 5 should keep the first 4 events
+    // band-undefined and emit values from index 4 onward.
+    const b = makeSteady().baseline('cpu', {
+      window: '10s',
+      sigma: 2,
+      minSamples: 5,
+    });
+    for (let i = 0; i < 4; i += 1) {
+      const e = b.at(i)!;
+      expect(e.get('avg')).toBeUndefined();
+      expect(e.get('sd')).toBeUndefined();
+      expect(e.get('upper')).toBeUndefined();
+      expect(e.get('lower')).toBeUndefined();
+      // Source columns must still pass through during warm-up.
+      expect(typeof e.get('cpu')).toBe('number');
+      expect(e.get('host')).toBe('api-1');
+    }
+    expect(typeof b.at(4)!.get('avg')).toBe('number');
+    expect(typeof b.at(4)!.get('sd')).toBe('number');
+  });
 });

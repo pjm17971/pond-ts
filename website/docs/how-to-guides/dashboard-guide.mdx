@@ -185,13 +185,13 @@ scope them. `pond-ts` handles this with `partitionBy`:
 // Per-host rolling 1-min average + standard deviation, in one pass:
 const perHostBaselines = timeSeries
   .partitionBy('host')
-  .baseline('cpu', { window: '1m', sigma: 2 }) // appends avg/sd/upper/lower per row
+  .baseline('cpu', { window: '1m', sigma: 2, minSamples: 20 }) // avg/sd/upper/lower per row
   .toMap((g) => g.toPoints());
 // Map<host, Array<{ ts, cpu, requests, avg, sd, upper, lower }>>
 ```
 
 This is the workhorse pattern in the reference dashboard's CPU
-section ([`useDashboardData.ts`](https://github.com/pjm17971/pond-ts-dashboard/blob/main/src/useDashboardData.ts) step 7). Three things to notice:
+section ([`useDashboardData.ts`](https://github.com/pjm17971/pond-ts-dashboard/blob/main/src/useDashboardData.ts) step 7). Four things to notice:
 
 1. **`partitionBy` keeps the rolling baseline scoped per host.**
    Without it, `baseline('cpu', { window: '1m' })` would average
@@ -201,7 +201,14 @@ section ([`useDashboardData.ts`](https://github.com/pjm17971/pond-ts-dashboard/b
    (`avg`, `sd`, `upper`, `lower`) on every event. The bands and the
    outlier predicate read from the same row data; no second rolling
    pass.
-3. **`toMap(g => g.toPoints())` returns wide-row arrays** —
+3. **`minSamples: 20` hides the warm-up.** A 1-minute rolling stdev
+   computed off 2–3 samples is meaningless; the band collapses tight
+   around the first few values and false-flags the next normal event
+   as anomalous. With `minSamples`, `avg`/`sd`/`upper`/`lower` stay
+   `undefined` until each host has 20 samples in its window —
+   meaning the chart and the outlier predicate both naturally
+   abstain instead of producing junk for the opening seconds.
+4. **`toMap(g => g.toPoints())` returns wide-row arrays** —
    `[{ ts, cpu, avg, upper, lower, ... }]` — one per host, ready for
    a chart library to consume. (Earlier pond versions used
    `.collect().groupBy(col, fn)` for the same shape; on v0.10+ prefer

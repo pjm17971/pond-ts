@@ -10,6 +10,7 @@ import {
 } from './LiveView.js';
 import {
   LiveRollingAggregation,
+  type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
@@ -260,8 +261,14 @@ export class LiveAggregation<
   rolling(
     windowSize: RollingWindow,
     mapping: AggregateMap<Out>,
+    options?: LiveRollingOptions,
   ): LiveRollingAggregation<Out> {
-    return new LiveRollingAggregation(this as any, windowSize, mapping);
+    return new LiveRollingAggregation(
+      this as any,
+      windowSize,
+      mapping,
+      options,
+    );
   }
 
   dispose(): void {
