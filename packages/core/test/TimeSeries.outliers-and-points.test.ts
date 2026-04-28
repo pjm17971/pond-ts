@@ -141,6 +141,33 @@ describe('TimeSeries.outliers', () => {
     const s = new TimeSeries({ name: 'cpu', schema, rows: [] });
     expect(s.outliers('cpu', { window: '5s', sigma: 2 }).length).toBe(0);
   });
+
+  it('honors minSamples — suppresses flags inside the warm-up window', () => {
+    // 40 flat-ish samples at ~0.5 with a single spike at i=3 (early)
+    // and another at i=20 (after the warm-up).
+    const rows: Array<[number, number, string]> = [];
+    for (let i = 0; i < 40; i += 1) {
+      let cpu = 0.5 + ((i * 0.003) % 0.02);
+      if (i === 3 || i === 20) cpu = 0.95;
+      rows.push([i * 1000, cpu, 'api-1']);
+    }
+    const s = new TimeSeries({ name: 'cpu', schema, rows });
+
+    // minSamples=10 means the rolling avg/sd are undefined for the
+    // first 9 events, so outliers can't flag any sample before
+    // t=9000 even if a deviation exists there.
+    const gated = s.outliers('cpu', {
+      window: '10s',
+      sigma: 2,
+      minSamples: 10,
+    });
+    expect(gated.length).toBeGreaterThan(0);
+    for (let i = 0; i < gated.length; i += 1) {
+      expect(gated.at(i)!.begin()).toBeGreaterThanOrEqual(9_000);
+    }
+    // The post-warm-up spike at t=20000 must still come through.
+    expect(gated.events.some((e) => e.begin() === 20_000)).toBe(true);
+  });
 });
 
 describe('TimeSeries.toPoints', () => {

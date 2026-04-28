@@ -50,6 +50,31 @@ Opening events — where the window would extend beyond the series'
 ends — emit `undefined` under trailing and centered; under leading,
 trailing events emit `undefined` instead.
 
+## Warm-up gate (`minSamples`)
+
+By default rolling emits a result for every source event, even when
+the window holds only one or two samples. For stats whose stability
+depends on having enough data — rolling stdev, percentiles, the
+`avg`/`sd` pair behind a band chart — those early rows are noisy and
+can false-flag downstream consumers (anomaly bands collapsing
+around a tiny early sample). `minSamples` suppresses output until
+the window contains at least N source events:
+
+```ts
+// Don't trust the rolling stats until at least 20 samples are in.
+cpu.rolling(
+  '1m',
+  { mean: { from: 'cpu', using: 'avg' }, sd: { from: 'cpu', using: 'stdev' } },
+  { minSamples: 20 },
+);
+```
+
+Rows below the threshold emit `undefined` for every reducer column;
+the output schema and length don't change. Defaults to `0` (no
+gate). Same option is available on
+[`baseline()`](./anomaly-detection) and `outliers()` and threads
+through to their internal rolling pass.
+
 ## Two output shapes
 
 Pick the one that matches your output cadence:

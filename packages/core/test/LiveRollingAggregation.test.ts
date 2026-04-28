@@ -331,3 +331,64 @@ describe('LiveRollingAggregationLiveSource', () => {
     tail.dispose();
   });
 });
+
+describe('LiveRollingAggregation minSamples', () => {
+  it('value() returns undefined while window is below the threshold', () => {
+    const live = makeLive();
+    const tail = new LiveRollingAggregation(
+      live,
+      '10s',
+      { value: 'avg' },
+      { minSamples: 3 },
+    );
+    expect(tail.value().value).toBeUndefined();
+
+    live.push([0, 10, 'a']);
+    expect(tail.value().value).toBeUndefined();
+
+    live.push([1000, 20, 'a']);
+    expect(tail.value().value).toBeUndefined();
+
+    // Crosses the threshold on the third event.
+    live.push([2000, 30, 'a']);
+    expect(tail.value().value).toBe(20); // avg(10,20,30)
+    tail.dispose();
+  });
+
+  it('emits undefined into the output buffer during warm-up', () => {
+    const live = makeLive();
+    const tail = new LiveRollingAggregation(
+      live,
+      '10s',
+      { value: 'avg' },
+      { minSamples: 2 },
+    );
+    live.push([0, 10, 'a']);
+    expect(tail.at(0)?.get('value')).toBeUndefined();
+    live.push([1000, 20, 'a']);
+    expect(tail.at(1)?.get('value')).toBe(15);
+    tail.dispose();
+  });
+
+  it('rejects negative or non-integer minSamples', () => {
+    const live = makeLive();
+    expect(
+      () =>
+        new LiveRollingAggregation(
+          live,
+          '5s',
+          { value: 'avg' },
+          { minSamples: -1 },
+        ),
+    ).toThrow(/non-negative integer/);
+    expect(
+      () =>
+        new LiveRollingAggregation(
+          live,
+          '5s',
+          { value: 'avg' },
+          { minSamples: 1.5 },
+        ),
+    ).toThrow(/non-negative integer/);
+  });
+});

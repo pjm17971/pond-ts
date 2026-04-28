@@ -11,6 +11,21 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- `minSamples` option on `TimeSeries.rolling`,
+  `PartitionedTimeSeries.rolling`, `LiveRollingAggregation`, and
+  the `LivePartitionedSeries` rolling sugar — suppresses output
+  rows whose window contains fewer than the configured number of
+  source events. Forwarded to `TimeSeries.baseline` and
+  `TimeSeries.outliers` (and their per-partition variants), which
+  pass it to their internal rolling pass. Defaults to `0` (no
+  gate) so existing call sites are unaffected. Use it on noisy
+  rolling stats (e.g. the rolling stdev that feeds
+  `baseline()`'s ±σ bands) to hide the warm-up region where a
+  tiny-sample stdev would collapse the band tight enough to
+  false-flag normal events.
+
 ## [0.11.1] — 2026-04-27
 
 Closes a packaging footgun the dashboard agent surfaced while

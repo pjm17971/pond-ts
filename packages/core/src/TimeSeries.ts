@@ -2836,8 +2836,18 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Defaults:
    * - `alignment`: `"trailing"`
+   * - `minSamples`: `0` (no gate)
    * - sequence-driven only: `sample: "begin"`
    * - sequence-driven only: `range: series.timeRange()`
+   *
+   * `minSamples` suppresses output until the window contains at least
+   * that many source events: rows where the count is below the threshold
+   * emit `undefined` for every reducer column. Use it to hide warmup
+   * artifacts on rolling stats whose stability depends on having enough
+   * samples (e.g. the rolling stdev that feeds {@link TimeSeries.baseline}'s
+   * ±σ bands). The default of `0` is a no-op — every window emits, and
+   * empty windows still invoke each reducer with the empty input list
+   * so custom reducers can return their preferred sentinel.
    *
    * **Multi-entity series:** the rolling window includes events from
    * every entity within the window — `host-A`'s rolling average mixes
@@ -2849,12 +2859,12 @@ export class TimeSeries<S extends SeriesSchema> {
   rolling<const Mapping extends AggregateMap<S>>(
     window: DurationInput,
     mapping: Mapping,
-    options?: { alignment?: RollingAlignment },
+    options?: { alignment?: RollingAlignment; minSamples?: number },
   ): TimeSeries<RollingSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     window: DurationInput,
     mapping: Mapping,
-    options?: { alignment?: RollingAlignment },
+    options?: { alignment?: RollingAlignment; minSamples?: number },
   ): TimeSeries<RollingOutputMapSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
@@ -2864,6 +2874,7 @@ export class TimeSeries<S extends SeriesSchema> {
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     },
   ): TimeSeries<AggregateSchema<S, Mapping>>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
@@ -2874,6 +2885,7 @@ export class TimeSeries<S extends SeriesSchema> {
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     },
   ): TimeSeries<AggregateOutputMapResultSchema<S, Mapping>>;
   rolling(
@@ -2886,11 +2898,13 @@ export class TimeSeries<S extends SeriesSchema> {
           alignment?: RollingAlignment;
           sample?: AlignSample;
           range?: TemporalLike;
+          minSamples?: number;
         },
     maybeOptions: {
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     } = {},
   ): TimeSeries<SeriesSchema> {
     let mapping: AggregateMap<S> | AggregateOutputMap<S>;
@@ -2898,6 +2912,7 @@ export class TimeSeries<S extends SeriesSchema> {
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     };
     let sequence: SequenceLike | undefined;
     let window: DurationInput;
@@ -2950,6 +2965,16 @@ export class TimeSeries<S extends SeriesSchema> {
 
     const windowMs = parseDuration(window);
     const alignment = options.alignment ?? 'trailing';
+    // Default 0 disables the gate — preserves prior behavior where
+    // empty windows still invoke the reducer (custom reducers may
+    // return a sentinel for empty input).
+    const minSamples = options.minSamples ?? 0;
+    if (!Number.isInteger(minSamples) || minSamples < 0) {
+      throw new TypeError(
+        'rolling minSamples must be a non-negative integer (default 0)',
+      );
+    }
+    const undefinedRow = columnSpecs.map(() => undefined);
     const anchorInWindow = (candidate: number, anchor: number): boolean => {
       if (alignment === 'trailing') {
         return candidate > anchor - windowMs && candidate <= anchor;
@@ -2985,13 +3010,16 @@ export class TimeSeries<S extends SeriesSchema> {
         const contributors = this.events.filter((candidate) =>
           anchorInWindow(candidate.begin(), anchor),
         );
-        const aggregated = columnSpecs.map((spec) => {
-          const values = contributors.map((candidate) => {
-            const data = candidate.data();
-            return data[spec.source as keyof typeof data];
-          }) as ReadonlyArray<ColumnValue | undefined>;
-          return applyAggregateReducer(spec.reducer, values);
-        });
+        const aggregated =
+          contributors.length < minSamples
+            ? undefinedRow
+            : columnSpecs.map((spec) => {
+                const values = contributors.map((candidate) => {
+                  const data = candidate.data();
+                  return data[spec.source as keyof typeof data];
+                }) as ReadonlyArray<ColumnValue | undefined>;
+                return applyAggregateReducer(spec.reducer, values);
+              });
 
         return Object.freeze([bucket, ...aggregated]);
       });
@@ -3045,8 +3073,9 @@ export class TimeSeries<S extends SeriesSchema> {
         }
       }
     };
-    const snapshotWindow = (): (ColumnValue | undefined)[] =>
-      columnSpecs.map((spec, i) => {
+    const snapshotWindow = (): (ColumnValue | undefined)[] => {
+      if (windowEnd - windowStart < minSamples) return undefinedRow;
+      return columnSpecs.map((spec, i) => {
         const state = reducerStates[i];
         if (state) return state.snapshot();
         const values = this.events
@@ -3057,6 +3086,7 @@ export class TimeSeries<S extends SeriesSchema> {
           }) as ReadonlyArray<ColumnValue | undefined>;
         return applyAggregateReducer(spec.reducer, values);
       });
+    };
 
     if (alignment === 'trailing') {
       for (let groupStart = 0; groupStart < this.events.length; ) {
@@ -4184,6 +4214,14 @@ export class TimeSeries<S extends SeriesSchema> {
    * the primitive callers want. Filters that compare against the
    * band should null-check `upper` / `lower`.
    *
+   * The `minSamples` option (forwarded to {@link TimeSeries.rolling})
+   * widens the warm-up region: rows whose window contains fewer than
+   * `minSamples` source events emit `undefined` for all four columns.
+   * Use it on noisy data where a tiny sample count produces a
+   * collapsed `sd` and false-flags the early events as anomalies; a
+   * value of `20` is a reasonable default for sub-second telemetry on
+   * a 1-minute window. Defaults to `0` (no warm-up gate).
+   *
    * Custom column names via the `names` option if the defaults would
    * collide with source columns.
    *
@@ -4211,6 +4249,7 @@ export class TimeSeries<S extends SeriesSchema> {
       window: DurationInput;
       sigma: number;
       alignment?: RollingAlignment;
+      minSamples?: number;
       names?: {
         avg?: AvgName;
         sd?: SdName;
@@ -4219,7 +4258,7 @@ export class TimeSeries<S extends SeriesSchema> {
       };
     },
   ): TimeSeries<BaselineSchema<S, AvgName, SdName, UpperName, LowerName>> {
-    const { window, sigma, alignment } = options;
+    const { window, sigma, alignment, minSamples } = options;
     if (!Number.isFinite(sigma) || sigma <= 0) {
       throw new TypeError('baseline sigma must be a positive finite number');
     }
@@ -4240,13 +4279,19 @@ export class TimeSeries<S extends SeriesSchema> {
 
     // Single rolling pass; output names match our output schema so we
     // can read them back by name.
+    const rollingOptions: {
+      alignment?: RollingAlignment;
+      minSamples?: number;
+    } = {};
+    if (alignment !== undefined) rollingOptions.alignment = alignment;
+    if (minSamples !== undefined) rollingOptions.minSamples = minSamples;
     const rolling = this.rolling(
       window,
       {
         [avgName]: { from: col as string, using: 'avg' as const },
         [sdName]: { from: col as string, using: 'stdev' as const },
       } as unknown as AggregateOutputMap<S>,
-      alignment !== undefined ? { alignment } : undefined,
+      rollingOptions,
     ) as unknown as TimeSeries<SeriesSchema>;
 
     const resultSchema = Object.freeze([
@@ -4303,7 +4348,10 @@ export class TimeSeries<S extends SeriesSchema> {
    *
    * Events before the rolling window has a meaningful baseline (stdev
    * is zero or undefined) are not flagged — can't detect deviation
-   * against a flat or empty reference.
+   * against a flat or empty reference. The `minSamples` option
+   * (forwarded to {@link TimeSeries.rolling}) widens that warm-up:
+   * rows whose window contains fewer than `minSamples` source events
+   * are skipped before the comparison. Defaults to `0` (no gate).
    *
    * Conceptually equivalent to `baseline(col, { window, sigma })`
    * followed by a `|value - avg| > sigma * sd` filter — both share
@@ -4330,9 +4378,10 @@ export class TimeSeries<S extends SeriesSchema> {
       window: DurationInput;
       sigma: number;
       alignment?: RollingAlignment;
+      minSamples?: number;
     },
   ): TimeSeries<S> {
-    const { window, sigma, alignment } = options;
+    const { window, sigma, alignment, minSamples } = options;
     if (!Number.isFinite(sigma) || sigma <= 0) {
       throw new TypeError('outliers sigma must be a positive finite number');
     }
@@ -4344,7 +4393,12 @@ export class TimeSeries<S extends SeriesSchema> {
       [ROLL_AVG]: { from: col as string, using: 'avg' as const },
       [ROLL_SD]: { from: col as string, using: 'stdev' as const },
     } as unknown as AggregateOutputMap<S>;
-    const rollingOptions = alignment !== undefined ? { alignment } : undefined;
+    const rollingOptions: {
+      alignment?: RollingAlignment;
+      minSamples?: number;
+    } = {};
+    if (alignment !== undefined) rollingOptions.alignment = alignment;
+    if (minSamples !== undefined) rollingOptions.minSamples = minSamples;
     const rolling = this.rolling(
       window,
       rollingMapping,

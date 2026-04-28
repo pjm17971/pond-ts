@@ -43,6 +43,10 @@ type EventListener = (event: any) => void;
 
 export type RollingWindow = DurationInput | number;
 
+export type LiveRollingOptions = {
+  minSamples?: number;
+};
+
 export class LiveRollingAggregation<
   S extends SeriesSchema,
   Out extends SeriesSchema = SeriesSchema,
@@ -56,6 +60,7 @@ export class LiveRollingAggregation<
 
   readonly #windowMs: number | undefined;
   readonly #windowCount: number | undefined;
+  readonly #minSamples: number;
   #nextIndex: number;
 
   readonly #outputEvents: any[];
@@ -67,8 +72,16 @@ export class LiveRollingAggregation<
     source: LiveSource<S>,
     window: RollingWindow,
     mapping: AggregateMap<S>,
+    options: LiveRollingOptions = {},
   ) {
     this.name = source.name;
+    const minSamples = options.minSamples ?? 0;
+    if (!Number.isInteger(minSamples) || minSamples < 0) {
+      throw new TypeError(
+        'rolling minSamples must be a non-negative integer (default 0)',
+      );
+    }
+    this.#minSamples = minSamples;
 
     if (typeof window === 'number' && Number.isInteger(window) && window > 0) {
       this.#windowMs = undefined;
@@ -143,8 +156,11 @@ export class LiveRollingAggregation<
 
   value(): Record<string, ColumnValue | undefined> {
     const result: Record<string, ColumnValue | undefined> = {};
+    const warmup = this.#entries.length < this.#minSamples;
     for (let i = 0; i < this.#columns.length; i++) {
-      result[this.#columns[i]!.source] = this.#states[i]!.snapshot();
+      result[this.#columns[i]!.source] = warmup
+        ? undefined
+        : this.#states[i]!.snapshot();
     }
     return result;
   }
@@ -267,9 +283,12 @@ export class LiveRollingAggregation<
 
     this.#evict(event.begin());
 
+    const warmup = this.#entries.length < this.#minSamples;
     const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
-      record[this.#columns[i]!.source] = this.#states[i]!.snapshot();
+      record[this.#columns[i]!.source] = warmup
+        ? undefined
+        : this.#states[i]!.snapshot();
     }
     const outputEvent = new Event(event.key(), record);
     this.#outputEvents.push(outputEvent);

@@ -567,12 +567,12 @@ export class PartitionedTimeSeries<
   rolling<const Mapping extends AggregateMap<S>>(
     window: DurationInput,
     mapping: Mapping,
-    options?: { alignment?: RollingAlignment },
+    options?: { alignment?: RollingAlignment; minSamples?: number },
   ): PartitionedTimeSeries<RollingSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
     window: DurationInput,
     mapping: Mapping,
-    options?: { alignment?: RollingAlignment },
+    options?: { alignment?: RollingAlignment; minSamples?: number },
   ): PartitionedTimeSeries<RollingOutputMapSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateMap<S>>(
     sequence: SequenceLike,
@@ -582,6 +582,7 @@ export class PartitionedTimeSeries<
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     },
   ): PartitionedTimeSeries<AggregateSchema<S, Mapping>, K>;
   rolling<const Mapping extends AggregateOutputMap<S>>(
@@ -592,6 +593,7 @@ export class PartitionedTimeSeries<
       alignment?: RollingAlignment;
       sample?: AlignSample;
       range?: TemporalLike;
+      minSamples?: number;
     },
   ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>, K>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -640,6 +642,7 @@ export class PartitionedTimeSeries<
       window: DurationInput;
       sigma: number;
       alignment?: RollingAlignment;
+      minSamples?: number;
       names?: {
         avg?: AvgName;
         sd?: SdName;
@@ -664,6 +667,7 @@ export class PartitionedTimeSeries<
       window: DurationInput;
       sigma: number;
       alignment?: RollingAlignment;
+      minSamples?: number;
     },
   ): PartitionedTimeSeries<S, K> {
     return this.rewrap(

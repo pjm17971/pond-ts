@@ -115,4 +115,7 @@ export type {
   OrderingMode,
   RetentionPolicy,
 } from './LiveSeries.js';
-export type { RollingWindow } from './LiveRollingAggregation.js';
+export type {
+  LiveRollingOptions,
+  RollingWindow,
+} from './LiveRollingAggregation.js';

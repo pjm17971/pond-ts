@@ -60,6 +60,22 @@ const anomalies = bands.filter((e) => {
 Filters that null-check `upper` / `lower` will do the right thing
 through warm-up and flat-window regions.
 
+The default warm-up only suppresses output until there's at least
+one sample. On noisy sub-second telemetry that's usually too eager
+— a 2- or 3-sample window has a near-zero rolling stdev, so the
+band collapses tight around the first few values and false-flags
+the next normal-looking event. Pass `minSamples` to widen the
+warm-up:
+
+```ts
+cpu.baseline('cpu', { window: '1m', sigma: 2, minSamples: 20 });
+```
+
+While the window holds fewer than `minSamples` source events,
+`avg`, `sd`, `upper`, and `lower` are all `undefined`. The option
+threads through to the internal [`rolling`](./rolling#warm-up-gate-minsamples)
+pass and is also available on `outliers()`.
+
 ### Custom column names
 
 If the defaults (`avg` / `sd` / `upper` / `lower`) collide with
