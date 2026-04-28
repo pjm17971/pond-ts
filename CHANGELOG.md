@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.3...HEAD
 
 ## [Unreleased]
+
+## [0.11.3] — 2026-04-28
 
 ### Added
 
@@ -35,6 +37,8 @@ type-level changes; patch bumps are strictly additive.
 
   Existing `import { SeriesSchema } from 'pond-ts'` calls keep
   working unchanged.
+
+[0.11.3]: https://github.com/pjm17971/pond-ts/compare/v0.11.2...v0.11.3
 
 ## [0.11.2] — 2026-04-28
 
