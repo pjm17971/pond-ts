@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { LiveSeries, LiveView, LiveRollingAggregation } from '../src/index.js';
+import {
+  LiveAggregation,
+  LiveSeries,
+  LiveView,
+  LiveRollingAggregation,
+  Sequence,
+} from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -368,6 +374,63 @@ describe('LiveRollingAggregation minSamples', () => {
     live.push([1000, 20, 'a']);
     expect(tail.at(1)?.get('value')).toBe(15);
     tail.dispose();
+  });
+
+  it('returns to undefined when eviction drops the count below the threshold', () => {
+    const live = makeLive();
+    const tail = new LiveRollingAggregation(
+      live,
+      '5s',
+      { value: 'avg' },
+      { minSamples: 2 },
+    );
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    expect(tail.value().value).toBe(15);
+
+    // A single far-future event evicts everything older than 5s
+    // before it; the window now holds just one event, dropping back
+    // below minSamples.
+    live.push([20_000, 99, 'a']);
+    expect(tail.value().value).toBeUndefined();
+    tail.dispose();
+  });
+
+  it('LiveSeries.rolling threads minSamples to the aggregation', () => {
+    const live = makeLive();
+    const tail = live.rolling('10s', { value: 'avg' }, { minSamples: 3 });
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    expect(tail.value().value).toBeUndefined();
+    live.push([2000, 30, 'a']);
+    expect(tail.value().value).toBe(20);
+    tail.dispose();
+  });
+
+  it('LiveView.rolling threads minSamples', () => {
+    const live = makeLive();
+    const view = new LiveView(live as any, (event: any) => event);
+    const tail = view.rolling(
+      '10s',
+      { value: 'avg' },
+      { minSamples: 3 },
+    ) as any;
+    live.push([0, 10, 'a'], [1000, 20, 'a']);
+    expect(tail.value().value).toBeUndefined();
+    live.push([2000, 30, 'a']);
+    expect(tail.value().value).toBe(20);
+    tail.dispose();
+  });
+
+  it('LiveAggregation.rolling threads minSamples (validates the option)', () => {
+    // Threading is mechanical; a validation error proves the option
+    // reaches the underlying LiveRollingAggregation.
+    const live = makeLive();
+    const agg = new LiveAggregation(live, Sequence.every('1s'), {
+      value: 'avg',
+    });
+    expect(() =>
+      agg.rolling('10s', { value: 'avg' }, { minSamples: -1 }),
+    ).toThrow(/non-negative integer/);
+    agg.dispose();
   });
 
   it('rejects negative or non-integer minSamples', () => {

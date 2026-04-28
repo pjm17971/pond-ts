@@ -44,6 +44,13 @@ type EventListener = (event: any) => void;
 export type RollingWindow = DurationInput | number;
 
 export type LiveRollingOptions = {
+  /**
+   * Suppress output until the window contains at least this many
+   * source events; below the threshold every reducer column emits
+   * `undefined`. Defaults to `0` (no gate). For count-based windows
+   * (`window: number`), `minSamples > window` means the gate never
+   * opens — output is `undefined` forever.
+   */
   minSamples?: number;
 };
 

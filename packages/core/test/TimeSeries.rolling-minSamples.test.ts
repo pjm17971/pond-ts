@@ -1,8 +1,10 @@
 /**
  * Tests for the `minSamples` warm-up gate on `TimeSeries.rolling` —
  * suppresses output rows whose window contains fewer than the
- * configured number of source events. Default of 1 preserves the
- * original "emit from event 0" behavior.
+ * configured number of source events. Default of 0 preserves the
+ * original "emit from event 0" behavior, including the contract
+ * that empty windows still invoke each reducer with the empty
+ * input list.
  */
 import { describe, expect, it } from 'vitest';
 import { Sequence, TimeSeries } from '../src/index.js';
@@ -20,7 +22,7 @@ function makeSeries(n = 10) {
 }
 
 describe('TimeSeries.rolling minSamples (event-driven)', () => {
-  it('default of 1 emits avg/sd from the first event', () => {
+  it('default of 0 emits avg/sd from the first event', () => {
     const r = makeSeries(5).rolling('3s', {
       cpu: 'avg',
       host: 'last',
