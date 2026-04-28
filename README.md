@@ -69,6 +69,15 @@ npm run verify
 
 The documentation website lives in [`website/`](./website) and is built with Docusaurus.
 
+## Examples
+
+- **[pond-ts-dashboard](https://github.com/pjm17971/pond-ts-dashboard)** —
+  a working React dashboard that streams synthetic per-host CPU/request
+  metrics, computes per-host rolling baselines, flags anomalies against
+  ±σ bands, and renders everything as live line and bar charts (~600
+  lines of TypeScript). The repo's README is also published as a docs-
+  site guide: [Building a dashboard with pond-ts](website/docs/react/dashboard-guide.mdx).
+
 ## License
 
 MIT
