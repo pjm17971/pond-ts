@@ -1,0 +1,31 @@
+---
+id: how-to-guides-index
+title: How-to guides
+sidebar_position: 1
+---
+
+# How-to guides
+
+Long-form walkthroughs grounded in real problem-solving with pond-ts.
+Each guide is built around a working reference implementation —
+agents and contributors who hit friction in specific shapes have
+written up their experiences for future readers.
+
+Available:
+
+- [**Building a dashboard with pond-ts**](./dashboard-guide) —
+  adapted from the [dashboard agent's reference repo](https://github.com/pjm17971/pond-ts-dashboard).
+  React + `LiveSeries` ingest, throttled snapshot reading, per-host
+  rolling baselines, anomaly detection, and chart-library bridging
+  — built around a ~600-line working dashboard.
+
+In flight:
+
+- A CSV-cleaning guide adapted from the CSV-cleaner agent runs that
+  drove the v0.9 / v0.10 partition / dedupe / materialize work.
+- A gRPC stream-processor guide once that experimental work surfaces
+  something worth writing up.
+
+For shorter, primitive-focused docs, see the
+[pond-ts core reference](../pond-ts/) and
+[@pond-ts/react reference](../react/).

@@ -76,7 +76,7 @@ The documentation website lives in [`website/`](./website) and is built with Doc
   metrics, computes per-host rolling baselines, flags anomalies against
   ±σ bands, and renders everything as live line and bar charts (~600
   lines of TypeScript). The repo's README is also published as a docs-
-  site guide: [Building a dashboard with pond-ts](website/docs/react/dashboard-guide.mdx).
+  site guide: [Building a dashboard with pond-ts](website/docs/how-to-guides/dashboard-guide.mdx).
 
 ## License
 

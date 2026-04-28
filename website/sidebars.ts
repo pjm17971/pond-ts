@@ -67,13 +67,9 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Recipes',
-      link: { type: 'doc', id: 'recipes/recipes-index' },
-      items: [
-        'recipes/cpu-metrics',
-        'recipes/error-rate-dashboard',
-        'recipes/streaming-dashboard',
-      ],
+      label: 'How-to guides',
+      link: { type: 'doc', id: 'how-to-guides/how-to-guides-index' },
+      items: ['how-to-guides/dashboard-guide'],
     },
     {
       type: 'category',
