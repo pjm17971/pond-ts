@@ -69,7 +69,10 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'How-to guides',
       link: { type: 'doc', id: 'how-to-guides/how-to-guides-index' },
-      items: ['how-to-guides/dashboard-guide'],
+      items: [
+        'how-to-guides/dashboard-guide',
+        'how-to-guides/ingesting-messy-data',
+      ],
     },
     {
       type: 'category',

@@ -1,6 +1,6 @@
 ---
 title: Building a dashboard with pond-ts
-sidebar_position: 5
+sidebar_position: 2
 ---
 
 # Building a dashboard with pond-ts
@@ -372,13 +372,13 @@ _charts_: any two of those drag in a third.
 
 ## When to reach for pond, summarized
 
-| Situation                                                                                                | Use pond?                                                                                |
-| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Single value, occasional update                                                                          | No, `useState` is fine                                                                   |
-| Polled fetch, render the response                                                                        | No, `useQuery` is fine                                                                   |
-| **Stream of events with transforms (rolling avg, percentiles, anomalies) feeding charts**                | **Yes**                                                                                  |
-| Stream of events with no transforms (just plot raw values)                                               | Optional — pond's snapshot+throttle still helps but you could roll your own              |
-| You're already using `react-timeseries-charts` (the predecessor)                                         | Yes, this is the rewrite                                                                 |
+| Situation                                                                                 | Use pond?                                                                   |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Single value, occasional update                                                           | No, `useState` is fine                                                      |
+| Polled fetch, render the response                                                         | No, `useQuery` is fine                                                      |
+| **Stream of events with transforms (rolling avg, percentiles, anomalies) feeding charts** | **Yes**                                                                     |
+| Stream of events with no transforms (just plot raw values)                                | Optional — pond's snapshot+throttle still helps but you could roll your own |
+| You're already using `react-timeseries-charts` (the predecessor)                          | Yes, this is the rewrite                                                    |
 
 The library's whole pitch is the third row. If that's your shape,
 it'll save you most of the data-layer code you'd otherwise hand-roll,

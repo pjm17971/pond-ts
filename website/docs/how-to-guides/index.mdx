@@ -18,11 +18,16 @@ Available:
   React + `LiveSeries` ingest, throttled snapshot reading, per-host
   rolling baselines, anomaly detection, and chart-library bridging
   — built around a ~600-line working dashboard.
+- [**Ingesting messy data**](./ingesting-messy-data) — adapted from
+  a CSV-cleaner agent run on a real-world per-host metrics dump
+  (mixed timestamp formats, four spellings of "missing,"
+  duplicate-retry rows, multi-host interleaving, gap-from-missed-
+  scrapes). Walks through schema declaration, boundary
+  normalization, dedupe, `partitionBy` for per-entity scope, gap-
+  capped fill, and optional regularization with `materialize`.
 
 In flight:
 
-- A CSV-cleaning guide adapted from the CSV-cleaner agent runs that
-  drove the v0.9 / v0.10 partition / dedupe / materialize work.
 - A gRPC stream-processor guide once that experimental work surfaces
   something worth writing up.
 
