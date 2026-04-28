@@ -307,3 +307,21 @@ That's it. The `v*` tag push triggers `.github/workflows/release.yml`,
 which checks out the tag, runs `npm run verify`, then
 `npm publish --access public --provenance --workspaces` to publish every
 workspace package in one pass. Do not run `npm publish` locally.
+
+### Deploying docs without a release
+
+The docs site (`.github/workflows/docs.yml`) publishes only on `v*`
+tag pushes by default — the live site reflects the latest npm
+version, not in-flight `main`. After merging doc-only changes to
+`main` (new guides, fixed examples, recipe additions), push them
+live without waiting for the next release:
+
+```
+gh workflow run docs.yml --ref main
+```
+
+Watch the run with `gh run list --workflow=docs.yml --limit 1`. The
+deploy step runs on the same workflow, so once it completes the
+new content is live on the GitHub Pages URL. Use this for any
+doc-only change that doesn't justify a version bump (the dashboard
+guide adapted from `pond-ts-dashboard` is the canonical example).
