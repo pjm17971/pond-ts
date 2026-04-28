@@ -11,6 +11,31 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`pond-ts/types` subpath export** — type-only entry point that
+  exposes the schema-shape, row-shape, and JSON-shape types
+  (`SeriesSchema`, `ColumnDef`, `RowForSchema`,
+  `JsonRowForSchema`, etc.) without dragging in the runtime.
+  Schema-as-contract consumers — packages whose only job is to
+  declare the `as const` schema flowing through producer /
+  aggregator / web — can now constrain literals via
+  `satisfies SeriesSchema` without adding `pond-ts` as a runtime
+  dependency. Surfaced by the gRPC experiment's `packages/shared`,
+  where `import { SeriesSchema } from 'pond-ts'` would have
+  pulled in the whole library for one type.
+
+  ```ts
+  import type { SeriesSchema } from 'pond-ts/types';
+  export const schema = [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const satisfies SeriesSchema;
+  ```
+
+  Existing `import { SeriesSchema } from 'pond-ts'` calls keep
+  working unchanged.
+
 ## [0.11.2] — 2026-04-28
 
 ### Added
