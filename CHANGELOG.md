@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.6...HEAD
 
 ## [Unreleased]
+
+## [0.11.6] — 2026-04-29
 
 ### Added
 
@@ -38,6 +40,8 @@ type-level changes; patch bumps are strictly additive.
   (9 tests covering every layer including the
   "dashboard-defaults" 480-events-at-8/s scenario from the gRPC
   experiment's M1 friction notes).
+
+[0.11.6]: https://github.com/pjm17971/pond-ts/compare/v0.11.5...v0.11.6
 
 ## [0.11.5] — 2026-04-29
 
