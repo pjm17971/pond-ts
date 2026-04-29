@@ -53,6 +53,23 @@ describe('LiveSequenceRollingAggregation — basic emission', () => {
     seq.dispose();
   });
 
+  it('emits once when a single event crosses multiple boundaries', () => {
+    // Event at 0 → bucket 0. Event at 90 001 → bucket 3.
+    // Buckets 1 (30 s) and 2 (60 s) had no data → no emission for them.
+    // One emission at ts=90 000 (start of bucket 3).
+    const live = makeLive();
+    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
+    const seq = rolling.sequence('30s');
+
+    live.push([0, 10]);
+    live.push([90_001, 20]);
+    expect(seq.length).toBe(1);
+    expect(seq.at(0)!.begin()).toBe(90_000);
+
+    rolling.dispose();
+    seq.dispose();
+  });
+
   it('emits two events when two boundaries are crossed', () => {
     const live = makeLive();
     const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });

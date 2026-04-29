@@ -43,6 +43,17 @@ type EventListener = (event: any) => void;
  * interval, no event is emitted for that interval. This is consistent
  * with the rest of pond-ts: data is the clock.
  *
+ * **One emission per crossing, not per skipped interval.** If a source
+ * event jumps multiple interval boundaries at once (e.g. an event at
+ * 90 001 ms after a gap since 0 ms, with a 30 s interval), exactly one
+ * event is emitted — at the start of the new bucket (90 000 ms). The
+ * 30 s and 60 s intervals had no data, so they produce no output.
+ *
+ * **Snapshot timing.** The rolling-window snapshot is read after the
+ * boundary-crossing event has been ingested by the rolling window. The
+ * emitted value therefore includes that event's contribution to the
+ * trailing aggregate.
+ *
  * Created via `rolling.sequence(interval)`.
  *
  * @example
