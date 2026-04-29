@@ -926,10 +926,14 @@ export class TimeSeries<S extends SeriesSchema> {
    * emitted as `null`. By default rows are emitted as arrays; use `rowFormat: "object"` for rows
    * keyed by schema column names.
    *
-   * The return type narrows on `rowFormat`: omit (or pass `'array'`)
-   * to get tuple rows (`JsonRowForSchema<S>`); pass `'object'` to
-   * get schema-keyed object rows (`JsonObjectRowForSchema<S>`).
-   * Consumers can read `result.rows` without a cast.
+   * Return type is the broader `TimeSeriesJsonInput<SeriesSchema>`
+   * union — `result.rows` is typed as
+   * `ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>`
+   * regardless of which `rowFormat` was passed, so tuple-form
+   * consumers still need to cast (e.g.
+   * `result.rows as ReadonlyArray<JsonRowForSchema<S>>`). The
+   * overload-narrowed signature is parked as a follow-up — see
+   * PLAN.md Phase 4.
    */
   toJSON(
     options: { rowFormat?: JsonRowFormat } = {},

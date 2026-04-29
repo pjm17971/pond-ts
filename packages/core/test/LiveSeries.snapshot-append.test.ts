@@ -186,7 +186,7 @@ describe('LiveSeries.pushJson', () => {
     ] as const;
     const live = new LiveSeries({ name: 'tz', schema: tzSchema });
     live.pushJson([['2025-01-01T00:00', 0.5]], {
-      parse: { timeZone: 'Europe/Madrid' },
+      timeZone: 'Europe/Madrid',
     });
     // Madrid is UTC+1 in January — 23:00 UTC the prior day.
     expect(live.at(0)!.begin()).toBe(
@@ -238,6 +238,29 @@ describe('LiveSeries.fromJSON (static factory)', () => {
   it('handles an empty rows array', () => {
     const live = LiveSeries.fromJSON({ name: 'src', schema, rows: [] });
     expect(live.length).toBe(0);
+  });
+
+  it('forwards retention.maxBytes', () => {
+    // 1024 bytes is plenty for a few small events; this just pins
+    // that the option reaches the constructor.
+    const live = LiveSeries.fromJSON(
+      { name: 'src', schema, rows: [[0, 0.5, 'api-1']] },
+      { retention: { maxBytes: 1024 } },
+    );
+    expect(live.length).toBe(1);
+  });
+
+  it('forwards graceWindow + ordering=reorder', () => {
+    const live = LiveSeries.fromJSON(
+      { name: 'src', schema, rows: [[1000, 0.5, 'api-1']] },
+      { ordering: 'reorder', graceWindow: '5s' },
+    );
+    expect(live.length).toBe(1);
+    expect(live.graceWindowMs).toBe(5000);
+    // A late event within grace lands at its insertion point.
+    live.push([500, 0.6, 'api-1']);
+    expect(live.length).toBe(2);
+    expect(live.at(0)!.get('cpu')).toBe(0.6);
   });
 });
 

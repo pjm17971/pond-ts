@@ -258,12 +258,11 @@ export class Event<K extends EventKey, D> {
   /**
    * Example: `event.toRow(schema)`. Returns the typed-row tuple for
    * this event in the column order declared by `schema` — `[key,
-   * ...values]`. The schema is taken on trust: pass the same
-   * `as const` schema the event was originally produced under.
+   * ...values]`.
    *
    * Use this in batch-listener fanout to convert a stream of `Event`
    * objects into the same shape `LiveSeries.toRows()` /
-   * `bulkPush(rows)` consume, without walking columns by hand:
+   * `pushMany(rows)` consume, without walking columns by hand:
    *
    * ```ts
    * live.on('batch', (events) => {
@@ -271,6 +270,15 @@ export class Event<K extends EventKey, D> {
    *   sendOverWire(rows); // codec of your choice
    * });
    * ```
+   *
+   * **Trust contract:** no validation against `schema`. If the
+   * caller passes a schema whose value-column names don't match the
+   * event's payload keys, `data[col.name]` is `undefined` for every
+   * mismatched column and the row is silently corrupt — downstream
+   * `pushMany(rows)` accepts it (column count matches), but reads
+   * via `event.get('col')` from the resulting events return
+   * `undefined`. Pass the same `as const` schema the event was
+   * originally produced under.
    */
   toRow<S extends SeriesSchema>(schema: S): RowForSchema<S> {
     const data = this.#data as Record<string, unknown>;
@@ -293,6 +301,12 @@ export class Event<K extends EventKey, D> {
    * `event.toJsonRow(schema)` plugs straight into a wire envelope
    * that the receiver feeds into `LiveSeries.pushJson(...)` or
    * `LiveSeries.fromJSON(...)`.
+   *
+   * **Trust contract:** same as {@link Event.toRow} — no validation
+   * against `schema`. Mismatched column names produce `null`
+   * cells in the JSON output (`serializeJsonValue(undefined)`),
+   * which round-trip through `pushJson` as `undefined`. Pass the
+   * same `as const` schema the event was originally produced under.
    */
   toJsonRow<S extends SeriesSchema>(
     schema: S,

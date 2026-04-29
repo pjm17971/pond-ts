@@ -329,7 +329,7 @@ export class LiveSeries<S extends SeriesSchema> {
    * parses each row through {@link parseJsonRow} (translates `null`
    * cells to `undefined`, parses the key into the right
    * `Time`/`TimeRange`/`Interval` instance), then dispatches to
-   * {@link LiveSeries.bulkPush}.
+   * {@link LiveSeries.pushMany}.
    *
    * Closes the wire→push safety hole: a `JsonRowForSchema<S>` is
    * structurally typed against the schema (column count, value
@@ -337,19 +337,25 @@ export class LiveSeries<S extends SeriesSchema> {
    * the schema breaks the call site at compile time. The previous
    * `live.push(row as never)` workaround swallowed mismatches.
    *
-   * Use the optional `parse: { timeZone }` option when JSON
-   * timestamps are local-calendar strings — same semantics as
-   * {@link TimeSeries.fromJSON}.
+   * Pass a `TimeZoneOptions` second argument to disambiguate
+   * local-calendar timestamp strings — same semantics as
+   * {@link TimeSeries.fromJSON}'s `parse` option, just inlined as
+   * a sibling argument because `pushJson` has no input envelope
+   * to attach a `parse:` key to.
+   *
+   * @example
+   * ```ts
+   * live.pushJson(rows);
+   * live.pushJson(rows, { timeZone: 'Europe/Madrid' });
+   * ```
    */
   pushJson(
     rows: ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>,
-    options: { parse?: TimeZoneOptions } = {},
+    parse: TimeZoneOptions = {},
   ): void {
     if (rows.length === 0) return;
     this.pushMany(
-      parseJsonRows(this.schema, rows, options.parse) as ReadonlyArray<
-        RowForSchema<S>
-      >,
+      parseJsonRows(this.schema, rows, parse) as ReadonlyArray<RowForSchema<S>>,
     );
   }
 
@@ -380,7 +386,7 @@ export class LiveSeries<S extends SeriesSchema> {
   /**
    * Example: `live.toRows()`. Returns the current buffer as an
    * array of normalized typed-row tuples — the same shape
-   * `bulkPush(rows)` accepts. Codec-agnostic: each cell carries its
+   * `pushMany(rows)` accepts. Codec-agnostic: each cell carries its
    * native runtime value (`Time`/`TimeRange`/`Interval` keys,
    * `undefined` for missing data, raw scalars for everything else),
    * so `JSON.stringify` is one option but not the only one — the
@@ -396,7 +402,7 @@ export class LiveSeries<S extends SeriesSchema> {
    * array of schema-keyed object rows — same shape as
    * {@link TimeSeries.toObjects}. Useful when callers want to read
    * by column name rather than tuple position; not the input form
-   * to `bulkPush` (which takes tuples).
+   * to `pushMany` (which takes tuples).
    */
   toObjects(): ReadonlyArray<NormalizedObjectRow> {
     return this.toTimeSeries().toObjects();
@@ -448,7 +454,7 @@ export class LiveSeries<S extends SeriesSchema> {
         input.rows as ReadonlyArray<
           JsonRowForSchema<S> | JsonObjectRowForSchema<S>
         >,
-        input.parse !== undefined ? { parse: input.parse } : undefined,
+        input.parse,
       );
     }
     return live;
