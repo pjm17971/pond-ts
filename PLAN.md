@@ -1186,14 +1186,50 @@ Closes M1 friction notes #1 (`LiveSeries.toJSON()` missing), #2
 and translates `null → undefined`), and #5 (no `pushMany` /
 `fromJSON`).
 
-**Deferred:** friction note #3 (`toJSON()` return-type narrowing on
-`rowFormat`). Tangles with TypeScript's overload variance around
-generics — the obvious narrowed-overload form (returning
-`TimeSeriesJsonInput<S> & { rows: ... }`) cascades errors through
-unrelated overload sets in `TimeSeries.ts`. The narrowing is a
-small ergonomic win (no `as WireRow[]` cast); the fix needs more
-time than this PR warrants. Park as a follow-up; consumers continue
-to cast for the array form until then.
+**Partial follow-up (post-v0.11.5):** friction note #3 was
+re-attempted with distinct named return types
+(`TimeSeriesJsonOutputArray<S>` / `TimeSeriesJsonOutputObject<S>`)
+in place of `TimeSeriesJsonInput<S> & { rows: ... }` intersections.
+
+- **`LiveSeries.toJSON` narrowing landed.** Overloads keyed on
+  `rowFormat` work cleanly; the impl casts the inner
+  `toTimeSeries().toJSON()` result. `test-d/liveseries-tojson-narrowing.test-d.ts`
+  pins it. For the live snapshot path — the common case for
+  networked consumers — the ergonomic win is there.
+- **`TimeSeries.toJSON` narrowing still cascades.** Adding the same
+  overload pair triggers TS2394 errors at four unrelated overload
+  sets (`pivotByGroup`, `rolling`, `arrayAggregate`, `arrayExplode`).
+  Cause-and-fix isolated has defeated multiple time-boxes. The
+  cascade is reproducible whether the impl signature returns a
+  union, `any`, or the broad `TimeSeriesJsonInput<SeriesSchema>` —
+  it's specific to `TimeSeries.toJSON`'s shape, not the impl. The
+  inline JSDoc records this. Re-attempt if a TypeScript upgrade
+  or a refactor of one of those four overload sets unblocks it.
+
+  **Alternative path worth trying first:** extract the toJSON
+  serialization body into a module-level helper
+  (`serializeToJSON<S>(events, schema, rowFormat)`) called by both
+  `TimeSeries.toJSON` and `LiveSeries.toJSON` (replacing the
+  current `live.toTimeSeries().toJSON(...)` indirection). Each
+  class becomes a thin narrowed wrapper over the helper. The
+  cascade trigger is sensitive to `TimeSeries.toJSON`'s in-class
+  shape; pulling the body out may bypass it without needing a
+  TypeScript upgrade. Cheaper than waiting on a compiler fix and
+  unblocks the unified narrowing story for batch consumers too.
+
+**Friction note #6 (count semantics) — investigated, not a bug.**
+Empirical reproduction across nine scenarios (LiveSeries push
+variadic + per-row, TimeSeries construction, reduce, aggregate,
+rolling, LiveAggregation, LiveRollingAggregation, plus the exact
+"dashboard defaults: 480 events at 8/s" case) shows the library
+preserves duplicate temporal keys and counts them independently at
+every layer. The friction-noted "count collapses same-ts events"
+diagnosis was empirically wrong; the agent's stagger workaround in
+the simulator probably wasn't necessary for the reason claimed.
+
+`test/duplicate-keys.test.ts` locks down the behavior so a future
+regression breaks visibly. `count` reducer JSDoc updated to call
+out duplicate-key semantics explicitly.
 
 **Deliberately NOT in scope: pluggable codec adaptors.** The
 ergonomic shape we're considering for codecs (msgpack, protobuf) is

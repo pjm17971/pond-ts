@@ -11,6 +11,34 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`LiveSeries.toJSON()` return-type narrowing on `rowFormat`.**
+  Overloads keyed on `rowFormat: 'array' | 'object'` so consumers
+  read `result.rows` without a cast. Tuple form returns
+  `TimeSeriesJsonOutputArray<S>`; object form returns
+  `TimeSeriesJsonOutputObject<S>`. Both new types exported from
+  `pond-ts/types`. The companion narrowing on `TimeSeries.toJSON`
+  is still parked — it cascades TS2394 errors through unrelated
+  overload sets in `TimeSeries.ts`. See PLAN.md.
+- New types: `TimeSeriesJsonOutputArray<S>` and
+  `TimeSeriesJsonOutputObject<S>`. Use these for typed assignment
+  (`const out: TimeSeriesJsonOutputArray<S> = ts.toJSON()`) or
+  cast (`ts.toJSON() as TimeSeriesJsonOutputArray<S>`) until the
+  `TimeSeries.toJSON` narrowing lands.
+
+### Documentation
+
+- `count` reducer JSDoc clarifies that **duplicate temporal keys
+  do not collapse** — multiple events sharing one `Time` key each
+  contribute independently to the count. Walks the per-column
+  value array, not unique keys. Behavior is consistent across
+  `reduce`, `aggregate`, `rolling`, `LiveAggregation`, and
+  `LiveRollingAggregation` — pinned by `test/duplicate-keys.test.ts`
+  (9 tests covering every layer including the
+  "dashboard-defaults" 480-events-at-8/s scenario from the gRPC
+  experiment's M1 friction notes).
+
 ## [0.11.5] — 2026-04-29
 
 ### Fixed
