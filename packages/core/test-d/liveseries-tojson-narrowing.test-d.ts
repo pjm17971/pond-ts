@@ -51,3 +51,8 @@ void _objectRow;
 // @ts-expect-error rows shapes diverge — array tuple vs schema-keyed record
 const _badAssign: TimeSeriesJsonOutputArray<typeof schema> = objectOut;
 void _badAssign;
+
+// Negative (inverse): array-form return is NOT assignable to object-form.
+// @ts-expect-error rows shapes diverge in the other direction too
+const _badAssignReverse: TimeSeriesJsonOutputObject<typeof schema> = arrayOut;
+void _badAssignReverse;

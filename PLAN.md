@@ -1206,6 +1206,17 @@ in place of `TimeSeriesJsonInput<S> & { rows: ... }` intersections.
   inline JSDoc records this. Re-attempt if a TypeScript upgrade
   or a refactor of one of those four overload sets unblocks it.
 
+  **Alternative path worth trying first:** extract the toJSON
+  serialization body into a module-level helper
+  (`serializeToJSON<S>(events, schema, rowFormat)`) called by both
+  `TimeSeries.toJSON` and `LiveSeries.toJSON` (replacing the
+  current `live.toTimeSeries().toJSON(...)` indirection). Each
+  class becomes a thin narrowed wrapper over the helper. The
+  cascade trigger is sensitive to `TimeSeries.toJSON`'s in-class
+  shape; pulling the body out may bypass it without needing a
+  TypeScript upgrade. Cheaper than waiting on a compiler fix and
+  unblocks the unified narrowing story for batch consumers too.
+
 **Friction note #6 (count semantics) — investigated, not a bug.**
 Empirical reproduction across nine scenarios (LiveSeries push
 variadic + per-row, TimeSeries construction, reduce, aggregate,
