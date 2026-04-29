@@ -22,6 +22,8 @@ import type {
   JsonObjectRowForSchema,
   JsonRowFormat,
   JsonRowForSchema,
+  TimeSeriesJsonOutputArray,
+  TimeSeriesJsonOutputObject,
   JsonValueForKind,
   JoinConflictMode,
   JoinManySchema,
@@ -929,11 +931,21 @@ export class TimeSeries<S extends SeriesSchema> {
    * Return type is the broader `TimeSeriesJsonInput<SeriesSchema>`
    * union — `result.rows` is typed as
    * `ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>`
-   * regardless of which `rowFormat` was passed, so tuple-form
-   * consumers still need to cast (e.g.
-   * `result.rows as ReadonlyArray<JsonRowForSchema<S>>`). The
-   * overload-narrowed signature is parked as a follow-up — see
-   * PLAN.md Phase 4.
+   * regardless of which `rowFormat` was passed. Consumers either
+   * cast or use the narrowed shape types
+   * `TimeSeriesJsonOutputArray<S>` / `TimeSeriesJsonOutputObject<S>`
+   * declared in `./types.js` for downstream typing.
+   *
+   * **Why no overload narrowing here?** A narrowed-overload pair
+   * (return-type-keyed on `rowFormat`) cascades TS2394 errors
+   * through several unrelated overload sets in this file
+   * (`pivotByGroup`, `rolling`, `arrayAggregate`, `arrayExplode`).
+   * The cascade is specific to `TimeSeries.toJSON`'s shape and has
+   * defeated several time-boxed attempts to isolate. The
+   * counterpart on {@link LiveSeries.toJSON} DOES narrow — for
+   * the networked snapshot path, the ergonomic win is already
+   * there. Re-attempt if a TS upgrade or refactor unblocks the
+   * cascade.
    */
   toJSON(
     options: { rowFormat?: JsonRowFormat } = {},

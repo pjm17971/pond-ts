@@ -124,6 +124,26 @@ export type TimeSeriesJsonInput<S extends SeriesSchema> = {
   rows: ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>;
 };
 
+/**
+ * `toJSON()` output narrowed to the array (tuple) row form.
+ * Returned when `rowFormat` is omitted or set to `'array'`.
+ */
+export type TimeSeriesJsonOutputArray<S extends SeriesSchema> = {
+  name: string;
+  schema: S;
+  rows: ReadonlyArray<JsonRowForSchema<S>>;
+};
+
+/**
+ * `toJSON()` output narrowed to the object (schema-keyed) row form.
+ * Returned when `rowFormat` is set to `'object'`.
+ */
+export type TimeSeriesJsonOutputObject<S extends SeriesSchema> = {
+  name: string;
+  schema: S;
+  rows: ReadonlyArray<JsonObjectRowForSchema<S>>;
+};
+
 export type JsonRowFormat = 'array' | 'object';
 
 export type NormalizedValueForKind<K extends string> = K extends 'time'

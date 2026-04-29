@@ -45,6 +45,8 @@ import {
   type SelectSchema,
   type SeriesSchema,
   type TimeSeriesJsonInput,
+  type TimeSeriesJsonOutputArray,
+  type TimeSeriesJsonOutputObject,
 } from './types.js';
 
 import type { DurationInput } from './utils/duration.js';
@@ -415,16 +417,27 @@ export class LiveSeries<S extends SeriesSchema> {
    * `live.toTimeSeries().toJSON(...)`.
    *
    * Defaults to `rowFormat: 'array'` (tuple rows). Pass
-   * `{ rowFormat: 'object' }` for schema-keyed object rows.
+   * `{ rowFormat: 'object' }` for schema-keyed object rows. The
+   * return type narrows on the option so consumers don't need to
+   * cast `result.rows`.
    *
    * Pairs with {@link LiveSeries.fromJSON} for snapshot
    * reconstruction; pairs with {@link LiveSeries.pushJson} for
    * incremental wire ingest.
    */
+  toJSON(options?: { rowFormat?: 'array' }): TimeSeriesJsonOutputArray<S>;
+  toJSON(options: { rowFormat: 'object' }): TimeSeriesJsonOutputObject<S>;
   toJSON(
     options: { rowFormat?: JsonRowFormat } = {},
-  ): TimeSeriesJsonInput<SeriesSchema> {
-    return this.toTimeSeries().toJSON(options);
+  ): TimeSeriesJsonOutputArray<S> | TimeSeriesJsonOutputObject<S> {
+    // `TimeSeries.toJSON` returns the broader `TimeSeriesJsonInput<SeriesSchema>`;
+    // the values it produces are correct-shaped at runtime for the
+    // narrowed types. The cast is the price of keeping the
+    // `TimeSeries` signature broad — see the toJSON cascade
+    // discussion in PLAN.md.
+    return this.toTimeSeries().toJSON(options) as
+      | TimeSeriesJsonOutputArray<S>
+      | TimeSeriesJsonOutputObject<S>;
   }
 
   /**
