@@ -7,9 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.5...HEAD
 
 ## [Unreleased]
+
+## [0.11.5] — 2026-04-29
+
+### Fixed
+
+- Published tarballs for both `pond-ts` and `@pond-ts/react` now
+  include `README.md`, `LICENSE`, and `CHANGELOG.md`. Earlier
+  releases shipped only `dist/` + `package.json`, which left the
+  npm page rendering as "This package does not have a README"
+  despite the comprehensive root README. The repo-root files were
+  invisible to `npm pack` because npm publishes from the package
+  directory and only auto-includes README/LICENSE when those files
+  live in the package dir itself. Each package now has a `prepack`
+  step that copies them in from the repo root before build.
+
+[0.11.5]: https://github.com/pjm17971/pond-ts/compare/v0.11.4...v0.11.5
 
 ## [0.11.4] — 2026-04-29
 
