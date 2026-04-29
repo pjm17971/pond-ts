@@ -12,7 +12,6 @@ export { LiveSeries } from './LiveSeries.js';
 export { LiveView } from './LiveView.js';
 export type { LiveFillMapping, LiveFillStrategy } from './LiveView.js';
 export { LiveRollingAggregation } from './LiveRollingAggregation.js';
-export { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 export { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';

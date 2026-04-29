@@ -1294,47 +1294,6 @@ into pond-ts core. The default JSON path stays directly on
 `LiveSeries.toJSON()` / `pushJson()` / `fromJSON()` — the most
 common case shouldn't pay an adaptor-indirection tax.
 
-### Shipped: `LiveSequenceRollingAggregation` — `rolling.sequence(interval)`
-
-Real-world telemetry use case surfaced the gap: a frontend app collecting
-latency events at 1 Hz wants to report p50/p75/p95 to a backend every 30 s.
-The batch layer already has the right primitive — `series.rolling(Sequence.every('30s'), '1m', mapping)` — but the live layer had no equivalent.
-
-`rolling.sequence(interval)` fills this:
-
-```ts
-const timings = new LiveSeries<TimingSchema>();
-const rolling = timings.rolling('1m', {
-  p50: { from: 'latency', using: 'p50' },
-  p75: { from: 'latency', using: 'p75' },
-  p95: { from: 'latency', using: 'p95' },
-}, { minSamples: 10 });
-
-// Emits once per 30 s of event time with the trailing 1-minute percentiles
-const reported = rolling.sequence('30s');
-reported.on('event', event => {
-  fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(event.data()) });
-});
-```
-
-**Design decisions:**
-
-- **Data-driven, not timer-driven.** Emission happens when source events
-  cross an epoch-aligned interval boundary. If no events arrive during an
-  interval, no event is emitted. Consistent with the "data is the clock"
-  principle; no `setInterval` inside the library.
-- **`LiveSequenceRollingAggregation` is a full `LiveSource`.** Implements
-  `name`, `schema`, `length`, `at()`, `on('event')`. Supports all view
-  transforms (filter, map, select, window, diff, rate, pctChange, fill,
-  cumulative, rolling, aggregate) for downstream chaining.
-- **Output is time-keyed** at epoch-aligned boundaries (e.g. `'30s'` → 0,
-  30 000, 60 000 … ms). Schema is the same as the upstream rolling output.
-- **Rolling snapshot at the crossing point.** `rolling.value()` is read at
-  the moment the first event past the boundary arrives — the rolling window
-  already includes that event, so the snapshot reflects the full window up
-  to that point. `minSamples` gates propagate naturally.
-- **`dispose()`** disconnects from the rolling aggregation's event stream.
-
 ### Dropped from scope
 
 - **`LiveRolling`**: covered by `LiveRollingAggregation` implementing `LiveSource` — the
