@@ -442,6 +442,83 @@ This makes `LiveRollingAggregation` the live equivalent of the batch `rolling()`
 output buffer grows unboundedly — downstream consumers can compose with
 `window()` to bound it if needed.
 
+## Sequence rolling: scheduled summaries
+
+`rolling.sequence(interval)` returns a `LiveSequenceRollingAggregation`
+that emits one time-keyed event each time source data crosses an epoch-aligned
+interval boundary. This is the live counterpart of the batch
+`series.rolling(Sequence.every('30s'), '1m', mapping)` pattern.
+
+```ts
+const timings = new LiveSeries({
+  name: 'timings',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'latency', kind: 'number' },
+  ] as const,
+});
+
+// Trailing 1-minute percentile window
+const rolling = timings.rolling('1m', {
+  p50: { from: 'latency', using: 'p50' },
+  p75: { from: 'latency', using: 'p75' },
+  p95: { from: 'latency', using: 'p95' },
+}, { minSamples: 10 });
+
+// Emits one event every 30 s of event time
+const reported = rolling.sequence('30s');
+
+reported.on('event', (event) => {
+  fetch('/api/telemetry', {
+    method: 'POST',
+    body: JSON.stringify({
+      ts: event.begin(),
+      p50: event.get('p50'),
+      p75: event.get('p75'),
+      p95: event.get('p95'),
+    }),
+  });
+});
+```
+
+### Emission semantics
+
+**Emission is data-driven.** An event is emitted when a source event's
+timestamp crosses an epoch-aligned boundary (`0`, `30 000`, `60 000` ms, …
+for a `'30s'` interval). If no source events arrive during an interval, no
+output event is produced for that interval — the clock is the data, not the
+wall.
+
+**One emission per crossing.** If a single source event jumps multiple
+interval boundaries at once — for example, the previous event was at t = 0
+and the next arrives at t = 90 001 ms with a `'30s'` interval — exactly one
+event is emitted, timestamped at the start of the new bucket (90 000 ms).
+The skipped intervals (30 s and 60 s) had no data, so they produce no output.
+
+**Snapshot timing.** The rolling-window snapshot is read after the
+boundary-crossing event has been ingested. The emitted value therefore
+includes that event's contribution to the trailing aggregate.
+
+### As a LiveSource
+
+`LiveSequenceRollingAggregation` satisfies `LiveSource` and supports the
+same view-transform surface as the other accumulators — `filter`, `map`,
+`select`, `window`, `diff`, `rate`, `pctChange`, `fill`, `cumulative`,
+`rolling`, `aggregate`:
+
+```ts
+// Only report when p95 exceeds a threshold
+const alerts = reported.filter((e) => (e.get('p95') ?? 0) > 500);
+alerts.on('event', (e) => sendAlert(e.get('p95')));
+```
+
+Call `dispose()` to stop receiving events when the sequence rolling is no
+longer needed:
+
+```ts
+reported.dispose();
+```
+
 ## Per-event transforms: diff, rate, pctChange
 
 These methods compute per-event deltas by comparing consecutive events. Each
