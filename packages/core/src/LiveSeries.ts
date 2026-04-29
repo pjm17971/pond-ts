@@ -22,6 +22,8 @@ import {
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
+import { parseJsonRows } from './json.js';
+import type { TimeZoneOptions } from './calendar.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
 import type { Sequence } from './Sequence.js';
 import {
@@ -32,11 +34,17 @@ import {
   type EventDataForSchema,
   type EventForSchema,
   type FirstColKind,
+  type JsonObjectRowForSchema,
+  type JsonRowForSchema,
+  type JsonRowFormat,
+  type NormalizedObjectRow,
+  type NormalizedRowForSchema,
   type NumericColumnNameForSchema,
   type RollingSchema,
   type RowForSchema,
   type SelectSchema,
   type SeriesSchema,
+  type TimeSeriesJsonInput,
 } from './types.js';
 
 import type { DurationInput } from './utils/duration.js';
@@ -270,6 +278,28 @@ export class LiveSeries<S extends SeriesSchema> {
   }
 
   push(...rows: RowForSchema<S>[]): void {
+    this.pushMany(rows);
+  }
+
+  /**
+   * Example: `live.pushMany(rows)`. Array-form counterpart to
+   * {@link LiveSeries.push}: takes a single `ReadonlyArray<RowForSchema<S>>`
+   * instead of variadic args. Behavior is identical — same per-row
+   * validation, same `'event'` / `'batch'` / `'evict'` listener
+   * semantics, same retention pass at the end.
+   *
+   * Reach for `pushMany` over `push(...rows)` when ingesting a
+   * snapshot or any large rows array — variadic spread allocates a
+   * stack frame per element and can blow on multi-thousand-row
+   * snapshots. `push(...rows)` itself is now a thin wrapper around
+   * this method, so behavior between the two is intentionally
+   * identical.
+   *
+   * For JSON-shape rows arriving over the wire, prefer
+   * {@link LiveSeries.pushJson} — it accepts the JSON envelope
+   * (nulls, raw timestamps) and parses through `parseJsonRow`.
+   */
+  pushMany(rows: ReadonlyArray<RowForSchema<S>>): void {
     if (rows.length === 0) return;
 
     const added: EventForSchema<S>[] = [];
@@ -291,6 +321,42 @@ export class LiveSeries<S extends SeriesSchema> {
     if (evicted.length > 0) {
       for (const fn of this.#onEvict) fn(evicted);
     }
+  }
+
+  /**
+   * Example: `live.pushJson(rows)`. Bulk JSON-shape ingest: takes
+   * an array of `JsonRowForSchema<S>` (or the object-form variant),
+   * parses each row through {@link parseJsonRow} (translates `null`
+   * cells to `undefined`, parses the key into the right
+   * `Time`/`TimeRange`/`Interval` instance), then dispatches to
+   * {@link LiveSeries.pushMany}.
+   *
+   * Closes the wire→push safety hole: a `JsonRowForSchema<S>` is
+   * structurally typed against the schema (column count, value
+   * shapes, null permissibility), so a column added or renamed in
+   * the schema breaks the call site at compile time. The previous
+   * `live.push(row as never)` workaround swallowed mismatches.
+   *
+   * Pass a `TimeZoneOptions` second argument to disambiguate
+   * local-calendar timestamp strings — same semantics as
+   * {@link TimeSeries.fromJSON}'s `parse` option, just inlined as
+   * a sibling argument because `pushJson` has no input envelope
+   * to attach a `parse:` key to.
+   *
+   * @example
+   * ```ts
+   * live.pushJson(rows);
+   * live.pushJson(rows, { timeZone: 'Europe/Madrid' });
+   * ```
+   */
+  pushJson(
+    rows: ReadonlyArray<JsonRowForSchema<S> | JsonObjectRowForSchema<S>>,
+    parse: TimeZoneOptions = {},
+  ): void {
+    if (rows.length === 0) return;
+    this.pushMany(
+      parseJsonRows(this.schema, rows, parse) as ReadonlyArray<RowForSchema<S>>,
+    );
   }
 
   clear(): void {
@@ -315,6 +381,83 @@ export class LiveSeries<S extends SeriesSchema> {
       schema: this.schema,
       rows: rows as RowForSchema<S>[],
     });
+  }
+
+  /**
+   * Example: `live.toRows()`. Returns the current buffer as an
+   * array of normalized typed-row tuples — the same shape
+   * `pushMany(rows)` accepts. Codec-agnostic: each cell carries its
+   * native runtime value (`Time`/`TimeRange`/`Interval` keys,
+   * `undefined` for missing data, raw scalars for everything else),
+   * so `JSON.stringify` is one option but not the only one — the
+   * tuple is also what protobuf / msgpack consumers want before
+   * encoding. For a wire-ready snapshot use {@link LiveSeries.toJSON}.
+   */
+  toRows(): ReadonlyArray<NormalizedRowForSchema<S>> {
+    return this.toTimeSeries().toRows();
+  }
+
+  /**
+   * Example: `live.toObjects()`. Returns the current buffer as an
+   * array of schema-keyed object rows — same shape as
+   * {@link TimeSeries.toObjects}. Useful when callers want to read
+   * by column name rather than tuple position; not the input form
+   * to `pushMany` (which takes tuples).
+   */
+  toObjects(): ReadonlyArray<NormalizedObjectRow> {
+    return this.toTimeSeries().toObjects();
+  }
+
+  /**
+   * Example: `live.toJSON()`. JSON-shape snapshot of the current
+   * buffer, suitable for sending over a WebSocket or any
+   * `JSON.stringify`-friendly transport. Sugar over
+   * `live.toTimeSeries().toJSON(...)`.
+   *
+   * Defaults to `rowFormat: 'array'` (tuple rows). Pass
+   * `{ rowFormat: 'object' }` for schema-keyed object rows.
+   *
+   * Pairs with {@link LiveSeries.fromJSON} for snapshot
+   * reconstruction; pairs with {@link LiveSeries.pushJson} for
+   * incremental wire ingest.
+   */
+  toJSON(
+    options: { rowFormat?: JsonRowFormat } = {},
+  ): TimeSeriesJsonInput<SeriesSchema> {
+    return this.toTimeSeries().toJSON(options);
+  }
+
+  /**
+   * Example: `LiveSeries.fromJSON({ name, schema, rows })`. Static
+   * factory: builds a fresh `LiveSeries` from a JSON snapshot
+   * envelope, parsing each row through {@link parseJsonRow}.
+   *
+   * The retention/grace/ordering options on the second argument
+   * are passed through to the constructor; pass them when you want
+   * the reconstructed series to behave like its original (e.g. on
+   * a client reconnecting and rehydrating from a server snapshot).
+   *
+   * Use `parse: { timeZone }` when JSON timestamps are local-
+   * calendar strings — same semantics as {@link TimeSeries.fromJSON}.
+   */
+  static fromJSON<S extends SeriesSchema>(
+    input: TimeSeriesJsonInput<S> & { parse?: TimeZoneOptions },
+    options: Omit<LiveSeriesOptions<S>, 'name' | 'schema'> = {},
+  ): LiveSeries<S> {
+    const live = new LiveSeries<S>({
+      ...options,
+      name: input.name,
+      schema: input.schema,
+    });
+    if (input.rows.length > 0) {
+      live.pushJson(
+        input.rows as ReadonlyArray<
+          JsonRowForSchema<S> | JsonObjectRowForSchema<S>
+        >,
+        input.parse,
+      );
+    }
+    return live;
   }
 
   filter(predicate: (event: EventForSchema<S>) => boolean): LiveView<S> {

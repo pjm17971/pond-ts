@@ -1,7 +1,16 @@
 import { Interval } from './Interval.js';
 import { Time } from './Time.js';
 import { TimeRange } from './TimeRange.js';
+import { serializeJsonKey, serializeJsonValue } from './json.js';
 import type { EventKey, IntervalValue, TemporalLike } from './temporal.js';
+import type {
+  FirstColKind,
+  JsonObjectRowForSchema,
+  JsonRowForSchema,
+  JsonRowFormat,
+  RowForSchema,
+  SeriesSchema,
+} from './types.js';
 
 type ScalarValue = number | string | boolean;
 type CollapseData<
@@ -244,6 +253,97 @@ export class Event<K extends EventKey, D> {
     return this.withKey(
       new TimeRange({ start: this.begin(), end: this.end() }),
     );
+  }
+
+  /**
+   * Example: `event.toRow(schema)`. Returns the typed-row tuple for
+   * this event in the column order declared by `schema` — `[key,
+   * ...values]`.
+   *
+   * Use this in batch-listener fanout to convert a stream of `Event`
+   * objects into the same shape `LiveSeries.toRows()` /
+   * `pushMany(rows)` consume, without walking columns by hand:
+   *
+   * ```ts
+   * live.on('batch', (events) => {
+   *   const rows = events.map((e) => e.toRow(schema));
+   *   sendOverWire(rows); // codec of your choice
+   * });
+   * ```
+   *
+   * **Trust contract:** no validation against `schema`. If the
+   * caller passes a schema whose value-column names don't match the
+   * event's payload keys, `data[col.name]` is `undefined` for every
+   * mismatched column and the row is silently corrupt — downstream
+   * `pushMany(rows)` accepts it (column count matches), but reads
+   * via `event.get('col')` from the resulting events return
+   * `undefined`. Pass the same `as const` schema the event was
+   * originally produced under.
+   */
+  toRow<S extends SeriesSchema>(schema: S): RowForSchema<S> {
+    const data = this.#data as Record<string, unknown>;
+    return Object.freeze([
+      this.#key,
+      ...schema.slice(1).map((col) => data[col.name]),
+    ]) as unknown as RowForSchema<S>;
+  }
+
+  /**
+   * Example: `event.toJsonRow(schema)`. Returns the JSON-shape row
+   * for this event — like {@link Event.toRow} but with the key
+   * serialized to its JSON form (numeric ms / `[start, end]` /
+   * `[value, start, end]`) and `undefined` cells emitted as `null`.
+   *
+   * Pass `{ rowFormat: 'object' }` to get the schema-keyed object
+   * shape instead of the array tuple.
+   *
+   * Mirrors `TimeSeries.toJSON`'s row-level serialization, so
+   * `event.toJsonRow(schema)` plugs straight into a wire envelope
+   * that the receiver feeds into `LiveSeries.pushJson(...)` or
+   * `LiveSeries.fromJSON(...)`.
+   *
+   * **Trust contract:** same as {@link Event.toRow} — no validation
+   * against `schema`. Mismatched column names produce `null`
+   * cells in the JSON output (`serializeJsonValue(undefined)`),
+   * which round-trip through `pushJson` as `undefined`. Pass the
+   * same `as const` schema the event was originally produced under.
+   */
+  toJsonRow<S extends SeriesSchema>(
+    schema: S,
+    options?: { rowFormat?: 'array' },
+  ): JsonRowForSchema<S>;
+  toJsonRow<S extends SeriesSchema>(
+    schema: S,
+    options: { rowFormat: 'object' },
+  ): JsonObjectRowForSchema<S>;
+  toJsonRow<S extends SeriesSchema>(
+    schema: S,
+    options: { rowFormat?: JsonRowFormat } = {},
+  ): JsonRowForSchema<S> | JsonObjectRowForSchema<S> {
+    const rowFormat = options.rowFormat ?? 'array';
+    const dataColumns = schema.slice(1);
+    const data = this.#data as Record<string, unknown>;
+    const keyColumn = schema[0]!;
+    const jsonKey = serializeJsonKey(
+      keyColumn.kind as FirstColKind,
+      this.#key,
+      rowFormat,
+    );
+
+    if (rowFormat === 'object') {
+      const row: Record<string, unknown> = {
+        [keyColumn.name]: jsonKey,
+      };
+      for (const column of dataColumns) {
+        row[column.name] = serializeJsonValue(data[column.name]);
+      }
+      return Object.freeze(row) as JsonObjectRowForSchema<S>;
+    }
+
+    return Object.freeze([
+      jsonKey,
+      ...dataColumns.map((column) => serializeJsonValue(data[column.name])),
+    ]) as unknown as JsonRowForSchema<S>;
   }
 
   /** Example: `event.asInterval("bucket-a")`. Converts the event key to a labeled `Interval` covering the same extent. */
