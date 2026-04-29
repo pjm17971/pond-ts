@@ -43,6 +43,15 @@ type EvictListener<S extends SeriesSchema> = (
 type ViewOptions<S extends SeriesSchema> = {
   schema?: S;
   evict?: (events: readonly EventForSchema<S>[]) => number;
+  /**
+   * Duration of the time-based window this view represents, in
+   * milliseconds. Set by `LiveSeries.window(duration)` and
+   * `LiveView.window(duration)` so {@link LiveView.rate} has a
+   * denominator. Unset for count-based windows or views that
+   * weren't created by a `.window()` call — `rate()` throws in
+   * those cases.
+   */
+  windowMs?: number;
 };
 
 export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
@@ -55,6 +64,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   readonly #evict:
     | ((events: readonly EventForSchema<S>[]) => number)
     | undefined;
+  readonly #windowMs: number | undefined;
   readonly #onEvent: Set<EventListener<S>>;
   readonly #onEvict: Set<EvictListener<S>>;
   readonly #unsubscribe: () => void;
@@ -69,6 +79,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     this.#events = [];
     this.#process = process;
     this.#evict = options?.evict;
+    this.#windowMs = options?.windowMs;
     this.#onEvent = new Set();
     this.#onEvict = new Set();
 
@@ -174,11 +185,55 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
           while (i < events.length && events[i]!.begin() < cutoff) i++;
           return i;
         },
+        windowMs: ms,
       });
     }
     throw new TypeError(
       'window must be a positive integer (event count) or duration string',
     );
+  }
+
+  /**
+   * Example: `live.window('1m').count()`. Returns the number of
+   * events currently in the view's buffer. For windows created via
+   * `window(duration)`, this is "events in the last N seconds";
+   * for `window(count)`, it's "events in the last N retained."
+   *
+   * Cheap O(1) accessor that reads `this.length` directly — same
+   * value as `view.length`. Provided as a method so it composes
+   * naturally with {@link LiveView.rate}.
+   */
+  count(): number {
+    return this.#events.length;
+  }
+
+  /**
+   * Example: `live.window('1m').eventRate()`. Returns events per
+   * second over the view's window — `count() / windowSeconds`.
+   *
+   * Only defined on time-based windows. Throws on count-based
+   * windows (`window(100)`) and on views that weren't created by
+   * a `.window(duration)` call (filter / map / select on a
+   * non-windowed source — there's no denominator to use).
+   *
+   * Convenient for metrics-endpoint gauges and React displays
+   * ("EVENT RATE 8.0/s"). Pairs with {@link LiveView.count} for
+   * cases where both numbers are needed.
+   *
+   * Distinct from {@link LiveView.rate}, which is the per-column
+   * derivative operator (rate-of-change of *values*).
+   * `eventRate` is per-window-events-per-second; `rate(columns)`
+   * is per-event derivative of the named columns.
+   */
+  eventRate(): number {
+    if (this.#windowMs === undefined) {
+      throw new TypeError(
+        'eventRate() requires a time-based window — call ' +
+          '.window(duration) first (count-based windows have no ' +
+          'denominator).',
+      );
+    }
+    return this.#events.length / (this.#windowMs / 1000);
   }
 
   aggregate<const M extends AggregateMap<S>>(

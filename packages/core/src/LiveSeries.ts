@@ -514,6 +514,7 @@ export class LiveSeries<S extends SeriesSchema> {
           while (i < events.length && events[i]!.begin() < cutoff) i++;
           return i;
         },
+        windowMs: ms,
       });
     }
     throw new TypeError(

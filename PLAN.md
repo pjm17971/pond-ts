@@ -1217,6 +1217,32 @@ in place of `TimeSeriesJsonInput<S> & { rows: ... }` intersections.
   TypeScript upgrade. Cheaper than waiting on a compiler fix and
   unblocks the unified narrowing story for batch consumers too.
 
+**Friction note #7 follow-up (events-per-second ergonomics).**
+The original friction was "useCurrent(live, { cpu: 'count' }, { tail: '1m' }).cpu / 60
+is awkward." Investigated as a column-free count earlier and
+deemed solvable in user code; revisited with a stronger ergonomic
+target.
+
+Landed in v0.11.7:
+
+- **`LiveView.count()` and `LiveView.eventRate()`** terminal
+  accessors. `live.window('1m').count()` and
+  `live.window('1m').eventRate()` read the current window count
+  and events/sec directly. `eventRate` is the per-window-events-
+  per-second operator, deliberately distinct from
+  `LiveView.rate(columns)` (the per-column derivative).
+  `eventRate` requires a time-based window — `window(N)`
+  count-based windows throw at the call site (no denominator).
+- **`@pond-ts/react` ships `useEventRate(source, '1m')`** — a
+  reactive hook returning the events-per-second number,
+  throttled on `'event'` like `useSnapshot`. Single hook
+  replaces `useCurrent + custom division`.
+
+The hook works because `LiveView.window(duration)`'s eviction is
+arrival-driven: count and rate update on each push, which is when
+display matters. Same staleness-at-zero-rate caveat as rolling —
+documented at the call site.
+
 **Friction note #6 (count semantics) — investigated, not a bug.**
 Empirical reproduction across nine scenarios (LiveSeries push
 variadic + per-row, TimeSeries construction, reduce, aggregate,
