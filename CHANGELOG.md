@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.6...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.7...HEAD
 
 ## [Unreleased]
+
+## [0.11.7] — 2026-04-29
 
 ### Added
 
@@ -27,13 +29,20 @@ type-level changes; patch bumps are strictly additive.
   denominator to use. Distinct from `LiveView.rate(columns)`,
   which is the per-column derivative operator (rate-of-change of
   values).
+- `LiveView.{filter,map,select}` now propagate the parent's window
+  duration to the child view, so chains like
+  `live.window('1m').filter(...).eventRate()` work as expected.
 - `@pond-ts/react` ships **`useEventRate(source, '1m')`** — a
   reactive hook returning the events-per-second number, throttled
-  on `'event'` like `useSnapshot`.
+  on `'event'` like `useSnapshot`. Hooks mounted on already-
+  populated sources render the actual rate on first paint via
+  lazy `useState` init.
   ```tsx
   const eventsPerSec = useEventRate(liveSeries, '1m');
   // <div>EVENT RATE {eventsPerSec.toFixed(1)}/s</div>
   ```
+
+[0.11.7]: https://github.com/pjm17971/pond-ts/compare/v0.11.6...v0.11.7
 
 ## [0.11.6] — 2026-04-29
 
