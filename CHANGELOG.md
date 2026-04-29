@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.4...HEAD
 
 ## [Unreleased]
+
+## [0.11.4] — 2026-04-29
 
 ### Added
 
@@ -46,6 +48,8 @@ type-level changes; patch bumps are strictly additive.
 - `LiveSeries.push(...rows)` is now a wrapper around
   `LiveSeries.pushMany(rows)`. Behavior is identical — same
   validation, listener fires, and retention pass.
+
+[0.11.4]: https://github.com/pjm17971/pond-ts/compare/v0.11.3...v0.11.4
 
 ## [0.11.3] — 2026-04-28
 
