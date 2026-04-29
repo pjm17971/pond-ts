@@ -1223,7 +1223,7 @@ is awkward." Investigated as a column-free count earlier and
 deemed solvable in user code; revisited with a stronger ergonomic
 target.
 
-Landed in v0.11.7:
+Landed (queued for the next patch release):
 
 - **`LiveView.count()` and `LiveView.eventRate()`** terminal
   accessors. `live.window('1m').count()` and

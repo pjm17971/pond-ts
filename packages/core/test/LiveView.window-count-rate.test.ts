@@ -121,15 +121,23 @@ describe('LiveView.eventRate', () => {
     expect(win.eventRate()).toBeCloseTo(1.0, 6);
   });
 
-  it('coexists with LiveView.rate(columns) — they are distinct operators', () => {
-    // `rate(columns)` is the per-column derivative; `eventRate()` is
-    // events-per-second-from-window. Different operations, different
-    // names.
+  it('coexists with LiveView.rate(columns) — distinct operators with distinct returns', () => {
+    // `rate(columns)` is the per-column derivative LiveView (one
+    // event per source event with the rate-of-change of `cpu`).
+    // `eventRate()` is events-per-second-from-window (one number).
+    // Different operations, different return shapes.
     const live = makeLive();
     const win = live.window('1m');
     const rateView = win.rate(['cpu']);
-    expect(typeof rateView.length).toBe('number'); // is a LiveView
+    const t0 = Date.now();
+    live.push([t0, 1.0, 'a']);
+    live.push([t0 + 1000, 2.0, 'a']); // delta of 1.0 over 1s = rate of 1.0/s
+    // rate(columns) returns a LiveView with a derivative event per source event
+    expect(rateView.length).toBeGreaterThan(0);
+    expect(typeof rateView.at(rateView.length - 1)).toBe('object');
+    // eventRate() returns a number derived from view.length / windowSec
     expect(typeof win.eventRate()).toBe('number');
+    expect(win.eventRate()).toBeCloseTo(2 / 60, 6);
   });
 });
 
@@ -151,5 +159,30 @@ describe('LiveView.window construction surfaces', () => {
     live.push([Date.now() + 2, 0.5, 'b']); // passes
     expect(win.count()).toBe(2);
     expect(win.eventRate()).toBeCloseTo(2 / 60, 6);
+  });
+
+  it('windowMs propagates through filter / map / select on a windowed view', () => {
+    // `window('1m').filter(...).eventRate()` — the windowed view
+    // is the SOURCE; the filter creates a child view that should
+    // inherit the same time denominator. Without propagation this
+    // would throw; with it, eventRate is meaningful (count divided
+    // by the same 60s).
+    const live = makeLive();
+    const t0 = Date.now();
+    live.push([t0, 0.5, 'a']);
+    live.push([t0 + 1, 0, 'b']);
+    live.push([t0 + 2, 0.7, 'c']);
+
+    const filtered = live.window('1m').filter((e) => e.get('cpu') > 0);
+    expect(filtered.count()).toBe(2);
+    expect(filtered.eventRate()).toBeCloseTo(2 / 60, 6);
+
+    const mapped = live.window('1m').map((e) => e);
+    expect(mapped.count()).toBe(3);
+    expect(mapped.eventRate()).toBeCloseTo(3 / 60, 6);
+
+    const selected = live.window('1m').select('cpu', 'host');
+    expect(selected.count()).toBe(3);
+    expect(selected.eventRate()).toBeCloseTo(3 / 60, 6);
   });
 });

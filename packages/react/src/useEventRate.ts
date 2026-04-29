@@ -44,7 +44,22 @@ export function useEventRate<S extends SeriesSchema>(
   options?: UseSnapshotOptions,
 ): number {
   const throttleMs = options?.throttle ?? 100;
-  const [rate, setRate] = useState(0);
+  // Lazy initial value: take a one-shot read off a temporary view so a
+  // hook mounted on an already-populated source renders the correct
+  // rate on the first paint, not 0. The temporary view is GC'd when
+  // the effect creates the long-lived view; no leak because we don't
+  // subscribe.
+  const [rate, setRate] = useState(() => {
+    const initialView = source.window(windowDuration);
+    const r = initialView.eventRate();
+    if (
+      'dispose' in initialView &&
+      typeof (initialView as any).dispose === 'function'
+    ) {
+      (initialView as any).dispose();
+    }
+    return r;
+  });
   const sourceRef = useRef(source);
   sourceRef.current = source;
 

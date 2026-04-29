@@ -16,6 +16,21 @@ function rowMs(
 }
 
 describe('useEventRate', () => {
+  it('returns the actual rate on first render of an already-populated source', () => {
+    // Lazy initial value avoids a 0-flash on mount when the source
+    // already has events.
+    const live = new LiveSeries({ name: 'cpu', schema });
+    const t0 = 1_700_000_000_000;
+    for (let i = 0; i < 60; i += 1) {
+      live.push(rowMs(t0 + i * 1000, 0.1));
+    }
+    const { result } = renderHook(() =>
+      useEventRate(live, '1m', { throttle: 0 }),
+    );
+    // Should be 1.0/s on the very first render — not 0 then 1.0.
+    expect(result.current).toBeCloseTo(1.0, 6);
+  });
+
   it('returns 0 for an empty source', () => {
     const live = new LiveSeries({ name: 'cpu', schema });
     const { result } = renderHook(() =>

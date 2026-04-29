@@ -146,13 +146,19 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   }
 
   filter(predicate: (event: EventForSchema<S>) => boolean): LiveView<S> {
-    return new LiveView(this, (event: EventForSchema<S>) =>
-      predicate(event) ? event : undefined,
+    return new LiveView(
+      this,
+      (event: EventForSchema<S>) => (predicate(event) ? event : undefined),
+      this.#windowMs !== undefined ? { windowMs: this.#windowMs } : undefined,
     );
   }
 
   map(fn: (event: EventForSchema<S>) => EventForSchema<S>): LiveView<S> {
-    return new LiveView(this, fn);
+    return new LiveView(
+      this,
+      fn,
+      this.#windowMs !== undefined ? { windowMs: this.#windowMs } : undefined,
+    );
   }
 
   select<const Keys extends readonly (keyof EventDataForSchema<S>)[]>(
@@ -165,6 +171,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
 
     return new LiveView(this, (event: any) => event.select(...keys), {
       schema: newSchema,
+      ...(this.#windowMs !== undefined ? { windowMs: this.#windowMs } : {}),
     });
   }
 
