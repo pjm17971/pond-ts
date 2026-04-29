@@ -126,152 +126,11 @@ type SchemasForSeriesTuple<T extends SeriesTuple> = {
     : never
   : never;
 
-function isObjectRow<S extends SeriesSchema>(
-  value: JsonRowForSchema<S> | JsonObjectRowForSchema<S>,
-): value is JsonObjectRowForSchema<S> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseJsonTimestamp(
-  value: unknown,
-  options: TimeZoneOptions = {},
-): number {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new TypeError('expected finite timestamp');
-    }
-    return value;
-  }
-  if (typeof value === 'string') {
-    return parseTimestampString(value, options);
-  }
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-  throw new TypeError('expected timestamp as number or string');
-}
-
-function parseJsonKey(
-  kind: FirstColKind,
-  value: unknown,
-  options: TimeZoneOptions = {},
-): EventKey {
-  if (
-    value instanceof Time ||
-    value instanceof TimeRange ||
-    value instanceof Interval
-  ) {
-    return value;
-  }
-
-  switch (kind) {
-    case 'time':
-      return new Time(parseJsonTimestamp(value, options));
-    case 'timeRange':
-      if (Array.isArray(value) && value.length === 2) {
-        return new TimeRange({
-          start: parseJsonTimestamp(value[0], options),
-          end: parseJsonTimestamp(value[1], options),
-        });
-      }
-      if (
-        typeof value === 'object' &&
-        value !== null &&
-        'start' in value &&
-        'end' in value &&
-        !('value' in value)
-      ) {
-        return new TimeRange({
-          start: parseJsonTimestamp(
-            (value as { start: unknown }).start,
-            options,
-          ),
-          end: parseJsonTimestamp((value as { end: unknown }).end, options),
-        });
-      }
-      throw new TypeError(
-        'expected timeRange as [start, end] or { start, end }',
-      );
-    case 'interval':
-      if (Array.isArray(value) && value.length === 3) {
-        return new Interval({
-          value: value[0] as string | number,
-          start: parseJsonTimestamp(value[1], options),
-          end: parseJsonTimestamp(value[2], options),
-        });
-      }
-      if (
-        typeof value === 'object' &&
-        value !== null &&
-        'value' in value &&
-        'start' in value &&
-        'end' in value
-      ) {
-        return new Interval({
-          value: (value as { value: string | number }).value,
-          start: parseJsonTimestamp(
-            (value as { start: unknown }).start,
-            options,
-          ),
-          end: parseJsonTimestamp((value as { end: unknown }).end, options),
-        });
-      }
-      throw new TypeError(
-        'expected interval as [value, start, end] or { value, start, end }',
-      );
-  }
-}
-
-function parseJsonRows<S extends SeriesSchema>(
-  schema: S,
-  rows: TimeSeriesJsonInput<S>['rows'],
-  options: TimeZoneOptions = {},
-): TimeSeriesInput<S>['rows'] {
-  return rows.map((row) => {
-    const values = isObjectRow(row)
-      ? schema.map((column) => row[column.name as keyof typeof row])
-      : row;
-
-    return Object.freeze(
-      values.map((value, index) => {
-        if (value === null) {
-          return undefined;
-        }
-
-        const column = schema[index]!;
-        if (index === 0) {
-          return parseJsonKey(column.kind as FirstColKind, value, options);
-        }
-        return value;
-      }),
-    ) as TimeSeriesInput<S>['rows'][number];
-  }) as TimeSeriesInput<S>['rows'];
-}
-
-function serializeJsonKey(
-  kind: FirstColKind,
-  key: EventKey,
-  rowFormat: JsonRowFormat,
-): JsonValueForKind<FirstColKind> {
-  if (kind === 'time') {
-    return key.begin();
-  }
-
-  if (kind === 'timeRange') {
-    return rowFormat === 'object'
-      ? { start: key.begin(), end: key.end() }
-      : [key.begin(), key.end()];
-  }
-
-  const interval = key as Interval;
-  return rowFormat === 'object'
-    ? { value: interval.value, start: interval.begin(), end: interval.end() }
-    : [interval.value, interval.begin(), interval.end()];
-}
-
-function serializeJsonValue(value: unknown): unknown {
-  return value === undefined ? null : value;
-}
+// JSON ↔ typed-row primitives live in `./json.js`. Both `TimeSeries`
+// and `LiveSeries` reach for them; extracted to break the import cycle
+// that would otherwise form (Event needs them, TimeSeries imports
+// Event).
+import { parseJsonRows, serializeJsonKey, serializeJsonValue } from './json.js';
 
 type PrefixesForSeriesTuple<T extends SeriesTuple> = {
   [I in keyof T]: string;
@@ -1066,6 +925,11 @@ export class TimeSeries<S extends SeriesSchema> {
    * Timestamps are emitted as numbers to avoid time zone ambiguity. Missing payload values are
    * emitted as `null`. By default rows are emitted as arrays; use `rowFormat: "object"` for rows
    * keyed by schema column names.
+   *
+   * The return type narrows on `rowFormat`: omit (or pass `'array'`)
+   * to get tuple rows (`JsonRowForSchema<S>`); pass `'object'` to
+   * get schema-keyed object rows (`JsonObjectRowForSchema<S>`).
+   * Consumers can read `result.rows` without a cast.
    */
   toJSON(
     options: { rowFormat?: JsonRowFormat } = {},

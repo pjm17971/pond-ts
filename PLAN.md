@@ -1160,6 +1160,78 @@ state.
 source, materialized on `.toTimeSeries()`. Window boundary is relative to
 latest event timestamp, not wall-clock.
 
+### Queued: snapshot/append primitives on `LiveSeries`
+
+Surfaced by the gRPC experiment's M1 milestone (WebSocket bridge,
+[pond-grpc-experiment#3](https://github.com/pjm17971/pond-grpc-experiment/pull/3)).
+`LiveSeries` is missing the parallel JSON / typed-row APIs that
+`TimeSeries` already has. The aggregator and browser today hand-
+roll per-row push loops, manual column-by-column serialization in
+the batch listener, and an unsafe `live.push(row as never)` cast on
+the wire→push path. Schema-evolution self-test confirms the cast is
+the lone hole where a column rename or addition silently passes
+type-check.
+
+Next PR adds **codec-agnostic primitives** plus **JSON sugar over
+them**:
+
+| Layer                                    | Methods                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Primitives (typed-tuple, codec-agnostic) | `LiveSeries.toRows()`, `LiveSeries.toObjects()`, `LiveSeries.pushMany(rows)`, `Event.toRow(schema)`    |
+| JSON sugar                               | `LiveSeries.toJSON()`, `LiveSeries.fromJSON()`, `LiveSeries.pushJson(rows)`, `Event.toJsonRow(schema)` |
+
+Closes M1 friction notes #1 (`LiveSeries.toJSON()` missing), #2
+(batch listener delivers `Event` objects, not rows), #4 (the
+`as never` push hole — `pushJson` validates a `JsonRowForSchema<S>`
+and translates `null → undefined`), and #5 (no `pushMany` /
+`fromJSON`).
+
+**Deferred:** friction note #3 (`toJSON()` return-type narrowing on
+`rowFormat`). Tangles with TypeScript's overload variance around
+generics — the obvious narrowed-overload form (returning
+`TimeSeriesJsonInput<S> & { rows: ... }`) cascades errors through
+unrelated overload sets in `TimeSeries.ts`. The narrowing is a
+small ergonomic win (no `as WireRow[]` cast); the fix needs more
+time than this PR warrants. Park as a follow-up; consumers continue
+to cast for the array form until then.
+
+**Deliberately NOT in scope: pluggable codec adaptors.** The
+ergonomic shape we're considering for codecs (msgpack, protobuf) is
+a `using:`-keyed export/import:
+
+```ts
+ws.send(live.export({ using: MessagePackAdaptor }));
+const live = LiveSeries.import(bytes, { schema, using: ProtoAdaptor });
+```
+
+Tempting to ship the `Adaptor` interface alongside the JSON case as
+a "default codec," but several open design questions only get
+answered by working code:
+
+- **Per-row vs per-snapshot semantics.** Protobuf likely wants
+  per-row (one message per `call.write`); msgpack wants whole-array
+  encoding. The interface needs to support both without forcing
+  either side into ugly wrapping.
+- **Schema-passing semantics.** Protobuf needs the message type;
+  JSON / msgpack don't. Pass schema as a second arg, or parameterize
+  the adaptor instance with the proto descriptor at construction?
+- **Streaming.** Does `Adaptor.encode` need to support streaming
+  for huge snapshots, or always return a whole `Uint8Array`?
+
+**Decision: extract `Adaptor` from working code post-M2.** The
+gRPC experiment's M2 builds protobuf-on-gRPC for the producer
+hop; M3+ may add msgpack-on-WebSocket. Once two real codecs exist
+in user-land, we have the shape data to define the contract. Pre-
+shipping `Adaptor` now would lock in answers we'd otherwise extract.
+The codec-agnostic primitives above (typed tuples in/out) are
+sufficient to build M2 with — no library work blocks the experiment.
+
+When the time comes, `Adaptor` likely lives in a separate package
+(`@pond-ts/adaptors` or similar) so codec libs don't get pulled
+into pond-ts core. The default JSON path stays directly on
+`LiveSeries.toJSON()` / `pushJson()` / `fromJSON()` — the most
+common case shouldn't pay an adaptor-indirection tax.
+
 ### Dropped from scope
 
 - **`LiveRolling`**: covered by `LiveRollingAggregation` implementing `LiveSource` — the
@@ -1307,18 +1379,27 @@ Later, only after the previous phases are stable:
 
 - `@pond-ts/charts` — first-party chart components built directly on the
   `pond-ts` data model, successor to `react-timeseries-charts`
-- **gRPC stream processor experiment** — exploratory: a server-side
-  binary that consumes a gRPC event stream and routes it through a
-  pond-ts `LivePartitionedSeries` pipeline (e.g. dedupe + fill +
-  rolling) per tenant or stream. Built primarily as a
-  performance/correctness testbed: real high-throughput workload
-  would surface routing-overhead bottlenecks with actual data
+- **gRPC stream processor experiment** — in progress at
+  [pjm17971/pond-grpc-experiment](https://github.com/pjm17971/pond-grpc-experiment).
+  Three-tier setup: producer (Node, gRPC) → aggregator (Node,
+  WebSocket fanout) → React app, all sharing one `as const` schema
+  via `pond-ts/types`. Exploratory: characterizes the single-thread
+  aggregator's operating envelope, surfaces the friction notes that
+  drive library follow-ups (already shipped: `pond-ts/types`
+  subpath in v0.11.3; queued: snapshot/append primitives on
+  `LiveSeries` — see Phase 4). Real high-throughput workload would
+  also surface routing-overhead bottlenecks with actual data
   (currently the partition routing path is ~0.8 µs/event due to
   row revalidation in `LiveSeries.push`; we deferred the
   optimization for v0.11 because synthetic measurements weren't
-  enough signal). Could also become a reference deployment shape
-  for users who want pond-ts pipelines in their own services.
-  Separate package or repo (not part of the npm packages).
+  enough signal). Becomes a reference deployment shape for users
+  who want pond-ts pipelines in their own services; M5's extraction
+  sweep should yield three RFCs (`@pond-ts/server`,
+  `useRemoteLiveSeries` for `@pond-ts/react`, `@pond-ts/dev-producer`)
+  and — once two codecs exist in working code (JSON on the WS hop,
+  protobuf on the gRPC hop) — likely an `Adaptor` interface in a
+  separate `@pond-ts/adaptors` package. Separate repo, not part of
+  the npm packages.
 
 ### Package structure
 

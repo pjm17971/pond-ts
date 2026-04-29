@@ -11,6 +11,42 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`LiveSeries` snapshot/append primitives** — closes the gap
+  where networked `LiveSeries` setups (gRPC, WebSocket fanout) had
+  to hand-roll the parallel APIs that already existed on
+  `TimeSeries`.
+  - **Codec-agnostic typed-tuple primitives:** `LiveSeries.toRows()`,
+    `LiveSeries.toObjects()`, `LiveSeries.pushMany(rows)`,
+    `Event.toRow(schema)`. Operate in `RowForSchema<S>` typed
+    tuples — JSON, MessagePack, protobuf, anything else applies at
+    the application boundary, not inside the library.
+  - **JSON sugar layered on top:** `LiveSeries.toJSON()`,
+    `LiveSeries.fromJSON(input, options?)`,
+    `LiveSeries.pushJson(rows)`, `Event.toJsonRow(schema)`. Closes
+    the wire→push safety hole — `pushJson` validates a
+    `JsonRowForSchema<S>` against the schema at compile time, so
+    schema evolution breaks the call site instead of swallowing
+    via `live.push(row as never)`.
+  - **`pushMany(rows)` is non-variadic.** Pair with the existing
+    variadic `push(...rows)` (now a one-line wrapper); reach for
+    `pushMany` when ingesting a snapshot or any large array —
+    variadic spread allocates a stack frame per element and can
+    blow on multi-thousand-row snapshots.
+
+  Surfaced by the gRPC experiment's M1 milestone
+  ([pond-grpc-experiment#3](https://github.com/pjm17971/pond-grpc-experiment/pull/3)).
+  See PLAN.md Phase 4 for the deferred adaptor-extraction
+  framing (codec strategies parked until two real codecs exist
+  in working code).
+
+### Changed
+
+- `LiveSeries.push(...rows)` is now a wrapper around
+  `LiveSeries.pushMany(rows)`. Behavior is identical — same
+  validation, listener fires, and retention pass.
+
 ## [0.11.3] — 2026-04-28
 
 ### Added
