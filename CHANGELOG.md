@@ -11,6 +11,30 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`LiveView.count()` and `LiveView.eventRate()` terminal accessors.**
+  Read the current event count and events-per-second over a windowed
+  view directly — closes the
+  `useCurrent(live, { cpu: 'count' }, { tail: '1m' }).cpu / 60`
+  boilerplate surfaced by the gRPC experiment.
+  ```ts
+  const eventsPerSec = live.window('1m').eventRate(); // events/sec
+  const eventsInWindow = live.window('1m').count();
+  ```
+  `eventRate()` requires a time-based window (`window('1m')`) and
+  throws on count-based windows (`window(100)`) — there's no
+  denominator to use. Distinct from `LiveView.rate(columns)`,
+  which is the per-column derivative operator (rate-of-change of
+  values).
+- `@pond-ts/react` ships **`useEventRate(source, '1m')`** — a
+  reactive hook returning the events-per-second number, throttled
+  on `'event'` like `useSnapshot`.
+  ```tsx
+  const eventsPerSec = useEventRate(liveSeries, '1m');
+  // <div>EVENT RATE {eventsPerSec.toFixed(1)}/s</div>
+  ```
+
 ## [0.11.6] — 2026-04-29
 
 ### Added
