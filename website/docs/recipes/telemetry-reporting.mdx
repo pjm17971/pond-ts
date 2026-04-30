@@ -32,14 +32,14 @@ export const timings = new LiveSeries({ name: 'timings', schema });
 
 // ── Sequence rolling: trailing 1-minute window, reported every 30 s ─
 export const reported = timings.rolling(
-  Sequence.every('30s'),  // emit interval — one event per 30 s of data time
-  '1m',                   // rolling window size
+  Sequence.every('30s'), // emit interval — one event per 30 s of data time
+  '1m', // rolling window size
   {
     p50: { from: 'latency', using: 'p50' },
     p75: { from: 'latency', using: 'p75' },
     p95: { from: 'latency', using: 'p95' },
   },
-  { minSamples: 10 },     // suppress output until the window is warm
+  { minSamples: 10 }, // suppress output until the window is warm
 );
 
 // ── Backend reporting ───────────────────────────────────────────
@@ -48,7 +48,7 @@ reported.on('event', (event) => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      ts: event.begin(),          // epoch-aligned 30 s boundary
+      ts: event.begin(), // epoch-aligned 30 s boundary
       p50: event.get('p50'),
       p75: event.get('p75'),
       p95: event.get('p95'),
@@ -57,17 +57,20 @@ reported.on('event', (event) => {
 });
 ```
 
-If you also need direct access to the rolling window (e.g. for an in-app
-display), keep a reference to it separately:
+If you also need direct access to the rolling window for an in-app display
+(see below), construct a separate `rolling` for that — the two coexist
+without sharing state:
 
 ```ts
-export const rolling = timings.rolling('1m', {
-  p50: { from: 'latency', using: 'p50' },
-  p75: { from: 'latency', using: 'p75' },
-  p95: { from: 'latency', using: 'p95' },
-}, { minSamples: 10 });
-
-export const reported = rolling.sequence('30s'); // lower-level form
+export const rolling = timings.rolling(
+  '1m',
+  {
+    p50: { from: 'latency', using: 'p50' },
+    p75: { from: 'latency', using: 'p75' },
+    p95: { from: 'latency', using: 'p95' },
+  },
+  { minSamples: 10 },
+);
 ```
 
 ## Collecting events
@@ -92,10 +95,10 @@ converts it to a millisecond timestamp internally.
 
 ## Displaying in React
 
-If you kept a separate `rolling` reference (see the lower-level form above),
-it can drive an in-app performance panel. Because `reported` only fires every
-30 s, read `rolling.value()` directly in a `useLiveQuery` for a live display
-that updates on every incoming event (throttled):
+If you kept a separate `rolling` reference (see the snippet above), it can
+drive an in-app performance panel. Because `reported` only fires every 30 s,
+read `rolling.value()` directly in a `useLiveQuery` for a live display that
+updates on every incoming event (throttled):
 
 ```tsx
 import { useLiveQuery } from '@pond-ts/react';
@@ -111,17 +114,21 @@ function PerformancePanel() {
 
   return (
     <dl>
-      <dt>p50</dt><dd>{stats.p50.toFixed(0)} ms</dd>
-      <dt>p75</dt><dd>{stats.p75?.toFixed(0) ?? '—'} ms</dd>
-      <dt>p95</dt><dd>{stats.p95?.toFixed(0) ?? '—'} ms</dd>
+      <dt>p50</dt>
+      <dd>{stats.p50.toFixed(0)} ms</dd>
+      <dt>p75</dt>
+      <dd>{stats.p75?.toFixed(0) ?? '—'} ms</dd>
+      <dt>p95</dt>
+      <dd>{stats.p95?.toFixed(0) ?? '—'} ms</dd>
     </dl>
   );
 }
 ```
 
 The display updates on every incoming timing event; the backend POST fires
-only at 30 s boundaries. Both read from the same rolling window — no
-duplicated state.
+only at 30 s boundaries. The two rollings each maintain their own deque, so
+the cost is roughly 2× the rolling-window memory — fine for a single 1 minute
+window with a handful of percentiles.
 
 ## Adding throughput
 
@@ -140,7 +147,7 @@ reported.on('event', (event) => {
       p50: event.get('p50'),
       p75: event.get('p75'),
       p95: event.get('p95'),
-      rps: rate.value(),          // snapshot at the same 30 s boundary
+      rps: rate.value(), // snapshot at the same 30 s boundary
     }),
   });
 });

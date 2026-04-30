@@ -1,10 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  LiveSeries,
-  LiveSequenceRollingAggregation,
-  LiveView,
-  Sequence,
-} from '../src/index.js';
+import { LiveSeries, LiveView, Sequence } from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -214,20 +209,6 @@ describe('LiveSequenceRollingAggregation — chaining', () => {
 
     seq.dispose();
   });
-
-  it('.sequence() on a LiveRollingAggregation still works (step-by-step form)', () => {
-    // rolling.sequence(interval) is the lower-level form — still valid
-    const live = makeLive();
-    const rolling = live.rolling('1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
-    expect(seq).toBeInstanceOf(LiveSequenceRollingAggregation);
-
-    live.push([0, 10], [30_001, 20]);
-    expect(seq.length).toBe(1);
-
-    rolling.dispose();
-    seq.dispose();
-  });
 });
 
 // ── Sequence with anchor ───────────────────────────────────────────
@@ -236,11 +217,9 @@ describe('LiveSequenceRollingAggregation — Sequence anchor', () => {
   it('respects a non-zero anchor from a Sequence object', () => {
     const live = makeLive();
     // Anchor at 5 000 ms → boundaries at 5 000, 35 000, 65 000 …
-    const seq = live.rolling(
-      Sequence.every('30s', { anchor: 5_000 }),
-      '1m',
-      { value: 'avg' },
-    );
+    const seq = live.rolling(Sequence.every('30s', { anchor: 5_000 }), '1m', {
+      value: 'avg',
+    });
 
     live.push([5_000, 10], [35_001, 20]); // crosses 35 000 boundary
     expect(seq.length).toBe(1);
@@ -266,5 +245,32 @@ describe('LiveSequenceRollingAggregation — dispose', () => {
     seq.dispose();
     live.push([60_001, 3]);
     expect(spy).toHaveBeenCalledTimes(1); // seq disposed; no new calls
+  });
+
+  it('dispose() releases the hidden inner rolling subscription on the source', () => {
+    // Regression test for a memory leak. The `live.rolling(Sequence, ...)`
+    // overload constructs a hidden `LiveRollingAggregation` and wraps it in
+    // a `LiveSequenceRollingAggregation`. The user holds only the seq; the
+    // rolling has no other reference. If `seq.dispose()` only unsubscribed
+    // the seq from the rolling (and not the rolling from the source), the
+    // rolling would stay subscribed forever.
+    const live = makeLive();
+
+    const realOn = live.on.bind(live);
+    let activeSourceSubs = 0;
+    live.on = ((type: any, fn: any) => {
+      const unsub = realOn(type, fn);
+      activeSourceSubs++;
+      return (() => {
+        activeSourceSubs--;
+        if (typeof unsub === 'function') return unsub();
+      }) as any;
+    }) as any;
+
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
+    expect(activeSourceSubs).toBe(1); // hidden inner rolling subscribed once
+
+    seq.dispose();
+    expect(activeSourceSubs).toBe(0); // both seq and inner rolling released
   });
 });

@@ -14,7 +14,7 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { LiveSeries, LiveRollingAggregation } from '../dist/index.js';
+import { LiveSeries, LiveRollingAggregation, Sequence } from '../dist/index.js';
 
 const schema = Object.freeze([
   { name: 'time', kind: 'time' },
@@ -27,7 +27,9 @@ const ROWS_30K = Array.from({ length: 30_000 }, (_, t) => [t * 1_000, t % 100]);
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
 }
 
 function bench(label, fn, repeats = 6) {
@@ -44,7 +46,9 @@ function bench(label, fn, repeats = 6) {
 }
 
 // ── Baseline: rolling only, no sequence ─────────────────────────
-console.log('\nBaseline — 30 000 events, 1 Hz, 60 s rolling, no sequence rolling:');
+console.log(
+  '\nBaseline — 30 000 events, 1 Hz, 60 s rolling, no sequence rolling:',
+);
 const baseMs = bench('rolling only', () => {
   const live = new LiveSeries({ name: 'bench', schema });
   const rolling = new LiveRollingAggregation(live, '60s', { value: 'avg' });
@@ -53,31 +57,37 @@ const baseMs = bench('rolling only', () => {
 });
 
 // ── Scenario 1: 30 s interval (~1 000 emissions) ─────────────────
-console.log('\nScenario 1 — same stream + sequence rolling, 30 s interval (~1 000 emissions):');
-const s1Ms = bench('rolling + sequence(30s)', () => {
+console.log(
+  '\nScenario 1 — same stream + sequence rolling, 30 s interval (~1 000 emissions):',
+);
+const s1Ms = bench('live.rolling(Sequence.every(30s), 60s, ...)', () => {
   const live = new LiveSeries({ name: 'bench', schema });
-  const rolling = new LiveRollingAggregation(live, '60s', { value: 'avg' });
-  const seq = rolling.sequence('30s');
+  const seq = live.rolling(Sequence.every('30s'), '60s', { value: 'avg' });
   live.pushMany(ROWS_30K);
-  rolling.dispose();
   seq.dispose();
 });
 
 // ── Scenario 2: 1 s interval (~30 000 emissions — every event emits) ──
-console.log('\nScenario 2 — same stream + sequence rolling, 1 s interval (~30 000 emissions):');
-const s2Ms = bench('rolling + sequence(1s)', () => {
+console.log(
+  '\nScenario 2 — same stream + sequence rolling, 1 s interval (~30 000 emissions):',
+);
+const s2Ms = bench('live.rolling(Sequence.every(1s), 60s, ...)', () => {
   const live = new LiveSeries({ name: 'bench', schema });
-  const rolling = new LiveRollingAggregation(live, '60s', { value: 'avg' });
-  const seq = rolling.sequence('1s');
+  const seq = live.rolling(Sequence.every('1s'), '60s', { value: 'avg' });
   live.pushMany(ROWS_30K);
-  rolling.dispose();
   seq.dispose();
 });
 
 // ── Overhead summary ─────────────────────────────────────────────
 console.log('\nOverhead vs baseline (30 000 events):');
-console.log(`  sequence(30s): +${(s1Ms - baseMs).toFixed(1)} ms (+${(((s1Ms - baseMs) / baseMs) * 100).toFixed(0)}%)`);
-console.log(`  sequence(1s):  +${(s2Ms - baseMs).toFixed(1)} ms (+${(((s2Ms - baseMs) / baseMs) * 100).toFixed(0)}%) — every event emits`);
-console.log(`\nPer-event overhead of #check (scenario 2, ~30 000 checks + emissions):`);
+console.log(
+  `  sequence(30s): +${(s1Ms - baseMs).toFixed(1)} ms (+${(((s1Ms - baseMs) / baseMs) * 100).toFixed(0)}%)`,
+);
+console.log(
+  `  sequence(1s):  +${(s2Ms - baseMs).toFixed(1)} ms (+${(((s2Ms - baseMs) / baseMs) * 100).toFixed(0)}%) — every event emits`,
+);
+console.log(
+  `\nPer-event overhead of #check (scenario 2, ~30 000 checks + emissions):`,
+);
 console.log(`  ~${(((s2Ms - baseMs) / 30_000) * 1e6).toFixed(0)} ns/event`);
 console.log('\nDone.');

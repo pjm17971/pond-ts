@@ -16,9 +16,7 @@ import {
 import { TimeSeries } from './TimeSeries.js';
 import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
 import { Sequence } from './Sequence.js';
-import {
-  LiveSequenceRollingAggregation,
-} from './LiveSequenceRollingAggregation.js';
+import { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 import type {
   AggregateMap,
   AggregateSchema,
@@ -278,7 +276,9 @@ export class LiveAggregation<
     windowOrMapping: RollingWindow | M,
     mappingOrOptions?: M | LiveRollingOptions,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<Out, RollingSchema<Out, M>> | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
+  ):
+    | LiveRollingAggregation<Out, RollingSchema<Out, M>>
+    | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
     if (sequenceOrWindow instanceof Sequence) {
       const r = new LiveRollingAggregation(
         this as any,
@@ -286,7 +286,11 @@ export class LiveAggregation<
         mappingOrOptions as AggregateMap<Out>,
         options,
       );
-      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+      return new LiveSequenceRollingAggregation(
+        r,
+        sequenceOrWindow,
+        true,
+      ) as any;
     }
     return new LiveRollingAggregation(
       this as any,

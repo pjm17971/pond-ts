@@ -26,11 +26,6 @@ import type {
   SelectSchema,
   SeriesSchema,
 } from './types.js';
-import type { DurationInput } from './utils/duration.js';
-import { parseDuration } from './utils/duration.js';
-
-/** Accepted forms for the sequence interval on `rolling.sequence()`. */
-export type SequenceInterval = DurationInput | Sequence;
 
 type EventListener = (event: any) => void;
 
@@ -40,8 +35,8 @@ type EventListener = (event: any) => void;
  *
  * Each emitted event carries a snapshot of the rolling-window aggregate
  * at the moment the boundary was crossed. The output is time-keyed at
- * epoch-aligned interval boundaries (e.g. every 30 s → timestamps at
- * 0, 30 000, 60 000, … ms).
+ * the sequence's epoch-aligned interval boundaries (e.g.
+ * `Sequence.every('30s')` → timestamps at 0, 30 000, 60 000, … ms).
  *
  * **Emission is data-driven.** If no source events arrive during an
  * interval, no event is emitted for that interval. This is consistent
@@ -49,7 +44,7 @@ type EventListener = (event: any) => void;
  *
  * **One emission per crossing, not per skipped interval.** If a source
  * event jumps multiple interval boundaries at once (e.g. an event at
- * 90 001 ms after a gap since 0 ms, with a 30 s interval), exactly one
+ * 90 001 ms after a gap since 0 ms, with a 30 s sequence), exactly one
  * event is emitted — at the start of the new bucket (90 000 ms). The
  * 30 s and 60 s intervals had no data, so they produce no output.
  *
@@ -58,18 +53,24 @@ type EventListener = (event: any) => void;
  * emitted value therefore includes that event's contribution to the
  * trailing aggregate.
  *
- * Created via `rolling.sequence(interval)`.
+ * Created by passing a `Sequence` as the first argument to
+ * `live.rolling(...)`, mirroring the batch API
+ * `series.rolling(Sequence.every('30s'), '1m', mapping)`.
  *
  * @example
  * ```ts
  * const timings = new LiveSeries<TimingSchema>();
- * const rolling = timings.rolling('1m', {
- *   p50: { from: 'latency', using: 'p50' },
- *   p95: { from: 'latency', using: 'p95' },
- * });
  *
  * // Emits once per 30 s of event time with trailing 1-minute percentiles
- * const reported = rolling.sequence('30s');
+ * const reported = timings.rolling(
+ *   Sequence.every('30s'),
+ *   '1m',
+ *   {
+ *     p50: { from: 'latency', using: 'p50' },
+ *     p95: { from: 'latency', using: 'p95' },
+ *   },
+ * );
+ *
  * reported.on('event', event => {
  *   fetch('/api/telemetry', {
  *     method: 'POST',
@@ -86,6 +87,7 @@ export class LiveSequenceRollingAggregation<
   readonly schema: Out;
 
   readonly #rolling: LiveRollingAggregation<S, Out>;
+  readonly #ownsRolling: boolean;
   readonly #stepMs: number;
   readonly #anchorMs: number;
   readonly #outputEvents: EventForSchema<Out>[];
@@ -94,20 +96,26 @@ export class LiveSequenceRollingAggregation<
 
   #lastBucketIdx: number | undefined;
 
+  /**
+   * Internal — use `live.rolling(Sequence, window, mapping)` instead.
+   *
+   * @param rolling The upstream rolling aggregation to snapshot at boundary crossings.
+   * @param sequence The fixed-step Sequence whose boundaries trigger emission.
+   * @param ownsRolling When `true`, `dispose()` also disposes the upstream rolling.
+   *   Set by the `live.rolling(Sequence, ...)` overload, which constructs the
+   *   rolling internally and is solely responsible for its lifecycle.
+   */
   constructor(
     rolling: LiveRollingAggregation<S, Out>,
-    interval: SequenceInterval,
+    sequence: Sequence,
+    ownsRolling: boolean = false,
   ) {
     this.name = rolling.name;
     this.schema = rolling.schema;
     this.#rolling = rolling;
-    if (interval instanceof Sequence) {
-      this.#stepMs = interval.stepMs();
-      this.#anchorMs = interval.anchor();
-    } else {
-      this.#stepMs = parseDuration(interval);
-      this.#anchorMs = 0;
-    }
+    this.#ownsRolling = ownsRolling;
+    this.#stepMs = sequence.stepMs();
+    this.#anchorMs = sequence.anchor();
     this.#outputEvents = [];
     this.#onEvent = new Set();
     this.#lastBucketIdx = undefined;
@@ -135,10 +143,17 @@ export class LiveSequenceRollingAggregation<
 
   /**
    * Disconnect from the upstream rolling aggregation. No further events
-   * will be emitted after this call.
+   * will be emitted after this call. When this instance was created via
+   * the `live.rolling(Sequence, window, mapping)` overload (which constructs
+   * the upstream rolling internally), `dispose()` also disposes that
+   * upstream rolling — there is no other reference to it, so leaving it
+   * subscribed to the source would leak.
    */
   dispose(): void {
     this.#unsubscribe();
+    if (this.#ownsRolling) {
+      this.#rolling.dispose();
+    }
   }
 
   // ── View transforms (mirrors LiveRollingAggregation) ────────────
@@ -225,7 +240,9 @@ export class LiveSequenceRollingAggregation<
     windowOrMapping: RollingWindow | M,
     mappingOrOptions?: M | LiveRollingOptions,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<Out, RollingSchema<Out, M>> | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
+  ):
+    | LiveRollingAggregation<Out, RollingSchema<Out, M>>
+    | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
     if (sequenceOrWindow instanceof Sequence) {
       const r = new LiveRollingAggregation(
         this as any,
@@ -233,7 +250,11 @@ export class LiveSequenceRollingAggregation<
         mappingOrOptions as AggregateMap<Out>,
         options,
       );
-      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+      return new LiveSequenceRollingAggregation(
+        r,
+        sequenceOrWindow,
+        true,
+      ) as any;
     }
     return new LiveRollingAggregation(
       this as any,

@@ -11,6 +11,49 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`live.rolling(Sequence, window, mapping)` overload** — live counterpart
+  of the batch `series.rolling(Sequence.every('30s'), '1m', mapping)` call.
+  Returns a new `LiveSequenceRollingAggregation<S, Out>` that emits one
+  time-keyed event per epoch-aligned boundary as source events cross it,
+  carrying a snapshot of the trailing rolling-window aggregate. Available
+  on every live source: `LiveSeries`, `LiveView`, `LiveAggregation`, and
+  `LiveSequenceRollingAggregation` itself (for downstream chaining).
+
+  ```ts
+  // Trailing 1-minute percentiles, reported every 30 s of event time.
+  const reported = timings.rolling(
+    Sequence.every('30s'),
+    '1m',
+    {
+      p50: { from: 'latency', using: 'p50' },
+      p95: { from: 'latency', using: 'p95' },
+    },
+    { minSamples: 10 },
+  );
+  reported.on('event', (e) =>
+    fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
+  );
+  ```
+
+  Emission is **data-driven**: no `setInterval`, no wall clock. If the
+  source goes quiet, no events are emitted; if a single event jumps
+  multiple boundaries, exactly one event fires at the new bucket. Snapshot
+  is taken after the boundary-crossing event has been ingested by the
+  rolling window, so the emitted value includes that event's contribution.
+  Closes the frontend-telemetry gap surfaced while drafting the
+  `pond-grpc-experiment` reporting path.
+
+- **`LiveSequenceRollingAggregation` exported** from package root with full
+  `LiveSource<Out>` surface and the same view-transform set as
+  `LiveRollingAggregation` (`filter`, `map`, `select`, `window`, `diff`,
+  `rate`, `pctChange`, `fill`, `cumulative`, `rolling`, `aggregate`).
+
+- **Telemetry-reporting recipe** at `website/docs/recipes/telemetry-reporting.mdx`
+  — end-to-end frontend-collection → backend-summary pattern using the new
+  overload, plus React in-app display via `useLiveQuery`.
+
 ## [0.11.7] — 2026-04-29
 
 ### Added

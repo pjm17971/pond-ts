@@ -5,10 +5,7 @@ import {
   type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
-import {
-  LiveSequenceRollingAggregation,
-  type SequenceInterval,
-} from './LiveSequenceRollingAggregation.js';
+import { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { Sequence } from './Sequence.js';
 import {
@@ -270,7 +267,9 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     windowOrMapping: RollingWindow | M,
     mappingOrOptions?: M | LiveRollingOptions,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<S, RollingSchema<S, M>> | LiveSequenceRollingAggregation<S, RollingSchema<S, M>> {
+  ):
+    | LiveRollingAggregation<S, RollingSchema<S, M>>
+    | LiveSequenceRollingAggregation<S, RollingSchema<S, M>> {
     if (sequenceOrWindow instanceof Sequence) {
       const r = new LiveRollingAggregation(
         this,
@@ -278,7 +277,11 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
         mappingOrOptions as AggregateMap<S>,
         options,
       );
-      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+      return new LiveSequenceRollingAggregation(
+        r,
+        sequenceOrWindow,
+        true,
+      ) as any;
     }
     return new LiveRollingAggregation(
       this,

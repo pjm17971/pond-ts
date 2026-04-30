@@ -1,6 +1,5 @@
 import { Event } from './Event.js';
 import { LiveAggregation } from './LiveAggregation.js';
-import { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 import {
   LiveView,
   makeDiffView,
@@ -11,7 +10,6 @@ import {
 } from './LiveView.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
 import { Sequence } from './Sequence.js';
-import type { SequenceInterval } from './LiveSequenceRollingAggregation.js';
 import type {
   AggregateMap,
   DiffSchema,
@@ -19,7 +17,6 @@ import type {
   EventForSchema,
   LiveSource,
   NumericColumnNameForSchema,
-  RollingSchema,
   ColumnValue,
   SelectSchema,
   SeriesSchema,
@@ -267,27 +264,6 @@ export class LiveRollingAggregation<
     mapping: M,
   ): LiveAggregation<Out> {
     return new LiveAggregation(this as any, sequence, mapping as any);
-  }
-
-  /**
-   * Returns a live source that emits one event per `interval` of event
-   * time, carrying the current rolling-window aggregate at the moment each
-   * interval boundary is crossed.
-   *
-   * Emission is **data-driven**: if no source events arrive during an
-   * interval, no event is emitted for that interval. Output timestamps are
-   * epoch-aligned to the given interval duration.
-   *
-   * @example
-   * ```ts
-   * const reported = rolling.sequence('30s');
-   * reported.on('event', event => {
-   *   fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(event.data()) });
-   * });
-   * ```
-   */
-  sequence(interval: SequenceInterval): LiveSequenceRollingAggregation<S, Out> {
-    return new LiveSequenceRollingAggregation(this, interval);
   }
 
   dispose(): void {

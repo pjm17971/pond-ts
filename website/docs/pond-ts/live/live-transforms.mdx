@@ -460,8 +460,8 @@ const timings = new LiveSeries({
 
 // Trailing 1-minute window, reported every 30 s of event time
 const reported = timings.rolling(
-  Sequence.every('30s'),  // emit interval
-  '1m',                   // rolling window
+  Sequence.every('30s'), // emit interval
+  '1m', // rolling window
   {
     p50: { from: 'latency', using: 'p50' },
     p75: { from: 'latency', using: 'p75' },
@@ -481,14 +481,6 @@ reported.on('event', (event) => {
     }),
   });
 });
-```
-
-If you already hold a `LiveRollingAggregation` you can also call
-`.sequence(interval)` on it directly to get the same result:
-
-```ts
-const rolling = timings.rolling('1m', { p95: { from: 'latency', using: 'p95' } });
-const reported = rolling.sequence('30s'); // equivalent lower-level form
 ```
 
 ### Emission semantics
