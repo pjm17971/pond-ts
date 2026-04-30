@@ -1,0 +1,179 @@
+---
+sidebar_position: 4
+---
+
+# Frontend telemetry reporting
+
+Collecting high-frequency timing or performance events in a frontend app
+and reporting summarised percentiles to a backend service — without
+drowning the server in raw event traffic. The same rolling state drives
+an in-app live display.
+
+**The pattern:**
+
+1. Collect timing events into a `LiveSeries` as they happen.
+2. Maintain a trailing rolling window of percentiles with `rolling()`.
+3. Use `rolling.sample(sequence)` to emit one snapshot per reporting
+   interval. Subscribe and `fetch` each snapshot to the backend.
+4. Read `rolling.value()` directly for the in-app live display — same
+   rolling state, no duplicated deque.
+
+## Setup
+
+```ts
+import { LiveSeries, Sequence } from 'pond-ts';
+
+// ── Schema ──────────────────────────────────────────────────────
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'latency', kind: 'number' }, // milliseconds
+] as const;
+
+// ── Live source ─────────────────────────────────────────────────
+export const timings = new LiveSeries({ name: 'timings', schema });
+
+// ── Rolling 1-minute percentile window ──────────────────────────
+export const rolling = timings.rolling(
+  '1m',
+  {
+    p50: { from: 'latency', using: 'p50' },
+    p75: { from: 'latency', using: 'p75' },
+    p95: { from: 'latency', using: 'p95' },
+  },
+  { minSamples: 10 }, // suppress output until the window is warm
+);
+
+// ── Sample every 30 s of event time → backend ───────────────────
+export const reported = rolling.sample(Sequence.every('30s'));
+
+reported.on('event', (event) => {
+  fetch('/api/telemetry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ts: event.begin(), // epoch-aligned 30 s boundary
+      p50: event.get('p50'),
+      p75: event.get('p75'),
+      p95: event.get('p95'),
+    }),
+  });
+});
+```
+
+The same `rolling` drives both the backend report and the in-app
+display. There is no second rolling deque — `reported` is a passive
+sampler that reads `rolling.value()` at boundary crossings.
+
+## Collecting events
+
+Call `timings.push()` wherever you measure latency — in a fetch wrapper,
+an interceptor, or a performance observer:
+
+```ts
+import { Temporal } from '@js-temporal/polyfill';
+
+function measureFetch(url: string): Promise<Response> {
+  const start = performance.now();
+  return fetch(url).finally(() => {
+    timings.push([Temporal.Now.instant(), performance.now() - start]);
+  });
+}
+```
+
+`timings.push()` accepts a `Temporal.Instant` as the time key; the library
+converts it to a millisecond timestamp internally.
+
+## Displaying in React
+
+`useLiveQuery` re-evaluates on every source event (throttled). Read
+`rolling.value()` to surface the latest percentile snapshot:
+
+```tsx
+import { useLiveQuery } from '@pond-ts/react';
+import { timings, rolling } from './telemetry';
+
+function PerformancePanel() {
+  // Throttled to once per second; re-reads rolling.value() on each event
+  const stats = useLiveQuery(timings, () => rolling.value(), {
+    throttleMs: 1_000,
+  });
+
+  if (!stats?.p50) return <span>warming up…</span>;
+
+  return (
+    <dl>
+      <dt>p50</dt>
+      <dd>{stats.p50.toFixed(0)} ms</dd>
+      <dt>p75</dt>
+      <dd>{stats.p75?.toFixed(0) ?? '—'} ms</dd>
+      <dt>p95</dt>
+      <dd>{stats.p95?.toFixed(0) ?? '—'} ms</dd>
+    </dl>
+  );
+}
+```
+
+The display updates on every incoming timing event; the backend POST fires
+only at 30 s boundaries. Both read from the same rolling window — single
+source of truth, no duplicated state.
+
+## Adding throughput
+
+Include events-per-second alongside the percentiles so the backend can
+contextualise the p95 reading (a p95 of 200 ms at 3 req/s is very different
+from 300 req/s):
+
+```ts
+const rate = timings.window('1m').eventRate(); // events/sec over last minute
+
+reported.on('event', (event) => {
+  fetch('/api/telemetry', {
+    method: 'POST',
+    body: JSON.stringify({
+      ts: event.begin(),
+      p50: event.get('p50'),
+      p75: event.get('p75'),
+      p95: event.get('p95'),
+      rps: rate.value(), // snapshot at the same 30 s boundary
+    }),
+  });
+});
+```
+
+## Per-endpoint breakdown
+
+If you want separate percentiles per endpoint, partition first:
+
+```ts
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'latency', kind: 'number' },
+  { name: 'endpoint', kind: 'string' },
+] as const;
+
+const timings = new LiveSeries({ name: 'timings', schema });
+
+const byEndpoint = timings.partitionBy('endpoint').rolling('1m', {
+  p50: { from: 'latency', using: 'p50' },
+  p95: { from: 'latency', using: 'p95' },
+});
+
+// Read per-endpoint percentiles on demand
+byEndpoint.value('/api/users'); // { p50: ..., p95: ... }
+```
+
+## Emission semantics
+
+`rolling.sample(sequence)` is **data-driven**, not timer-driven — it
+emits when incoming events cross an epoch-aligned interval boundary, not
+on a wall clock. If the app goes idle (no fetch activity), no report is
+sent. If a burst of events arrives after a quiet period, exactly one
+report is sent per crossed boundary, not one per skipped interval.
+
+The snapshot is taken after the boundary-crossing event is ingested, so
+the emitted percentiles reflect the full trailing window including that
+event.
+
+See [Sampling on a Sequence](../pond-ts/live/live-transforms#sampling-on-a-sequence-rollingsampleseq)
+in the live transforms reference for the full semantics and the
+`LiveSequenceRollingAggregation` view-transform surface.

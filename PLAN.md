@@ -1294,6 +1294,79 @@ into pond-ts core. The default JSON path stays directly on
 `LiveSeries.toJSON()` / `pushJson()` / `fromJSON()` — the most
 common case shouldn't pay an adaptor-indirection tax.
 
+### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot
+
+A frontend telemetry use case (collect latency events at high rate,
+report p50/p75/p95 to a backend every 30 s, also display them live in
+the UI) surfaced a gap. `LiveRollingAggregation` emits per source
+event — too noisy for backend reporting. The batch layer has
+`series.rolling(Sequence.every('30s'), '1m', mapping)` for the
+"sampled rolling" shape, but the live layer didn't.
+
+`rolling.sample(sequence)` fills it without conflating two operations:
+
+```ts
+const rolling = timings.rolling('1m', {
+  p50: { from: 'latency', using: 'p50' },
+  p95: { from: 'latency', using: 'p95' },
+});
+
+// Backend report every 30 s of event time
+const reported = rolling.sample(Sequence.every('30s'));
+reported.on('event', (e) =>
+  fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
+);
+
+// Same rolling drives the in-app display, no duplicated state
+useLiveQuery(timings, () => rolling.value());
+```
+
+**Design decisions:**
+
+- **Composition, not overload.** An earlier iteration tried a
+  `live.rolling(Sequence, '1m', mapping)` overload mirroring the batch
+  shape exactly. The implementation revealed the misfit: the overload
+  had to allocate a hidden inner rolling and track ownership with an
+  `ownsRolling` flag to avoid leaking source subscriptions on dispose,
+  and the hidden rolling locked away state the user might want to read
+  directly (the in-app display case). Keeping the two operations
+  separate — `live.rolling(...)` returns a rolling, `rolling.sample(seq)`
+  taps it for sequence-triggered snapshots — gives the user one
+  reference per concern with no hidden ownership.
+- **Honest naming.** "sample" describes what the operation actually
+  does (snapshot at sequence boundaries), versus "rolling" which would
+  imply a dense grid the live emission doesn't deliver.
+- **Data-driven, not timer-driven.** Emission happens when source
+  events cross an epoch-aligned boundary. If no events arrive during
+  an interval, no event is emitted. Consistent with "data is the
+  clock"; no `setInterval` inside the library.
+- **Independent lifetimes.** `sample.dispose()` only detaches the
+  sampler from the rolling. `rolling.dispose()` is the user's
+  responsibility. One rolling can power multiple downstream consumers
+  (multiple `.sample()` cadences for different reporting endpoints,
+  plus direct `rolling.value()` reads) without coupling.
+- **`LiveSequenceRollingAggregation` is a full `LiveSource`.**
+  Implements `name`, `schema`, `length`, `at()`, `on('event')`.
+  Supports the same view-transform set as `LiveRollingAggregation`
+  (filter, map, select, window, diff, rate, pctChange, fill,
+  cumulative, rolling, aggregate) for downstream chaining.
+- **Output is time-keyed** at epoch-aligned boundaries (e.g.
+  `Sequence.every('30s')` → 0, 30 000, 60 000 … ms).
+- **Snapshot timing.** `rolling.value()` is read after the
+  boundary-crossing event has been ingested by the rolling, so the
+  emitted aggregate includes that event's contribution.
+
+### Deferred from this wave
+
+- **Generalized `.sample(sequence)` on other `LiveSource` types.**
+  Only on `LiveRollingAggregation` for now — that's the one known use
+  case. Sampling raw `LiveSeries` events or `LiveView` derivatives at
+  sequence boundaries is plausible but speculative; promote when a
+  real use case appears.
+- **`live.rolling(Sequence, ...)` overload.** Not coming back. The
+  composition form is clearer about what's happening and avoids the
+  ownership-tracking footgun.
+
 ### Dropped from scope
 
 - **`LiveRolling`**: covered by `LiveRollingAggregation` implementing `LiveSource` — the

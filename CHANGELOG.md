@@ -11,6 +11,53 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`rolling.sample(sequence)`** on `LiveRollingAggregation` — taps a
+  rolling aggregation and emits one snapshot of the rolling state each
+  time a source event crosses an epoch-aligned boundary of `sequence`.
+  Closes the frontend-telemetry gap: collect high-frequency timing
+  events, sample p50/p95 to a backend every 30 s, while the same
+  rolling drives an in-app live display (no duplicated deque).
+
+  ```ts
+  const rolling = timings.rolling('1m', {
+    p50: { from: 'latency', using: 'p50' },
+    p95: { from: 'latency', using: 'p95' },
+  });
+
+  // One sampler → backend report every 30 s of event time
+  const reported = rolling.sample(Sequence.every('30s'));
+  reported.on('event', (e) =>
+    fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
+  );
+
+  // Same rolling drives the UI live display
+  useLiveQuery(timings, () => rolling.value());
+  ```
+
+  Emission is **data-driven**: no `setInterval`. If the source goes
+  quiet, no events fire. A single source event spanning multiple
+  boundaries fires exactly one event at the new bucket. Snapshot is
+  taken after the boundary-crossing event is ingested by the rolling,
+  so the emitted value includes that event's contribution.
+
+  **Independent lifetimes.** `sample.dispose()` only detaches the
+  sampler from the rolling; the rolling's lifecycle stays the user's
+  responsibility. One rolling can power multiple `.sample()` cadences
+  plus direct `rolling.value()` reads without coupling.
+
+- **`LiveSequenceRollingAggregation` exported** from package root with
+  full `LiveSource<Out>` surface and the same view-transform set as
+  `LiveRollingAggregation` (`filter`, `map`, `select`, `window`,
+  `diff`, `rate`, `pctChange`, `fill`, `cumulative`, `rolling`,
+  `aggregate`).
+
+- **Telemetry-reporting recipe** at
+  `website/docs/recipes/telemetry-reporting.mdx` — end-to-end
+  frontend-collection → backend-summary pattern using `.sample()`,
+  plus the React in-app display via `useLiveQuery`.
+
 ## [0.11.7] — 2026-04-29
 
 ### Added
