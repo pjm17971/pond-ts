@@ -1812,6 +1812,117 @@ Keep these distinct:
 
 ---
 
+## Documentation backlog
+
+Items collected from the multi-agent experiments (CSV-cleaner,
+dashboard, gRPC pipeline, webapp telemetry). Each is small in
+isolation; worth landing as a single MDX pass rather than dribbling
+in piecemeal so readers benefit from a coherent "production
+deployment" / "observability" surface in one place.
+
+- **`pushMany` is the throughput-critical primitive** — call this
+  out explicitly in `live-series.mdx`'s push section. Apps forwarding
+  events from a per-event source (gRPC streams, EventSource, brokers
+  with `qos=1`) should reach for `pushMany` with explicit
+  producer-side batching, not "trust consumer-side coalescing." The
+  M3 friction notes show macrotask-coalesced `pushMany` averages 1.4
+  events/call at saturation — the API works, but only when the
+  caller actually batches.
+
+- **GC observation snippet** — six-line `PerformanceObserver` over
+  `'gc'` entries, alongside the existing `LiveSeries.on('evict')`
+  callback docs. Aggregator deployments need this; pond can host the
+  one-paragraph pattern.
+
+- **No-NaN guarantee from numeric reducers** — reducer-reference
+  page should state explicitly that `p50`/`avg`/`stdev`/`pNN`/
+  `difference` emit `undefined` (not `NaN` or `Infinity`) for empty
+  windows, cold windows under `minSamples`, and below-threshold
+  states. Surfaced in the webapp-telemetry code as defensive
+  `toNumber()` wrappers that wouldn't be needed if the guarantee
+  were stated.
+
+- **Same-timestamp event behavior per ordering mode** — the
+  `LiveSeries` ordering-modes section should pin what happens with
+  ties under each mode. The webapp-telemetry code's `Math.max(ts,
+lastTs + 0.001)` monotonicity hack was belt-and-suspenders against
+  unclear tie-handling. Documenting "ties accepted under `'reorder'`
+  and `'drop'`; throws under `'strict'`" would remove the need.
+
+- **Side-channel latency-measurement pattern** — short recipe / how-
+  to showing the `Map<eventKey, pushedAtMs>` pattern for end-to-end
+  latency in network-fronted aggregators. The M3 experiment hand-
+  rolled this; we explicitly chose not to bake `pushedAt` into pond
+  (push→batch is synchronous; the latency is entirely
+  application-side). Documenting the pattern is the right
+  deliverable.
+
+- **`LiveSequenceRollingAggregation` schema reference** — the
+  rolling.sample() class is in the API reference but its place in
+  the live layered model could use a small diagram (we have the
+  ARCHITECTURE.md ASCII version; the docs site doesn't yet show
+  it).
+
+Likely venue: a new how-to page, "Observing pond-ts in production",
+covering eviction listeners, GC observation, end-to-end latency,
+push-vs-pushMany guidance, and pointers to the relevant operator
+sections. Estimate: 200-400 lines MDX, single PR, ships via
+`gh workflow run docs.yml --ref main` — no version bump required.
+
+## Performance expectations and the bench-vs-real-world gap
+
+A design note worth pinning, surfaced concretely by the gRPC
+experiment's M3 milestone.
+
+The library benchmark publishes peak throughput numbers (e.g. **538k
+events/sec at P=100, N=10** in the multi-partition rolling
+benchmark). These numbers are **achievable iff the caller hands
+`pushMany` arrays of N events**. Per-event sources without wire
+batching see roughly an order-of-magnitude less:
+
+| Scenario                                                    | Effective throughput                            |
+| ----------------------------------------------------------- | ----------------------------------------------- |
+| Library bench, `pushMany([...N events])`, N=10              | **538k events/sec**                             |
+| Per-event push (`live.push([row])` once per source event)   | ~70k events/sec end-to-end (gRPC framing-bound) |
+| Macrotask-coalesced `pushMany` over a per-event gRPC stream | ~73k events/sec (+7-17%); avg batch 1.4 events  |
+| Wire-level batched `pushMany` (estimated)                   | 200-400k events/sec                             |
+
+The gap is **wire-shape, not pond**. gRPC delivers one event per
+`'data'` callback; `setImmediate`-based coalescing rarely catches
+more than the event that triggered the schedule. To approach library
+peak with a real network source, the **producer must batch at the
+wire** (e.g. `stream EventBatch { repeated Event }` in proto, with
+the producer accumulating 1-10ms of events per frame and the
+aggregator unpacking into a single `pushMany`).
+
+**Documentation implication:** the benchmarks page (and the README's
+"performance" section) should grow a one-paragraph callout that
+frames the bench numbers honestly:
+
+> _Pond's bench numbers reflect what's possible when the caller hands
+> `pushMany` an array of N events. If you're forwarding from a
+> per-event source — gRPC `'data'` callbacks, EventSource frames,
+> message-broker `qos=1` subscribers — your effective throughput
+> depends on whether the wire layer batches. Per-event forwarding
+> typically reaches ~14% of the bench peak; producer-side wire
+> batching can recover most of the gap. The
+> [gRPC experiment's M3 friction notes](link) show this in detail._
+
+Worth doing alongside the docs-backlog pass above — same MDX
+deploy.
+
+**`@pond-ts/server` implication:** the eventual server package
+should ship a `coalesce({ windowMs })` strategy with a tested
+default, plus a reference `EventBatch`-style proto in examples.
+Both surfaced as M3 friction-note carry-forwards. Captured here so
+the M5 RFC starts with these pre-baked rather than re-discovering
+them.
+
+**What this is NOT:** a deficiency in pond. The bench numbers are
+real; `pushMany` is the right primitive; the wire-shape consideration
+is inherent to network-bound architectures. Documenting the
+expectation is the deliverable, not optimisation work.
+
 ## Cross-cutting work
 
 These happen throughout the phases rather than being deferred:
