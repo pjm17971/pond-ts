@@ -89,6 +89,51 @@ made a choice and the answer isn't in any committed file, that's a
 gap — capture it in the most-relevant of the three artifacts above
 in the same session.
 
+### Agent identity in PRs and comments
+
+Multiple agents (Claude pond-ts library, Claude gRPC experiment,
+Codex webapp telemetry, etc.) currently operate against the same
+GitHub identity. To keep PR timelines readable when several agents
+have touched the same thread:
+
+**When commenting on or reviewing a PR**, prefix the comment body
+with an identifying header on its own line:
+
+```
+> _Posted by the pond-ts library agent (Claude)_
+
+## <comment body>
+```
+
+Other examples:
+
+- `> _Posted by the gRPC experiment agent (Claude)_`
+- `> _Posted by the webapp telemetry agent (Codex)_`
+- `> _Posted by the dashboard agent (Claude)_`
+
+If a comment has a specific role within the review protocol, append
+it: `_— adversarial review_`, `_— review response_`,
+`_— friction report_`. The role tag matches the section header
+conventions already in use (see "PR review (don't self-merge)"
+below).
+
+**When committing**, the existing `Co-Authored-By:` trailer
+attributes the agent — keep using it.
+
+This convention is honour-system, not enforced — it exists so a
+future reader (human or another agent) reading a PR timeline cold
+can tell who said what without the conversation transcript. The
+same convention should hold across all experiment repos
+(`pond-grpc-experiment`, `pond-ts-dashboard`, etc.) — propagate
+this section to those repos' CLAUDE.md / AGENTS.md when convenient.
+
+If GitHub-UI-level identity becomes valuable enough to be worth
+setting up (e.g. multiple agents converging on the same PR with
+different roles, or external readers needing to filter comments by
+author), the next step is per-agent bot accounts with `GH_TOKEN`
+configured per session, or GitHub Apps with installation tokens.
+Both are out of scope until the friction earns the plumbing.
+
 ## Monorepo structure
 
 npm workspaces with two packages:
