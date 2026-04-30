@@ -1479,6 +1479,127 @@ useLiveQuery(timings, () => rolling.value());
   footgun the overload required. Captured in the closed PR #92 as a
   deliberate blind alley.
 
+### RFC sketch: Trigger as a first-class concept
+
+Surfaced by the gRPC experiment's M3.5 step-1 friction note (the
+dashboard agent's [`WIRE.md`](https://github.com/pjm17971/pond-grpc-experiment/blob/m3.5-aggregate-wire-step-1/WIRE.md)
+asked for synchronised tick aggregation across all partitions; pond
+has no primitive for it). On reflection, the gap goes deeper than
+"sample is missing one variant" — it's a factoring problem.
+
+**The factoring.** Pond's live layer today carries trigger
+semantics implicitly inside each accumulator type:
+
+| Type                                       | Implicit trigger              |
+| ------------------------------------------ | ----------------------------- |
+| `LiveRollingAggregation`                   | event-driven (emits per push) |
+| `LiveAggregation`                          | bucket-close-driven           |
+| `LiveSequenceRollingAggregation` (v0.11.8) | sequence-crossing-driven      |
+
+Three accumulators, three implicit triggers, no recombination.
+"Rolling-window with count-trigger" or "bucketed with clock-trigger"
+have nowhere to live. The sharper factoring is **Source × Trigger ×
+Aggregation** — trigger as a first-class composable concept,
+orthogonal to the aggregation choice.
+
+**Settled design choices** (as of this RFC sketch):
+
+- **Constructor-function form for triggers.** `Trigger.clock(seq)`,
+  `Trigger.count(n)`, future `Trigger.custom(predicate)`. Avoids
+  stringly-typed first args; type system narrows naturally; leaves
+  room for additional trigger kinds without API churn.
+- **Trigger attaches at the source level**, above `partitionBy`.
+  All downstream accumulators inherit the trigger; partitions
+  share one synchronised clock (which is the dashboard's
+  motivating requirement). Shape:
+
+  ```ts
+  const ticks = live
+    .triggerOn(Trigger.clock(Sequence.every('200ms')))
+    .partitionBy('host')
+    .rolling('1m', { cpu: 'avg', cpu_sd: 'stdev' });
+  ```
+
+- **`.sample()` (v0.11.8) will be removed pre-1.0.** Replaced by
+  `live.triggerOn(Trigger.clock(seq)).rolling(...)`. The webapp
+  telemetry agent migrates once. No backwards-compat sugar — pond
+  prefers one way to do each thing, and pre-1.0 is the right time
+  to fix this.
+
+**Default trigger.** Without an explicit `triggerOn`, accumulators
+keep their existing event-driven behavior (i.e. an implicit
+`Trigger.event()`). Backward compatible for everything that doesn't
+care about emission cadence.
+
+**Filter/map/select stay per-event.** Triggers configure
+_accumulator emission cadence_, not the entire chain. Stateless
+transforms keep running on every event; only `rolling()` /
+`aggregate()` / etc. observe the trigger when emitting.
+
+**Open design questions for the M5 RFC:**
+
+1. **What's the type of `live.triggerOn(...)` output?** A new
+   `TriggeredLiveSource<S>` that wraps source + trigger? Same type
+   with a phantom-tag generic? Decide based on what makes the
+   downstream method signatures cleanest. Shouldn't leak into call
+   sites the user writes.
+2. **Trigger placement in the chain.** Source-level is the design
+   decision; but where exactly? Before `partitionBy` was the
+   user's framing. Should it also be expressible later
+   (`partition.triggerOn(...)` for finer scoping)? Probably not —
+   keep it at the source for synchronisation guarantees.
+3. **Multiple triggers on the same source.** Two consumers want
+   different cadences (e.g. backend report at 30s, dashboard at
+   200ms). They'd each call `triggerOn` independently — does that
+   produce two `TriggeredLiveSource` views, each driving its own
+   downstream chain? Yes — same composition story as `LiveView`.
+4. **Cross-trigger semantics: clock + count?** "Emit on clock, but
+   no more than every 100 events." Compound triggers via
+   `Trigger.any(...)` / `Trigger.all(...)` are a natural extension
+   but speculative until needed.
+
+**Sibling RFC item: delta-reducer family.** The dashboard's
+`n_in_tick` ("samples since last emission") is a fundamentally
+different statistic from rolling-window count — it requires
+snapshot-aware state. Triggers alone don't solve it. Reducers like
+`countSince`, `sumSince`, `firstSince`, `lastSince` track "what
+arrived between my last emission and now" and report the delta. Has
+to land in the same RFC because a tick-driven rolling that doesn't
+expose `n_in_tick` is incomplete for the motivating use case.
+
+**What this replaces:**
+
+| Today                                                                                 | After                                                                                                |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `live.rolling('1m', m)`                                                               | `live.rolling('1m', m)` (unchanged; implicit `Trigger.event()`)                                      |
+| `live.rolling('1m', m).sample(seq)`                                                   | `live.triggerOn(Trigger.clock(seq)).rolling('1m', m)`                                                |
+| `live.partitionBy('host').rolling(...).toMap()` (per-host samplers, NOT synchronised) | `live.triggerOn(Trigger.clock(seq)).partitionBy('host').rolling(...)` (synchronised by construction) |
+
+**What does NOT change:**
+
+- `LiveAggregation` (sequence-bucketed with bucket-close emission)
+  stays as-is. Its trigger semantics are different from
+  `Trigger.clock` — it emits on bucket close, which is a
+  conditional-on-watermark, not a per-N-time-units event. May fold
+  into the trigger taxonomy as `Trigger.bucketClose(seq)` later;
+  not in scope for first cut.
+
+**Status:** RFC sketch only. No implementation work yet. The
+gRPC experiment's `HostAggregator` workaround (M3.5 step 1) is
+the right shape until this lands. The M5 extraction sweep should
+absorb this design as a core-library proposal alongside the
+`@pond-ts/server` / `useRemoteLiveSeries` / `@pond-ts/dev-producer`
+RFCs. Three external surfaces + one internal factoring change is
+the M5 scope to plan around.
+
+Cite for context recovery: this RFC sketch was drafted in
+conversation between the user and the pond-ts library agent (Claude)
+on 2026-04-30, after the dashboard agent and gRPC experiment agent
+collaborated on M3.5 step 1 (`pond-grpc-experiment` PR #11). The
+factoring observation came out of asking "is `.sample()` overly
+specific?" — yes, but the deeper problem is that trigger semantics
+are baked into accumulator types instead of being orthogonal.
+
 ### Dropped from scope
 
 - **`LiveRolling`**: covered by `LiveRollingAggregation` implementing `LiveSource` — the
