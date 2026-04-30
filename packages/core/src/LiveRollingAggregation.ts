@@ -1,5 +1,6 @@
 import { Event } from './Event.js';
 import { LiveAggregation } from './LiveAggregation.js';
+import { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 import {
   LiveView,
   makeDiffView,
@@ -265,6 +266,49 @@ export class LiveRollingAggregation<
     mapping: M,
   ): LiveAggregation<Out> {
     return new LiveAggregation(this as any, sequence, mapping as any);
+  }
+
+  /**
+   * Returns a live source that emits one snapshot of this rolling
+   * aggregation each time a source event crosses an epoch-aligned
+   * boundary of `sequence`. The output is time-keyed at boundary
+   * timestamps; the value is the rolling-window aggregate as it stood
+   * the moment the boundary-crossing event was ingested.
+   *
+   * **Emission is data-driven.** No wall-clock timer; if the source
+   * goes quiet, no events are emitted. If a single source event jumps
+   * multiple boundaries, exactly one event fires at the new bucket's
+   * start, not one per skipped boundary.
+   *
+   * **Independent lifetimes.** The returned sampler holds a reference
+   * to `this` rolling but does not own it — `sample.dispose()` only
+   * detaches the sampler. Call `rolling.dispose()` separately when
+   * done with the rolling itself. This lets one rolling drive several
+   * downstream consumers (e.g. a `.sample('30s')` for the backend plus
+   * direct `rolling.value()` reads for an in-app display) without
+   * coupling their lifetimes.
+   *
+   * `sequence` must be a fixed-step `Sequence` (e.g. `Sequence.every('30s')`).
+   * Calendar sequences (`Sequence.daily()` etc.) are rejected because
+   * boundary indexing requires a constant step.
+   *
+   * @example
+   * ```ts
+   * const rolling = timings.rolling('1m', { latency: 'p95' });
+   * const reported = rolling.sample(Sequence.every('30s'));
+   * reported.on('event', e =>
+   *   fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
+   * );
+   * ```
+   */
+  sample(sequence: Sequence): LiveSequenceRollingAggregation<S, Out> {
+    if (sequence.kind() !== 'fixed') {
+      throw new TypeError(
+        'rolling.sample(sequence) requires a fixed-step Sequence; ' +
+          'calendar sequences have no constant boundary spacing.',
+      );
+    }
+    return new LiveSequenceRollingAggregation(this, sequence);
   }
 
   dispose(): void {
