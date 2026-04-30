@@ -1355,24 +1355,44 @@ useLiveQuery(timings, () => rolling.value());
 
 ### Deferred from this wave
 
-- **Generalized `.sample(sequence)` on other `LiveSource` types.**
-  Only on `LiveRollingAggregation` for now — that's the one known use
-  case. Sampling raw `LiveSeries` events or `LiveView` derivatives at
-  sequence boundaries is plausible but speculative; promote when a
-  real use case appears.
-- **`live.rolling(Sequence, ...)` overload.** Not coming back. The
-  composition form is clearer about what's happening and avoids the
-  ownership-tracking footgun.
-- **`AggregateOutputMap` overload on `LiveSeries.rolling()`.** The
+- **Cheap-sampling primitive on `LiveSeries` / `LiveView`** —
+  considered and **deliberately not generalized as `.sample()`**. The
+  rolling version of `.sample()` snapshots a stateful aggregate
+  (`rolling.value()`) at boundaries; a raw `LiveSeries` has no such
+  state — the operation would be "emit the most-recent event in each
+  bucket" or "emit every Nth event," both of which are inherently
+  lossy. Reusing the `.sample()` verb would conflate two different
+  operations: principled-aggregate-snapshot vs cheap-stream-thinning.
+
+  If a real use case appears (debugging firehose streams, prototype
+  back-pressure relief, ad-hoc data reduction without an aggregation
+  decision), it warrants its own primitive with an honest name —
+  candidates like `.lastPerBucket(sequence)`, `.throttle(sequence)`,
+  or `.everyNth(n)` telegraph "this is lossy by design." The
+  asymmetry of `.sample()` only existing on `LiveRollingAggregation`
+  is therefore intentional, not a gap to be filled.
+
+  The principled answer for almost any real reporting / dashboarding
+  use case is the path that already shipped:
+  `live.rolling(...).sample(seq)` — make a deliberate aggregation
+  decision, then emit the reduced result at intervals.
+
+- **`AggregateOutputMap` overload on `LiveSeries.rolling()`** — the
   batch `series.rolling()` accepts both `AggregateMap<S>`
   (`{ existingCol: reducer }`) and `AggregateOutputMap<S>`
   (`{ alias: { from, using } }`); the live counterpart only takes the
-  former. So multi-reducer-per-column patterns
+  former, so multi-reducer-per-column patterns
   (`{ p50: { from: 'latency', using: 'p50' }, p95: ... }`) are
-  batch-only on the live side. The current frontend-telemetry
-  workaround is to allocate one rolling per percentile or snapshot to
-  batch. Worth landing as a follow-up — same type plumbing as the
-  batch side, just plumbed through `LiveRollingAggregation`.
+  batch-only on the live side. Worth landing as a follow-up — same
+  type plumbing as the batch side, just plumbed through
+  `LiveRollingAggregation`. Surfaces in the telemetry recipe as the
+  "want multiple percentiles?" workaround section.
+
+- **`live.rolling(Sequence, ...)` overload.** Not coming back. The
+  composition form (`live.rolling(...).sample(seq)`) is clearer about
+  what's happening and avoids the hidden-ownership / leaked-listener
+  footgun the overload required. Captured in the closed PR #92 as a
+  deliberate blind alley.
 
 ### Dropped from scope
 

@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.7...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.8...HEAD
 
 ## [Unreleased]
+
+## [0.11.8] — 2026-04-30
 
 ### Added
 
@@ -58,6 +60,8 @@ type-level changes; patch bumps are strictly additive.
   `website/docs/recipes/telemetry-reporting.mdx` — end-to-end
   frontend-collection → backend-summary pattern using `.sample()`,
   plus the React in-app display via `useLiveQuery`.
+
+[0.11.8]: https://github.com/pjm17971/pond-ts/compare/v0.11.7...v0.11.8
 
 ## [0.11.7] — 2026-04-29
 
