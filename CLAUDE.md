@@ -322,8 +322,32 @@ Agent({
   ## Adversarial review
 
   <your findings here, grouped by category>
+
+  **Reviewer confidence:** <high | medium | low> — <one-sentence reason>
   EOF
   )"
+
+  End every review with a one-line confidence statement on its
+  own paragraph. Pick honestly:
+  - **high** — standard surface, you saw nothing concerning, the
+    diff was small or well-isolated, you fully understood every
+    change.
+  - **medium** — the change touches subtle ground (deep type-system
+    work, algorithmic correctness, non-obvious refactors crossing
+    multiple files, performance claims you couldn't fully verify
+    from the diff alone) and you have residual uncertainty even
+    though you found no concrete issues.
+  - **low** — the change is genuinely beyond the depth a single
+    Layer 2 review can credibly cover.
+
+  When confidence is **medium** or **low**, end the review with an
+  explicit recommendation on a separate line:
+
+  > Recommend a Codex adversarial pass before merge — flagging this
+  > review as below-high confidence on <specific dimension>.
+
+  The Layer 2 agent cannot initiate a Codex review; only the human
+  can. The recommendation is a flag for the human reviewer.
 
   Do not return the review as text — the PR comment is the
   deliverable.`,
@@ -379,6 +403,34 @@ trail, not a human approval gate.
 
 For these, the agent review is the floor, not the ceiling. Ask the
 user before merging.
+
+**When to escalate to a Codex adversarial pass.** The Layer 2 Claude
+agent always ends its review with a confidence statement
+(`high | medium | low`). When the agent reports **medium or low
+confidence**, the standard Layer 2 review has done its part but the
+PR earns an additional pass that only the human reviewer can
+initiate — running Codex against the same diff. The agent flags
+this in its review comment as `Recommend a Codex adversarial pass
+before merge`; the human decides.
+
+Categories that typically pull confidence below high:
+
+- **Deep type-system work** — variance issues, conditional types,
+  distributive types, complex generic constraints where "this
+  compiles" doesn't fully validate "this is the right type-level
+  shape."
+- **Algorithmic correctness on non-obvious algorithms** —
+  monotonic-deque windows, amortized-cost claims, edge cases that
+  aren't enumerable from the diff.
+- **Non-obvious refactors crossing many files** — the diff is large
+  enough that pattern-matching dominates careful reading.
+- **Performance claims** — the agent can verify a benchmark was
+  run, but not always whether the benchmark tests what it claims.
+
+The agent should not artificially deflate confidence to dodge
+responsibility — pick honestly. If you reviewed the diff carefully
+and found nothing concerning on a standard surface, **high** is
+the right answer.
 
 ## Publishing a release
 
