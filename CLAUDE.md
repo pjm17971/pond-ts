@@ -25,6 +25,70 @@ we deliberately didn't build.
 Update it when you change a layer boundary, add a new class to one of
 the layers, or introduce a new recurring pattern.
 
+## Multi-agent experiments and the feedback model
+
+Pond is being designed and battle-tested through parallel multi-agent
+experiments. Different agents (Claude, Codex, Gemini) each build
+real(ish) things end-to-end, hit pain wherever it falls, write
+friction reports, and the library iterates. The discipline:
+
+- **Build like you're really building.** The agent driving an
+  experiment is told "here's the problem, build it" — not "test
+  these specific APIs." Pain surfaces where it surfaces. Pre-empting
+  where the gold should be ("you're testing the wrong thing")
+  short-circuits the discovery process and we lose insight.
+- **Pain outside pond is fine.** Agents work around it; we focus on
+  the pain we can address. A friction note that says "we had to
+  build a side-channel map because gRPC delivers one event per
+  callback" is a workaround, not a pond bug. Calibrate.
+- **Three outputs per experiment:**
+  1. **Friction notes** — library-actionable items. Drive PRs to
+     pond-ts (API gaps, doc clarifications, missing primitives).
+  2. **Bench / analysis data** — numbers, comparisons, what
+     surprised us. Feeds the _honesty_ sections of the eventual
+     writeup ("here's what the bench numbers actually mean for your
+     architecture").
+  3. **Reference implementation** — the working code, which becomes
+     the basis of a how-to guide.
+- **Each experiment lands as a how-to guide** in
+  `website/docs/how-to-guides/`. First-person narrative, grounded in
+  real working code, ~400-600 lines of MDX, friction-driven library
+  improvements already baked into the version it pins.
+  `ingesting-messy-data.mdx` (CSV-cleaner) and `dashboard-guide.mdx`
+  (dashboard) are the templates.
+- **Active experiments are tracked in PLAN.md** under the "Active
+  experiments" section. That section is the canonical roster of who
+  is working on what, what each has driven into the library so far,
+  and where each track is now.
+
+### Context preservation across sessions
+
+Conversation transcripts live locally at
+`~/.claude/projects/-Users-peter-murphy-Code-pond/<uuid>.jsonl` —
+they're per-machine, not committed, and don't survive context
+compaction within a session.
+
+When a meaningful decision lands (API shape choice, design pivot,
+deferred-but-considered alternative, blind-alley walked-back), the
+_reasoning_ must end up in a committed artifact so future sessions
+can recover it without the transcript:
+
+- **PLAN.md "Shipped:" and "Deferred from this wave" sections** are
+  the load-bearing artifact for library-level decisions.
+- **Experiment milestone files** (`experiments/<exp>/M*.md`) capture
+  per-milestone friction notes and library carry-forwards.
+- **PR comment trail** (Layer 2 adversarial review + author response)
+  captures per-PR design discussion. Both comments together are the
+  durable record.
+- **Closed-as-blind-alley PRs** (e.g. PR #92 → #93 redesign) are
+  themselves the trail — link the closed PR from the new one's body
+  with a one-line "this approach was tried and rejected because…"
+
+If you find yourself reaching for the transcript to recover _why_ we
+made a choice and the answer isn't in any committed file, that's a
+gap — capture it in the most-relevant of the three artifacts above
+in the same session.
+
 ## Monorepo structure
 
 npm workspaces with two packages:

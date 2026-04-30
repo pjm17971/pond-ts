@@ -30,6 +30,91 @@ What is still not stable enough to build on aggressively:
 
 ---
 
+## Active experiments
+
+Pond is battle-tested through parallel multi-agent experiments — see
+[CLAUDE.md "Multi-agent experiments and the feedback model"](CLAUDE.md#multi-agent-experiments-and-the-feedback-model)
+for the philosophy. This section is the canonical roster: who's
+working on what, what each has driven into the library, where each
+track is now.
+
+### CSV-cleaner (complete; v0.9.x)
+
+Three-agent run (Claude, Codex, Gemini) on a real per-host metrics
+CSV with mixed timestamp formats, four spellings of "missing,"
+duplicate-retry rows, and gap-from-missed-scrapes. Each agent
+produced an independent friction report; library responded with a
+coordinated v0.9.x wave.
+
+- **Drove:** `partitionBy`/`PartitionedTimeSeries` (cross-entity
+  correctness), `dedupe({ keep })`, `fill(maxGap)` + all-or-nothing
+  fill semantics, `**Multi-entity series:**` JSDoc warnings on every
+  stateful operator.
+- **Writeup:** `website/docs/how-to-guides/ingesting-messy-data.mdx`.
+- **Source folder:** `experiments/csv-cleaner/` (PROMPT.md, RUBRIC.md,
+  SPEC.md, generate.ts, messy.csv, results/).
+- **Notable:** Gemini escaped its sandbox, found the experiment
+  folder, cheated. We laughed.
+
+### Dashboard (ongoing as reviewer; drove v0.10-v0.11.0)
+
+Built a full webapp at
+[`pjm17971/pond-ts-dashboard`](https://github.com/pjm17971/pond-ts-dashboard).
+The dashboard agent stays involved as the React/charting domain
+expert and reviews PRs touching that surface. Will inform
+`@pond-ts/charts` when that package extracts.
+
+- **Drove:** v0.11.0 `LivePartitionedSeries` (named explicitly as the
+  "obvious next step" in round-2 feedback), `useCurrent` reference
+  stability, `pivotByGroup` typed `groups`, `useEventRate` /
+  `LiveView.eventRate()`, `useCurrent` value narrowing.
+- **Writeup:** `website/docs/how-to-guides/dashboard-guide.mdx`.
+
+### gRPC pipeline (in flight; M3 merged, M4 next)
+
+Claude agent. Three-process gRPC + WebSocket stack: producer
+(`@pond-ts/dev-producer` candidate) → aggregator (`@pond-ts/server`
+candidate, runs a server-side `LiveSeries`) → web dashboard (the read
+side, `useRemoteLiveSeries` candidate). Targeting M5 extraction
+sweep producing three RFC-style design docs.
+
+- **Drove so far:** v0.11.3 (`pond-ts/types` subpath export — schema-
+  as-contract without runtime dep), v0.11.4 (`LiveSeries.toJSON` /
+  `pushJson` / `pushMany` / `Event.toJsonRow` — codec-agnostic
+  snapshot+append primitives), v0.11.5 (packaging fix — README/
+  LICENSE/CHANGELOG in tarballs), v0.11.6 (count() doc clarification
+  on duplicate keys; the M3 friction notes confirmed this fixed M1's
+  misdiagnosed stagger workaround).
+- **Milestone files:** `experiments/grpc-pipeline/{PLAN,LINKS,M0,M1,M2,M3}.md`.
+  M3.md (in PR #8) is the throughput-characterisation friction
+  report — gRPC framing-bound at 73k events/sec, ~14% of library
+  bench peak. Captured in PLAN under "Performance expectations and
+  the bench-vs-real-world gap."
+- **Carry-forwards to `@pond-ts/server` RFC:** coalesce strategy with
+  tested default windowMs, reference EventBatch-style proto in
+  examples, snapshot-cache design, slow-client policy defaults.
+
+### Webapp telemetry (ongoing; drove v0.11.8)
+
+Codex agent. Frontend telemetry-stats reporting (collect latency
+events, sample percentiles to a backend every 30 s, display live in
+React). Real production code in a trading-platform app.
+
+- **Drove:** v0.11.8 `rolling.sample(sequence)`. The first design
+  attempt was an overload (`live.rolling(Sequence, '1m', mapping)`)
+  mirroring the batch shape; closed PR #92 walked that back after
+  implementation surfaced a hidden-ownership leak and locked-away
+  rolling state. Final design (PR #93) is composition: a `.sample()`
+  method on `LiveRollingAggregation` that taps the rolling without
+  owning it. Both PRs together are the design trail.
+- **Surfaced as next deferred:** the `AggregateOutputMap` overload
+  on `LiveSeries.rolling()`. The Codex code duplicates the same
+  numeric value into four columns named `p50`/`p75`/`p95`/`count` to
+  satisfy `AggregateMap`'s "one reducer per column" constraint —
+  exactly the gap PLAN's deferred section predicted.
+
+---
+
 ## Completed work
 
 ### Phase 0: Core performance (done)
