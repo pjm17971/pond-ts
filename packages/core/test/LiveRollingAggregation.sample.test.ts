@@ -244,6 +244,84 @@ describe('rolling.sample(sequence) — chaining', () => {
     sample.dispose();
     rolling.dispose();
   });
+
+  it('map() returns a LiveView and forwards events', () => {
+    const live = makeLive();
+    const rolling = live.rolling('1m', { value: 'avg' });
+    const sample = rolling.sample(Sequence.every('30s'));
+    const mapped = sample.map((e) => e);
+    expect(mapped).toBeInstanceOf(LiveView);
+
+    const received: number[] = [];
+    mapped.on('event', (e) => received.push(e.begin()));
+
+    live.push([0, 10], [30_001, 20]);
+    expect(received).toEqual([30_000]);
+
+    sample.dispose();
+    rolling.dispose();
+  });
+
+  it('select() narrows the schema', () => {
+    const live = makeLive();
+    const rolling = live.rolling('1m', { value: 'avg' });
+    const sample = rolling.sample(Sequence.every('30s'));
+    const selected = sample.select('value');
+    expect(selected).toBeInstanceOf(LiveView);
+    expect(selected.schema.length).toBe(2); // time + value
+
+    sample.dispose();
+    rolling.dispose();
+  });
+});
+
+// ── Rejection of calendar sequences ─────────────────────────────────
+
+describe('rolling.sample(sequence) — calendar sequence rejection', () => {
+  it('throws a sampler-aware error for calendar sequences', () => {
+    const live = makeLive();
+    const rolling = live.rolling('1m', { value: 'avg' });
+    // Calendar sequences (e.g. `Sequence.calendar('day')`) have no
+    // constant millisecond step; .sample() should reject them upfront
+    // with a sampler-specific error rather than the generic
+    // 'calendar sequences do not have a fixed millisecond step size'
+    // from sequence.stepMs() invoked deeper in the constructor.
+    expect(() => rolling.sample(Sequence.calendar('day'))).toThrowError(
+      /rolling\.sample.*fixed-step Sequence/,
+    );
+    rolling.dispose();
+  });
+});
+
+// ── Out-of-order events ─────────────────────────────────────────────
+
+describe('rolling.sample(sequence) — out-of-order events', () => {
+  it('does not emit on events that go backward in bucket index', () => {
+    // With ordering: 'reorder', a late event can land before the latest.
+    // The rolling will emit one event for the late insertion; the
+    // sampler should ignore it (no boundary advanced).
+    const live = new LiveSeries({
+      name: 'ooo',
+      schema,
+      ordering: 'reorder',
+      graceWindow: '5m',
+    });
+    const rolling = live.rolling('1m', { value: 'avg' });
+    const sample = rolling.sample(Sequence.every('30s'));
+
+    live.push([0, 10]);
+    live.push([60_001, 20]); // crosses 30s, 60s — emits 1 at boundary 60_000
+    expect(sample.length).toBe(1);
+    expect(sample.at(0)!.begin()).toBe(60_000);
+
+    // Late event landing in bucket 0 (out of order) — bucket index
+    // (0) < lastBucketIdx (2), so no emission.
+    live.push([5_000, 15]);
+    expect(sample.length).toBe(1);
+
+    sample.dispose();
+    rolling.dispose();
+  });
 });
 
 // ── Independent lifetimes ──────────────────────────────────────────

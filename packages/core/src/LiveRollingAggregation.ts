@@ -288,9 +288,13 @@ export class LiveRollingAggregation<
    * direct `rolling.value()` reads for an in-app display) without
    * coupling their lifetimes.
    *
+   * `sequence` must be a fixed-step `Sequence` (e.g. `Sequence.every('30s')`).
+   * Calendar sequences (`Sequence.daily()` etc.) are rejected because
+   * boundary indexing requires a constant step.
+   *
    * @example
    * ```ts
-   * const rolling = timings.rolling('1m', { p95: { from: 'latency', using: 'p95' } });
+   * const rolling = timings.rolling('1m', { latency: 'p95' });
    * const reported = rolling.sample(Sequence.every('30s'));
    * reported.on('event', e =>
    *   fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
@@ -298,6 +302,12 @@ export class LiveRollingAggregation<
    * ```
    */
   sample(sequence: Sequence): LiveSequenceRollingAggregation<S, Out> {
+    if (sequence.kind() !== 'fixed') {
+      throw new TypeError(
+        'rolling.sample(sequence) requires a fixed-step Sequence; ' +
+          'calendar sequences have no constant boundary spacing.',
+      );
+    }
     return new LiveSequenceRollingAggregation(this, sequence);
   }
 

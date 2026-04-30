@@ -450,10 +450,7 @@ emits one snapshot of the rolling state each time a source event crosses
 an epoch-aligned boundary of the sequence.
 
 ```ts
-const rolling = timings.rolling('1m', {
-  p50: { from: 'latency', using: 'p50' },
-  p95: { from: 'latency', using: 'p95' },
-});
+const rolling = timings.rolling('1m', { latency: 'p95' });
 
 // Backend report every 30 s of event time
 const reported = rolling.sample(Sequence.every('30s'));
@@ -463,15 +460,19 @@ reported.on('event', (event) => {
     method: 'POST',
     body: JSON.stringify({
       ts: event.begin(), // 0, 30 000, 60 000, … (epoch-aligned)
-      p50: event.get('p50'),
-      p95: event.get('p95'),
+      p95: event.get('latency'),
     }),
   });
 });
 
 // Same rolling drives an in-app live display, no extra deque
-console.log(rolling.value()); // { p50: 42, p95: 180 }
+console.log(rolling.value()); // { latency: 180 }
 ```
+
+`sequence` must be a **fixed-step** `Sequence` (`Sequence.every('30s')`,
+`Sequence.hourly()`). Calendar sequences (`Sequence.daily()`,
+`Sequence.weekly()`) are rejected — boundary indexing needs a constant
+step.
 
 **Emission semantics:**
 
@@ -484,6 +485,10 @@ console.log(rolling.value()); // { p50: 42, p95: 180 }
 - **Snapshot timing.** The rolling-window snapshot is read after the
   boundary-crossing event has been ingested by the rolling, so the
   emitted value includes that event's contribution.
+- **Out-of-order events.** Late arrivals (under `ordering: 'reorder'`
+  on the source) do not trigger emission — only events that advance
+  the bucket index do. Late events are absorbed silently by the
+  rolling window's normal recompute.
 - **Independent lifetimes.** `sample.dispose()` only detaches the
   sampler from the rolling — it does NOT dispose the rolling. Call
   `rolling.dispose()` separately when done with the rolling.
@@ -492,6 +497,17 @@ The output is a `LiveSequenceRollingAggregation`, a full `LiveSource` with
 the same view-transform surface as the rolling itself (`filter`, `map`,
 `select`, `window`, `diff`, `rate`, `pctChange`, `fill`, `cumulative`,
 `rolling`, `aggregate`).
+
+:::note[Multiple percentiles per column]
+The live-side `rolling()` only accepts the `AggregateMap<S>` shape
+(`{ existingColumnName: reducer }`) — one reducer per existing column.
+The batch `series.rolling()` also accepts `AggregateOutputMap<S>`
+(`{ alias: { from, using } }`) for multi-reducer-per-column cases like
+`{ p50: { from: 'latency', using: 'p50' }, p95: { from: 'latency', using: 'p95' } }`.
+That overload isn't on `LiveSeries.rolling()` yet. For now, run
+multiple `LiveRollingAggregation`s side-by-side, or snapshot to
+`TimeSeries` and use the batch path.
+:::
 
 ## Per-event transforms: diff, rate, pctChange
 

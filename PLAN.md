@@ -1297,19 +1297,16 @@ common case shouldn't pay an adaptor-indirection tax.
 ### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot
 
 A frontend telemetry use case (collect latency events at high rate,
-report p50/p75/p95 to a backend every 30 s, also display them live in
-the UI) surfaced a gap. `LiveRollingAggregation` emits per source
-event — too noisy for backend reporting. The batch layer has
+report p95 to a backend every 30 s, also display it live in the UI)
+surfaced a gap. `LiveRollingAggregation` emits per source event — too
+noisy for backend reporting. The batch layer has
 `series.rolling(Sequence.every('30s'), '1m', mapping)` for the
 "sampled rolling" shape, but the live layer didn't.
 
 `rolling.sample(sequence)` fills it without conflating two operations:
 
 ```ts
-const rolling = timings.rolling('1m', {
-  p50: { from: 'latency', using: 'p50' },
-  p95: { from: 'latency', using: 'p95' },
-});
+const rolling = timings.rolling('1m', { latency: 'p95' });
 
 // Backend report every 30 s of event time
 const reported = rolling.sample(Sequence.every('30s'));
@@ -1366,6 +1363,16 @@ useLiveQuery(timings, () => rolling.value());
 - **`live.rolling(Sequence, ...)` overload.** Not coming back. The
   composition form is clearer about what's happening and avoids the
   ownership-tracking footgun.
+- **`AggregateOutputMap` overload on `LiveSeries.rolling()`.** The
+  batch `series.rolling()` accepts both `AggregateMap<S>`
+  (`{ existingCol: reducer }`) and `AggregateOutputMap<S>`
+  (`{ alias: { from, using } }`); the live counterpart only takes the
+  former. So multi-reducer-per-column patterns
+  (`{ p50: { from: 'latency', using: 'p50' }, p95: ... }`) are
+  batch-only on the live side. The current frontend-telemetry
+  workaround is to allocate one rolling per percentile or snapshot to
+  batch. Worth landing as a follow-up — same type plumbing as the
+  batch side, just plumbed through `LiveRollingAggregation`.
 
 ### Dropped from scope
 

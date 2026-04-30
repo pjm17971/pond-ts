@@ -64,14 +64,16 @@ type EventListener = (event: any) => void;
  * backend, plus direct `rolling.value()` reads for the UI) without
  * coupling their lifetimes.
  *
+ * **Out-of-order events** (when the upstream rolling sees a late event
+ * under `'reorder'` ordering) do not trigger emission — only events
+ * advancing the bucket index do. Late arrivals are absorbed by the
+ * rolling window's normal recompute; this sampler stays silent.
+ *
  * @example
  * ```ts
  * const timings = new LiveSeries<TimingSchema>();
  *
- * const rolling = timings.rolling('1m', {
- *   p50: { from: 'latency', using: 'p50' },
- *   p95: { from: 'latency', using: 'p95' },
- * });
+ * const rolling = timings.rolling('1m', { latency: 'p95' });
  *
  * // Backend report every 30 s of event time
  * const reported = rolling.sample(Sequence.every('30s'));

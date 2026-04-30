@@ -17,14 +17,11 @@ type-level changes; patch bumps are strictly additive.
   rolling aggregation and emits one snapshot of the rolling state each
   time a source event crosses an epoch-aligned boundary of `sequence`.
   Closes the frontend-telemetry gap: collect high-frequency timing
-  events, sample p50/p95 to a backend every 30 s, while the same
+  events, sample p95 latency to a backend every 30 s, while the same
   rolling drives an in-app live display (no duplicated deque).
 
   ```ts
-  const rolling = timings.rolling('1m', {
-    p50: { from: 'latency', using: 'p50' },
-    p95: { from: 'latency', using: 'p95' },
-  });
+  const rolling = timings.rolling('1m', { latency: 'p95' });
 
   // One sampler → backend report every 30 s of event time
   const reported = rolling.sample(Sequence.every('30s'));
@@ -35,6 +32,10 @@ type-level changes; patch bumps are strictly additive.
   // Same rolling drives the UI live display
   useLiveQuery(timings, () => rolling.value());
   ```
+
+  `sequence` must be a fixed-step `Sequence`; calendar sequences
+  (`Sequence.daily()` etc.) are rejected upfront — boundary indexing
+  needs a constant step.
 
   Emission is **data-driven**: no `setInterval`. If the source goes
   quiet, no events fire. A single source event spanning multiple
