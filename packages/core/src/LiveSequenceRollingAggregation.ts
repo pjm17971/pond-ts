@@ -14,7 +14,7 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './LiveView.js';
-import type { Sequence } from './Sequence.js';
+import { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
   DiffSchema,
@@ -22,11 +22,15 @@ import type {
   EventForSchema,
   NumericColumnNameForSchema,
   ColumnValue,
+  RollingSchema,
   SelectSchema,
   SeriesSchema,
 } from './types.js';
 import type { DurationInput } from './utils/duration.js';
 import { parseDuration } from './utils/duration.js';
+
+/** Accepted forms for the sequence interval on `rolling.sequence()`. */
+export type SequenceInterval = DurationInput | Sequence;
 
 type EventListener = (event: any) => void;
 
@@ -82,7 +86,8 @@ export class LiveSequenceRollingAggregation<
   readonly schema: Out;
 
   readonly #rolling: LiveRollingAggregation<S, Out>;
-  readonly #intervalMs: number;
+  readonly #stepMs: number;
+  readonly #anchorMs: number;
   readonly #outputEvents: EventForSchema<Out>[];
   readonly #onEvent: Set<EventListener>;
   readonly #unsubscribe: () => void;
@@ -91,12 +96,18 @@ export class LiveSequenceRollingAggregation<
 
   constructor(
     rolling: LiveRollingAggregation<S, Out>,
-    interval: DurationInput,
+    interval: SequenceInterval,
   ) {
     this.name = rolling.name;
     this.schema = rolling.schema;
     this.#rolling = rolling;
-    this.#intervalMs = parseDuration(interval);
+    if (interval instanceof Sequence) {
+      this.#stepMs = interval.stepMs();
+      this.#anchorMs = interval.anchor();
+    } else {
+      this.#stepMs = parseDuration(interval);
+      this.#anchorMs = 0;
+    }
     this.#outputEvents = [];
     this.#onEvent = new Set();
     this.#lastBucketIdx = undefined;
@@ -198,12 +209,38 @@ export class LiveSequenceRollingAggregation<
     return makeCumulativeView(this as any, spec);
   }
 
-  rolling(
-    windowSize: RollingWindow,
-    mapping: AggregateMap<Out>,
+  rolling<const M extends AggregateMap<Out>>(
+    window: RollingWindow,
+    mapping: M,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<Out> {
-    return new LiveRollingAggregation(this as any, windowSize, mapping, options);
+  ): LiveRollingAggregation<Out, RollingSchema<Out, M>>;
+  rolling<const M extends AggregateMap<Out>>(
+    sequence: Sequence,
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>>;
+  rolling<const M extends AggregateMap<Out>>(
+    sequenceOrWindow: Sequence | RollingWindow,
+    windowOrMapping: RollingWindow | M,
+    mappingOrOptions?: M | LiveRollingOptions,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<Out, RollingSchema<Out, M>> | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
+    if (sequenceOrWindow instanceof Sequence) {
+      const r = new LiveRollingAggregation(
+        this as any,
+        windowOrMapping as RollingWindow,
+        mappingOrOptions as AggregateMap<Out>,
+        options,
+      );
+      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+    }
+    return new LiveRollingAggregation(
+      this as any,
+      sequenceOrWindow,
+      windowOrMapping as AggregateMap<Out>,
+      mappingOrOptions as LiveRollingOptions | undefined,
+    );
   }
 
   aggregate<const M extends AggregateMap<Out>>(
@@ -217,7 +254,7 @@ export class LiveSequenceRollingAggregation<
 
   #check(event: EventForSchema<Out>): void {
     const ts = event.begin();
-    const bucketIdx = Math.floor(ts / this.#intervalMs);
+    const bucketIdx = Math.floor((ts - this.#anchorMs) / this.#stepMs);
 
     if (this.#lastBucketIdx === undefined) {
       // First event — record which bucket we're in; no emission yet.
@@ -229,7 +266,7 @@ export class LiveSequenceRollingAggregation<
       // Crossed one or more bucket boundaries.
       // Emit once with the current rolling snapshot, timestamped at the
       // start of the new bucket (= end of the just-closed bucket).
-      const boundaryMs = bucketIdx * this.#intervalMs;
+      const boundaryMs = this.#anchorMs + bucketIdx * this.#stepMs;
       const snap = this.#rolling.value() as Record<
         string,
         ColumnValue | undefined

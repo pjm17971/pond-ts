@@ -20,12 +20,16 @@ import {
   type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
+import {
+  LiveSequenceRollingAggregation,
+  type SequenceInterval,
+} from './LiveSequenceRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import { parseJsonRows } from './json.js';
 import type { TimeZoneOptions } from './calendar.js';
 import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
-import type { Sequence } from './Sequence.js';
+import { Sequence } from './Sequence.js';
 import {
   EMITS_EVICT,
   type AggregateMap,
@@ -533,12 +537,33 @@ export class LiveSeries<S extends SeriesSchema> {
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<S, RollingSchema<S, M>> {
+  ): LiveRollingAggregation<S, RollingSchema<S, M>>;
+  rolling<const M extends AggregateMap<S>>(
+    sequence: Sequence,
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveSequenceRollingAggregation<S, RollingSchema<S, M>>;
+  rolling<const M extends AggregateMap<S>>(
+    sequenceOrWindow: Sequence | RollingWindow,
+    windowOrMapping: RollingWindow | M,
+    mappingOrOptions?: M | LiveRollingOptions,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<S, RollingSchema<S, M>> | LiveSequenceRollingAggregation<S, RollingSchema<S, M>> {
+    if (sequenceOrWindow instanceof Sequence) {
+      const r = new LiveRollingAggregation(
+        this,
+        windowOrMapping as RollingWindow,
+        mappingOrOptions as AggregateMap<S>,
+        options,
+      );
+      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+    }
     return new LiveRollingAggregation(
       this,
-      window,
-      mapping as AggregateMap<S>,
-      options,
+      sequenceOrWindow,
+      windowOrMapping as AggregateMap<S>,
+      mappingOrOptions as LiveRollingOptions | undefined,
     );
   }
 

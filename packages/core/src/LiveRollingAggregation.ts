@@ -10,7 +10,8 @@ import {
   type LiveFillStrategy,
 } from './LiveView.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
-import type { Sequence } from './Sequence.js';
+import { Sequence } from './Sequence.js';
+import type { SequenceInterval } from './LiveSequenceRollingAggregation.js';
 import type {
   AggregateMap,
   DiffSchema,
@@ -285,7 +286,7 @@ export class LiveRollingAggregation<
    * });
    * ```
    */
-  sequence(interval: DurationInput): LiveSequenceRollingAggregation<S, Out> {
+  sequence(interval: SequenceInterval): LiveSequenceRollingAggregation<S, Out> {
     return new LiveSequenceRollingAggregation(this, interval);
   }
 

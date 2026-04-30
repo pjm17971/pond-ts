@@ -15,7 +15,10 @@ import {
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
 import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
-import type { Sequence } from './Sequence.js';
+import { Sequence } from './Sequence.js';
+import {
+  LiveSequenceRollingAggregation,
+} from './LiveSequenceRollingAggregation.js';
 import type {
   AggregateMap,
   AggregateSchema,
@@ -25,6 +28,7 @@ import type {
   LiveSource,
   NumericColumnNameForSchema,
   ColumnValue,
+  RollingSchema,
   SelectSchema,
   SeriesSchema,
   ValueColumnsForSchema,
@@ -258,16 +262,37 @@ export class LiveAggregation<
     return makeCumulativeView(this as any, spec);
   }
 
-  rolling(
-    windowSize: RollingWindow,
-    mapping: AggregateMap<Out>,
+  rolling<const M extends AggregateMap<Out>>(
+    window: RollingWindow,
+    mapping: M,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<Out> {
+  ): LiveRollingAggregation<Out, RollingSchema<Out, M>>;
+  rolling<const M extends AggregateMap<Out>>(
+    sequence: Sequence,
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>>;
+  rolling<const M extends AggregateMap<Out>>(
+    sequenceOrWindow: Sequence | RollingWindow,
+    windowOrMapping: RollingWindow | M,
+    mappingOrOptions?: M | LiveRollingOptions,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<Out, RollingSchema<Out, M>> | LiveSequenceRollingAggregation<Out, RollingSchema<Out, M>> {
+    if (sequenceOrWindow instanceof Sequence) {
+      const r = new LiveRollingAggregation(
+        this as any,
+        windowOrMapping as RollingWindow,
+        mappingOrOptions as AggregateMap<Out>,
+        options,
+      );
+      return new LiveSequenceRollingAggregation(r, sequenceOrWindow) as any;
+    }
     return new LiveRollingAggregation(
       this as any,
-      windowSize,
-      mapping,
-      options,
+      sequenceOrWindow,
+      windowOrMapping as AggregateMap<Out>,
+      mappingOrOptions as LiveRollingOptions | undefined,
     );
   }
 

@@ -444,10 +444,10 @@ output buffer grows unboundedly — downstream consumers can compose with
 
 ## Sequence rolling: scheduled summaries
 
-`rolling.sequence(interval)` returns a `LiveSequenceRollingAggregation`
-that emits one time-keyed event each time source data crosses an epoch-aligned
-interval boundary. This is the live counterpart of the batch
-`series.rolling(Sequence.every('30s'), '1m', mapping)` pattern.
+Pass a `Sequence` as the first argument to `rolling()` to get a
+`LiveSequenceRollingAggregation` that emits one time-keyed event each time
+source data crosses an epoch-aligned interval boundary. This mirrors the
+batch `series.rolling(Sequence.every('30s'), '1m', mapping)` API.
 
 ```ts
 const timings = new LiveSeries({
@@ -458,15 +458,17 @@ const timings = new LiveSeries({
   ] as const,
 });
 
-// Trailing 1-minute percentile window
-const rolling = timings.rolling('1m', {
-  p50: { from: 'latency', using: 'p50' },
-  p75: { from: 'latency', using: 'p75' },
-  p95: { from: 'latency', using: 'p95' },
-}, { minSamples: 10 });
-
-// Emits one event every 30 s of event time
-const reported = rolling.sequence('30s');
+// Trailing 1-minute window, reported every 30 s of event time
+const reported = timings.rolling(
+  Sequence.every('30s'),  // emit interval
+  '1m',                   // rolling window
+  {
+    p50: { from: 'latency', using: 'p50' },
+    p75: { from: 'latency', using: 'p75' },
+    p95: { from: 'latency', using: 'p95' },
+  },
+  { minSamples: 10 },
+);
 
 reported.on('event', (event) => {
   fetch('/api/telemetry', {
@@ -479,6 +481,14 @@ reported.on('event', (event) => {
     }),
   });
 });
+```
+
+If you already hold a `LiveRollingAggregation` you can also call
+`.sequence(interval)` on it directly to get the same result:
+
+```ts
+const rolling = timings.rolling('1m', { p95: { from: 'latency', using: 'p95' } });
+const reported = rolling.sequence('30s'); // equivalent lower-level form
 ```
 
 ### Emission semantics

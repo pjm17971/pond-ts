@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   LiveSeries,
-  LiveRollingAggregation,
   LiveSequenceRollingAggregation,
   LiveView,
+  Sequence,
 } from '../src/index.js';
 
 const schema = [
@@ -20,36 +20,31 @@ function makeLive() {
 describe('LiveSequenceRollingAggregation — basic emission', () => {
   it('does not emit before first boundary is crossed', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     live.push([0, 10], [5_000, 20], [15_000, 30]);
     expect(seq.length).toBe(0);
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('emits once when a boundary is crossed', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     live.push([0, 10], [15_000, 20], [30_001, 30]); // last event crosses 30 s mark
     expect(seq.length).toBe(1);
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('emits at the epoch-aligned boundary timestamp', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     live.push([0, 10], [30_001, 20]);
     expect(seq.at(0)!.begin()).toBe(30_000); // bucket boundary, not event ts
-    rolling.dispose();
+
     seq.dispose();
   });
 
@@ -58,22 +53,19 @@ describe('LiveSequenceRollingAggregation — basic emission', () => {
     // Buckets 1 (30 s) and 2 (60 s) had no data → no emission for them.
     // One emission at ts=90 000 (start of bucket 3).
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     live.push([0, 10]);
     live.push([90_001, 20]);
     expect(seq.length).toBe(1);
     expect(seq.at(0)!.begin()).toBe(90_000);
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('emits two events when two boundaries are crossed', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     live.push([0, 10]);
     live.push([30_001, 20]); // crosses 30 s
@@ -82,7 +74,6 @@ describe('LiveSequenceRollingAggregation — basic emission', () => {
     expect(seq.at(0)!.begin()).toBe(30_000);
     expect(seq.at(1)!.begin()).toBe(60_000);
 
-    rolling.dispose();
     seq.dispose();
   });
 });
@@ -93,8 +84,7 @@ describe('LiveSequenceRollingAggregation — rolling window content', () => {
   it('emitted value reflects trailing rolling window', () => {
     const live = makeLive();
     // 1-minute rolling avg, emit every 30 s
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     // Push events at 0 s, 10 s, 20 s — all inside the 30 s window
     live.push([0, 10], [10_000, 20], [20_000, 30]);
@@ -106,28 +96,29 @@ describe('LiveSequenceRollingAggregation — rolling window content', () => {
     const emitted = seq.at(0)!;
     expect(emitted.get('value')).toBeCloseTo((10 + 20 + 30 + 40) / 4, 5);
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('respects minSamples — emits undefined while window is cold', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' }, { minSamples: 10 });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(
+      Sequence.every('30s'),
+      '1m',
+      { value: 'avg' },
+      { minSamples: 10 },
+    );
 
     // Push only 2 events before crossing the boundary — window not yet warm
     live.push([0, 100], [10_000, 200], [30_001, 300]);
     expect(seq.at(0)!.get('value')).toBeUndefined();
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('eviction affects emitted value', () => {
     const live = makeLive();
     // 30-second rolling window, emit every 30 s
-    const rolling = new LiveRollingAggregation(live, '30s', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '30s', { value: 'avg' });
 
     // Events at 0 and 15 s are inside the first 30 s window
     live.push([0, 10], [15_000, 20]);
@@ -144,7 +135,6 @@ describe('LiveSequenceRollingAggregation — rolling window content', () => {
     expect(seq.length).toBe(1);
     expect(seq.at(0)!.get('value')).toBeCloseTo(25, 5);
 
-    rolling.dispose();
     seq.dispose();
   });
 });
@@ -154,8 +144,7 @@ describe('LiveSequenceRollingAggregation — rolling window content', () => {
 describe('LiveSequenceRollingAggregation — on(event)', () => {
   it('fires the event listener on boundary crossing', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'sum' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'sum' });
 
     const received: number[] = [];
     seq.on('event', (e) => received.push(e.begin()));
@@ -166,14 +155,12 @@ describe('LiveSequenceRollingAggregation — on(event)', () => {
     live.push([60_001, 3]);
     expect(received).toEqual([30_000, 60_000]);
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('unsubscribe stops receiving events', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'sum' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'sum' });
 
     const spy = vi.fn();
     const unsub = seq.on('event', spy);
@@ -185,7 +172,6 @@ describe('LiveSequenceRollingAggregation — on(event)', () => {
     live.push([60_001, 3]);
     expect(spy).toHaveBeenCalledTimes(1); // no new calls after unsub
 
-    rolling.dispose();
     seq.dispose();
   });
 });
@@ -195,27 +181,24 @@ describe('LiveSequenceRollingAggregation — on(event)', () => {
 describe('LiveSequenceRollingAggregation — LiveSource contract', () => {
   it('exposes name and schema from rolling source', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
 
     expect(seq.name).toBe('test');
-    expect(seq.schema).toBe(rolling.schema);
+    expect(seq.schema[0]!.name).toBe('time');
+    expect(seq.schema[1]!.name).toBe('value');
 
-    rolling.dispose();
     seq.dispose();
   });
 
   it('at() with negative index reads from the end', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'sum' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'sum' });
 
     live.push([0, 1], [30_001, 2], [60_001, 3]);
     expect(seq.length).toBe(2);
     expect(seq.at(-1)!.begin()).toBe(60_000);
     expect(seq.at(0)!.begin()).toBe(30_000);
 
-    rolling.dispose();
     seq.dispose();
   });
 });
@@ -225,22 +208,44 @@ describe('LiveSequenceRollingAggregation — LiveSource contract', () => {
 describe('LiveSequenceRollingAggregation — chaining', () => {
   it('filter() returns a LiveView', () => {
     const live = makeLive();
-    const rolling = new LiveRollingAggregation(live, '1m', { value: 'avg' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'avg' });
     const filtered = seq.filter(() => true);
     expect(filtered).toBeInstanceOf(LiveView);
 
-    rolling.dispose();
     seq.dispose();
   });
 
-  it('created via rolling.sequence() convenience', () => {
+  it('.sequence() on a LiveRollingAggregation still works (step-by-step form)', () => {
+    // rolling.sequence(interval) is the lower-level form — still valid
     const live = makeLive();
     const rolling = live.rolling('1m', { value: 'avg' });
     const seq = rolling.sequence('30s');
     expect(seq).toBeInstanceOf(LiveSequenceRollingAggregation);
 
+    live.push([0, 10], [30_001, 20]);
+    expect(seq.length).toBe(1);
+
     rolling.dispose();
+    seq.dispose();
+  });
+});
+
+// ── Sequence with anchor ───────────────────────────────────────────
+
+describe('LiveSequenceRollingAggregation — Sequence anchor', () => {
+  it('respects a non-zero anchor from a Sequence object', () => {
+    const live = makeLive();
+    // Anchor at 5 000 ms → boundaries at 5 000, 35 000, 65 000 …
+    const seq = live.rolling(
+      Sequence.every('30s', { anchor: 5_000 }),
+      '1m',
+      { value: 'avg' },
+    );
+
+    live.push([5_000, 10], [35_001, 20]); // crosses 35 000 boundary
+    expect(seq.length).toBe(1);
+    expect(seq.at(0)!.begin()).toBe(35_000);
+
     seq.dispose();
   });
 });
@@ -250,8 +255,7 @@ describe('LiveSequenceRollingAggregation — chaining', () => {
 describe('LiveSequenceRollingAggregation — dispose', () => {
   it('stops emitting after dispose', () => {
     const live = makeLive();
-    const rolling = live.rolling('1m', { value: 'sum' });
-    const seq = rolling.sequence('30s');
+    const seq = live.rolling(Sequence.every('30s'), '1m', { value: 'sum' });
 
     const spy = vi.fn();
     seq.on('event', spy);
@@ -262,7 +266,5 @@ describe('LiveSequenceRollingAggregation — dispose', () => {
     seq.dispose();
     live.push([60_001, 3]);
     expect(spy).toHaveBeenCalledTimes(1); // seq disposed; no new calls
-
-    rolling.dispose();
   });
 });

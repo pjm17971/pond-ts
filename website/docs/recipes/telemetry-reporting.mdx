@@ -11,16 +11,15 @@ the server in raw event traffic.
 **The pattern:**
 
 1. Collect timing events into a `LiveSeries` as they happen
-2. Maintain a trailing rolling window of percentiles with `rolling()`
-3. Use `rolling.sequence(interval)` to emit one summary per reporting interval
-4. Subscribe to the output and `fetch` each summary to the backend
-5. Optionally read the same rolling state in React for an in-app display
+2. Pass a `Sequence` to `rolling()` to maintain a trailing window and emit
+   one summary per reporting interval in a single call
+3. Subscribe to the output and `fetch` each summary to the backend
+4. Optionally read the same rolling state in React for an in-app display
 
 ## Setup
 
 ```ts
-import { LiveSeries, LiveRollingAggregation } from 'pond-ts';
-import { Temporal } from '@js-temporal/polyfill';
+import { LiveSeries, Sequence } from 'pond-ts';
 
 // ── Schema ──────────────────────────────────────────────────────
 const schema = [
@@ -31,19 +30,17 @@ const schema = [
 // ── Live source ─────────────────────────────────────────────────
 export const timings = new LiveSeries({ name: 'timings', schema });
 
-// ── Rolling 1-minute percentile window ──────────────────────────
-export const rolling = timings.rolling(
-  '1m',
+// ── Sequence rolling: trailing 1-minute window, reported every 30 s ─
+export const reported = timings.rolling(
+  Sequence.every('30s'),  // emit interval — one event per 30 s of data time
+  '1m',                   // rolling window size
   {
     p50: { from: 'latency', using: 'p50' },
     p75: { from: 'latency', using: 'p75' },
     p95: { from: 'latency', using: 'p95' },
   },
-  { minSamples: 10 }, // suppress output until the window is warm
+  { minSamples: 10 },     // suppress output until the window is warm
 );
-
-// ── Sequence rolling: emit one summary every 30 s ───────────────
-export const reported = rolling.sequence('30s');
 
 // ── Backend reporting ───────────────────────────────────────────
 reported.on('event', (event) => {
@@ -58,6 +55,19 @@ reported.on('event', (event) => {
     }),
   });
 });
+```
+
+If you also need direct access to the rolling window (e.g. for an in-app
+display), keep a reference to it separately:
+
+```ts
+export const rolling = timings.rolling('1m', {
+  p50: { from: 'latency', using: 'p50' },
+  p75: { from: 'latency', using: 'p75' },
+  p95: { from: 'latency', using: 'p95' },
+}, { minSamples: 10 });
+
+export const reported = rolling.sequence('30s'); // lower-level form
 ```
 
 ## Collecting events
@@ -82,10 +92,10 @@ converts it to a millisecond timestamp internally.
 
 ## Displaying in React
 
-The same `rolling` object can drive an in-app performance panel. Because
-`rolling.sequence()` only fires every 30 s, read `rolling.value()` directly
-in a `useLiveQuery` for a live display that updates on every incoming event
-(throttled):
+If you kept a separate `rolling` reference (see the lower-level form above),
+it can drive an in-app performance panel. Because `reported` only fires every
+30 s, read `rolling.value()` directly in a `useLiveQuery` for a live display
+that updates on every incoming event (throttled):
 
 ```tsx
 import { useLiveQuery } from '@pond-ts/react';
@@ -160,11 +170,11 @@ byEndpoint.value('/api/users'); // { p50: ..., p95: ... }
 
 ## Emission semantics
 
-`rolling.sequence(interval)` is **data-driven**, not timer-driven — it emits
-when incoming events cross an epoch-aligned interval boundary, not on a wall
-clock. If the app goes idle (no fetch activity), no report is sent. If a
-burst of events arrives after a quiet period, exactly one report is sent per
-crossed boundary, not one per skipped interval.
+The sequence rolling form of `rolling()` is **data-driven**, not timer-driven
+— it emits when incoming events cross an epoch-aligned interval boundary, not
+on a wall clock. If the app goes idle (no fetch activity), no report is sent.
+If a burst of events arrives after a quiet period, exactly one report is sent
+per crossed boundary, not one per skipped interval.
 
 The snapshot is taken after the boundary-crossing event is ingested, so the
 emitted percentiles reflect the full trailing window including that event.
