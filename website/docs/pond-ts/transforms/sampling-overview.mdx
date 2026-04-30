@@ -153,3 +153,14 @@ each interval the resulting `Time` lands.
   with its empty-bucket and rolling-window behavior.
 - [Cleaning data](./cleaning) — once you have a uniform grid, what
   to do with the gaps `align` and `aggregate` leave behind.
+
+:::note[Live equivalent]
+For sampling a streaming rolling-window aggregate at sequence
+boundaries (e.g. emit p95 every 30 s of event time), see
+[`rolling.sample(seq)`](./rolling#sampling-on-a-sequence-rollingsampleseq).
+The verb "sample" overlaps with `align`'s `sample: 'begin' | 'center' | 'end'`
+option name — they're different concepts. `align`'s `sample` picks
+**where inside a grid step** to read the source value; `rolling.sample()`
+is a method that emits a **snapshot of the rolling state** when source
+data crosses a sequence boundary.
+:::
