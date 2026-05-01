@@ -1,6 +1,6 @@
 import { Event } from './Event.js';
+import { Time } from './Time.js';
 import { LiveAggregation } from './LiveAggregation.js';
-import { LiveSequenceRollingAggregation } from './LiveSequenceRollingAggregation.js';
 import {
   LiveView,
   makeDiffView,
@@ -11,6 +11,12 @@ import {
 } from './LiveView.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
+import {
+  bucketIndexFor,
+  boundaryTimestampFor,
+  type Trigger,
+  type ClockTrigger,
+} from './triggers.js';
 import type {
   AggregateMap,
   DiffSchema,
@@ -18,10 +24,9 @@ import type {
   EventForSchema,
   LiveSource,
   NumericColumnNameForSchema,
-  RollingSchema,
-  ColumnValue,
   SelectSchema,
   SeriesSchema,
+  ColumnValue,
 } from './types.js';
 
 import type { DurationInput } from './utils/duration.js';
@@ -53,6 +58,30 @@ export type LiveRollingOptions = {
    * opens — output is `undefined` forever.
    */
   minSamples?: number;
+
+  /**
+   * Emission cadence. Defaults to `Trigger.event()` — emits one
+   * snapshot per source event push (the historical behavior).
+   *
+   * Pass `Trigger.clock(Sequence.every('30s'))` to switch to
+   * sequence-triggered emission: one snapshot fires when a source
+   * event crosses an epoch-aligned boundary of the sequence; output
+   * timestamps are the boundary instants. If no events arrive during
+   * an interval, no event is emitted (data-driven, not wall-clock-
+   * driven).
+   *
+   * For partitioned rollings (`live.partitionBy(col).rolling(...)`),
+   * a clock trigger emits **synchronised across partitions**: when
+   * any partition's event crosses the boundary, every partition's
+   * rolling-window snapshot fires at the same instant. See
+   * {@link Trigger} for the full trigger taxonomy.
+   *
+   * @experimental Trigger types beyond `clock` and `event` are
+   *   reserved for future expansion (`count`, `custom`, compound
+   *   triggers). The current API surface is locked at these two for
+   *   the experimental release.
+   */
+  trigger?: Trigger;
 };
 
 export class LiveRollingAggregation<
@@ -70,6 +99,19 @@ export class LiveRollingAggregation<
   readonly #windowCount: number | undefined;
   readonly #minSamples: number;
   #nextIndex: number;
+
+  /**
+   * The configured trigger. Stored as a strict union; emission paths
+   * dispatch on `kind`.
+   */
+  readonly #trigger: Trigger;
+  /**
+   * For clock triggers: the bucket index of the most recently
+   * crossed boundary. Undefined until the first event is ingested
+   * (the first event establishes the starting bucket; emission begins
+   * on the next crossing).
+   */
+  #lastClockBucketIdx: number | undefined;
 
   readonly #outputEvents: any[];
   readonly #onUpdate: Set<UpdateListener>;
@@ -90,6 +132,8 @@ export class LiveRollingAggregation<
       );
     }
     this.#minSamples = minSamples;
+    this.#trigger = options.trigger ?? { kind: 'event' };
+    this.#lastClockBucketIdx = undefined;
 
     if (typeof window === 'number' && Number.isInteger(window) && window > 0) {
       this.#windowMs = undefined;
@@ -268,49 +312,6 @@ export class LiveRollingAggregation<
     return new LiveAggregation(this as any, sequence, mapping as any);
   }
 
-  /**
-   * Returns a live source that emits one snapshot of this rolling
-   * aggregation each time a source event crosses an epoch-aligned
-   * boundary of `sequence`. The output is time-keyed at boundary
-   * timestamps; the value is the rolling-window aggregate as it stood
-   * the moment the boundary-crossing event was ingested.
-   *
-   * **Emission is data-driven.** No wall-clock timer; if the source
-   * goes quiet, no events are emitted. If a single source event jumps
-   * multiple boundaries, exactly one event fires at the new bucket's
-   * start, not one per skipped boundary.
-   *
-   * **Independent lifetimes.** The returned sampler holds a reference
-   * to `this` rolling but does not own it — `sample.dispose()` only
-   * detaches the sampler. Call `rolling.dispose()` separately when
-   * done with the rolling itself. This lets one rolling drive several
-   * downstream consumers (e.g. a `.sample('30s')` for the backend plus
-   * direct `rolling.value()` reads for an in-app display) without
-   * coupling their lifetimes.
-   *
-   * `sequence` must be a fixed-step `Sequence` (e.g. `Sequence.every('30s')`).
-   * Calendar sequences (`Sequence.daily()` etc.) are rejected because
-   * boundary indexing requires a constant step.
-   *
-   * @example
-   * ```ts
-   * const rolling = timings.rolling('1m', { latency: 'p95' });
-   * const reported = rolling.sample(Sequence.every('30s'));
-   * reported.on('event', e =>
-   *   fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
-   * );
-   * ```
-   */
-  sample(sequence: Sequence): LiveSequenceRollingAggregation<S, Out> {
-    if (sequence.kind() !== 'fixed') {
-      throw new TypeError(
-        'rolling.sample(sequence) requires a fixed-step Sequence; ' +
-          'calendar sequences have no constant boundary spacing.',
-      );
-    }
-    return new LiveSequenceRollingAggregation(this, sequence);
-  }
-
   dispose(): void {
     this.#unsubscribe();
   }
@@ -334,6 +335,22 @@ export class LiveRollingAggregation<
 
     this.#evict(event.begin());
 
+    // Emission is gated by the configured trigger.
+    switch (this.#trigger.kind) {
+      case 'event':
+        this.#emitEvent(event.key());
+        return;
+      case 'clock':
+        this.#emitClock(event.begin(), this.#trigger);
+        return;
+    }
+  }
+
+  /**
+   * Emit one output event keyed at `key`, carrying the current
+   * rolling-window snapshot. Used by Trigger.event() (the default).
+   */
+  #emitEvent(key: any): void {
     const warmup = this.#entries.length < this.#minSamples;
     const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
@@ -341,9 +358,33 @@ export class LiveRollingAggregation<
         ? undefined
         : this.#states[i]!.snapshot();
     }
-    const outputEvent = new Event(event.key(), record);
+    const outputEvent = new Event(key, record);
     this.#outputEvents.push(outputEvent);
     for (const fn of this.#onEvent) fn(outputEvent);
+  }
+
+  /**
+   * Clock-triggered emission: fire one output event at the new
+   * bucket's start timestamp when an incoming event crosses an
+   * epoch-aligned boundary. The first event ingested establishes
+   * the starting bucket; emission begins on the next crossing.
+   * A single event jumping multiple boundaries fires exactly one
+   * event at the new bucket's start, not one per skipped boundary.
+   */
+  #emitClock(eventTs: number, trigger: ClockTrigger): void {
+    const bucketIdx = bucketIndexFor(trigger, eventTs);
+
+    if (this.#lastClockBucketIdx === undefined) {
+      // First event — record the starting bucket; no emission yet.
+      this.#lastClockBucketIdx = bucketIdx;
+      return;
+    }
+
+    if (bucketIdx > this.#lastClockBucketIdx) {
+      const boundaryMs = boundaryTimestampFor(trigger, bucketIdx);
+      this.#emitEvent(new Time(boundaryMs));
+      this.#lastClockBucketIdx = bucketIdx;
+    }
   }
 
   #evict(latestTimestamp: number): void {

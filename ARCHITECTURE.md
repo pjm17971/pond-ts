@@ -32,20 +32,17 @@ Three layers, with snapshots crossing the boundary downward:
 │   │  (lazy derived;  │  │ <S, R>             │  │ Aggregation    │ │
 │   │  filter/map/fill │  │ (sequence-bucketed │  │ <S, R>         │ │
 │   │  /diff/rate/     │  │  windowed reduce)  │  │ (sliding       │ │
-│   │  cumulative)     │  │                    │  │  window)       │ │
-│   └──────────────────┘  └────────────────────┘  └───────┬────────┘ │
-│                                                         │.sample(  │
-│                                                         │ Sequence)│
-│                                              ┌──────────▼────────┐ │
-│                                              │ LiveSequence      │ │
-│                                              │ RollingAggregation│ │
-│                                              │ <S, R>            │ │
-│                                              │ (snapshot of      │ │
-│                                              │  rolling state    │ │
-│                                              │  emitted on every │ │
-│                                              │  Sequence-boundary│ │
-│                                              │  crossing)        │ │
-│                                              └───────────────────┘ │
+│   │  cumulative)     │  │                    │  │  window;       │ │
+│   │                  │  │                    │  │  trigger?:     │ │
+│   │                  │  │                    │  │  Trigger)      │ │
+│   └──────────────────┘  └────────────────────┘  └────────────────┘ │
+│                                                                    │
+│   ┌──────────────────────────────────────────────────────────────┐ │
+│   │ LivePartitionedSyncRolling<S, K, R>  (clock-trigger only)    │ │
+│   │ partitionBy(col).rolling(window, m, { trigger: clock(seq) }) │ │
+│   │ → LiveSource<RowSchema>; one event per partition per         │ │
+│   │   boundary crossing; all events for a tick share the same ts │ │
+│   └──────────────────────────────────────────────────────────────┘ │
 │                                                                    │
 │   All implement LiveSource<S>: { name, schema, length, at, on }    │
 └────────────────────────────────────────────────────────────────────┘
@@ -218,39 +215,39 @@ across events and emits derived events as windows fire.
 - `LiveRollingAggregation` — sliding window; emits on every input
   event with the current window's reduced value.
 
-### `LiveSequenceRollingAggregation<S, R>`
+### Trigger-based emission (`triggers.ts`)
 
-Sequence-triggered sampler over a `LiveRollingAggregation`. Constructed
-via `rolling.sample(sequence)` — taps an existing rolling aggregation
-and emits one event each time a source event crosses an epoch-aligned
-boundary of the configured `Sequence`. Output events are time-keyed at
-the boundary timestamp; the value is the rolling-window aggregate as it
-stood the moment the boundary-crossing event was ingested.
+`v0.12.0-experimental` factors **emission cadence** as a first-class
+concept orthogonal to the aggregation choice. `LiveRollingAggregation`
+accepts an optional `trigger` in its options:
 
-**Composition, not fusion.** The sampler is a thin observer over the
-rolling — it does not own the rolling and does not duplicate its state.
-This separation is deliberate: an earlier design that fused both
-operations into a single `live.rolling(Sequence, ...)` overload had to
-allocate a hidden inner rolling and track ownership, and locked away
-state the caller might want to read directly. The current shape lets
-one rolling drive multiple downstream consumers (multiple `.sample()`
-cadences for different reporting endpoints, plus direct
-`rolling.value()` reads for an in-app live display) without coupling
-their lifetimes.
+- `Trigger.event()` (default) — emits per source event push (the
+  historical behavior of `LiveRollingAggregation`).
+- `Trigger.clock(sequence)` — emits when a source event crosses an
+  epoch-aligned boundary of the (fixed-step) `Sequence`. Replaces
+  the v0.11.8 `LiveSequenceRollingAggregation` / `.sample()` pattern.
 
-Emission semantics:
+The trigger is observed by the accumulator's emission path — state
+updates remain per-event, only emission is gated by the trigger.
+`rolling.value()` is independent of the trigger; it always returns
+the current rolling-window snapshot.
 
-- **Data-driven** — no `setInterval`, no wall clock. Events fire only
-  when source data crosses a boundary.
-- **One emission per crossing** — a single source event jumping
-  multiple boundaries fires once at the new bucket's start, not once
-  per skipped boundary.
-- **Snapshot after ingest** — `rolling.value()` is read after the
-  boundary-crossing event has been ingested by the rolling, so the
-  emitted aggregate includes that event's contribution.
-- **Independent dispose** — `sample.dispose()` only detaches the
-  sampler from the rolling. The rolling's lifecycle is the user's
-  responsibility.
+**Synchronised partitioned rolling.** When a clock trigger is passed
+to `LivePartitionedSeries.rolling()`, emission is **synchronised
+across partitions**: a shared bucket index is maintained across all
+known partitions, and any partition's event crossing the boundary
+fires emission for every partition at the same instant. Implemented
+in `LivePartitionedSyncRolling.ts` (internal, no public class name —
+the public type is `LiveSource<RowSchema>` whose schema includes the
+partition column for downstream rebucketing).
+
+Restricted to direct-after-`partitionBy` for the experimental
+release: chained sugar (`partitionBy(c).fill(...).rolling(...)`)
+rejects clock triggers with a clear error. Lifts when a real use
+case appears.
+
+The full design rationale and migration story is captured in the
+RFC at `docs/rfcs/triggers.md`.
 
 ### `LivePartitionedSeries<S, K>` (`LivePartitionedSeries.ts`)
 
@@ -507,26 +504,26 @@ TimeSeries`. Ingest-time normalization (timestamp parsing, missing-
 
 ## 5. Where to find things
 
-| Concern                                        | File                                                                                   |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Core values (Event, Time, TimeRange, Interval) | `Event.ts`, `Time.ts`, `TimeRange.ts`, `Interval.ts`                                   |
-| Sequences (recurrence, bounded)                | `Sequence.ts`, `BoundedSequence.ts`                                                    |
-| Schema types                                   | `types.ts`, `types-aggregate.ts`, `types-reduce.ts`                                    |
-| Validation                                     | `validate.ts`                                                                          |
-| Calendar / timezone parsing                    | `calendar.ts`, `temporal.ts`                                                           |
-| Reducers (built-in + custom)                   | `reducers/`                                                                            |
-| Batch core                                     | `TimeSeries.ts`                                                                        |
-| Batch partitioning                             | `PartitionedTimeSeries.ts`                                                             |
-| Live source interface                          | `types.ts` (`LiveSource<S>`, `EMITS_EVICT`)                                            |
-| Live buffer                                    | `LiveSeries.ts`                                                                        |
-| Live derived views                             | `LiveView.ts`                                                                          |
-| Live aggregation                               | `LiveAggregation.ts`, `LiveRollingAggregation.ts`, `LiveSequenceRollingAggregation.ts` |
-| Live partitioning                              | `LivePartitionedSeries.ts`                                                             |
-| React hooks                                    | `packages/react/src/`                                                                  |
-| Public exports                                 | `packages/core/src/index.ts`                                                           |
-| Plan / status / roadmap                        | `PLAN.md`                                                                              |
-| Process / discipline / release                 | `CLAUDE.md`                                                                            |
-| Release notes                                  | `CHANGELOG.md`                                                                         |
+| Concern                                        | File                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Core values (Event, Time, TimeRange, Interval) | `Event.ts`, `Time.ts`, `TimeRange.ts`, `Interval.ts`                                              |
+| Sequences (recurrence, bounded)                | `Sequence.ts`, `BoundedSequence.ts`                                                               |
+| Schema types                                   | `types.ts`, `types-aggregate.ts`, `types-reduce.ts`                                               |
+| Validation                                     | `validate.ts`                                                                                     |
+| Calendar / timezone parsing                    | `calendar.ts`, `temporal.ts`                                                                      |
+| Reducers (built-in + custom)                   | `reducers/`                                                                                       |
+| Batch core                                     | `TimeSeries.ts`                                                                                   |
+| Batch partitioning                             | `PartitionedTimeSeries.ts`                                                                        |
+| Live source interface                          | `types.ts` (`LiveSource<S>`, `EMITS_EVICT`)                                                       |
+| Live buffer                                    | `LiveSeries.ts`                                                                                   |
+| Live derived views                             | `LiveView.ts`                                                                                     |
+| Live aggregation                               | `LiveAggregation.ts`, `LiveRollingAggregation.ts`, `LivePartitionedSyncRolling.ts`, `triggers.ts` |
+| Live partitioning                              | `LivePartitionedSeries.ts`                                                                        |
+| React hooks                                    | `packages/react/src/`                                                                             |
+| Public exports                                 | `packages/core/src/index.ts`                                                                      |
+| Plan / status / roadmap                        | `PLAN.md`                                                                                         |
+| Process / discipline / release                 | `CLAUDE.md`                                                                                       |
+| Release notes                                  | `CHANGELOG.md`                                                                                    |
 
 ---
 

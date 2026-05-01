@@ -12,16 +12,18 @@ in-app live display.
 **The pattern:**
 
 1. Collect timing events into a `LiveSeries` as they happen.
-2. Maintain a trailing rolling window with `rolling()`.
-3. Use `rolling.sample(sequence)` to emit one snapshot per reporting
-   interval. Subscribe and `fetch` each snapshot to the backend.
+2. Call `rolling()` with a `Trigger.clock(sequence)` to maintain a
+   trailing rolling window AND emit one snapshot per reporting interval
+   in a single primitive.
+3. Subscribe to the rolling and `fetch` each emitted snapshot to the
+   backend.
 4. Read `rolling.value()` directly for the in-app live display — same
    rolling state, no duplicated deque.
 
 ## Setup
 
 ```ts
-import { LiveSeries, Sequence } from 'pond-ts';
+import { LiveSeries, Sequence, Trigger } from 'pond-ts';
 
 // ── Schema ──────────────────────────────────────────────────────
 const schema = [
@@ -32,18 +34,20 @@ const schema = [
 // ── Live source ─────────────────────────────────────────────────
 export const timings = new LiveSeries({ name: 'timings', schema });
 
-// ── Rolling 1-minute window ─────────────────────────────────────
-// Live `rolling()` takes one reducer per column. For p95 latency:
+// ── Rolling 1-minute window with a 30 s clock trigger ───────────
+// Single primitive: maintains the rolling window AND emits one
+// snapshot per 30 s boundary crossing of source events.
 export const rolling = timings.rolling(
   '1m',
   { latency: 'p95' },
-  { minSamples: 10 }, // suppress output until the window is warm
+  {
+    trigger: Trigger.clock(Sequence.every('30s')),
+    minSamples: 10, // suppress output until the window is warm
+  },
 );
 
-// ── Sample every 30 s of event time → backend ───────────────────
-export const reported = rolling.sample(Sequence.every('30s'));
-
-reported.on('event', (event) => {
+// ── Backend report on each boundary crossing ───────────────────
+rolling.on('event', (event) => {
   fetch('/api/telemetry', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -55,9 +59,9 @@ reported.on('event', (event) => {
 });
 ```
 
-The same `rolling` drives both the backend report and the in-app
-display. `reported` is a passive sampler that reads `rolling.value()`
-at boundary crossings — no second rolling deque.
+The same `rolling` powers both the backend report (via `'event'`
+listener at the trigger cadence) and the in-app display (via
+`rolling.value()` at any time). No second rolling, no duplicated deque.
 
 ### Want multiple percentiles?
 
@@ -66,15 +70,20 @@ the batch `AggregateOutputMap` form (`{ p50: { from: 'latency', using: 'p50' } }
 isn't on `LiveSeries.rolling()` yet. Two pragmatic options:
 
 **1. One rolling per percentile** (most common). Each rolling maintains
-its own deque, but they share the source's event stream:
+its own deque, but they share the source's event stream and trigger:
 
 ```ts
-const p50 = timings.rolling('1m', { latency: 'p50' }, { minSamples: 10 });
-const p95 = timings.rolling('1m', { latency: 'p95' }, { minSamples: 10 });
-
-// Sample whichever cadence matters — both samplers tap into their respective rolling
-const reported50 = p50.sample(Sequence.every('30s'));
-const reported95 = p95.sample(Sequence.every('30s'));
+const trigger = { trigger: Trigger.clock(Sequence.every('30s')) };
+const p50 = timings.rolling(
+  '1m',
+  { latency: 'p50' },
+  { ...trigger, minSamples: 10 },
+);
+const p95 = timings.rolling(
+  '1m',
+  { latency: 'p95' },
+  { ...trigger, minSamples: 10 },
+);
 ```
 
 **2. Snapshot to batch when you need multi-reducer**. Read raw events
@@ -103,7 +112,9 @@ converts it to a millisecond timestamp internally.
 ## Displaying in React
 
 `useLiveQuery` re-evaluates on every source event (throttled). Read
-`rolling.value()` to surface the latest aggregate snapshot:
+`rolling.value()` to surface the latest aggregate snapshot — note that
+`rolling.value()` reads the current rolling state regardless of trigger;
+it's not gated on the next 30 s boundary:
 
 ```tsx
 import { useLiveQuery } from '@pond-ts/react';
@@ -139,7 +150,7 @@ from 300 req/s):
 ```ts
 const rate = timings.window('1m').eventRate(); // events/sec over last minute
 
-reported.on('event', (event) => {
+rolling.on('event', (event) => {
   fetch('/api/telemetry', {
     method: 'POST',
     body: JSON.stringify({
@@ -164,27 +175,40 @@ const schema = [
 
 const timings = new LiveSeries({ name: 'timings', schema });
 
-const byEndpoint = timings
+// Synchronised partitioned rolling: every endpoint's snapshot
+// emits at the same 30 s boundary, all sharing the same ts.
+const ticks = timings
   .partitionBy('endpoint')
-  .rolling('1m', { latency: 'p95' });
+  .rolling(
+    '1m',
+    { latency: 'p95' },
+    { trigger: Trigger.clock(Sequence.every('30s')) },
+  );
 
-// Read per-endpoint p95 on demand
-byEndpoint.value('/api/users'); // { latency: ... }
+// Each tick: one event per known endpoint, all sharing the same ts.
+// Schema: [time, endpoint, latency]
+ticks.on('event', (event) => {
+  // event.begin() === <boundary timestamp>
+  // event.get('endpoint') === '/api/users' | '/api/orders' | …
+  // event.get('latency') === <rolling p95 for that endpoint>
+});
 ```
 
 ## Emission semantics
 
-`rolling.sample(sequence)` is **data-driven**, not timer-driven — it
-emits when incoming events cross an epoch-aligned interval boundary, not
-on a wall clock. If the app goes idle (no fetch activity), no report is
-sent. If a burst of events arrives after a quiet period, exactly one
-report is sent per crossed boundary, not one per skipped interval.
+`Trigger.clock(sequence)` is **data-driven**, not timer-driven — it
+emits when incoming events cross an epoch-aligned interval boundary,
+not on a wall clock. If the app goes idle (no fetch activity), no
+report is sent. If a burst of events arrives after a quiet period,
+exactly one report is sent per crossed boundary, not one per skipped
+interval.
 
-The snapshot is taken after the boundary-crossing event is ingested, so
-the emitted aggregate reflects the full trailing window including that
-event. Late arrivals (under `ordering: 'reorder'`) do not trigger
-emission — they're absorbed silently by the rolling window's recompute.
+The snapshot is taken after the boundary-crossing event is ingested,
+so the emitted aggregate reflects the full trailing window including
+that event. Late arrivals (under `ordering: 'reorder'`) do not
+trigger emission — they're absorbed silently by the rolling window's
+recompute.
 
-See [Sampling on a Sequence](../pond-ts/live/live-transforms#sampling-on-a-sequence-rollingsampleseq)
+See [Trigger-based emission](../pond-ts/live/live-transforms#trigger-based-emission)
 in the live transforms reference for the full semantics and the
-`LiveSequenceRollingAggregation` view-transform surface.
+synchronised-partitioned shape.

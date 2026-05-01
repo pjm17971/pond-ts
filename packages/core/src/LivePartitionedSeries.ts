@@ -1,5 +1,6 @@
 import { LiveSeries, type LiveSeriesOptions } from './LiveSeries.js';
 import { LiveRollingAggregation } from './LiveRollingAggregation.js';
+import { LivePartitionedSyncRolling } from './LivePartitionedSyncRolling.js';
 import {
   makeCumulativeView,
   makeDiffView,
@@ -7,6 +8,7 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './LiveView.js';
+import type { Trigger } from './triggers.js';
 import {
   type AggregateMap,
   type DiffSchema,
@@ -479,8 +481,58 @@ export class LivePartitionedSeries<
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+  ): LivePartitionedView<S, RollingSchema<S, M>, K>;
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
+  ): LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
     options?: LiveRollingOptions,
-  ): LivePartitionedView<S, RollingSchema<S, M>, K> {
+  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema> {
+    // Clock trigger → synchronised partitioned emission. Returns a
+    // LiveSource<RowSchema> directly (no LivePartitionedView wrap)
+    // because the output is already a flat per-partition-row stream;
+    // each tick fires N events (one per known partition) at the same
+    // boundary timestamp.
+    if (options?.trigger?.kind === 'clock') {
+      const syncOptions: {
+        minSamples?: number;
+        declaredGroups?: ReadonlyArray<K>;
+      } = {};
+      if (options.minSamples !== undefined)
+        syncOptions.minSamples = options.minSamples;
+      if (this.groups !== undefined) syncOptions.declaredGroups = this.groups;
+      const sync = new LivePartitionedSyncRolling<S, K, SeriesSchema>(
+        this.name,
+        this.schema,
+        this.by,
+        window,
+        mapping as AggregateMap<S>,
+        options.trigger,
+        syncOptions,
+      );
+      // Wire existing partitions and future spawns into the sync
+      // rolling. Each per-partition LiveSeries emits its own events;
+      // we forward them all into the shared sync state.
+      const subscribe = (key: K, partition: LiveSource<S>) => {
+        this.#disposers.add(
+          partition.on('event', (event) => sync.ingest(key, event)),
+        );
+      };
+      for (const [key, partition] of this.#partitions) {
+        subscribe(key, partition);
+      }
+      this.#onSpawn.add((key, partition) => {
+        subscribe(key, partition);
+      });
+      return sync;
+    }
+
+    // Default: per-partition rolling with per-partition emission.
     return new LivePartitionedView<S, RollingSchema<S, M>, K>(
       this,
       (sub) =>
@@ -789,6 +841,18 @@ export class LivePartitionedView<
     mapping: M,
     options?: LiveRollingOptions,
   ): LivePartitionedView<SBase, RollingSchema<R, M>, K> {
+    // MVP cap: synchronised partitioned rolling (clock trigger) is
+    // only supported directly after partitionBy(), not after chained
+    // sugar like fill().rolling(...). The chained shape needs the
+    // factory output's schema threaded into the sync rolling, which
+    // we'll plumb when a real use case appears.
+    if (options?.trigger && options.trigger.kind !== 'event') {
+      throw new TypeError(
+        'Clock-triggered partitioned rolling is only supported directly ' +
+          'after partitionBy(), not after chained sugar methods. Restructure as ' +
+          '`live.partitionBy(col).rolling(window, mapping, { trigger: ... })`.',
+      );
+    }
     const prev = this.#factory;
     return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
       this.#root,

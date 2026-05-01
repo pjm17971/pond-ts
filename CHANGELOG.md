@@ -7,9 +7,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.11.8...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.0-experimental.0...HEAD
 
 ## [Unreleased]
+
+## [0.12.0-experimental.0] — 2026-05-01
+
+> **Experimental release.** Published under the `experimental` npm
+> dist-tag (`npm install pond-ts@experimental`). The API surface
+> introduced here is shaped by two known users (Codex on webapp
+> telemetry, Claude on the gRPC pipeline experiment) migrating in
+> parallel; their friction notes inform the final stable `0.12.0`.
+> Caret installs against `^0.11.0` continue to receive `0.11.x`
+> releases unchanged.
+
+### Added
+
+- **Trigger as a first-class concept.** A new `Trigger` factory
+  exposed at the package root lets `LiveRollingAggregation` switch
+  emission cadence without changing any other shape:
+
+  ```ts
+  import { LiveSeries, Sequence, Trigger } from 'pond-ts';
+
+  // Webapp telemetry: rolling 1m p95, emit on every 30 s of event-time
+  const rolling = timings.rolling(
+    '1m',
+    { latency: 'p95' },
+    { trigger: Trigger.clock(Sequence.every('30s')) },
+  );
+
+  rolling.on('event', (e) =>
+    fetch('/api/telemetry', { method: 'POST', body: JSON.stringify(e.data()) }),
+  );
+  rolling.value(); // current rolling-window snapshot, independent of trigger
+  ```
+
+  Two trigger variants in this experimental release:
+  - **`Trigger.event()`** — per-event emission. Default; the historical
+    behavior of `LiveRollingAggregation` when no trigger is specified.
+  - **`Trigger.clock(sequence)`** — sequence-triggered emission. One
+    snapshot fires when a source event crosses an epoch-aligned
+    boundary of the (fixed-step) `Sequence`. Output keyed at boundary
+    instants. Calendar sequences are rejected upfront.
+
+  Future variants (`Trigger.count(n)`, custom predicates, compound
+  triggers) are reserved but not shipped in this release.
+
+- **Synchronised partitioned rolling.** `LivePartitionedSeries.rolling`
+  now accepts a clock trigger. The output is a
+  `LiveSource<RowSchema>` whose schema is `[time, <partitionColumn>,
+...mappingColumns]`; on every boundary crossing, one event fires
+  per known partition, all sharing the same boundary timestamp.
+  Synchronised across partitions by construction (the bucket index is
+  shared, not per-partition).
+
+  ```ts
+  // Dashboard tick aggregation: 100 hosts, 200ms cadence
+  const ticks = live
+    .partitionBy('host')
+    .rolling(
+      '1m',
+      { cpu: 'avg' },
+      { trigger: Trigger.clock(Sequence.every('200ms')) },
+    );
+
+  ticks.on('event', (e) => {
+    // e.begin() === <boundary timestamp>, same for every host this tick
+    // e.get('host') === 'api-1' | 'api-2' | …
+    // e.get('cpu') === <rolling avg for that host>
+  });
+  ```
+
+  Restricted to direct-after-`partitionBy` for the experimental
+  release: chained sugar (`partitionBy(c).fill(...).rolling(...)`)
+  rejects clock triggers with a clear error. Lifts in a future release
+  once a real use case appears.
+
+  Closes the gRPC experiment's M3.5 dashboard friction note (the
+  hand-rolled `HostAggregator` becomes ~10 lines of pond code).
+
+### Removed (breaking — pre-1.0)
+
+- **`LiveSequenceRollingAggregation`** class deleted. Its capability
+  is preserved as `LiveRollingAggregation` with
+  `{ trigger: Trigger.clock(sequence) }`. Migration: replace
+  `live.rolling('1m', m).sample(seq)` with
+  `live.rolling('1m', m, { trigger: Trigger.clock(seq) })`. Single
+  rolling object now serves both backend reporting and direct
+  `.value()` reads (no separate sampler reference).
+- **`.sample(sequence)`** method removed from `LiveRollingAggregation`.
+  Use the trigger option above.
+
+### Changed
+
+- **`LiveRollingOptions`** gains an optional `trigger?: Trigger`
+  field. Default behavior (no `trigger` specified) is unchanged from
+  v0.11.x — per-event emission. Backward compatible for everyone
+  who didn't use `.sample()`.
+
+### Performance
+
+- New benchmark `scripts/perf-triggers.mjs` covers both
+  non-partitioned and synchronised partitioned cases. Headline numbers
+  on a current MacBook Pro:
+  - Non-partitioned: clock(30s) ~50% faster than per-event baseline
+    (emission is rarer); clock(1s) similar.
+  - Synchronised partitioned (100 hosts, 30k events at realistic
+    rates): ~300 ns/emission at 200ms cadence; +205% over per-
+    partition baseline at the high end. Well within budget for the
+    motivating dashboard use case.
+
+### Notes
+
+- **`docs/rfcs/triggers.md`** captures the full design rationale,
+  the four sign-off questions, and the migration plan. Read this if
+  you want the "why this shape" context.
+- **Two known users** are migrating against this experimental
+  release: Codex on the webapp telemetry track and Claude on the gRPC
+  experiment's M3.5 milestone. Their friction notes inform the final
+  stable `0.12.0`. If you migrate too, friction reports welcome.
 
 ## [0.11.8] — 2026-04-30
 
@@ -61,6 +178,7 @@ type-level changes; patch bumps are strictly additive.
   frontend-collection → backend-summary pattern using `.sample()`,
   plus the React in-app display via `useLiveQuery`.
 
+[0.12.0-experimental.0]: https://github.com/pjm17971/pond-ts/compare/v0.11.8...v0.12.0-experimental.0
 [0.11.8]: https://github.com/pjm17971/pond-ts/compare/v0.11.7...v0.11.8
 
 ## [0.11.7] — 2026-04-29

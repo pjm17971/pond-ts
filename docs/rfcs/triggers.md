@@ -1,13 +1,21 @@
 # RFC: Trigger as a first-class concept in the live layer
 
-**Status:** Draft (sign-off pending) → branch `feat/triggers` → target `0.12.0-experimental.0`
-**Drafted:** 2026-05-01
-**Authors:** the pond-ts library agent (Claude), in conversation with the user
-**Motivating use cases:**
+**Status:** Approved 2026-05-01, shipped as `0.12.0-experimental.0` on branch `feat/triggers`.
 
-1. **Synchronised partitioned tick aggregation** — `pond-grpc-experiment`'s M3.5 dashboard wire (per-host 200ms ticks where every host's frame for tick T carries the same `ts`). Currently expressed via a hand-rolled `HostAggregator`; the friction note is in
-   [`experiments/grpc-pipeline`](#) but the experiment is shipping its own aggregator while the library has nothing to offer for synchronised partition emission.
-2. **Sequence-sampled rolling** — frontend telemetry stats (collect latency events, report p95 to a backend every 30 s while the rolling state drives an in-app live display). v0.11.8 ships `.sample(seq)` for this; the API is correct for the use case in isolation but specialises a general concept (trigger) into a single verb. Subsumed by the trigger primitive without loss.
+**Drafted:** 2026-05-01.
+**Authors:** the pond-ts library agent (Claude), in conversation with the user.
+
+## Sign-off decisions
+
+1. Option name: `trigger` ✓
+2. Partitioned-with-clock output shape: per-partition rows of typed events ✓
+3. `Trigger.event()` publicly callable (default behavior, useful for explicit-default documentation) ✓
+4. No public class for the partitioned-sync emission path; just a typed `LiveSource<RowSchema>` ✓
+
+## Motivating use cases
+
+1. **Synchronised partitioned tick aggregation** — `pond-grpc-experiment`'s M3.5 dashboard wire (per-host 200ms ticks where every host's frame for tick T carries the same `ts`). Originally expressed via a hand-rolled `HostAggregator`; the experiment was shipping its own aggregator while the library had nothing to offer for synchronised partition emission.
+2. **Sequence-sampled rolling** — frontend telemetry stats (collect latency events, report p95 to a backend every 30 s while the rolling state drives an in-app live display). v0.11.8 shipped `.sample(seq)` for this; the API was correct for the use case in isolation but specialised a general concept (trigger) into a single verb. Subsumed by the trigger primitive without loss.
 
 ## Why this RFC, why now
 
@@ -145,16 +153,14 @@ The output is a `LiveSource<S'>` whose schema includes the partition column:
 // Output schema: [time, host, cpu_avg, cpu_sd, cpu_n]
 //   (one row per partition, all sharing the same boundary timestamp)
 
-const ticks = live
-  .partitionBy('host')
-  .rolling(
-    '1m',
-    {
-      cpu: 'avg',
-      cpu: 'stdev' /* shorthand collisions resolved via AggregateOutputMap, see deferred work */,
-    },
-    { trigger: Trigger.clock(Sequence.every('200ms')) },
-  );
+const ticks = live.partitionBy('host').rolling(
+  '1m',
+  {
+    cpu: 'avg',
+    cpu: 'stdev' /* shorthand collisions resolved via AggregateOutputMap, see deferred work */,
+  },
+  { trigger: Trigger.clock(Sequence.every('200ms')) },
+);
 
 ticks.on('event', (event) => {
   // event.begin() === <boundary timestamp>

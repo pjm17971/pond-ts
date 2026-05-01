@@ -70,7 +70,7 @@ expert and reviews PRs touching that surface. Will inform
   `LiveView.eventRate()`, `useCurrent` value narrowing.
 - **Writeup:** `website/docs/how-to-guides/dashboard-guide.mdx`.
 
-### gRPC pipeline (in flight; M3 merged, M4 next)
+### gRPC pipeline (in flight; M3 merged, M3.5 in progress)
 
 Claude agent. Three-process gRPC + WebSocket stack: producer
 (`@pond-ts/dev-producer` candidate) → aggregator (`@pond-ts/server`
@@ -84,15 +84,27 @@ sweep producing three RFC-style design docs.
   snapshot+append primitives), v0.11.5 (packaging fix — README/
   LICENSE/CHANGELOG in tarballs), v0.11.6 (count() doc clarification
   on duplicate keys; the M3 friction notes confirmed this fixed M1's
-  misdiagnosed stagger workaround).
-- **Milestone files:** `experiments/grpc-pipeline/{PLAN,LINKS,M0,M1,M2,M3}.md`.
-  M3.md (in PR #8) is the throughput-characterisation friction
-  report — gRPC framing-bound at 73k events/sec, ~14% of library
-  bench peak. Captured in PLAN under "Performance expectations and
-  the bench-vs-real-world gap."
+  misdiagnosed stagger workaround), v0.12.0-experimental (Trigger
+  primitive — M3.5's `HostAggregator` motivated the synchronised
+  partitioned-rolling shape; webapp telemetry's `.sample()` use case
+  folded into the same redesign).
+- **Milestone files:** `experiments/grpc-pipeline/{PLAN,LINKS,M0..M3.5}.md`.
+  - M3 (PR #8) — throughput-characterisation friction report, gRPC
+    framing-bound at 73k events/sec, captured in PLAN under
+    "Performance expectations and the bench-vs-real-world gap."
+  - M3 phase A (PR #9) — `EventBatch` wire batching, 22k → 486k
+    events/sec at the saturation cell; pond is genuinely under
+    pressure now (~30% wall-clock minor GC). Confirmed bench numbers
+    are real-world-validated.
+  - M3.5 (PR #11, PR #13) — server-side aggregation slice; surfaced
+    that pond had no synchronised-partitioned-tick primitive,
+    forcing a hand-rolled `HostAggregator`. Resolved by the v0.12
+    Trigger redesign (RFC: `docs/rfcs/triggers.md`).
 - **Carry-forwards to `@pond-ts/server` RFC:** coalesce strategy with
   tested default windowMs, reference EventBatch-style proto in
-  examples, snapshot-cache design, slow-client policy defaults.
+  examples, snapshot-cache design, slow-client policy defaults,
+  per-phase metrics histograms (`pushManyTotalMs`, `fanoutRecordMs`,
+  `fanoutSerializeMs`, `fanoutBroadcastMs`) as opt-in defaults.
 
 ### Webapp telemetry (ongoing; drove v0.11.8)
 
@@ -100,13 +112,19 @@ Codex agent. Frontend telemetry-stats reporting (collect latency
 events, sample percentiles to a backend every 30 s, display live in
 React). Real production code in a trading-platform app.
 
-- **Drove:** v0.11.8 `rolling.sample(sequence)`. The first design
-  attempt was an overload (`live.rolling(Sequence, '1m', mapping)`)
-  mirroring the batch shape; closed PR #92 walked that back after
-  implementation surfaced a hidden-ownership leak and locked-away
-  rolling state. Final design (PR #93) is composition: a `.sample()`
-  method on `LiveRollingAggregation` that taps the rolling without
-  owning it. Both PRs together are the design trail.
+- **Drove:** v0.11.8 `rolling.sample(sequence)` (later subsumed by
+  v0.12.0-experimental triggers). The first design attempt was an
+  overload (`live.rolling(Sequence, '1m', mapping)`) mirroring the
+  batch shape; closed PR #92 walked that back after implementation
+  surfaced a hidden-ownership leak and locked-away rolling state.
+  v0.11.8 (PR #93) shipped `.sample()` as a separate composition step.
+  Then the gRPC experiment's M3.5 work surfaced that `.sample()` was
+  itself overly specific — the deeper factoring is `Source × Trigger
+× Aggregation`, with `.sample()` collapsing into "rolling with a
+  clock trigger." v0.12.0-experimental ships `Trigger.clock(seq)`
+  as a first-class concept; `.sample()` and `LiveSequenceRollingAggregation`
+  are deleted. The webapp telemetry agent migrates from `.sample()`
+  to `{ trigger: Trigger.clock(seq) }` as part of v0.12 adoption.
 - **Surfaced as next deferred:** the `AggregateOutputMap` overload
   on `LiveSeries.rolling()`. The Codex code duplicates the same
   numeric value into four columns named `p50`/`p75`/`p95`/`count` to
@@ -1379,7 +1397,16 @@ into pond-ts core. The default JSON path stays directly on
 `LiveSeries.toJSON()` / `pushJson()` / `fromJSON()` — the most
 common case shouldn't pay an adaptor-indirection tax.
 
-### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot
+### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot (v0.11.8, superseded by v0.12 triggers)
+
+> **Status note (2026-05-01):** `.sample()` and
+> `LiveSequenceRollingAggregation` shipped in v0.11.8 and were deleted
+> in v0.12.0-experimental.0. The use case is preserved as
+> `live.rolling('1m', m, { trigger: Trigger.clock(seq) })` — same
+> emission semantics, no separate class. Migration is a one-line
+> change in the webapp telemetry track. The design history below is
+> retained because the reasoning ("composition, not fusion") still
+> applies and informed the v0.12 trigger factoring.
 
 A frontend telemetry use case (collect latency events at high rate,
 report p95 to a backend every 30 s, also display it live in the UI)
@@ -1479,7 +1506,16 @@ useLiveQuery(timings, () => rolling.value());
   footgun the overload required. Captured in the closed PR #92 as a
   deliberate blind alley.
 
-### RFC sketch: Trigger as a first-class concept
+### Shipped (experimental): Trigger as a first-class concept (v0.12.0-experimental.0)
+
+> **Status note (2026-05-01):** the RFC below was approved and
+> implemented as v0.12.0-experimental.0. RFC document at
+> `docs/rfcs/triggers.md`. Two real users migrating: Codex on webapp
+> telemetry, Claude on the gRPC experiment's M3.5 work. Their
+> friction notes inform the final stable v0.12.0 release. The
+> sketch is preserved for context.
+
+### RFC sketch (approved, implemented): Trigger as a first-class concept
 
 Surfaced by the gRPC experiment's M3.5 step-1 friction note (the
 dashboard agent's [`WIRE.md`](https://github.com/pjm17971/pond-grpc-experiment/blob/m3.5-aggregate-wire-step-1/WIRE.md)
