@@ -72,16 +72,20 @@ export type LiveRollingOptions = {
    * an interval, no event is emitted (data-driven, not wall-clock-
    * driven).
    *
+   * Pass `Trigger.count(n)` to emit one snapshot every `n` source
+   * events, useful when event-time boundaries lag during burst load
+   * but per-event emission is too noisy. Counter resets on each fire,
+   * so this measures "events since the last emission."
+   *
    * For partitioned rollings (`live.partitionBy(col).rolling(...)`),
    * a clock trigger emits **synchronised across partitions**: when
    * any partition's event crosses the boundary, every partition's
    * rolling-window snapshot fires at the same instant. See
    * {@link Trigger} for the full trigger taxonomy.
    *
-   * @experimental Trigger types beyond `clock` and `event` are
-   *   reserved for future expansion (`count`, `custom`, compound
-   *   triggers). The current API surface is locked at these two for
-   *   the experimental release.
+   * @experimental Trigger types beyond `event`, `clock`, and `count`
+   *   are reserved for future expansion (`idle`, `any`, custom
+   *   triggers). See the trigger taxonomy RFC sketch in PLAN.md.
    */
   trigger?: Trigger;
 };
@@ -115,6 +119,16 @@ export class LiveRollingAggregation<
    */
   #lastClockBucketIdx: number | undefined;
 
+  /**
+   * For count triggers: the number of events ingested since the most
+   * recent emission (or since construction, before the first
+   * emission). The trigger fires when this reaches `n`, then resets
+   * to zero. Resetting (rather than counting modulo) means a count(N)
+   * trigger inside a future `Trigger.any(...)` always measures
+   * "events since the last fire."
+   */
+  #countSinceLastEmit: number;
+
   readonly #outputEvents: any[];
   readonly #onUpdate: Set<UpdateListener>;
   readonly #onEvent: Set<EventListener>;
@@ -136,6 +150,7 @@ export class LiveRollingAggregation<
     this.#minSamples = minSamples;
     this.#trigger = options.trigger ?? { kind: 'event' };
     this.#lastClockBucketIdx = undefined;
+    this.#countSinceLastEmit = 0;
 
     if (typeof window === 'number' && Number.isInteger(window) && window > 0) {
       this.#windowMs = undefined;
@@ -368,7 +383,23 @@ export class LiveRollingAggregation<
       case 'clock':
         this.#emitClock(event.begin(), this.#trigger);
         return;
+      case 'count':
+        this.#emitCount(event.key(), this.#trigger.n);
+        return;
     }
+  }
+
+  /**
+   * Count-triggered emission: fire one output event keyed at the
+   * source event's key when the per-event counter reaches `n`, then
+   * reset the counter. The first emission fires on the `n`th source
+   * event, not the first.
+   */
+  #emitCount(key: any, n: number): void {
+    this.#countSinceLastEmit++;
+    if (this.#countSinceLastEmit < n) return;
+    this.#countSinceLastEmit = 0;
+    this.#emitEvent(key);
   }
 
   /**

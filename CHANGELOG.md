@@ -7,9 +7,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.2...HEAD
 
 ## [Unreleased]
+
+## [0.13.2] — 2026-05-01
+
+Strictly additive over v0.13.1. Adds `Trigger.count(n)` per the
+second wave of Codex feedback after webapp-telemetry adoption. Use
+case: "very hot metrics like row stale times or handler payload
+sizes where event-time boundaries may lag during bursts, but
+per-event is too noisy."
+
+### Added
+
+- **`Trigger.count(n)`** — third trigger primitive alongside
+  `Trigger.event()` and `Trigger.clock(seq)` /
+  `Trigger.every(duration)`. Emits one rolling-window snapshot
+  every `n` source events, with the counter resetting on each fire
+  (so "events since the last emission," not "every Nth event modulo
+  the input"):
+
+  ```ts
+  const rolling = timings.rolling(
+    '5m',
+    { latency: 'p95' },
+    { trigger: Trigger.count(1000) },
+  );
+  ```
+
+  - **Data-driven** — counter only advances on event ingestion, no
+    `setTimeout` inside the library. The first emission fires on
+    the `n`th event, not the first.
+  - **Per-partition** — when applied via `partitionBy(...).rolling(...)`,
+    each partition counts independently. Count does not synchronise
+    emission across partitions; use `Trigger.clock` for that.
+  - **Rejects non-positive integers** — `Trigger.count(0)`,
+    `Trigger.count(-1)`, `Trigger.count(1.5)`, and `Trigger.count(NaN)`
+    throw at construction with a clear error.
+
+### Changed
+
+- **Trigger taxonomy expanded.** `Trigger` union is now
+  `EventTrigger | ClockTrigger | CountTrigger`. Per-partition
+  rolling overload widened to accept count triggers and route them
+  to the `LivePartitionedView` per-partition path (not the synced
+  rolling — count semantics across partitions are ambiguous and
+  there's no killer use case for either choice yet).
+
+### Docs
+
+- `live-transforms.mdx`: trigger section now lists all three
+  primitives up front with a dedicated subsection on count
+  semantics. JSDoc on `LiveRollingAggregation.trigger` updated to
+  mention count.
+- PLAN.md: trigger-taxonomy expansion RFC sketch captured —
+  documents the shipped `count` plus deferred decisions on `idle`
+  (the wall-clock crossing, requires its own RFC), `any` (composite,
+  ships after singletons exist), and `threshold` / `manual`
+  (declined / deferred as misclassified or sugar over existing
+  primitives).
+
+### Tests
+
+- 7 new tests in `test/Triggers.test.ts`:
+  - `Trigger.count(n)` shape and freeze
+  - Non-positive integer rejection (zero, negative, fractional, NaN)
+  - Emission cadence: snapshots every Nth event with correct
+    rolling-window values
+  - `Trigger.count(1)` behavioural equivalence to `Trigger.event()`
+  - No emission during quiet periods (data-driven)
+  - `rolling.value()` independent of trigger
+  - Per-partition independent counting via
+    `partitionBy().rolling(..., { trigger: Trigger.count(2) })`
+- Total core tests: 1070 (was 1063).
+
+[0.13.2]: https://github.com/pjm17971/pond-ts/compare/v0.13.1...v0.13.2
 
 ## [0.13.1] — 2026-05-01
 

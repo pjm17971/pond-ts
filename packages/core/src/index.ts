@@ -13,7 +13,7 @@ export { LiveView } from './LiveView.js';
 export type { LiveFillMapping, LiveFillStrategy } from './LiveView.js';
 export { LiveRollingAggregation } from './LiveRollingAggregation.js';
 export { Trigger } from './triggers.js';
-export type { ClockTrigger, EventTrigger } from './triggers.js';
+export type { ClockTrigger, CountTrigger, EventTrigger } from './triggers.js';
 export { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
 export { Time } from './Time.js';
 export { TimeRange, toTimeRange } from './TimeRange.js';

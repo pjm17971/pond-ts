@@ -60,6 +60,20 @@ describe('Trigger', () => {
     expect(sugar.sequence.anchor()).toBe(5_000);
   });
 
+  it('Trigger.count(n) returns a frozen kind=count trigger', () => {
+    const t = Trigger.count(100);
+    expect(t.kind).toBe('count');
+    expect(t.n).toBe(100);
+    expect(Object.isFrozen(t)).toBe(true);
+  });
+
+  it('Trigger.count rejects non-positive integers', () => {
+    expect(() => Trigger.count(0)).toThrowError(/positive integer/);
+    expect(() => Trigger.count(-1)).toThrowError(/positive integer/);
+    expect(() => Trigger.count(1.5)).toThrowError(/positive integer/);
+    expect(() => Trigger.count(NaN)).toThrowError(/positive integer/);
+  });
+
   it('Trigger.every drives a rolling at the same cadence as Trigger.clock', () => {
     // Behavioural pin: sugar produces the same emission cadence as
     // explicit Trigger.clock(Sequence.every(...)).
@@ -245,6 +259,134 @@ describe('LiveRollingAggregation — clock trigger (Trigger.clock)', () => {
     expect(rolling.value().value).toBeCloseTo(15, 5);
 
     rolling.dispose();
+  });
+});
+
+// ── Count trigger ────────────────────────────────────────────────
+
+describe('LiveRollingAggregation — count trigger (Trigger.count)', () => {
+  it('emits one snapshot every N events, starting on the Nth', () => {
+    const live = makeLive();
+    const rolling = live.rolling(
+      '5m',
+      { value: 'avg' },
+      { trigger: Trigger.count(3) },
+    );
+
+    const emissions: Array<{ ts: number; value: number | undefined }> = [];
+    rolling.on('event', (e) =>
+      emissions.push({ ts: e.begin(), value: e.get('value') }),
+    );
+
+    // No emission for the first 2 events.
+    live.push([0, 10]);
+    live.push([1_000, 20]);
+    expect(emissions).toHaveLength(0);
+
+    // The 3rd event triggers the first emission with the rolling avg
+    // including all 3 events: (10+20+30)/3 = 20.
+    live.push([2_000, 30]);
+    expect(emissions).toHaveLength(1);
+    expect(emissions[0]!.ts).toBe(2_000);
+    expect(emissions[0]!.value).toBe(20);
+
+    // The next 2 events don't trigger; the 6th does.
+    live.push([3_000, 40]);
+    live.push([4_000, 50]);
+    expect(emissions).toHaveLength(1);
+
+    live.push([5_000, 60]);
+    expect(emissions).toHaveLength(2);
+    expect(emissions[1]!.ts).toBe(5_000);
+    // Rolling avg = (10+..+60)/6 = 35
+    expect(emissions[1]!.value).toBe(35);
+
+    rolling.dispose();
+  });
+
+  it('count(1) is equivalent to event trigger', () => {
+    const live = makeLive();
+    const rolling = live.rolling(
+      '5m',
+      { value: 'avg' },
+      { trigger: Trigger.count(1) },
+    );
+    const emissions: number[] = [];
+    rolling.on('event', (e) => emissions.push(e.begin()));
+
+    live.push([0, 10], [1_000, 20], [2_000, 30]);
+    expect(emissions).toEqual([0, 1_000, 2_000]);
+
+    rolling.dispose();
+  });
+
+  it('does not emit during quiet periods (data-driven, no timer)', () => {
+    const live = makeLive();
+    const rolling = live.rolling(
+      '5m',
+      { value: 'avg' },
+      { trigger: Trigger.count(3) },
+    );
+    const emissions: number[] = [];
+    rolling.on('event', (e) => emissions.push(e.begin()));
+
+    live.push([0, 10], [1_000, 20]); // 2 events, no emission yet
+    expect(emissions).toHaveLength(0);
+
+    // No further pushes — no setTimeout-style emission. Counter stays
+    // at 2 indefinitely; emission only fires on the next ingest.
+    expect(emissions).toHaveLength(0);
+
+    rolling.dispose();
+  });
+
+  it('rolling.value() reports current state regardless of trigger', () => {
+    const live = makeLive();
+    const rolling = live.rolling(
+      '5m',
+      { value: 'avg' },
+      { trigger: Trigger.count(100) },
+    );
+
+    live.push([0, 10], [1_000, 20]);
+    // Trigger has not fired (only 2 events out of 100), but value()
+    // always reads the current rolling-window snapshot.
+    expect(rolling.value().value).toBe(15);
+
+    rolling.dispose();
+  });
+
+  it('per-partition rolling counts each partition independently', () => {
+    const live = makePartitioned();
+    const rolling = live.partitionBy('host').rolling(
+      '5m',
+      { cpu: 'avg', host: 'last' }, // include host so the unified output keeps it
+      { trigger: Trigger.count(2) },
+    );
+
+    const emitted: Array<{ host: unknown; cpu: unknown }> = [];
+    rolling
+      .collect()
+      .on('event', (e) =>
+        emitted.push({ host: e.get('host'), cpu: e.get('cpu') }),
+      );
+
+    // Globally monotonic timestamps; partitioned by host.
+    live.push([0, 0.4, 'api-1']);
+    live.push([1_000, 0.5, 'api-2']);
+    expect(emitted).toHaveLength(0); // each host has only 1 event
+
+    // api-1 hits count=2 → emits its rolling window's avg of [0.4, 0.6]
+    live.push([2_000, 0.6, 'api-1']);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.host).toBe('api-1');
+    expect(emitted[0]!.cpu as number).toBeCloseTo(0.5, 5);
+
+    // api-2 hits count=2 → emits its rolling window's avg of [0.5, 0.7]
+    live.push([3_000, 0.7, 'api-2']);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1]!.host).toBe('api-2');
+    expect(emitted[1]!.cpu as number).toBeCloseTo(0.6, 5);
   });
 });
 

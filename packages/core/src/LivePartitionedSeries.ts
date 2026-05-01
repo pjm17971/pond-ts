@@ -508,12 +508,12 @@ export class LivePartitionedSeries<
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
-    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
   ): LivePartitionedView<S, RollingSchema<S, M>, K>;
   rolling<const M extends AggregateOutputMap<S>>(
     window: RollingWindow,
     mapping: M,
-    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
   ): LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>;
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
@@ -1021,12 +1021,12 @@ export class LivePartitionedView<
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
-    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
   ): LivePartitionedView<SBase, RollingSchema<R, M>, K>;
   rolling<const M extends AggregateOutputMap<R>>(
     window: RollingWindow,
     mapping: M,
-    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
   ): LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>;
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,

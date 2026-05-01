@@ -446,9 +446,12 @@ output buffer grows unboundedly — downstream consumers can compose with
 
 A rolling aggregation's emission cadence is controlled by an optional
 `trigger` on the `rolling` call. The default is per-event emission (the
-historical behaviour). Pass `Trigger.clock(sequence)` to switch to
-sequence-triggered emission — one snapshot fires when a source event
-crosses an epoch-aligned boundary of the sequence.
+historical behaviour). Three triggers are available:
+
+- **`Trigger.event()`** — emit per source event (the default).
+- **`Trigger.every(duration)`** / **`Trigger.clock(sequence)`** — emit
+  one snapshot when a source event crosses an epoch-aligned boundary.
+- **`Trigger.count(n)`** — emit one snapshot every `n` source events.
 
 ```ts
 import { Trigger } from 'pond-ts';
@@ -501,6 +504,33 @@ are rejected — boundary indexing needs a constant step.
   the current rolling-window snapshot, regardless of when the trigger
   last fired. Use it to drive a live display alongside trigger-based
   backend reporting (one rolling, two consumers, no duplicated state).
+
+#### Count trigger
+
+For very hot metrics where event-time boundaries lag during bursts —
+but per-event emission is too noisy — switch to a count trigger that
+fires every `n` source events:
+
+```ts
+// Emit one snapshot every 1000 source events. Counter resets on each
+// fire, so this measures "events since the last emission," not "every
+// 1000th event modulo the input."
+const rolling = timings.rolling(
+  '5m',
+  { p95: { from: 'latency', using: 'p95' } },
+  { trigger: Trigger.count(1000) },
+);
+```
+
+Like the clock trigger, `Trigger.count` is **data-driven** — the
+counter only advances on event ingestion, no `setTimeout` inside the
+library. The first emission fires on the `n`th event, not the first.
+
+When applied to `partitionBy(...).rolling(...)`, **each partition counts
+independently** — count does not synchronise emission across partitions.
+Use `Trigger.clock` for cross-partition synchronisation; use
+`Trigger.count` when each partition's burstiness is what you're
+measuring.
 
 ### Synchronised partitioned rolling
 
