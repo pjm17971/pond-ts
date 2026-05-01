@@ -33,7 +33,7 @@ import type { TimestampInput } from './temporal.js';
  * every partition emits its current rolling-window snapshot at the
  * same boundary timestamp.
  */
-export type Trigger = ClockTrigger | EventTrigger;
+export type Trigger = ClockTrigger | CountTrigger | EventTrigger;
 
 /**
  * Sequence-triggered emission. The accumulator emits one snapshot each
@@ -54,6 +54,28 @@ export type Trigger = ClockTrigger | EventTrigger;
  * indexing requires a constant millisecond step.
  */
 export type ClockTrigger = Readonly<{ kind: 'clock'; sequence: Sequence }>;
+
+/**
+ * Count-triggered emission. The accumulator emits one snapshot every
+ * `n` source events. The first emission fires on the `n`th event, not
+ * the first.
+ *
+ * - **Output timestamps** are the source event's timestamp at the
+ *   moment of firing (same as `Trigger.event()`).
+ * - **Data-driven** — the counter only advances on event ingestion.
+ *   No timer; quiet periods don't fire snapshots.
+ * - **Per-partition counting.** When applied via a per-partition
+ *   `partitionBy(...).rolling(...)`, each partition counts
+ *   independently — a count trigger does not synchronise emission
+ *   across partitions. Use `Trigger.clock` for cross-partition
+ *   synchronisation.
+ *
+ * Useful for very hot metrics where event-time boundaries lag during
+ * bursts but per-event emission is too noisy (e.g. row stale times,
+ * payload sizes). For "every 30s OR every 1000 events," compose with
+ * `Trigger.any` (post-v0.13.2 — see PLAN).
+ */
+export type CountTrigger = Readonly<{ kind: 'count'; n: number }>;
 
 /**
  * Per-event emission. The accumulator emits one snapshot per source
@@ -120,6 +142,32 @@ export const Trigger = Object.freeze({
       kind: 'clock',
       sequence: Sequence.every(duration, options),
     });
+  },
+
+  /**
+   * Construct a count-triggered emission rule. See
+   * {@link CountTrigger} for full semantics.
+   *
+   * Useful when event-time boundaries lag under burst load but
+   * per-event emission is too noisy. The accumulator fires one
+   * snapshot every `n` source events.
+   *
+   * ```ts
+   * live.rolling('5m', mapping, {
+   *   trigger: Trigger.count(1000),
+   * });
+   * ```
+   *
+   * @throws TypeError if `n` is not a positive integer (zero,
+   *   negative, NaN, or non-integer values are rejected).
+   */
+  count(n: number): CountTrigger {
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new TypeError(
+        `Trigger.count(n) requires a positive integer; received ${n}.`,
+      );
+    }
+    return Object.freeze({ kind: 'count', n });
   },
 
   /**

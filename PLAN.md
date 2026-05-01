@@ -1537,6 +1537,18 @@ useLiveQuery(timings, () => rolling.value());
   a second user reports the same naming friction OR if a wall-clock
   trigger lands and the umbrella naming becomes the deciding factor.
 
+- **`Trigger.count(n)` — shipped in v0.13.2.** Second wave of Codex
+  feedback after webapp-telemetry adoption. Use case: "very hot
+  metrics like row stale times or handler payload sizes where event-
+  time boundaries may lag during bursts, but per-event is too noisy."
+  Implementation is a counter on `LiveRollingAggregation` plus a
+  `case 'count'` branch in the trigger switch — `event` and `clock`
+  remain unchanged. Per-partition rollings get count emission
+  independently; synced partitioned rolling
+  (`LivePartitionedSyncRolling`) doesn't support count because count
+  semantics across partitions are ambiguous (per-partition? global?)
+  and there's no killer use case for either.
+
 - **Sub-window primitive — `rolling(...).tap(seq, mapping)` over a
   shared event buffer.** Surfaced by the gRPC experiment's
   `HostAggregator` walkback (2026-05-01) and the v0.13.0 retrospective
@@ -1570,6 +1582,119 @@ useLiveQuery(timings, () => rolling.value());
   Reference workaround in the meantime: two separate `rolling()` calls
   off the same source. Documented as the "if you find yourself wanting
   this" footnote in the eventual `tap` RFC.
+
+### RFC sketch: trigger taxonomy expansion (post-v0.13.2)
+
+Surfaced by Codex feedback after adopting v0.12 triggers in the
+production webapp telemetry app (2026-05-01, second wave). Codex
+proposed five additional triggers; triage below distinguishes
+mechanical extensions, the architectural design moment, and
+misclassified asks.
+
+**Mechanical extensions (low design cost):**
+
+- **`Trigger.count(n)` — shipped in v0.13.2.** Captured above.
+
+- **`Trigger.any(...)` — composition over single-axis triggers.**
+  Killer use case from Codex:
+  `Trigger.any(Trigger.every('30s'), Trigger.count(1000))` —
+  "send every 30 s of event time, or sooner if 1000 events have
+  arrived since the last fire." Bounds queue depth even when the
+  time interval is long. Compositional shape — once count + every +
+  idle exist as singletons, `any` is a thin coordinator.
+
+  **Design wrinkle: reset semantics.** When one inner trigger fires
+  inside an `any`, do the others reset?
+  - For `count(N)`: yes — counter restarts after each fire so it
+    measures "N events since the last emission," not "every Nth
+    event modulo the input."
+  - For `every(duration)`: no — the time grid is epoch-aligned, not
+    last-fire-aligned. A reset would drift the boundaries.
+  - For `idle(duration)`: yes — idle timer restarts on every fire
+    (any fire, not just its own) and on every event arrival.
+
+  Ship after the singletons exist; let real composite usage shape
+  reset semantics rather than over-design upfront. v0.14.x candidate.
+
+**Design moment (RFC required):**
+
+- **`Trigger.idle(duration)` — wall-clock crossing.**
+  Codex use case: scroll profiling. "User scrolls, events stream in,
+  then the idle trigger flushes a final 'settled' snapshot." Real
+  pattern, currently underserved — `Trigger.event()` is too noisy
+  during the burst, `Trigger.every('500ms')` either misses the
+  settle moment or fires uselessly during quiet periods.
+
+  By definition, "fire after N ms of silence" can't be data-driven.
+  No event arrives to consult; the trigger has to fire on the
+  wall clock. Two architectural forks:
+
+  a) **Accept wall-clock.** `setTimeout`-driven, only armed when a
+     subscriber is attached. Ergonomic, real, but commits pond to a
+     `setTimeout` dependency it has explicitly avoided through v0.12
+     ("data-driven, no setInterval inside the library").
+
+  b) **User-driven tap.** Pond exposes `rolling.checkIdle(now)` or
+     similar; user wires their own `requestAnimationFrame` /
+     `setTimeout`. Keeps the pure data-driven model but defeats the
+     ergonomic promise — the user is now responsible for the tick
+     loop.
+
+  **Lean: (a).** Idle is fundamentally about *absence*, and absence
+  isn't a data event. A user-side workaround re-implements the
+  same `setTimeout` pond would have done, just less centrally. The
+  ergonomic win for the targeted use case (interactive UIs, scroll
+  profiling, debounce-on-quiet) is real.
+
+  **What (a) commits us to:**
+  - `setTimeout` inside the library (host-environment dependency)
+  - Fake-timer test infra for deterministic tests
+  - The `Trigger.clock` naming wrinkle becomes pressing — once
+    pond has a wall-clock trigger, "clock" no longer means
+    "data-driven boundary crossing" uniformly.
+
+  **Likely naming reshuffle alongside `idle`:**
+  - `Trigger.eventClock(seq)` — current `Trigger.clock` behaviour,
+    fires on data-clock boundary crossing
+  - `Trigger.wallClock(seq)` — future variant, fires on
+    wall-clock boundary regardless of activity
+  - `Trigger.idle(duration)` — wall-clock-driven, fires after N ms
+    of silence
+  - `Trigger.event()`, `Trigger.every(duration)`, `Trigger.count(n)`
+    unchanged
+  - `Trigger.clock` deprecated as ambiguous, redirected to
+    `eventClock` for back-compat through one minor cycle
+
+  This is the RFC moment. Decide: do we want `idle` enough to take
+  on `setTimeout`, fake-timer infra, and the naming reshuffle? My
+  read: yes — Codex's use case is well-specified and ergonomically
+  hard to replicate user-side — but worth waiting for one more
+  signal (a second user, or a real production blocker) before
+  committing the design effort. v0.14 candidate; gate on signal
+  strength.
+
+**Decline / defer:**
+
+- **`Trigger.threshold(column, predicate)` — misclassified.**
+  Codex even hedged: "maybe this belongs as a filter after rolling
+  rather than a trigger." Confirmed: it does. A trigger answers
+  "*when* do we emit?" uniformly across all output events; a
+  threshold answers "*do we emit this event?*" — that's filter
+  semantics. Already trivially expressible:
+  `live.rolling(window, mapping, options).filter(e => e.get('current') > x)`.
+  Document this answer in the trigger doc's "what about
+  threshold-based emission?" section so the question doesn't
+  re-surface.
+
+- **`Trigger.manual()` / externally poked — sugar over existing.**
+  The unload case is `addEventListener('beforeunload', () =>
+  post(rolling.value()))`. Debug export is `rolling.value()`.
+  Reconnect-on-disconnect is the same pattern. If a real version
+  ever earns its keep (multiple users hitting it), the right shape
+  is `rolling.emit()` as an explicit method on the accumulator,
+  not a trigger primitive — because there's no temporal predicate,
+  just an imperative "fire one snapshot now." Defer until concrete
+  signal.
 
 ### Shipped: Trigger as a first-class concept (v0.12.0)
 
