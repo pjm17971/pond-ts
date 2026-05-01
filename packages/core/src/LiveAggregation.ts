@@ -314,27 +314,15 @@ export class LiveAggregation<
 
     let pending = this.#pending.get(bucket.start);
     if (!pending) {
+      // The constructor's eager check guarantees every reducer is a
+      // built-in string by the time we get here, so `c.reducer` is
+      // safe to pass directly to `resolveReducer`.
       pending = {
         start: bucket.start,
         end: bucket.end,
-        states: this.#columns.map((c) => {
-          if (typeof c.reducer !== 'string') {
-            // Live aggregation currently only supports built-in
-            // (string) reducers — they have incremental
-            // bucket-state machinery (`add`/`snapshot`) that custom
-            // functions don't. Use AggregateOutputMap aliases over
-            // built-ins to compose multiple stats from one source
-            // column. Custom-function support on live aggregation
-            // is queued as separate work.
-            throw new TypeError(
-              `live aggregation reducer for output '${c.output}' must be a built-in name; ` +
-                'custom function reducers are not supported on live aggregation. ' +
-                'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
-                'to compose multiple built-in reducers from one source column.',
-            );
-          }
-          return resolveReducer(c.reducer).bucketState();
-        }),
+        states: this.#columns.map((c) =>
+          resolveReducer(c.reducer as string).bucketState(),
+        ),
       };
       this.#pending.set(bucket.start, pending);
     }

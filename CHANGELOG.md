@@ -56,11 +56,15 @@ the live surface.
 
 ### Changed
 
-- **Eager validation of reducer shape on live aggregation.**
-  `LiveAggregation` now validates at construction time that every
-  reducer is a built-in name; previously the error fired lazily when
-  the first event arrived. Live rolling already had this behavior;
-  this aligns the two paths.
+- **Better error message when a custom-function reducer is passed to
+  live aggregation.** `LiveAggregation` already failed at construction
+  via `resolveReducer(reducer)` (with a generic `unsupported aggregate
+  reducer` message); now the eager built-in-name check runs first and
+  emits a targeted error pointing at the `AggregateOutputMap` alias
+  workaround. Same eager behavior on `LivePartitionedSyncRolling`,
+  which previously failed lazily when the first partition spawned —
+  now fails at construction. Aligns with `LiveRollingAggregation`'s
+  long-standing eager check.
 
 - **Shared `normalizeAggregateColumns` helper.** Extracted from
   `TimeSeries.ts` into `aggregate-columns.ts` and used by all three

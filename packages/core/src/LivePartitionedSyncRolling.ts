@@ -318,23 +318,13 @@ export class LivePartitionedSyncRolling<
   #ensurePartition(key: K): PartitionState {
     let state = this.#partitionStates.get(key);
     if (state) return state;
+    // The constructor's eager check guarantees every reducer is a
+    // built-in string by the time we get here, so `c.reducer` is
+    // safe to pass directly to `resolveReducer`.
     state = {
-      states: this.#columns.map((c) => {
-        if (typeof c.reducer !== 'string') {
-          // Same string-reducer gate as `LiveRollingAggregation`.
-          // Custom-function reducers don't have rolling-state
-          // machinery; AggregateOutputMap aliases over built-ins
-          // are the supported shape for "multiple stats from one
-          // column."
-          throw new TypeError(
-            `live partitioned sync rolling reducer for output '${c.output}' must be a built-in name; ` +
-              'custom function reducers are not supported on live rolling. ' +
-              'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
-              'to compose multiple built-in reducers from one source column.',
-          );
-        }
-        return resolveReducer(c.reducer).rollingState();
-      }),
+      states: this.#columns.map((c) =>
+        resolveReducer(c.reducer as string).rollingState(),
+      ),
       entries: [],
       nextIndex: 0,
     };

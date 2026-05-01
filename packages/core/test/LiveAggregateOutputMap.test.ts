@@ -226,7 +226,7 @@ describe('LiveView.rolling/aggregate — AggregateOutputMap', () => {
 // ── LiveAggregation.rolling and LiveRollingAggregation.aggregate ───
 
 describe('chainable accumulators with AggregateOutputMap', () => {
-  it('LiveAggregation.rolling accepts AggregateOutputMap', () => {
+  it('LiveAggregation.rolling rolls aliased outputs over closed buckets', () => {
     const live = makeFlat();
     const agg = live.aggregate(Sequence.every('1s'), { value: 'avg' });
     const rolled = agg.rolling('5s', {
@@ -234,12 +234,16 @@ describe('chainable accumulators with AggregateOutputMap', () => {
       maxOfAvg: { from: 'value', using: 'max' },
     });
 
+    // Buckets close as the watermark crosses each bucket.end:
+    //   [0,1000): avg(10,30) = 20  → closes at t=1500
+    //   [1000,2000): avg(40)  = 40  → closes at t=2500
+    //   [2000,3000): avg(50)  = 50  → closes at t=3500
     live.push(
       [0, 10, 'a'],
-      [500, 30, 'a'], // bucket [0,1000): avg=20
-      [1500, 40, 'a'], // bucket [1000,2000): avg=40
-      [2500, 50, 'a'], // bucket [2000,3000): avg=50
-      [3500, 60, 'a'], // closes the prior bucket
+      [500, 30, 'a'],
+      [1500, 40, 'a'],
+      [2500, 50, 'a'],
+      [3500, 60, 'a'],
     );
 
     expect(rolled.schema.map((c) => c.name)).toEqual([
@@ -247,10 +251,15 @@ describe('chainable accumulators with AggregateOutputMap', () => {
       'avgOfAvg',
       'maxOfAvg',
     ]);
+    // After all closes, the rolling window holds bucket-avgs [20, 40, 50].
+    // 5s window keyed at the bucket starts [0, 1000, 2000] — none evicted.
+    const v = rolled.value();
+    expect(v.avgOfAvg as number).toBeCloseTo((20 + 40 + 50) / 3, 5);
+    expect(v.maxOfAvg).toBe(50);
     rolled.dispose();
   });
 
-  it('LiveRollingAggregation.aggregate accepts AggregateOutputMap', () => {
+  it('LiveRollingAggregation.aggregate buckets aliased outputs over rolling-output events', () => {
     const live = makeFlat();
     const rolled = live.rolling('5s', { value: 'avg' });
     const agg = rolled.aggregate(Sequence.every('1s'), {
@@ -258,9 +267,23 @@ describe('chainable accumulators with AggregateOutputMap', () => {
       hi: { from: 'value', using: 'max' },
     });
 
+    // Rolling emits one event per push, keyed at the source ts:
+    //   t=0    rolling-avg = 10
+    //   t=500  rolling-avg = 15
+    //   t=1500 rolling-avg = 20  (avg of 10,20,30)
+    //   t=2500 rolling-avg = 25  (avg of 10,20,30,40)
+    // Aggregated into 1s buckets:
+    //   [0,1000):    rolling-avgs [10, 15]  → mean=12.5, hi=15  (closes at t=1500)
+    //   [1000,2000): rolling-avgs [20]      → mean=20,   hi=20  (closes at t=2500)
     live.push([0, 10, 'a'], [500, 20, 'a'], [1500, 30, 'a'], [2500, 40, 'a']);
 
     expect(agg.schema.map((c) => c.name)).toEqual(['time', 'mean', 'hi']);
+    const closed = agg.closed();
+    expect(closed.length).toBeGreaterThanOrEqual(2);
+    expect(closed.at(0)!.get('mean')).toBe(12.5);
+    expect(closed.at(0)!.get('hi')).toBe(15);
+    expect(closed.at(1)!.get('mean')).toBe(20);
+    expect(closed.at(1)!.get('hi')).toBe(20);
     agg.dispose();
   });
 });
@@ -287,9 +310,19 @@ describe('partitionBy().rolling — AggregateOutputMap (per-partition)', () => {
       [1500, 0.9, 'api-2'],
     );
 
-    const collected = rolledByHost.collect();
-    expect(collected.schema.some((c) => c.name === 'mean')).toBe(true);
-    expect(collected.schema.some((c) => c.name === 'hi')).toBe(true);
+    const map = rolledByHost.toMap();
+    // api-1 saw [0.4, 0.6] in its 5s window → avg=0.5, max=0.6
+    const apiOne = map.get('api-1')!;
+    const last1 = apiOne.at(apiOne.length - 1)!;
+    expect(last1.get('mean') as number).toBeCloseTo(0.5, 5);
+    expect(last1.get('hi')).toBe(0.6);
+
+    // api-2 saw [0.5, 0.9] in its 5s window → avg=0.7, max=0.9
+    const apiTwo = map.get('api-2')!;
+    const last2 = apiTwo.at(apiTwo.length - 1)!;
+    expect(last2.get('mean') as number).toBeCloseTo(0.7, 5);
+    expect(last2.get('hi')).toBe(0.9);
+
     partitioned.dispose();
   });
 });
