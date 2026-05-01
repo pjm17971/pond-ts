@@ -527,8 +527,15 @@ export class LivePartitionedSeries<
       );
       // Wire the sync rolling: subscribe to each partition's raw
       // events. Root case — factory is identity (the partition IS the
-      // event source).
-      this.#wireSyncRolling(sync, (partition) => partition);
+      // event source). Pass ownsFactoryOutput: false because the
+      // partition LiveSeries is owned by this series, not by the
+      // sync rolling — disposing the sync must NOT tear down the
+      // partition itself.
+      this.#wireSyncRolling(
+        sync,
+        (partition) => partition,
+        /* ownsFactoryOutput */ false,
+      );
       return sync;
     }
 
@@ -603,10 +610,23 @@ export class LivePartitionedSeries<
    *   `sync.dispose()` detaches them) and the parent's `#disposers`
    *   (so the parent's dispose path also detaches them). Idempotent
    *   in either order.
+   *
+   * **Factory-output ownership.** When `ownsFactoryOutput` is true
+   * (chained-view case — factory creates a LiveView / Rolling /
+   * Aggregation that itself subscribes upstream), we ALSO register
+   * `out.dispose()` so the chain output's upstream subscription
+   * tears down. Without this, disposing the sync rolling only
+   * removes our listener; the chain view keeps processing
+   * partition events into its own buffer indefinitely (real leak,
+   * surfaces under repeated create/dispose cycles or high-cardinality
+   * partitions). The root case (`ownsFactoryOutput: false`) skips
+   * dispose because the partition LiveSeries is owned by the parent
+   * series, not by the sync rolling.
    */
   #wireSyncRolling<R extends SeriesSchema>(
     sync: LivePartitionedSyncRolling<R, K, SeriesSchema>,
     factory: (partition: LiveSeries<S>) => LiveSource<R>,
+    ownsFactoryOutput: boolean,
   ): void {
     // Build per-partition factory outputs once. Reused for both
     // replay (existing events) and subscription (future events) so
@@ -631,10 +651,25 @@ export class LivePartitionedSeries<
     }
 
     // Subscribe to each existing factory output's future events.
-    for (const [key, out] of factoryOutputs) {
+    // If we own the output, also register its dispose() so the
+    // chain's upstream subscription tears down on cleanup.
+    const wireOutput = (out: LiveSource<R>, key: K): void => {
       const unsub = out.on('event', (event) => sync.ingest(key, event));
-      sync._registerUnsubscribe(unsub);
-      this.#disposers.add(unsub);
+      const cleanup = ownsFactoryOutput
+        ? () => {
+            unsub();
+            // Duck-typed: chain outputs (LiveView, LiveRolling-
+            // Aggregation, LiveAggregation) all expose `dispose()`;
+            // a defensive `?.` covers any future LiveSource impl
+            // that doesn't.
+            (out as LiveSource<R> & { dispose?: () => void }).dispose?.();
+          }
+        : unsub;
+      sync._registerUnsubscribe(cleanup);
+      this.#disposers.add(cleanup);
+    };
+    for (const [key, out] of factoryOutputs) {
+      wireOutput(out, key);
     }
 
     // Future spawns: invoke factory on each new partition and
@@ -645,10 +680,7 @@ export class LivePartitionedSeries<
       // The SpawnListener signature uses LiveSource<S> for back-
       // compatibility with collect/apply, but #spawnPartition always
       // creates a LiveSeries<S> — safe to narrow here.
-      const out = factory(partition as LiveSeries<S>);
-      const unsub = out.on('event', (event) => sync.ingest(key, event));
-      sync._registerUnsubscribe(unsub);
-      this.#disposers.add(unsub);
+      wireOutput(factory(partition as LiveSeries<S>), key);
     };
     onSpawnSet.add(spawnHandler);
     // Register the spawn-handler removal with sync.dispose() so the
@@ -662,13 +694,15 @@ export class LivePartitionedSeries<
    * branch to wire a sync rolling whose reducer-input schema is the
    * chain output `R` rather than the source schema `S`. The view
    * passes its composed factory; this method delegates to
-   * `#wireSyncRolling`.
+   * `#wireSyncRolling` with `ownsFactoryOutput: true` because the
+   * chain output (a LiveView / LiveRollingAggregation / etc.) has
+   * its own upstream subscription that must be torn down on dispose.
    */
   _wireSyncRollingFromView<R extends SeriesSchema>(
     sync: LivePartitionedSyncRolling<R, K, SeriesSchema>,
     factory: (partition: LiveSeries<S>) => LiveSource<R>,
   ): void {
-    this.#wireSyncRolling(sync, factory);
+    this.#wireSyncRolling(sync, factory, /* ownsFactoryOutput */ true);
   }
 
   #spawnPartition(key: K): LiveSeries<S> {
