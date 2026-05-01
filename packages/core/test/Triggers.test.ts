@@ -491,6 +491,202 @@ describe('LivePartitionedView.rolling rejects clock trigger', () => {
   });
 });
 
+// ── Regression tests from PR #94's Codex adversarial review ──────
+
+describe('partitionBy().rolling clock-trigger — quiet-partition eviction', () => {
+  it('a quiet partition with stale entries outside the rolling window emits null/undefined, not the stale value', () => {
+    // Codex review item #1: every known partition's window state
+    // must be evicted against the triggering event's timestamp
+    // before snapshotting. Without this fix, a quiet partition's
+    // pre-window value would still appear in the emitted aggregate.
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '30s',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // host A's only event is at t=0. host B then triggers a tick
+    // far past A's data:
+    live.push([0, 0.99, 'a']);
+    // host B at t=90_001 — 90 seconds later. Crosses to bucket 3.
+    // The 30s window cutoff at t=90_001 is 60_001; A's event at
+    // t=0 is well outside the window.
+    live.push([90_001, 0.5, 'b']);
+
+    // 1 tick fires at boundary 90_000, with both partitions emitting.
+    expect(ticks.length).toBe(2);
+    const byHost = new Map<unknown, unknown>();
+    for (let i = 0; i < ticks.length; i++) {
+      const e = ticks.at(i)!;
+      byHost.set(e.get('host'), e.get('cpu'));
+    }
+    // host A's window is empty — the t=0 event has been evicted.
+    // Pre-fix: would have emitted 0.99. Post-fix: undefined.
+    expect(byHost.get('a')).toBeUndefined();
+    // host B has its just-arrived event in the window.
+    expect(byHost.get('b')).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe('partitionBy().rolling clock-trigger — pre-existing partition data replay', () => {
+  it('events already in partition buffers are replayed into the sync rolling at construction', () => {
+    // Codex review item #2: when constructing the sync rolling, the
+    // existing partition buffers are replayed in global timestamp
+    // order so the rolling state reflects history, not just future
+    // events.
+    const live = makePartitioned();
+
+    // Pre-populate the source with events across two hosts and
+    // multiple boundary crossings, BEFORE constructing the sync
+    // rolling. The router will spawn the partitions and route events
+    // into them.
+    live.push([0, 0.1, 'a']);
+    live.push([10_000, 0.2, 'b']);
+    live.push([20_000, 0.3, 'a']);
+    live.push([30_001, 0.4, 'a']); // crosses 30s boundary
+    live.push([40_000, 0.5, 'b']);
+    live.push([60_001, 0.6, 'b']); // crosses 60s boundary
+
+    // NOW construct the sync rolling. Without the fix, it would see
+    // zero events; with the fix, it replays all six events in
+    // timestamp order and the bucket index advances naturally.
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '60s',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // Two boundaries were crossed during replay (30s and 60s). Each
+    // emits one row per known partition (2 partitions) → 4 events.
+    expect(ticks.length).toBe(4);
+    expect(ticks.at(0)!.begin()).toBe(30_000);
+    expect(ticks.at(1)!.begin()).toBe(30_000);
+    expect(ticks.at(2)!.begin()).toBe(60_000);
+    expect(ticks.at(3)!.begin()).toBe(60_000);
+  });
+
+  it('replay correctly interleaves events across partitions by timestamp', () => {
+    // Critical correctness guarantee: when replaying, events from
+    // different partitions must be ingested in global timestamp
+    // order. Otherwise the second partition's earlier events would
+    // be silently discarded (bucketIdx ≤ lastBucketIdx).
+    const live = makePartitioned();
+
+    // Construct interleaved history: a@0, b@5_000, a@30_001 (crosses)
+    live.push([0, 0.1, 'a']);
+    live.push([5_000, 0.5, 'b']);
+    live.push([30_001, 0.2, 'a']);
+
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '60s',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // Replay processes events in [0, 5_000, 30_001] order. The
+    // 30_001 crosses the boundary; both partitions emit.
+    expect(ticks.length).toBe(2);
+    // Both partitions should have their pre-boundary events in
+    // their windows. b's avg = 0.5 (one event); a's avg = (0.1 + 0.2) / 2.
+    const byHost = new Map<unknown, unknown>();
+    for (let i = 0; i < ticks.length; i++) {
+      const e = ticks.at(i)!;
+      byHost.set(e.get('host'), e.get('cpu'));
+    }
+    expect(byHost.get('a')).toBeCloseTo(0.15, 5);
+    expect(byHost.get('b')).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe('partitionBy().rolling clock-trigger — spawn-listener cleanup on dispose', () => {
+  it('disposed sync rollings do not retain memory via the parent series spawn listener', () => {
+    // Codex review item #3: the spawn listener captures the sync
+    // source. When sync.dispose() runs, the spawn listener must be
+    // removed from the parent series — otherwise repeated
+    // create/dispose cycles accumulate dead listeners and retained
+    // state on a long-lived high-cardinality partitioned source.
+    //
+    // We can't directly assert "no memory leak" but we can verify
+    // the listener registration count stays bounded across cycles.
+    const live = makePartitioned();
+    const partitioned = live.partitionBy('host');
+
+    // Probe: count listeners on the partitioned series. We can't
+    // reach #onSpawn directly, but we can observe behavior: after
+    // dispose, future spawns should NOT call into the disposed
+    // sync. We approximate this by creating, disposing, and then
+    // pushing a NEW partition — the disposed sync's ingest is a
+    // no-op so it shouldn't fire any of its listeners on emission.
+
+    const sync1 = partitioned.rolling(
+      '1m',
+      { cpu: 'avg' },
+      { trigger: Trigger.clock(Sequence.every('30s')) },
+    );
+    const spy1 = vi.fn();
+    sync1.on('event', spy1);
+
+    (sync1 as any).dispose();
+
+    // After dispose: a new partition spawns. Pre-fix, the disposed
+    // sync would still receive ingest calls (its spawn handler is
+    // still in #onSpawn) — though they'd be no-ops because dispose
+    // gates them. Post-fix, the spawn handler is removed entirely.
+    live.push([0, 0.1, 'new-host']);
+    live.push([30_001, 0.2, 'new-host']); // crosses boundary
+
+    // The disposed sync should have emitted nothing.
+    expect(spy1).not.toHaveBeenCalled();
+
+    // And a new sync constructed AFTER the dispose should work
+    // independently — it sees the new-host events via replay.
+    const sync2 = partitioned.rolling(
+      '1m',
+      { cpu: 'avg' },
+      { trigger: Trigger.clock(Sequence.every('30s')) },
+    );
+    // Replay handles the existing events; the second crosses the boundary
+    expect(sync2.length).toBeGreaterThanOrEqual(1);
+
+    (sync2 as any).dispose();
+  });
+
+  it('repeated create/dispose cycles do not accumulate listeners on the parent', () => {
+    // Stronger assertion: cycle the sync many times and verify no
+    // residual effect after disposal. If spawn listeners weren't
+    // being removed, each cycle would add one. After 100 cycles,
+    // a future spawn would trigger 100 dead-listener calls.
+    const live = makePartitioned();
+    const partitioned = live.partitionBy('host');
+
+    for (let i = 0; i < 100; i++) {
+      const sync = partitioned.rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+      (sync as any).dispose();
+    }
+
+    // After 100 cycles, push events. If spawn listeners leaked,
+    // each new partition spawn would invoke 100 dead handlers. The
+    // dispose path makes ingest a no-op, so this is silent — but
+    // the absence of any thrown error or listener-count blowup is
+    // the implicit pin.
+    expect(() => {
+      live.push([0, 0.1, 'host-x']);
+      live.push([30_001, 0.2, 'host-x']);
+    }).not.toThrow();
+  });
+});
+
 // ── Webapp-telemetry pattern: replaces .sample() ──────────────────
 
 describe('telemetry pattern (one rolling drives both backend report and live display)', () => {

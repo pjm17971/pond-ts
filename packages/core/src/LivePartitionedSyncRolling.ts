@@ -281,7 +281,13 @@ export class LivePartitionedSyncRolling<
       return;
     }
     if (bucketIdx > this.#lastBucketIdx) {
-      this.#emitTick(bucketIdx);
+      // Pass `ts` (the triggering event's timestamp) into emitTick so
+      // every partition's window is evicted against "now" before we
+      // snapshot. Without this, a quiet partition's stale entries from
+      // before the window cutoff would still appear in the emitted
+      // aggregate — corrupting synchronized rollups for sparse
+      // partitions.
+      this.#emitTick(bucketIdx, ts);
       this.#lastBucketIdx = bucketIdx;
     }
   }
@@ -325,8 +331,20 @@ export class LivePartitionedSyncRolling<
 
   /**
    * Walk every known partition (in observation / declared-groups
-   * order), emit one row per partition keyed at the new bucket's
-   * boundary timestamp. All emitted events share the same `ts`.
+   * order), evict each partition's rolling-window state against the
+   * triggering event's timestamp `latestTs`, then emit one row per
+   * partition keyed at the new bucket's boundary timestamp. All
+   * emitted events share the same boundary `ts`.
+   *
+   * **Why eviction here?** The partition that received the
+   * boundary-crossing event was already evicted in `ingest()`, but
+   * other (quiet) partitions haven't been touched since their last
+   * event. If a partition's last event landed before the window
+   * cutoff (`latestTs - windowMs`), its entries are stale from the
+   * data clock's perspective — they shouldn't contribute to a
+   * snapshot taken at "now." Without this pass, a 30 s window can
+   * still emit a 90-second-old value from a partition that went
+   * silent at t=0.
    *
    * Hot path: hoists invariants (column count, listener iterable,
    * byColumn name) out of the per-partition loop, uses an indexed
@@ -334,7 +352,7 @@ export class LivePartitionedSyncRolling<
    * the record object via a plain assignment rather than a computed-
    * property literal (which V8 deopts at scale).
    */
-  #emitTick(bucketIdx: number): void {
+  #emitTick(bucketIdx: number, latestTs: number): void {
     const boundaryMs = boundaryTimestampFor(this.#trigger, bucketIdx);
     const time = new Time(boundaryMs);
     const order = this.#partitionOrder;
@@ -350,6 +368,9 @@ export class LivePartitionedSyncRolling<
     for (let p = 0; p < orderLen; p++) {
       const key = order[p]!;
       const state = states.get(key)!;
+      // Evict this partition's stale window entries against the
+      // triggering event's timestamp before snapshotting.
+      this.#evictPartition(state, latestTs);
       const warmup = state.entries.length < minSamples;
       const record: Record<string, ColumnValue | undefined> = {};
       record[byCol] = key;

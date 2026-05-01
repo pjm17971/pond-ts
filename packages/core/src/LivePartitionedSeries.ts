@@ -529,12 +529,50 @@ export class LivePartitionedSeries<
         sync._registerUnsubscribe(unsub);
         this.#disposers.add(unsub);
       };
+
+      // Replay existing partition events into the sync rolling in
+      // global timestamp order. Without this, a sync rolling
+      // constructed against a pre-populated source would discard the
+      // existing history and only see future events — and the very
+      // first future event would just initialise lastBucketIdx
+      // instead of crossing it. Mirrors the LiveRollingAggregation
+      // constructor's `for (let i = 0; i < source.length; i++)
+      // this.#ingest(...)` replay pattern, generalised across
+      // partitions: events from different partitions must interleave
+      // by timestamp so the bucket index advances monotonically
+      // (otherwise a later-iterated partition's earlier events would
+      // be silently discarded as bucketIdx <= lastBucketIdx).
+      type Existing = { ts: number; key: K; event: EventForSchema<S> };
+      const existing: Existing[] = [];
+      for (const [key, partition] of this.#partitions) {
+        for (let i = 0; i < partition.length; i++) {
+          const ev = partition.at(i)!;
+          existing.push({ ts: ev.begin(), key, event: ev });
+        }
+      }
+      existing.sort((a, b) => a.ts - b.ts);
+      for (const { key, event } of existing) {
+        sync.ingest(key, event);
+      }
+
+      // Subscribe to future events on every existing partition.
       for (const [key, partition] of this.#partitions) {
         subscribe(key, partition);
       }
-      this.#onSpawn.add((key, partition) => {
+
+      // Spawn listener — captures `sync` to subscribe future
+      // partitions. Register a remover with `sync.dispose()` so the
+      // parent series doesn't retain a closure on the disposed sync
+      // (which would prevent garbage collection on long-lived
+      // high-cardinality partitioned sources with create/dispose
+      // cycles).
+      const onSpawnSet = this.#onSpawn;
+      const spawnHandler: SpawnListener<S, K> = (key, partition) => {
         subscribe(key, partition);
-      });
+      };
+      onSpawnSet.add(spawnHandler);
+      sync._registerUnsubscribe(() => onSpawnSet.delete(spawnHandler));
+
       return sync;
     }
 
