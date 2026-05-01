@@ -235,7 +235,10 @@ export class LivePartitionedSeries<
 
     const subscribeToPartition = (partition: LiveSource<S>): (() => void) => {
       return partition.on('event', (event) => {
-        unified.push(eventToRow(event, this.schema));
+        // Trusted fast path — see LiveSeries._pushTrustedEvents.
+        // Partition sub-series share the unified buffer's schema `S`,
+        // so the source-side validation is sufficient.
+        unified._pushTrustedEvents([event]);
       });
     };
 
@@ -252,8 +255,10 @@ export class LivePartitionedSeries<
       }
     }
     existing.sort((a, b) => a.time - b.time);
-    for (const { event } of existing) {
-      unified.push(eventToRow(event, this.schema));
+    if (existing.length > 0) {
+      // Single batched push — one retention pass + one batch listener
+      // call instead of one per existing event.
+      unified._pushTrustedEvents(existing.map((x) => x.event));
     }
 
     for (const partition of this.#partitions.values()) {
@@ -351,15 +356,18 @@ export class LivePartitionedSeries<
       }
     }
     existing.sort((a, b) => a.time - b.time);
-    for (const { event, outSchema: s } of existing) {
-      unified.push(eventToRow(event, s));
+    if (existing.length > 0) {
+      // Single batched push for the historical prefix — same trust
+      // contract as the live subscribers below: each factory output
+      // shares the unified buffer's schema `R`.
+      unified._pushTrustedEvents(existing.map((x) => x.event));
     }
 
     // Subscribe each factory output to the unified buffer for live
     // forwarding.
     for (const { out } of outputs) {
       const unsub = out.on('event', (event) => {
-        unified.push(eventToRow(event, out.schema));
+        unified._pushTrustedEvents([event]);
       });
       this.#disposers.add(unsub);
     }
@@ -372,7 +380,7 @@ export class LivePartitionedSeries<
     this.#onSpawn.add((_, partition) => {
       const out = factory(partition as LiveSeries<S>);
       const unsub = out.on('event', (event) => {
-        unified.push(eventToRow(event, out.schema));
+        unified._pushTrustedEvents([event]);
       });
       this.#disposers.add(unsub);
     });
@@ -791,21 +799,13 @@ export class LivePartitionedSeries<
       }
       part = this.#spawnPartition(key);
     }
-    part.push(eventToRow(event, this.schema));
+    // Trusted-pipeline fast path: the source LiveSeries already
+    // constructed and validated this Event against `S`, and partition
+    // sub-series share the same schema. Pass the reference through
+    // instead of round-tripping `Event → row → Event` (which would
+    // re-validate and re-allocate per event).
+    part._pushTrustedEvents([event]);
   }
-}
-
-// Convert an Event back to a row tuple (for re-pushing into a
-// LiveSeries). Mirrors the conversion in LiveSeries.toTimeSeries.
-function eventToRow<S extends SeriesSchema>(
-  event: EventForSchema<S>,
-  schema: S,
-): RowForSchema<S> {
-  const row: unknown[] = [event.key()];
-  for (let i = 1; i < schema.length; i++) {
-    row.push(event.get((schema[i] as { name: string }).name as never));
-  }
-  return row as RowForSchema<S>;
 }
 
 /**

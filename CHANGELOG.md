@@ -7,9 +7,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.0...HEAD
 
 ## [Unreleased]
+
+## [0.14.0] — 2026-05-01
+
+Two perf wins driven by the gRPC experiment's V3 profiling pass
+(PR #14 on `pond-grpc-experiment`): `estimateEventBytes` at 6.2%
+self time and the partition router's `Event → row → Event`
+round-trip (combined ~7% in `#validateRow` + `Event` constructor
+re-allocations). Both root-caused, both fixed.
+
+Benchmark deltas on `scripts/perf-live-partitioned.mjs`
+(100k events, median ms):
+
+| Scenario                              | Before | After  | Δ       |
+| ------------------------------------- | -----: | -----: | ------: |
+| bare `LiveSeries.push`                |  41.11 |  30.08 | **−27%** |
+| `partitionBy('host')` routing (10)    |  83.14 |  39.10 | **−53%** |
+| `partitionBy + collect()`             | 124.82 |  49.96 | **−60%** |
+| `partitionBy + apply(fill)`           | 120.53 |  49.64 | **−59%** |
+| `partitionBy('host')` routing (1000)  | 105.92 |  43.23 | **−59%** |
+
+The bare-push delta is from the byte-estimate removal; the
+partition-routing deltas are from the trusted-pipeline path that
+skips `Event → row → Event` reconstruction at every routing hop.
+
+### Removed (breaking, pre-1.0)
+
+- **`retention.maxBytes`** option on `LiveSeriesOptions`. Speculative
+  feature from pre-v0.10 that no real user has reached for. Use
+  `retention.maxEvents` for count-based caps; `maxBytes` was
+  approximate (rough per-event byte estimate) and the imprecision
+  meant it was rarely used as designed.
+
+  Migration: replace `{ retention: { maxBytes: N } }` with
+  `{ retention: { maxEvents: M } }` where M is your desired
+  upper bound on event count.
+
+### Changed
+
+- **`estimateEventBytes` and the `#byteEstimate` accumulator
+  removed** from `LiveSeries`. Closes the 6.2% per-push self-time
+  line the gRPC experiment surfaced. Bare push is now ~27% faster
+  for the typical case where `maxBytes` was never set.
+
+- **Partition router uses a trusted-pipeline fast path.**
+  `LivePartitionedSeries.#routeEvent`, `collect()`, and `apply()`
+  previously round-tripped `Event → row → Event` at every routing
+  hop — re-validating and re-allocating Events that the source
+  pipeline had already constructed. New `_pushTrustedEvents` method
+  on `LiveSeries` accepts pre-validated Event references (under a
+  schema-identity contract; only used internally where the source
+  and target schemas are guaranteed identical). Closes the ~7%
+  combined self-time line in `#validateRow` (×2) and `Event`
+  constructor (×2) that the gRPC profile flagged.
+
+  Trusted-pipeline applies to: the source-to-partition route, the
+  per-partition replay-on-construct prefix, the unified-buffer
+  `collect()` subscriber, and `apply()`'s factory-output forwarding.
+  All four sites had identical schemas at both ends — the trust
+  contract holds without runtime re-checking.
+
+  `_pushTrustedEvents` is `@internal` and not exported from the
+  public type surface. Reach for `pushMany` from any external
+  context; the trusted variant skips schema validation and is
+  only safe for pond's own internal pipelines.
+
+### Tests
+
+- 4 new tests in `test/LiveSeries.test.ts` for the trusted-pipeline
+  path: insertion without re-validation, listener fan-out and
+  retention behaviour, ordering enforcement (strict still rejects
+  out-of-order on the trusted path — the trust contract is only
+  about validation/allocation, not insertion ordering), empty-array
+  no-op.
+- Removed the `retention: maxBytes` describe block in
+  `test/LiveSeries.test.ts` and the `forwards retention.maxBytes`
+  assertion in `test/LiveSeries.snapshot-append.test.ts`.
+- Total core tests: 1072 (was 1070; +4 new for the trusted path,
+  −2 for the removed maxBytes assertions).
+
+### Docs
+
+- `live-series.mdx`: retention table and example trimmed to
+  `maxEvents` + `maxAge` only. Removed the byte-estimate prose.
+
+[0.14.0]: https://github.com/pjm17971/pond-ts/compare/v0.13.2...v0.14.0
 
 ## [0.13.2] — 2026-05-01
 
