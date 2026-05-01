@@ -531,9 +531,24 @@ code rebuckets per-tick by grouping on `event.begin()`. Partitions
 declared via `{ groups }` emit in declared order; auto-spawned partitions
 emit in observation order.
 
-This shape is **only supported directly after `partitionBy(col)`** — not
-after a chained sugar method (`partitionBy(c).fill(...).rolling(...)`).
-That restriction is an MVP cap and may lift in a future release.
+**Restrictions in the experimental release:**
+
+- **Only supported directly after `partitionBy(col)`** — not after a
+  chained sugar method (`partitionBy(c).fill(...).rolling(...)`).
+- **Partition column name must not collide** with a reducer-output
+  column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
+  is rejected at construction; rename the reducer output (when
+  `AggregateOutputMap` lands on live rolling) or partition by a
+  different column.
+- **Late-spawn partitions** only appear in ticks **after** their first
+  event arrives. A partition not yet known to the sync source
+  contributes no row to the current tick — it joins the rotation when
+  its first event lands. To eagerly include a partition before any
+  events, declare it via `partitionBy(col, { groups: [...] })`.
+- **Return type is loose** (`LiveSource<SeriesSchema>` rather than a
+  schema-narrowed shape) in this experimental release. The schema is
+  correct at runtime; only the static types are widened. Tighter
+  typing is planned for stable `0.12.0` once the surface is settled.
 
 :::note[Experimental in 0.12.x]
 The `Trigger` API and the synchronised-partition output shape are

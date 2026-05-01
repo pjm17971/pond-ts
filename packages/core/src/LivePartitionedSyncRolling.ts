@@ -78,6 +78,13 @@ export class LivePartitionedSyncRolling<
 
   readonly #outputEvents: EventForSchema<Out>[];
   readonly #onEvent: Set<EventListener>;
+  /**
+   * Disposer functions for upstream subscriptions (one per partition
+   * `'event'` listener registered by the wiring in
+   * `LivePartitionedSeries.rolling`). `dispose()` runs and clears them.
+   */
+  readonly #unsubscribes: Set<() => void>;
+  #disposed: boolean;
 
   constructor(
     upstreamName: string,
@@ -140,6 +147,30 @@ export class LivePartitionedSyncRolling<
       );
     }
 
+    // Reject column-name collisions between the partition column and
+    // any reducer output column. Without this, the emit loop's record
+    // would overwrite the partition tag with the reducer output (or
+    // vice versa) silently — both columns share a name in the output
+    // schema, but `record[name]` only holds one value. Catch it at
+    // construction with a clear error.
+    if (this.#columns.some((c) => c.source === byColumn)) {
+      throw new TypeError(
+        `LivePartitionedSyncRolling: partition column '${byColumn}' collides ` +
+          `with a reducer-output column of the same name. Rename the reducer ` +
+          `output (e.g. via a dedicated alias once AggregateOutputMap is ` +
+          `supported on live rolling), or partition by a different column.`,
+      );
+    }
+    // Also reject collision with 'time' — though unlikely (partition
+    // columns can't be the first column of the schema), defend against
+    // future schema shapes that might break this assumption.
+    if (byColumn === 'time') {
+      throw new TypeError(
+        "LivePartitionedSyncRolling: partition column cannot be named 'time' " +
+          '(reserved for the time-keyed first column of the output schema).',
+      );
+    }
+
     // Output schema: [time, <byColumn>, ...mappingColumns].
     this.schema = Object.freeze([
       { name: 'time', kind: 'time' },
@@ -156,6 +187,8 @@ export class LivePartitionedSyncRolling<
     this.#lastBucketIdx = undefined;
     this.#outputEvents = [];
     this.#onEvent = new Set();
+    this.#unsubscribes = new Set();
+    this.#disposed = false;
 
     if (options.declaredGroups) {
       for (const k of options.declaredGroups) {
@@ -187,6 +220,36 @@ export class LivePartitionedSyncRolling<
     };
   }
 
+  /**
+   * Detach this sync source from every upstream partition it has
+   * subscribed to. Idempotent — calling twice is a no-op. After
+   * dispose, subsequent source events do not update internal state
+   * and no further events are emitted.
+   *
+   * The sync source's lifetime is independent of the
+   * `LivePartitionedSeries` that produced it: disposing the sync
+   * does not detach the partitioned series's other consumers, and
+   * disposing the partitioned series detaches this sync via the
+   * parent-disposer wiring in `LivePartitionedSeries.rolling`.
+   */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const unsub of this.#unsubscribes) {
+      unsub();
+    }
+    this.#unsubscribes.clear();
+  }
+
+  /**
+   * @internal — used by `LivePartitionedSeries.rolling` to register
+   * each per-partition `'event'` listener disposer so this sync
+   * source can detach them on `dispose()`.
+   */
+  _registerUnsubscribe(unsub: () => void): void {
+    this.#unsubscribes.add(unsub);
+  }
+
   // ── Wiring entry point ──────────────────────────────────────
 
   /**
@@ -197,6 +260,7 @@ export class LivePartitionedSyncRolling<
    * timestamp.
    */
   ingest(partitionKey: K, event: EventForSchema<S>): void {
+    if (this.#disposed) return;
     const state = this.#ensurePartition(partitionKey);
     const data = event.data() as Record<string, ColumnValue | undefined>;
     const values = this.#columns.map((c) => data[c.source]);

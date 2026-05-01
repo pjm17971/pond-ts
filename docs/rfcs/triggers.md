@@ -257,3 +257,19 @@ Three things to settle before I write code:
 1. **Sign-off requested on the four open questions above.**
 2. After sign-off, implementation in order: triggers.ts → option threading on `LiveRollingAggregation` → partitioned synchronisation path → tests → perf → docs.
 3. Publish as `0.12.0-experimental.0`. Both Codex (webapp) and the gRPC agent migrate; their friction notes inform the final stable `0.12.0`.
+
+## Post-implementation (2026-05-01) — Layer 2 review findings
+
+Adversarial review on PR #94 surfaced four real items that landed as fixes before publish, plus two deferred for stable `0.12.0`:
+
+**Fixed pre-publish:**
+
+- **Column-name collision now rejected at construction.** `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })` would have silently overwritten the partition tag with the reducer output. Constructor now throws with a clear error.
+- **`dispose()` exposed on the synchronised partitioned source.** Disposers are registered both with the sync source (so `sync.dispose()` detaches per-partition listeners directly) and with the parent `LivePartitionedSeries` (so the parent dispose path also cleans up). Idempotent in either order.
+- **Tests added** for column-collision rejection, dispose semantics, multi-partition multi-boundary jump, and late-spawn partition behavior. Test count: 25 (was 20).
+- **Documentation** updated to flag late-spawn partition semantics, the column-collision rejection rule, and the npm peer-dep mixing warning when consumers cross dist-tags.
+
+**Deferred for stable `0.12.0`:**
+
+- **Typed return shape** for the synchronised-partitioned path. Currently `LiveSource<SeriesSchema>` — runtime schema is correct, but static types widen. Needs a `RowSchemaForSyncRolling<S, M, ByCol>` helper that combines the partition column type from the source schema with the rolling output columns. Real type-plumbing work; better done once the surface is settled.
+- **Late-spawn semantics revisit.** Currently late partitions get no retroactive row in the current tick. If a real use case wants "every declared partition in every tick" or "partitions emit their first row for the tick they spawn in," the semantics can shift. Documented as an explicit limit for now.

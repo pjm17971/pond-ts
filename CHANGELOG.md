@@ -128,6 +128,26 @@ type-level changes; patch bumps are strictly additive.
   experiment's M3.5 milestone. Their friction notes inform the final
   stable `0.12.0`. If you migrate too, friction reports welcome.
 
+### Known limitations (experimental)
+
+- **Synchronised partitioned rolling output type is loose** —
+  `LiveSource<SeriesSchema>` rather than a schema-narrowed shape.
+  Runtime schema is correct; only static types widen. Tightening is
+  planned for stable `0.12.0`.
+- **Synchronised partitioned rolling rejects column-name collisions**
+  between the partition column and any reducer-output column at
+  construction (e.g. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`).
+  Rename the reducer output (once `AggregateOutputMap` lands on live
+  rolling) or partition by a different column.
+- **Late-spawn partitions only appear in ticks after their first event
+  arrives.** A partition unknown to the sync source contributes no
+  row to the current tick. Use `partitionBy(col, { groups: [...] })`
+  to eagerly include partitions from construction.
+- **Mixing `pond-ts@experimental` with `@pond-ts/react@^0.11.x`** will
+  produce an npm peer-dep warning. Both packages must come from the
+  same dist-tag — install both with `npm install pond-ts@experimental @pond-ts/react@experimental`,
+  or stay on `^0.11.0` for both.
+
 ## [0.11.8] — 2026-04-30
 
 ### Added

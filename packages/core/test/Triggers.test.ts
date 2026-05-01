@@ -341,6 +341,138 @@ describe('partitionBy().rolling(..., { trigger: Trigger.clock(...) })', () => {
   });
 });
 
+// ── Column collision rejection ───────────────────────────────────
+
+describe('partitionBy().rolling clock-trigger column collision', () => {
+  it('throws when partition column name collides with a reducer-output column', () => {
+    // Schema: [time, cpu, host]; partitionBy('cpu') would put 'cpu'
+    // as the partition tag, and a reducer mapping like { cpu: 'avg' }
+    // would also produce a 'cpu' output column. Without rejection,
+    // the emit loop's record would silently overwrite one with the
+    // other.
+    const live = makePartitioned();
+    expect(() =>
+      live
+        .partitionBy('cpu' as any) // partition column matches mapping output
+        .rolling(
+          '1m',
+          { cpu: 'avg' },
+          { trigger: Trigger.clock(Sequence.every('30s')) },
+        ),
+    ).toThrowError(/collides with a reducer-output column/);
+  });
+});
+
+// ── Dispose semantics on the sync source ──────────────────────────
+
+describe('partitionBy().rolling clock-trigger — dispose semantics', () => {
+  it('dispose() detaches from upstream partitions and stops emitting', () => {
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    const spy = vi.fn();
+    ticks.on('event', spy);
+
+    live.push([0, 0.4, 'api-1']);
+    live.push([5_000, 0.5, 'api-2']);
+    live.push([30_001, 0.6, 'api-1']); // boundary crossing → 2 emissions
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    (ticks as any).dispose();
+
+    // After dispose, further pushes don't reach the sync rolling
+    live.push([60_001, 0.7, 'api-1']);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('dispose() is idempotent', () => {
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+    expect(() => {
+      (ticks as any).dispose();
+      (ticks as any).dispose();
+      (ticks as any).dispose();
+    }).not.toThrow();
+  });
+});
+
+// ── Multi-partition multi-boundary jump ───────────────────────────
+
+describe('partitionBy().rolling clock-trigger — multi-partition multi-boundary jump', () => {
+  it('a single source event jumping multiple boundaries fires exactly one tick across all partitions', () => {
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // Establish two partitions before any boundary crossing
+    live.push([0, 0.4, 'api-1']);
+    live.push([5_000, 0.5, 'api-2']);
+    expect(ticks.length).toBe(0);
+
+    // One event that jumps THREE boundaries (0→30s→60s→90s)
+    live.push([90_001, 0.6, 'api-1']);
+
+    // Exactly one tick fires — at 90_000, with both known partitions
+    // emitting one row each (2 events total, both keyed at 90_000)
+    expect(ticks.length).toBe(2);
+    expect(ticks.at(0)!.begin()).toBe(90_000);
+    expect(ticks.at(1)!.begin()).toBe(90_000);
+    const hosts = new Set([ticks.at(0)!.get('host'), ticks.at(1)!.get('host')]);
+    expect(hosts).toEqual(new Set(['api-1', 'api-2']));
+  });
+});
+
+// ── Late-spawn partition semantics ────────────────────────────────
+
+describe('partitionBy().rolling clock-trigger — late-spawn partitions', () => {
+  it('a partition that spawns AFTER the first tick only appears in subsequent ticks', () => {
+    // Documented limitation: the sync source emits one row per known
+    // partition per tick. A partition that has not yet been spawned
+    // has no row in the current tick — it joins the rotation on its
+    // first event and emits starting with the next tick crossing.
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    live.push([0, 0.4, 'api-1']);
+    live.push([30_001, 0.6, 'api-1']); // tick at 30_000 — only 'api-1' known
+    expect(ticks.length).toBe(1);
+    expect(ticks.at(0)!.get('host')).toBe('api-1');
+
+    // 'api-2' arrives AFTER the first tick. Its first event spawns
+    // it; it joins the rotation but doesn't retroactively emit for
+    // the 30_000 tick.
+    live.push([35_000, 0.5, 'api-2']);
+    expect(ticks.length).toBe(1); // no new emission yet
+
+    // Next boundary crossing — both partitions now emit
+    live.push([60_001, 0.7, 'api-2']);
+    expect(ticks.length).toBe(3); // 1 prior + 2 (api-1 and api-2 at 60_000)
+  });
+});
+
 // ── Chained-view rejection ─────────────────────────────────────────
 
 describe('LivePartitionedView.rolling rejects clock trigger', () => {

@@ -518,10 +518,16 @@ export class LivePartitionedSeries<
       // Wire existing partitions and future spawns into the sync
       // rolling. Each per-partition LiveSeries emits its own events;
       // we forward them all into the shared sync state.
+      //
+      // Disposer ownership: each partition listener's unsubscribe is
+      // registered with BOTH the sync rolling (so `sync.dispose()`
+      // detaches them) and the parent series's `#disposers` (so the
+      // parent's dispose path also detaches them). Both paths are
+      // idempotent — calling them in either order, or both, is safe.
       const subscribe = (key: K, partition: LiveSource<S>) => {
-        this.#disposers.add(
-          partition.on('event', (event) => sync.ingest(key, event)),
-        );
+        const unsub = partition.on('event', (event) => sync.ingest(key, event));
+        sync._registerUnsubscribe(unsub);
+        this.#disposers.add(unsub);
       };
       for (const [key, partition] of this.#partitions) {
         subscribe(key, partition);
