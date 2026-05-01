@@ -7,9 +7,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.1...HEAD
 
 ## [Unreleased]
+
+## [0.13.1] — 2026-05-01
+
+Strictly additive over v0.13.0. Adds a sugar factory on `Trigger`
+following Codex feedback after adopting v0.12 triggers in the
+production webapp telemetry app: the explicit form
+(`Trigger.clock(Sequence.every('30s'))`) is "ceremony-heavy for the
+common case."
+
+### Added
+
+- **`Trigger.every(duration, options?)`** — sugar for the common
+  `Trigger.clock(Sequence.every(duration, options))` pattern. Removes
+  the need to import `Sequence` for trigger-only use sites. Forwards
+  `{ anchor }` to `Sequence.every` and inherits the same fixed-step
+  validation:
+
+  ```ts
+  // Before
+  live.rolling('1m', mapping, {
+    trigger: Trigger.clock(Sequence.every('30s')),
+  });
+
+  // After
+  live.rolling('1m', mapping, { trigger: Trigger.every('30s') });
+
+  // Anchored variant (passes through to Sequence.every):
+  Trigger.every('30s', { anchor: 5_000 });
+  ```
+
+  The explicit `Trigger.clock(seq)` form remains for callers who
+  already hold a `Sequence` object (e.g. one shared across batch
+  `series.aggregate(seq, ...)` and live triggers) — `Trigger.every`
+  always builds a fresh `Sequence`.
+
+### Docs
+
+- Telemetry recipe and live-transforms doc updated to lead with
+  the sugar form. `Trigger.clock` documented as the explicit form
+  for "I already have a Sequence object" cases.
+- JSDoc on `LiveRollingAggregation.trigger` and the partitioned
+  rolling clock-trigger example updated to show the sugar.
+
+### Tests
+
+- 3 new tests in `test/Triggers.test.ts` covering: sugar produces
+  `kind: 'clock'` with correct stepMs/anchor; anchor option
+  forwards correctly; behavioural equivalence between
+  `Trigger.every('30s')` and `Trigger.clock(Sequence.every('30s'))`
+  pinned by emission-time comparison through a real
+  `LiveRollingAggregation`.
+- Total core tests: 1063 (was 1060).
+
+[0.13.1]: https://github.com/pjm17971/pond-ts/compare/v0.13.0...v0.13.1
 
 ## [0.13.0] — 2026-05-01
 

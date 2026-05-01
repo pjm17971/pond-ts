@@ -458,7 +458,7 @@ import { Trigger } from 'pond-ts';
 const rolling = timings.rolling(
   '1m',
   { latency: 'p95' },
-  { trigger: Trigger.clock(Sequence.every('30s')) },
+  { trigger: Trigger.every('30s') },
 );
 
 rolling.on('event', (event) => {
@@ -474,9 +474,13 @@ rolling.on('event', (event) => {
 console.log(rolling.value()); // { latency: 180 } — current state
 ```
 
-`Trigger.clock` requires a fixed-step `Sequence` (`Sequence.every('30s')`,
-`Sequence.hourly()`). Calendar sequences (`Sequence.daily()`,
-`Sequence.weekly()`) are rejected — boundary indexing needs a constant step.
+`Trigger.every(duration)` is sugar for the explicit
+`Trigger.clock(Sequence.every(duration))` form. Reach for the explicit
+form when you already hold a `Sequence` object (e.g. one shared across
+batch `series.aggregate(seq, ...)` and live triggers) — `Trigger.every`
+always builds a fresh `Sequence`. Both forms require a fixed-step
+duration; calendar sequences (`Sequence.daily()`, `Sequence.weekly()`)
+are rejected — boundary indexing needs a constant step.
 
 **Emission semantics:**
 
@@ -511,7 +515,7 @@ const ticks = live
   .rolling(
     '1m',
     { cpu: 'avg' },
-    { trigger: Trigger.clock(Sequence.every('200ms')) },
+    { trigger: Trigger.every('200ms') },
   );
 
 // One row per host per tick, all sharing the same boundary timestamp
@@ -544,7 +548,7 @@ const ticks = live
   .rolling(
     '1m',
     { cpu: 'avg' },
-    { trigger: Trigger.clock(Sequence.every('200ms')) },
+    { trigger: Trigger.every('200ms') },
   );
 ```
 

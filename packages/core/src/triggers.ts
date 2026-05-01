@@ -1,4 +1,6 @@
 import { Sequence } from './Sequence.js';
+import type { DurationInput } from './utils/duration.js';
+import type { TimestampInput } from './temporal.js';
 
 /**
  * A `Trigger` describes when an accumulator should emit. Pond's live
@@ -13,7 +15,8 @@ import { Sequence } from './Sequence.js';
  * import { Trigger, Sequence } from 'pond-ts';
  *
  * const event = Trigger.event();                              // per-event (default)
- * const clock = Trigger.clock(Sequence.every('30s'));         // per sequence boundary
+ * const tick  = Trigger.every('30s');                         // sugar: fixed cadence
+ * const clock = Trigger.clock(Sequence.every('30s'));         // explicit Sequence form
  * ```
  *
  * Pass to an accumulator's `trigger` option to switch its emission
@@ -21,7 +24,7 @@ import { Sequence } from './Sequence.js';
  *
  * ```ts
  * live.rolling('1m', { latency: 'p95' }, {
- *   trigger: Trigger.clock(Sequence.every('30s')),
+ *   trigger: Trigger.every('30s'),
  * });
  * ```
  *
@@ -85,6 +88,38 @@ export const Trigger = Object.freeze({
       );
     }
     return Object.freeze({ kind: 'clock', sequence });
+  },
+
+  /**
+   * Sugar for the common case `Trigger.clock(Sequence.every(duration, options))`.
+   * Constructs a fixed-cadence sequence trigger without requiring callers
+   * to import `Sequence` for trigger-only use sites.
+   *
+   * ```ts
+   * live.rolling('1m', { latency: 'p95' }, {
+   *   trigger: Trigger.every('30s'),
+   * });
+   *
+   * // Anchored — same as Trigger.clock(Sequence.every('30s', { anchor: 5_000 })):
+   * Trigger.every('30s', { anchor: 5_000 });
+   * ```
+   *
+   * Reach for the explicit {@link Trigger.clock} form when you already
+   * hold a `Sequence` object (e.g. one shared across batch
+   * `series.aggregate(seq, ...)` and live triggers) — `Trigger.every`
+   * always builds a fresh `Sequence`.
+   *
+   * @throws TypeError if `duration` is not a valid fixed-step duration
+   *   string (rejected at `Sequence.every` construction).
+   */
+  every(
+    duration: DurationInput,
+    options: { anchor?: TimestampInput } = {},
+  ): ClockTrigger {
+    return Object.freeze({
+      kind: 'clock',
+      sequence: Sequence.every(duration, options),
+    });
   },
 
   /**

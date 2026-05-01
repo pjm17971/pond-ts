@@ -44,6 +44,52 @@ describe('Trigger', () => {
       /requires a fixed-step Sequence/,
     );
   });
+
+  it('Trigger.every(duration) is sugar for Trigger.clock(Sequence.every(duration))', () => {
+    const sugar = Trigger.every('30s');
+    expect(sugar.kind).toBe('clock');
+    expect(Object.isFrozen(sugar)).toBe(true);
+    expect(sugar.sequence.stepMs()).toBe(30_000);
+    // Default anchor matches Sequence.every default (epoch).
+    expect(sugar.sequence.anchor()).toBe(0);
+  });
+
+  it('Trigger.every forwards the anchor option', () => {
+    const sugar = Trigger.every('30s', { anchor: 5_000 });
+    expect(sugar.sequence.stepMs()).toBe(30_000);
+    expect(sugar.sequence.anchor()).toBe(5_000);
+  });
+
+  it('Trigger.every drives a rolling at the same cadence as Trigger.clock', () => {
+    // Behavioural pin: sugar produces the same emission cadence as
+    // explicit Trigger.clock(Sequence.every(...)).
+    const live = makeLive();
+    const sugar = live.rolling(
+      '1m',
+      { value: 'avg' },
+      { trigger: Trigger.every('30s') },
+    );
+    const explicit = makeLive();
+    const explicitRolling = explicit.rolling(
+      '1m',
+      { value: 'avg' },
+      { trigger: Trigger.clock(Sequence.every('30s')) },
+    );
+
+    const sugarTimes: number[] = [];
+    sugar.on('event', (e) => sugarTimes.push(e.begin()));
+    const explicitTimes: number[] = [];
+    explicitRolling.on('event', (e) => explicitTimes.push(e.begin()));
+
+    for (const ts of [0, 5_000, 30_001, 60_001]) {
+      live.push([ts, ts / 1000]);
+      explicit.push([ts, ts / 1000]);
+    }
+
+    expect(sugarTimes).toEqual(explicitTimes);
+    sugar.dispose();
+    explicitRolling.dispose();
+  });
 });
 
 // ── Default (event) trigger preserves existing behavior ──────────
