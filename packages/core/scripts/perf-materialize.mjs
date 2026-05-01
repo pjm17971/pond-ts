@@ -54,8 +54,9 @@ const results = [];
   const range = new TimeRange({ start: 0, end: (length - 1) * 100 });
   const seq = Sequence.every('1s');
   results.push(
-    benchmark(`${length} events / 100ms spacing → 1s bucket (select=last)`, () =>
-      series.materialize(seq, { select: 'last', range }),
+    benchmark(
+      `${length} events / 100ms spacing → 1s bucket (select=last)`,
+      () => series.materialize(seq, { select: 'last', range }),
     ),
   );
   results.push(
@@ -108,8 +109,7 @@ const results = [];
   results.push(
     benchmark(
       `${length} events / 4 hosts → partitionBy + materialize + collect`,
-      () =>
-        series.partitionBy('host').materialize(seq, { range }).collect(),
+      () => series.partitionBy('host').materialize(seq, { range }).collect(),
       3,
     ),
   );

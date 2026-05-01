@@ -84,7 +84,7 @@ sweep producing three RFC-style design docs.
   snapshot+append primitives), v0.11.5 (packaging fix — README/
   LICENSE/CHANGELOG in tarballs), v0.11.6 (count() doc clarification
   on duplicate keys; the M3 friction notes confirmed this fixed M1's
-  misdiagnosed stagger workaround), v0.12.0-experimental (Trigger
+  misdiagnosed stagger workaround), v0.12.0 (Trigger
   primitive — M3.5's `HostAggregator` motivated the synchronised
   partitioned-rolling shape; webapp telemetry's `.sample()` use case
   folded into the same redesign).
@@ -113,7 +113,7 @@ events, sample percentiles to a backend every 30 s, display live in
 React). Real production code in a trading-platform app.
 
 - **Drove:** v0.11.8 `rolling.sample(sequence)` (later subsumed by
-  v0.12.0-experimental triggers). The first design attempt was an
+  v0.12.0 triggers). The first design attempt was an
   overload (`live.rolling(Sequence, '1m', mapping)`) mirroring the
   batch shape; closed PR #92 walked that back after implementation
   surfaced a hidden-ownership leak and locked-away rolling state.
@@ -121,7 +121,7 @@ React). Real production code in a trading-platform app.
   Then the gRPC experiment's M3.5 work surfaced that `.sample()` was
   itself overly specific — the deeper factoring is `Source × Trigger
 × Aggregation`, with `.sample()` collapsing into "rolling with a
-  clock trigger." v0.12.0-experimental ships `Trigger.clock(seq)`
+  clock trigger." v0.12.0 ships `Trigger.clock(seq)`
   as a first-class concept; `.sample()` and `LiveSequenceRollingAggregation`
   are deleted. The webapp telemetry agent migrates from `.sample()`
   to `{ trigger: Trigger.clock(seq) }` as part of v0.12 adoption.
@@ -1401,7 +1401,7 @@ common case shouldn't pay an adaptor-indirection tax.
 
 > **Status note (2026-05-01):** `.sample()` and
 > `LiveSequenceRollingAggregation` shipped in v0.11.8 and were deleted
-> in v0.12.0-experimental.0. The use case is preserved as
+> in v0.12.0. The use case is preserved as
 > `live.rolling('1m', m, { trigger: Trigger.clock(seq) })` — same
 > emission semantics, no separate class. Migration is a one-line
 > change in the webapp telemetry track. The design history below is
@@ -1506,10 +1506,10 @@ useLiveQuery(timings, () => rolling.value());
   footgun the overload required. Captured in the closed PR #92 as a
   deliberate blind alley.
 
-### Shipped (experimental): Trigger as a first-class concept (v0.12.0-experimental.0)
+### Shipped: Trigger as a first-class concept (v0.12.0)
 
 > **Status note (2026-05-01):** the RFC below was approved and
-> implemented as v0.12.0-experimental.0. RFC document at
+> implemented as v0.12.0. RFC document at
 > `docs/rfcs/triggers.md`. Two real users migrating: Codex on webapp
 > telemetry, Claude on the gRPC experiment's M3.5 work. Their
 > friction notes inform the final stable v0.12.0 release. The

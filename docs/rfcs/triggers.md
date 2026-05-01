@@ -1,6 +1,6 @@
 # RFC: Trigger as a first-class concept in the live layer
 
-**Status:** Approved 2026-05-01, shipped as `0.12.0-experimental.0` on branch `feat/triggers`.
+**Status:** Approved 2026-05-01, shipped as `0.12.0` on branch `feat/triggers`.
 
 **Drafted:** 2026-05-01.
 **Authors:** the pond-ts library agent (Claude), in conversation with the user.
@@ -21,7 +21,7 @@
 
 PR #11 (M3.5 step 1) and PR #13 (`bench:agg`) on the gRPC experiment showed that pond's lack of a synchronised-tick primitive is forcing the experiment to roll its own aggregation outside the library — turning the bench into a measurement of the experiment's `HostAggregator`, not of pond. As long as the gap is unfilled, every additional milestone is testing pond less and less.
 
-The fix is small enough to scope as one PR and pre-1.0 enough to ship as `0.12.0-experimental.0` without committing to API stability. Two real users (Codex on webapp telemetry + the Claude gRPC agent) will migrate as soon as it's available; the friction-from-real-use shapes the production form.
+The fix is small enough to scope as one PR and pre-1.0 enough to ship as `0.12.0` without lengthy stabilisation. Two real users (Codex on webapp telemetry + the Claude gRPC agent) will migrate as soon as it's available; the friction-from-real-use shapes any follow-up.
 
 ## The factoring
 
@@ -53,7 +53,7 @@ import { Sequence } from './Sequence.js';
 
 export type Trigger = ClockTrigger | EventTrigger;
 // CountTrigger and CustomTrigger reserved for future expansion;
-// shipping only Clock + Event in the experimental release.
+// shipping only Clock + Event in 0.12.0.
 
 export type ClockTrigger = Readonly<{ kind: 'clock'; sequence: Sequence }>;
 export type EventTrigger = Readonly<{ kind: 'event' }>;
@@ -133,7 +133,7 @@ const rolling = live.rolling('1m', { latency: 'p95' });
 const sampled = rolling.sample(Sequence.every('30s'));
 sampled.on('event', e => fetch('/api/telemetry', ...));
 
-// v0.12.0-experimental:
+// v0.12.0:
 const rolling = live.rolling('1m', { latency: 'p95' }, {
   trigger: Trigger.clock(Sequence.every('30s')),
 });
@@ -206,7 +206,7 @@ A library-shipped delta-reducer family (`countSince`, `sumSince`, etc.) is a sep
 
 ## Migration plan
 
-| v0.11.8 form                                                      | v0.12.0-experimental form                                                                                 |
+| v0.11.8 form                                                      | v0.12.0 form                                                                                              |
 | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `live.rolling('1m', m).sample(Sequence.every('30s'))`             | `live.rolling('1m', m, { trigger: Trigger.clock(Sequence.every('30s')) })`                                |
 | `LiveSequenceRollingAggregation` (class)                          | **Deleted.** All references go away; the same shape is achievable via `LiveRollingAggregation` + trigger. |
@@ -215,7 +215,7 @@ A library-shipped delta-reducer family (`countSince`, `sumSince`, etc.) is a sep
 
 **Breakage scope:** v0.11.8 was published 2026-04-30. The webapp telemetry agent (Codex) is the only known caller of `.sample()` and `LiveSequenceRollingAggregation`. Migration: ~5-line change in their code. Pre-1.0; no semver concerns.
 
-The experimental release is published as `pond-ts@0.12.0-experimental.0` so users can opt in via `npm install pond-ts@experimental` without pulling it through `^0.11.0`. The next stable release reverts to `0.12.0` (no experimental tag) once feedback has informed any final API tweaks.
+Published as a minor bump to `0.12.0`. Pre-1.0 caret rules mean caret installs against `^0.11.0` keep getting `0.11.x`; consumers wanting the new shape upgrade their pin to `^0.12.0`.
 
 ## Implementation scope estimate
 
@@ -256,7 +256,7 @@ Three things to settle before I write code:
 
 1. **Sign-off requested on the four open questions above.**
 2. After sign-off, implementation in order: triggers.ts → option threading on `LiveRollingAggregation` → partitioned synchronisation path → tests → perf → docs.
-3. Publish as `0.12.0-experimental.0`. Both Codex (webapp) and the gRPC agent migrate; their friction notes inform the final stable `0.12.0`.
+3. Publish as `0.12.0` (minor bump from `0.11.8`). Both Codex (webapp) and the gRPC agent migrate to the trigger primitive; any further friction informs follow-up patch releases.
 
 ## Post-implementation (2026-05-01) — Layer 2 review findings
 

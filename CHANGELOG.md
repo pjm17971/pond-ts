@@ -7,19 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.0-experimental.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.0...HEAD
 
 ## [Unreleased]
 
-## [0.12.0-experimental.0] — 2026-05-01
+## [0.12.0] — 2026-05-01
 
-> **Experimental release.** Published under the `experimental` npm
-> dist-tag (`npm install pond-ts@experimental`). The API surface
-> introduced here is shaped by two known users (Codex on webapp
-> telemetry, Claude on the gRPC pipeline experiment) migrating in
-> parallel; their friction notes inform the final stable `0.12.0`.
-> Caret installs against `^0.11.0` continue to receive `0.11.x`
-> releases unchanged.
+The "triggers" release. Major redesign of how live accumulators
+control emission cadence — `Trigger` is now a first-class concept
+shaped by two converging real-world use cases (synchronised
+partitioned tick aggregation in the gRPC pipeline experiment,
+sequence-sampled rolling in webapp telemetry).
+
+Two correctness audits before publish: a Layer 2 Claude review
+(column collision, dispose, late-spawn, peer-dep) and a Codex
+adversarial review (quiet-partition stale samples, pre-existing
+data replay at construction, spawn-listener cleanup). All findings
+fixed and pinned with regression tests. 1039 / 1039 tests pass.
 
 ### Added
 
@@ -43,7 +47,7 @@ type-level changes; patch bumps are strictly additive.
   rolling.value(); // current rolling-window snapshot, independent of trigger
   ```
 
-  Two trigger variants in this experimental release:
+  Two trigger variants in this release:
   - **`Trigger.event()`** — per-event emission. Default; the historical
     behavior of `LiveRollingAggregation` when no trigger is specified.
   - **`Trigger.clock(sequence)`** — sequence-triggered emission. One
@@ -52,7 +56,7 @@ type-level changes; patch bumps are strictly additive.
     instants. Calendar sequences are rejected upfront.
 
   Future variants (`Trigger.count(n)`, custom predicates, compound
-  triggers) are reserved but not shipped in this release.
+  triggers) are reserved but not yet shipped.
 
 - **Synchronised partitioned rolling.** `LivePartitionedSeries.rolling`
   now accepts a clock trigger. The output is a
@@ -79,10 +83,10 @@ type-level changes; patch bumps are strictly additive.
   });
   ```
 
-  Restricted to direct-after-`partitionBy` for the experimental
-  release: chained sugar (`partitionBy(c).fill(...).rolling(...)`)
-  rejects clock triggers with a clear error. Lifts in a future release
-  once a real use case appears.
+  Restricted to direct-after-`partitionBy` in this release: chained
+  sugar (`partitionBy(c).fill(...).rolling(...)`) rejects clock
+  triggers with a clear error. Lifts in a future release once a real
+  use case appears.
 
   Closes the gRPC experiment's M3.5 dashboard friction note (the
   hand-rolled `HostAggregator` becomes ~10 lines of pond code).
@@ -123,17 +127,13 @@ type-level changes; patch bumps are strictly additive.
 - **`docs/rfcs/triggers.md`** captures the full design rationale,
   the four sign-off questions, and the migration plan. Read this if
   you want the "why this shape" context.
-- **Two known users** are migrating against this experimental
-  release: Codex on the webapp telemetry track and Claude on the gRPC
-  experiment's M3.5 milestone. Their friction notes inform the final
-  stable `0.12.0`. If you migrate too, friction reports welcome.
 
-### Known limitations (experimental)
+### Known limitations
 
 - **Synchronised partitioned rolling output type is loose** —
   `LiveSource<SeriesSchema>` rather than a schema-narrowed shape.
   Runtime schema is correct; only static types widen. Tightening is
-  planned for stable `0.12.0`.
+  queued for a follow-up release.
 - **Synchronised partitioned rolling rejects column-name collisions**
   between the partition column and any reducer-output column at
   construction (e.g. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`).
@@ -143,10 +143,6 @@ type-level changes; patch bumps are strictly additive.
   arrives.** A partition unknown to the sync source contributes no
   row to the current tick. Use `partitionBy(col, { groups: [...] })`
   to eagerly include partitions from construction.
-- **Mixing `pond-ts@experimental` with `@pond-ts/react@^0.11.x`** will
-  produce an npm peer-dep warning. Both packages must come from the
-  same dist-tag — install both with `npm install pond-ts@experimental @pond-ts/react@experimental`,
-  or stay on `^0.11.0` for both.
 
 ## [0.11.8] — 2026-04-30
 
@@ -198,7 +194,7 @@ type-level changes; patch bumps are strictly additive.
   frontend-collection → backend-summary pattern using `.sample()`,
   plus the React in-app display via `useLiveQuery`.
 
-[0.12.0-experimental.0]: https://github.com/pjm17971/pond-ts/compare/v0.11.8...v0.12.0-experimental.0
+[0.12.0]: https://github.com/pjm17971/pond-ts/compare/v0.11.8...v0.12.0
 [0.11.8]: https://github.com/pjm17971/pond-ts/compare/v0.11.7...v0.11.8
 
 ## [0.11.7] — 2026-04-29
