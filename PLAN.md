@@ -105,6 +105,26 @@ sweep producing three RFC-style design docs.
   examples, snapshot-cache design, slow-client policy defaults,
   per-phase metrics histograms (`pushManyTotalMs`, `fanoutRecordMs`,
   `fanoutSerializeMs`, `fanoutBroadcastMs`) as opt-in defaults.
+- **V4 validation (2026-05-01).** After v0.14.0 shipped, the
+  experiment re-profiled and produced a four-way bench (V1 manual
+  `HostAggregator` → V2 v0.12 trial → V3 v0.13.0 → V4 v0.14.0).
+  Every CHANGELOG-claimed delta from the v0.14.0 wave shows up in
+  the bench: heap −17% to −50% across moderate loads, ceiling
+  throughput +23% (208k → 256k/s), tick fps +30%, p99 1.91ms →
+  1.15ms. The two profile-flagged hot spots
+  (`estimateEventBytes` + `Event → row → Event` round-trips) are
+  gone or reduced as advertised. **The remaining ~38% ceiling gap
+  to V1 is now isolated to one operator:**
+  `LivePartitionedSyncRolling.ingest` per-event reducer-state
+  work (8.2% self time at V4 ceiling, larger share than V3's 4.1%
+  only because more events are processed per second — the per-event
+  cost is roughly unchanged). Reducer batching is the natural
+  next lever IF a future user pushes near ceiling; production
+  target is 100k/s (V4 hits 256k/s = 2.56× headroom), so it
+  doesn't earn its API surface yet. PR #14 on
+  `pond-grpc-experiment` carries the four-way story; the
+  experiment is now considered fully realized for the M3.5
+  scope and ready for its writeup.
 
 ### Webapp telemetry (ongoing; drove v0.11.8)
 
@@ -1584,6 +1604,36 @@ useLiveQuery(timings, () => rolling.value());
   Reference workaround in the meantime: two separate `rolling()` calls
   off the same source. Documented as the "if you find yourself wanting
   this" footnote in the eventual `tap` RFC.
+
+- **Reducer batching — deferred per the V4 bench.** The gRPC
+  experiment's V4 profile (after v0.14.0 shipped) confirms
+  `LivePartitionedSyncRolling.ingest` per-event reducer-state work
+  (`stdev.add` / `avg.add` / Welford-style running stats) is the
+  largest remaining hot spot at ceiling — 8.2% self time. Welford
+  updates ARE associative, so an `addMany([values])` reducer
+  interface that processes a contiguous run of events in one call
+  is sound. But:
+
+  - **Bench validates the user's earlier triage.** Production target
+    on the experiment is 100k events/sec; V4 hits 256k/s (2.56×
+    headroom). The remaining ceiling gap to V1 is real but doesn't
+    block any working app.
+  - **API surface impact is wide.** Every reducer (built-in + the
+    custom-function path) would need an `addMany` variant; call
+    sites in `LiveRollingAggregation` and `LivePartitionedSyncRolling`
+    would need to detect "do I have a contiguous batch?" and route
+    accordingly. Easy to get wrong; non-trivial to test.
+  - **Real gain is narrow.** Welford batching only wins on bulk
+    pushes (`pushMany` of N rows in one call). The streaming
+    pattern — one event per network handler call — doesn't benefit.
+
+  Revisit if (a) a second user reports ceiling-bound throughput as
+  blocking, OR (b) the gRPC experiment's writeup ends up needing
+  pond to claim parity with V1 on the saturation regime (it
+  currently doesn't; the writeup's honesty section will say "for
+  high-rate, custom aggregators win because they can amortise
+  reducer state across batches that pond's primitives can't see
+  is shareable"). Until then, parked.
 
 ### RFC sketch: trigger taxonomy expansion (post-v0.13.2)
 
