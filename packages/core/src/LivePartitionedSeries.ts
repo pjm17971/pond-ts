@@ -525,6 +525,23 @@ export class LivePartitionedSeries<
     mapping: M,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LiveSource<SeriesSchema>;
+  // Catch-all overloads for callers that pass `options` as a variable
+  // typed `LiveRollingOptions` (rather than an inline literal whose
+  // `trigger` field TS can narrow). Without these the four narrowed
+  // overloads above don't match — the trigger discriminator is unknown
+  // at the call site, so the result is the union of both branches.
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ):
+    | LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>
+    | LiveSource<SeriesSchema>;
   rolling(
     window: RollingWindow,
     mapping: AggregateMap<S> | AggregateOutputMap<S>,
@@ -1021,6 +1038,23 @@ export class LivePartitionedView<
     mapping: M,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LiveSource<SeriesSchema>;
+  // Catch-all overloads for callers that pass `options` as a variable
+  // typed `LiveRollingOptions`. See the matching block on
+  // `LivePartitionedSeries.rolling` for the full rationale.
+  rolling<const M extends AggregateMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ):
+    | LivePartitionedView<SBase, RollingSchema<R, M>, K>
+    | LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ):
+    | LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>
+    | LiveSource<SeriesSchema>;
   rolling(
     window: RollingWindow,
     mapping: AggregateMap<R> | AggregateOutputMap<R>,

@@ -1189,3 +1189,90 @@ const badBaselineColumn = wideTyped.baseline('api-3_cpu', {
   sigma: 2,
 });
 void badBaselineColumn;
+
+// ── partitionBy().rolling overload coverage with options variables ─────
+//
+// Codex flagged (2026-05-01) that the four narrowed overloads on
+// `LivePartitionedSeries.rolling` and `LivePartitionedView.rolling` did
+// not accept callers passing `options` as a variable typed
+// `LiveRollingOptions` — only inline literals worked. The catch-all
+// overloads added in v0.13.0 close this hole; these assertions pin it.
+
+import { LiveSeries, Trigger } from '../src/index.js';
+import type { LiveRollingOptions } from '../src/LiveRollingAggregation.js';
+
+const liveCpuSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+const liveCpu = new LiveSeries({ name: 'cpu', schema: liveCpuSchema });
+
+// Inline literal: untyped → routes to event-trigger overload (returns
+// LivePartitionedView).
+const inlineEvt = liveCpu.partitionBy('host').rolling('1m', { cpu: 'avg' });
+void inlineEvt;
+
+// Inline literal with explicit clock trigger → routes to clock-trigger
+// overload (returns LiveSource<SeriesSchema>).
+const inlineClock = liveCpu
+  .partitionBy('host')
+  .rolling(
+    '1m',
+    { cpu: 'avg' },
+    { trigger: Trigger.clock(Sequence.every('30s')) },
+  );
+void inlineClock;
+
+// Variable-typed options — Codex's failing case. Catch-all overload
+// accepts it and returns the union of both branches.
+const optsVar: LiveRollingOptions = { trigger: Trigger.event() };
+const varEvt = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { cpu: 'avg' }, optsVar);
+void varEvt;
+
+const optsVarEmpty: LiveRollingOptions = {};
+const varEmpty = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { cpu: 'avg' }, optsVarEmpty);
+void varEmpty;
+
+const optsVarClock: LiveRollingOptions = {
+  trigger: Trigger.clock(Sequence.every('30s')),
+};
+const varClock = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { cpu: 'avg' }, optsVarClock);
+void varClock;
+
+// Same coverage with the AggregateOutputMap shape.
+const varAlias = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { mean: { from: 'cpu', using: 'avg' } }, optsVar);
+void varAlias;
+
+const varAliasEmpty = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { mean: { from: 'cpu', using: 'avg' } }, optsVarEmpty);
+void varAliasEmpty;
+
+const varAliasClock = liveCpu
+  .partitionBy('host')
+  .rolling('1m', { mean: { from: 'cpu', using: 'avg' } }, optsVarClock);
+void varAliasClock;
+
+// Chained partitioned view (LivePartitionedView.rolling) — same catch-all
+// coverage. Use fill() to land on a chained view.
+const chainEvt = liveCpu
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling('1m', { cpu: 'avg' }, optsVar);
+void chainEvt;
+
+const chainAlias = liveCpu
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling('1m', { mean: { from: 'cpu', using: 'avg' } }, optsVarEmpty);
+void chainAlias;

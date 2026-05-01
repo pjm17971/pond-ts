@@ -84,6 +84,25 @@ the live surface.
   recommendation: alias multiple built-ins to compose stats from
   one source column.
 
+### Fixed
+
+- **`partitionBy(...).rolling(..., options)` now accepts `options` as
+  a variable typed `LiveRollingOptions`, not just inline literals.**
+  Pre-fix, the four narrowed overloads on
+  `LivePartitionedSeries.rolling` and `LivePartitionedView.rolling`
+  required TS to see the `trigger` field's discriminator at the call
+  site — so a caller writing
+  `const opts: LiveRollingOptions = { trigger: Trigger.event() };
+  partitioned.rolling(window, mapping, opts);` got `TS2769 No
+  overload matches this call`. Pre-existing hole on the partitioned
+  surface; surfaced by the v0.13.0 Codex adversarial pass. Closed by
+  adding catch-all overloads that accept the broader
+  `LiveRollingOptions` and return the union of both trigger
+  branches; the four narrowed overloads above still match inline
+  literals first, so callers keep the precise return type when they
+  pass the trigger inline. Pinned with `test-d/types.test-d.ts`
+  coverage using both inline-literal and variable forms.
+
 ### Tests
 
 - 16 new tests in `test/LiveAggregateOutputMap.test.ts` covering:
