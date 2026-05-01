@@ -53,8 +53,9 @@ const results = [];
   const ts = makeSeries(N, hosts);
   const HOSTS = Array.from({ length: hosts }, (_, i) => `host-${i}`);
   results.push(
-    benchmark(`${N} events × ${hosts} hosts → partitionBy('host') (no groups)`, () =>
-      ts.partitionBy('host'),
+    benchmark(
+      `${N} events × ${hosts} hosts → partitionBy('host') (no groups)`,
+      () => ts.partitionBy('host'),
     ),
   );
   results.push(
@@ -116,7 +117,8 @@ const results = [];
   results.push(
     benchmark(
       `${N} events × ${hosts} hosts → partitionBy(groups).toMap(g => g.toPoints())`,
-      () => ts.partitionBy('host', { groups: HOSTS }).toMap((g) => g.toPoints()),
+      () =>
+        ts.partitionBy('host', { groups: HOSTS }).toMap((g) => g.toPoints()),
     ),
   );
 }

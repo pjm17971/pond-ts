@@ -57,9 +57,8 @@ const results = [];
     ),
   );
   results.push(
-    benchmark(
-      `${N} events × ${hosts} hosts → toMap(g => g.toPoints())`,
-      () => ts.partitionBy('host').toMap((g) => g.toPoints()),
+    benchmark(`${N} events × ${hosts} hosts → toMap(g => g.toPoints())`, () =>
+      ts.partitionBy('host').toMap((g) => g.toPoints()),
     ),
   );
   results.push(

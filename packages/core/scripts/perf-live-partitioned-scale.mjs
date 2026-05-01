@@ -90,7 +90,9 @@ function runCell(P, N, simSec) {
   };
 }
 
-console.log('=== Matrix sweep (10s simulated, partial rolling-window state) ===');
+console.log(
+  '=== Matrix sweep (10s simulated, partial rolling-window state) ===',
+);
 const SIM_SEC = 10;
 const Ps = [1, 10, 100, 1000];
 const Ns = [1, 10, 100];
@@ -103,8 +105,12 @@ for (const P of Ps) {
   }
 }
 
-console.log('\n=== Saturation cell (full 1m rolling state at the upper-right corner) ===');
-console.log('(P=100 × N=100 × 60s — 600k events, ~6k events per rolling window per partition)');
+console.log(
+  '\n=== Saturation cell (full 1m rolling state at the upper-right corner) ===',
+);
+console.log(
+  '(P=100 × N=100 × 60s — 600k events, ~6k events per rolling window per partition)',
+);
 const saturation = runCell(100, 100, 60);
 console.log(JSON.stringify(saturation));
 

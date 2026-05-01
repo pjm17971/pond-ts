@@ -442,20 +442,26 @@ This makes `LiveRollingAggregation` the live equivalent of the batch `rolling()`
 output buffer grows unboundedly — downstream consumers can compose with
 `window()` to bound it if needed.
 
-### Sampling on a Sequence: `rolling.sample(seq)`
+### Trigger-based emission
 
-Use `rolling.sample(sequence)` when you want to **report** the rolling
-aggregate at a regular cadence rather than per-event. The returned source
-emits one snapshot of the rolling state each time a source event crosses
-an epoch-aligned boundary of the sequence.
+A rolling aggregation's emission cadence is controlled by an optional
+`trigger` on the `rolling` call. The default is per-event emission (the
+historical behaviour). Pass `Trigger.clock(sequence)` to switch to
+sequence-triggered emission — one snapshot fires when a source event
+crosses an epoch-aligned boundary of the sequence.
 
 ```ts
-const rolling = timings.rolling('1m', { latency: 'p95' });
+import { Trigger } from 'pond-ts';
 
-// Backend report every 30 s of event time
-const reported = rolling.sample(Sequence.every('30s'));
+// Webapp telemetry: backend report every 30 s of event time;
+// rolling.value() drives the in-app display from the same state.
+const rolling = timings.rolling(
+  '1m',
+  { latency: 'p95' },
+  { trigger: Trigger.clock(Sequence.every('30s')) },
+);
 
-reported.on('event', (event) => {
+rolling.on('event', (event) => {
   fetch('/api/telemetry', {
     method: 'POST',
     body: JSON.stringify({
@@ -465,14 +471,12 @@ reported.on('event', (event) => {
   });
 });
 
-// Same rolling drives an in-app live display, no extra deque
-console.log(rolling.value()); // { latency: 180 }
+console.log(rolling.value()); // { latency: 180 } — current state
 ```
 
-`sequence` must be a **fixed-step** `Sequence` (`Sequence.every('30s')`,
+`Trigger.clock` requires a fixed-step `Sequence` (`Sequence.every('30s')`,
 `Sequence.hourly()`). Calendar sequences (`Sequence.daily()`,
-`Sequence.weekly()`) are rejected — boundary indexing needs a constant
-step.
+`Sequence.weekly()`) are rejected — boundary indexing needs a constant step.
 
 **Emission semantics:**
 
@@ -489,14 +493,69 @@ step.
   on the source) do not trigger emission — only events that advance
   the bucket index do. Late events are absorbed silently by the
   rolling window's normal recompute.
-- **Independent lifetimes.** `sample.dispose()` only detaches the
-  sampler from the rolling — it does NOT dispose the rolling. Call
-  `rolling.dispose()` separately when done with the rolling.
+- **`rolling.value()` is independent of trigger.** It always reports
+  the current rolling-window snapshot, regardless of when the trigger
+  last fired. Use it to drive a live display alongside trigger-based
+  backend reporting (one rolling, two consumers, no duplicated state).
 
-The output is a `LiveSequenceRollingAggregation`, a full `LiveSource` with
-the same view-transform surface as the rolling itself (`filter`, `map`,
-`select`, `window`, `diff`, `rate`, `pctChange`, `fill`, `cumulative`,
-`rolling`, `aggregate`).
+### Synchronised partitioned rolling
+
+When you partition first and pass a clock trigger, **all partitions
+emit synchronously on every boundary crossing** — when any partition's
+event crosses the boundary, every known partition's rolling snapshot
+fires at the same instant.
+
+```ts
+const ticks = live
+  .partitionBy('host')
+  .rolling(
+    '1m',
+    { cpu: 'avg' },
+    { trigger: Trigger.clock(Sequence.every('200ms')) },
+  );
+
+// One row per host per tick, all sharing the same boundary timestamp
+ticks.on('event', (event) => {
+  console.log(
+    event.begin(), // boundary timestamp, same for every host this tick
+    event.get('host'),
+    event.get('cpu'),
+  );
+});
+```
+
+The output is a `LiveSource` whose schema is
+`[time, <partitionColumn>, ...mappingColumns]` — one event per known
+partition per tick, all carrying the same boundary timestamp. Consumer
+code rebuckets per-tick by grouping on `event.begin()`. Partitions
+declared via `{ groups }` emit in declared order; auto-spawned partitions
+emit in observation order.
+
+**Restrictions in this release:**
+
+- **Only supported directly after `partitionBy(col)`** — not after a
+  chained sugar method (`partitionBy(c).fill(...).rolling(...)`).
+- **Partition column name must not collide** with a reducer-output
+  column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
+  is rejected at construction; rename the reducer output (when
+  `AggregateOutputMap` lands on live rolling) or partition by a
+  different column.
+- **Late-spawn partitions** only appear in ticks **after** their first
+  event arrives. A partition not yet known to the sync source
+  contributes no row to the current tick — it joins the rotation when
+  its first event lands. To eagerly include a partition before any
+  events, declare it via `partitionBy(col, { groups: [...] })`.
+- **Return type is loose** (`LiveSource<SeriesSchema>` rather than a
+  schema-narrowed shape). The schema is correct at runtime; only the
+  static types are widened. Tighter typing is queued for a follow-up
+  release once the surface settles.
+
+:::note[New in 0.12.0]
+The `Trigger` API and the synchronised-partition output shape are
+new in `0.12.0`. The `event` and `clock` trigger variants are
+locked; future trigger types (`count`, `custom`, compound triggers)
+are reserved but not yet shipped.
+:::
 
 :::note[Multiple percentiles per column]
 The live-side `rolling()` only accepts the `AggregateMap<S>` shape

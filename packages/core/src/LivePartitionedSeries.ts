@@ -1,5 +1,6 @@
 import { LiveSeries, type LiveSeriesOptions } from './LiveSeries.js';
 import { LiveRollingAggregation } from './LiveRollingAggregation.js';
+import { LivePartitionedSyncRolling } from './LivePartitionedSyncRolling.js';
 import {
   makeCumulativeView,
   makeDiffView,
@@ -7,6 +8,7 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './LiveView.js';
+import type { Trigger } from './triggers.js';
 import {
   type AggregateMap,
   type DiffSchema,
@@ -479,8 +481,102 @@ export class LivePartitionedSeries<
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+  ): LivePartitionedView<S, RollingSchema<S, M>, K>;
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
+  ): LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateMap<S>>(
+    window: RollingWindow,
+    mapping: M,
     options?: LiveRollingOptions,
-  ): LivePartitionedView<S, RollingSchema<S, M>, K> {
+  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema> {
+    // Clock trigger → synchronised partitioned emission. Returns a
+    // LiveSource<RowSchema> directly (no LivePartitionedView wrap)
+    // because the output is already a flat per-partition-row stream;
+    // each tick fires N events (one per known partition) at the same
+    // boundary timestamp.
+    if (options?.trigger?.kind === 'clock') {
+      const syncOptions: {
+        minSamples?: number;
+        declaredGroups?: ReadonlyArray<K>;
+      } = {};
+      if (options.minSamples !== undefined)
+        syncOptions.minSamples = options.minSamples;
+      if (this.groups !== undefined) syncOptions.declaredGroups = this.groups;
+      const sync = new LivePartitionedSyncRolling<S, K, SeriesSchema>(
+        this.name,
+        this.schema,
+        this.by,
+        window,
+        mapping as AggregateMap<S>,
+        options.trigger,
+        syncOptions,
+      );
+      // Wire existing partitions and future spawns into the sync
+      // rolling. Each per-partition LiveSeries emits its own events;
+      // we forward them all into the shared sync state.
+      //
+      // Disposer ownership: each partition listener's unsubscribe is
+      // registered with BOTH the sync rolling (so `sync.dispose()`
+      // detaches them) and the parent series's `#disposers` (so the
+      // parent's dispose path also detaches them). Both paths are
+      // idempotent — calling them in either order, or both, is safe.
+      const subscribe = (key: K, partition: LiveSource<S>) => {
+        const unsub = partition.on('event', (event) => sync.ingest(key, event));
+        sync._registerUnsubscribe(unsub);
+        this.#disposers.add(unsub);
+      };
+
+      // Replay existing partition events into the sync rolling in
+      // global timestamp order. Without this, a sync rolling
+      // constructed against a pre-populated source would discard the
+      // existing history and only see future events — and the very
+      // first future event would just initialise lastBucketIdx
+      // instead of crossing it. Mirrors the LiveRollingAggregation
+      // constructor's `for (let i = 0; i < source.length; i++)
+      // this.#ingest(...)` replay pattern, generalised across
+      // partitions: events from different partitions must interleave
+      // by timestamp so the bucket index advances monotonically
+      // (otherwise a later-iterated partition's earlier events would
+      // be silently discarded as bucketIdx <= lastBucketIdx).
+      type Existing = { ts: number; key: K; event: EventForSchema<S> };
+      const existing: Existing[] = [];
+      for (const [key, partition] of this.#partitions) {
+        for (let i = 0; i < partition.length; i++) {
+          const ev = partition.at(i)!;
+          existing.push({ ts: ev.begin(), key, event: ev });
+        }
+      }
+      existing.sort((a, b) => a.ts - b.ts);
+      for (const { key, event } of existing) {
+        sync.ingest(key, event);
+      }
+
+      // Subscribe to future events on every existing partition.
+      for (const [key, partition] of this.#partitions) {
+        subscribe(key, partition);
+      }
+
+      // Spawn listener — captures `sync` to subscribe future
+      // partitions. Register a remover with `sync.dispose()` so the
+      // parent series doesn't retain a closure on the disposed sync
+      // (which would prevent garbage collection on long-lived
+      // high-cardinality partitioned sources with create/dispose
+      // cycles).
+      const onSpawnSet = this.#onSpawn;
+      const spawnHandler: SpawnListener<S, K> = (key, partition) => {
+        subscribe(key, partition);
+      };
+      onSpawnSet.add(spawnHandler);
+      sync._registerUnsubscribe(() => onSpawnSet.delete(spawnHandler));
+
+      return sync;
+    }
+
+    // Default: per-partition rolling with per-partition emission.
     return new LivePartitionedView<S, RollingSchema<S, M>, K>(
       this,
       (sub) =>
@@ -789,6 +885,18 @@ export class LivePartitionedView<
     mapping: M,
     options?: LiveRollingOptions,
   ): LivePartitionedView<SBase, RollingSchema<R, M>, K> {
+    // MVP cap: synchronised partitioned rolling (clock trigger) is
+    // only supported directly after partitionBy(), not after chained
+    // sugar like fill().rolling(...). The chained shape needs the
+    // factory output's schema threaded into the sync rolling, which
+    // we'll plumb when a real use case appears.
+    if (options?.trigger && options.trigger.kind !== 'event') {
+      throw new TypeError(
+        'Clock-triggered partitioned rolling is only supported directly ' +
+          'after partitionBy(), not after chained sugar methods. Restructure as ' +
+          '`live.partitionBy(col).rolling(window, mapping, { trigger: ... })`.',
+      );
+    }
     const prev = this.#factory;
     return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
       this.#root,
