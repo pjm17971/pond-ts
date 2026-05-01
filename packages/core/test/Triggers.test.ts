@@ -358,9 +358,11 @@ describe('LiveRollingAggregation — count trigger (Trigger.count)', () => {
 
   it('per-partition rolling counts each partition independently', () => {
     const live = makePartitioned();
-    const rolling = live
-      .partitionBy('host')
-      .rolling('5m', { cpu: 'avg' }, { trigger: Trigger.count(2) });
+    const rolling = live.partitionBy('host').rolling(
+      '5m',
+      { cpu: 'avg', host: 'last' }, // include host so the unified output keeps it
+      { trigger: Trigger.count(2) },
+    );
 
     const emitted: Array<{ host: unknown; cpu: unknown }> = [];
     rolling
@@ -374,11 +376,17 @@ describe('LiveRollingAggregation — count trigger (Trigger.count)', () => {
     live.push([1_000, 0.5, 'api-2']);
     expect(emitted).toHaveLength(0); // each host has only 1 event
 
-    live.push([2_000, 0.6, 'api-1']); // api-1 hits count=2 → emits
+    // api-1 hits count=2 → emits its rolling window's avg of [0.4, 0.6]
+    live.push([2_000, 0.6, 'api-1']);
     expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.host).toBe('api-1');
+    expect(emitted[0]!.cpu as number).toBeCloseTo(0.5, 5);
 
-    live.push([3_000, 0.7, 'api-2']); // api-2 hits count=2 → emits
+    // api-2 hits count=2 → emits its rolling window's avg of [0.5, 0.7]
+    live.push([3_000, 0.7, 'api-2']);
     expect(emitted).toHaveLength(2);
+    expect(emitted[1]!.host).toBe('api-2');
+    expect(emitted[1]!.cpu as number).toBeCloseTo(0.6, 5);
   });
 });
 
