@@ -7,9 +7,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.0...HEAD
 
 ## [Unreleased]
+
+## [0.14.0] — 2026-05-01
+
+Removes the byte-based retention path on `LiveSeries` — a speculative
+feature added pre-v0.10 that no real user reached for. Surfaced by
+the gRPC experiment's V3 profiling pass: `estimateEventBytes` was
+the largest single self-time line at 6.2% (called twice per push,
+plus once per evicted event), all to maintain a `#byteEstimate`
+counter that no working app actually used.
+
+Pre-1.0 cleanup. The `maxEvents` and `maxAge` retention policies
+remain — they cover every real eviction pattern the experiments
+have surfaced.
+
+### Removed (breaking, pre-1.0)
+
+- **`retention.maxBytes`** option on `LiveSeriesOptions`. Use
+  `retention.maxEvents` for count-based caps; `maxBytes` was
+  approximate (rough per-event byte estimate) and the imprecision
+  meant it was rarely used as designed. If you need actual memory
+  pressure protection, count-based caps are more predictable.
+
+  Migration: replace `{ retention: { maxBytes: N } }` with
+  `{ retention: { maxEvents: M } }` where M is your desired
+  upper bound on event count.
+
+### Changed
+
+- **`estimateEventBytes` and the `#byteEstimate` accumulator
+  removed** from `LiveSeries`. Closes the 6.2% self-time line
+  the gRPC experiment surfaced. At their saturation regime,
+  this alone is a measurable per-event win; at typical
+  dashboard load, it just removes dead work.
+
+### Tests
+
+- Removed the `retention: maxBytes` describe block in
+  `test/LiveSeries.test.ts`.
+- Removed the `forwards retention.maxBytes` assertion in
+  `test/LiveSeries.snapshot-append.test.ts`.
+
+### Docs
+
+- `live-series.mdx`: retention table and example trimmed to
+  `maxEvents` + `maxAge` only. Removed the byte-estimate prose.
+
+[0.14.0]: https://github.com/pjm17971/pond-ts/compare/v0.13.2...v0.14.0
 
 ## [0.13.2] — 2026-05-01
 

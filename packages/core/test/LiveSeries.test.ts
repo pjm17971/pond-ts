@@ -317,20 +317,6 @@ describe('retention: maxAge', () => {
   });
 });
 
-describe('retention: maxBytes', () => {
-  it('evicts events to stay within byte budget', () => {
-    const live = makeLive({ retention: { maxBytes: 200 } });
-    live.push(
-      [0, 10, 'a'],
-      [1000, 20, 'b'],
-      [2000, 30, 'c'],
-      [3000, 40, 'd'],
-      [4000, 50, 'e'],
-    );
-    expect(live.length).toBeLessThan(5);
-  });
-});
-
 describe('retention: combined', () => {
   it('applies maxEvents and maxAge together', () => {
     const live = makeLive({

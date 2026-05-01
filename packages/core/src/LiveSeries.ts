@@ -145,17 +145,6 @@ function compareKeys(a: EventKey, b: EventKey): number {
   return a.begin() !== b.begin() ? a.begin() - b.begin() : a.end() - b.end();
 }
 
-function estimateEventBytes(event: Event<EventKey, unknown>): number {
-  let bytes = 64; // base overhead (object, key, data refs)
-  const data = event.data() as Record<string, unknown>;
-  for (const v of Object.values(data)) {
-    if (typeof v === 'number') bytes += 8;
-    else if (typeof v === 'string') bytes += 2 * v.length;
-    else if (typeof v === 'boolean') bytes += 4;
-  }
-  return bytes;
-}
-
 // ── Types ───────────────────────────────────────────────────────
 
 export type OrderingMode = 'strict' | 'drop' | 'reorder';
@@ -163,7 +152,6 @@ export type OrderingMode = 'strict' | 'drop' | 'reorder';
 export type RetentionPolicy = {
   maxEvents?: number;
   maxAge?: DurationInput;
-  maxBytes?: number;
 };
 
 export type LiveSeriesOptions<S extends SeriesSchema> = {
@@ -208,10 +196,8 @@ export class LiveSeries<S extends SeriesSchema> {
   readonly #graceWindowMs: number;
   readonly #maxEvents: number;
   readonly #maxAgeMs: number;
-  readonly #maxBytes: number;
 
   #events: EventForSchema<S>[];
-  #byteEstimate: number;
 
   readonly #onEvent: Set<EventListener<S>>;
   readonly #onBatch: Set<BatchListener<S>>;
@@ -235,7 +221,6 @@ export class LiveSeries<S extends SeriesSchema> {
     const ret = options.retention ?? {};
     this.#maxEvents = ret.maxEvents ?? Infinity;
     this.#maxAgeMs = ret.maxAge ? parseDuration(ret.maxAge) : Infinity;
-    this.#maxBytes = ret.maxBytes ?? Infinity;
 
     // A late event accepted within grace but older than maxAge would be
     // evicted the moment retention ran — the grace contract would be a
@@ -255,7 +240,6 @@ export class LiveSeries<S extends SeriesSchema> {
     }
 
     this.#events = [];
-    this.#byteEstimate = 0;
     this.#onEvent = new Set();
     this.#onBatch = new Set();
     this.#onEvict = new Set();
@@ -315,7 +299,6 @@ export class LiveSeries<S extends SeriesSchema> {
       const event = this.#validateRow(row);
       if (this.#insert(event)) {
         added.push(event);
-        this.#byteEstimate += estimateEventBytes(event as any);
         for (const fn of this.#onEvent) fn(event);
       }
     }
@@ -369,7 +352,6 @@ export class LiveSeries<S extends SeriesSchema> {
   clear(): void {
     const evicted = this.#events;
     this.#events = [];
-    this.#byteEstimate = 0;
     if (evicted.length > 0) {
       for (const fn of this.#onEvict) fn(evicted);
     }
@@ -747,28 +729,8 @@ export class LiveSeries<S extends SeriesSchema> {
       evictCount = Math.max(evictCount, i);
     }
 
-    if (this.#maxBytes !== Infinity && this.#byteEstimate > this.#maxBytes) {
-      let i = evictCount;
-      let freed = 0;
-      for (let j = 0; j < evictCount; j++) {
-        freed += estimateEventBytes(this.#events[j] as any);
-      }
-      while (
-        i < this.#events.length &&
-        this.#byteEstimate - freed > this.#maxBytes
-      ) {
-        freed += estimateEventBytes(this.#events[i] as any);
-        i++;
-      }
-      evictCount = Math.max(evictCount, i);
-    }
-
     if (evictCount === 0) return [];
 
-    const evicted = this.#events.splice(0, evictCount);
-    for (const e of evicted) {
-      this.#byteEstimate -= estimateEventBytes(e as any);
-    }
-    return evicted;
+    return this.#events.splice(0, evictCount);
   }
 }

@@ -240,16 +240,6 @@ describe('LiveSeries.fromJSON (static factory)', () => {
     expect(live.length).toBe(0);
   });
 
-  it('forwards retention.maxBytes', () => {
-    // 1024 bytes is plenty for a few small events; this just pins
-    // that the option reaches the constructor.
-    const live = LiveSeries.fromJSON(
-      { name: 'src', schema, rows: [[0, 0.5, 'api-1']] },
-      { retention: { maxBytes: 1024 } },
-    );
-    expect(live.length).toBe(1);
-  });
-
   it('forwards graceWindow + ordering=reorder', () => {
     const live = LiveSeries.fromJSON(
       { name: 'src', schema, rows: [[1000, 0.5, 'api-1']] },

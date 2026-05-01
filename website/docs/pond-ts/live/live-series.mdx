@@ -30,7 +30,7 @@ live-collection role, with retention baked in instead of bolted on.
 | `Pond` (live store)      | `LiveSeries`                                   |
 | `Aggregator`             | `LiveAggregation`                              |
 | custom rolling processor | `LiveRollingAggregation`                       |
-| manual eviction on push  | `retention: { maxEvents / maxAge / maxBytes }` |
+| manual eviction on push  | `retention: { maxEvents / maxAge }`            |
 | `Pipeline` for live      | method chain on `LiveSeries` / `LiveView`      |
 
 ## Creating a LiveSeries
@@ -105,21 +105,16 @@ const live = new LiveSeries({
   retention: {
     maxEvents: 1000, // keep at most 1000 events
     maxAge: '30m', // drop events older than 30 minutes
-    maxBytes: 1_000_000, // approximate byte budget (~1 MB)
   },
 });
 ```
 
-All three policies can be combined. When multiple policies apply, the one that
-evicts the most events wins. Eviction always removes the oldest events first.
+Both policies can be combined. When both apply, the one that evicts the most
+events wins. Eviction always removes the oldest events first.
 
 **`maxAge`** is relative to the latest event's timestamp, not wall-clock time.
 This follows the "data is the clock" principle — if no events arrive, nothing
 is evicted.
-
-**`maxBytes`** uses a rough per-event estimate (64 bytes overhead + 8 per
-number + 2×length per string + 4 per boolean). It's meant for order-of-magnitude
-memory capping, not precise measurement.
 
 Duration strings support `ms`, `s`, `m`, `h`, `d` suffixes, or plain
 millisecond numbers.
