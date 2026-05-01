@@ -64,7 +64,8 @@ export type LiveRollingOptions = {
    * Emission cadence. Defaults to `Trigger.event()` — emits one
    * snapshot per source event push (the historical behavior).
    *
-   * Pass `Trigger.clock(Sequence.every('30s'))` to switch to
+   * Pass `Trigger.every('30s')` (or the equivalent
+   * `Trigger.clock(Sequence.every('30s'))`) to switch to
    * sequence-triggered emission: one snapshot fires when a source
    * event crosses an epoch-aligned boundary of the sequence; output
    * timestamps are the boundary instants. If no events arrive during

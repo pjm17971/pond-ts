@@ -501,7 +501,7 @@ export class LivePartitionedSeries<
    * partitioned.rolling(
    *   '5m',
    *   { cpu: 'avg' },                  // host is auto-injected
-   *   { trigger: Trigger.clock(Sequence.every('200ms')) },
+   *   { trigger: Trigger.every('200ms') },
    * );
    * ```
    */

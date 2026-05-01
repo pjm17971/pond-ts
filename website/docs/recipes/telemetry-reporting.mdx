@@ -12,7 +12,7 @@ in-app live display.
 **The pattern:**
 
 1. Collect timing events into a `LiveSeries` as they happen.
-2. Call `rolling()` with a `Trigger.clock(sequence)` to maintain a
+2. Call `rolling()` with `Trigger.every(duration)` to maintain a
    trailing rolling window AND emit one snapshot per reporting interval
    in a single primitive.
 3. Subscribe to the rolling and `fetch` each emitted snapshot to the
@@ -23,7 +23,7 @@ in-app live display.
 ## Setup
 
 ```ts
-import { LiveSeries, Sequence, Trigger } from 'pond-ts';
+import { LiveSeries, Trigger } from 'pond-ts';
 
 // ── Schema ──────────────────────────────────────────────────────
 const schema = [
@@ -41,7 +41,7 @@ export const rolling = timings.rolling(
   '1m',
   { latency: 'p95' },
   {
-    trigger: Trigger.clock(Sequence.every('30s')),
+    trigger: Trigger.every('30s'),
     minSamples: 10, // suppress output until the window is warm
   },
 );
@@ -77,7 +77,7 @@ const stats = timings.rolling(
     p95: { from: 'latency', using: 'p95' },
     p99: { from: 'latency', using: 'p99' },
   },
-  { trigger: Trigger.clock(Sequence.every('30s')), minSamples: 10 },
+  { trigger: Trigger.every('30s'), minSamples: 10 },
 );
 
 stats.on('event', (event) => {
@@ -190,7 +190,7 @@ const ticks = timings
   .rolling(
     '1m',
     { latency: 'p95' },
-    { trigger: Trigger.clock(Sequence.every('30s')) },
+    { trigger: Trigger.every('30s') },
   );
 
 // Each tick: one event per known endpoint, all sharing the same ts.
@@ -204,7 +204,8 @@ ticks.on('event', (event) => {
 
 ## Emission semantics
 
-`Trigger.clock(sequence)` is **data-driven**, not timer-driven — it
+`Trigger.every(duration)` (and the explicit `Trigger.clock(sequence)`
+form it desugars to) is **data-driven**, not timer-driven — it
 emits when incoming events cross an epoch-aligned interval boundary,
 not on a wall clock. If the app goes idle (no fetch activity), no
 report is sent. If a burst of events arrives after a quiet period,

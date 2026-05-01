@@ -1512,6 +1512,31 @@ useLiveQuery(timings, () => rolling.value());
   footgun the overload required. Captured in the closed PR #92 as a
   deliberate blind alley.
 
+- **`Trigger.every(duration)` sugar — shipped in v0.13.1.** Codex
+  feedback after adopting v0.12 triggers in the production webapp
+  telemetry app: `Trigger.clock(Sequence.every('30s'))` is "ceremony-
+  heavy for the common case." Sugar added as a one-line wrapper that
+  forwards `(duration, { anchor })` to `Sequence.every` internally.
+  The explicit `Trigger.clock(seq)` form remains for callers who
+  already hold a `Sequence` object (e.g. one shared across batch
+  `series.aggregate(seq, ...)` and live triggers) — `Trigger.every`
+  always builds a fresh `Sequence`. Telemetry recipe + live-transforms
+  doc updated to lead with the sugar form.
+
+- **`Trigger.clock` naming wrinkle — deferred.** Codex flagged the
+  same v0.12 retrospective: "the word `clock` made me briefly expect
+  wall-clock timers." Docs cleared up the data-driven semantics in
+  seconds, so the friction is real but mild. Considered renaming to
+  `Trigger.boundary(seq)` or `Trigger.sequence(seq)` for semantic
+  precision. Held for two reasons: (1) one signal isn't enough to
+  pay the migration cost across an in-flight RFC, two active
+  experiments, and existing tests/CHANGELOG/docs; (2) a wall-clock
+  trigger may eventually be a real ask, in which case `Trigger.clock`
+  becomes a natural umbrella with `Trigger.eventClock` (current data-
+  driven behaviour) vs `Trigger.wallClock` (timer-driven). Revisit if
+  a second user reports the same naming friction OR if a wall-clock
+  trigger lands and the umbrella naming becomes the deciding factor.
+
 - **Sub-window primitive — `rolling(...).tap(seq, mapping)` over a
   shared event buffer.** Surfaced by the gRPC experiment's
   `HostAggregator` walkback (2026-05-01) and the v0.13.0 retrospective
