@@ -1512,6 +1512,40 @@ useLiveQuery(timings, () => rolling.value());
   footgun the overload required. Captured in the closed PR #92 as a
   deliberate blind alley.
 
+- **Sub-window primitive — `rolling(...).tap(seq, mapping)` over a
+  shared event buffer.** Surfaced by the gRPC experiment's
+  `HostAggregator` walkback (2026-05-01) and the v0.13.0 retrospective
+  on multi-window patterns. The agent's two-window pattern (1m
+  baseline `{ mean, sd, n }` for "what's normal" + 200ms current-tick
+  for "right now on screen") is now half-covered by v0.13.0:
+  `AggregateOutputMap` collapses the baseline stats into one rolling.
+  But the second window — the current-tick aggregation at the
+  dashboard's update cadence — still requires its own `rolling()` with
+  its own deque, so a custom aggregator that shares the buffer across
+  both cutoffs can beat pond on memory at high partition × event-rate
+  scale.
+
+  Sketched primitive: `tap` returns a sub-rolling that reads from the
+  parent rolling's deque, maintains its own reducer state, and
+  enforces a sub-window cutoff (typed-constraint: sub-window ≤ parent
+  window). Type system allows it; runtime cost is the parent's add
+  loop plus an O(1) per-event sub-state update. Memory savings are
+  parent-buffer-only — saves `N_parent × 8` bytes per partition per
+  sub-window.
+
+  **Why deferred:** the savings only matter at extreme scale (≥10k
+  partitions or kHz/partition), which the gRPC experiment isn't yet
+  hitting. The naive "two rollings" pattern is good enough for the
+  ≥99% telemetry/observability dashboard regime. Pondjs never claimed
+  parity with custom aggregators at extreme scale; v0.13's writeup
+  honesty section says exactly this. Revisit when a second user lands
+  on the same wall — that's the design signal worth more than one
+  user's data.
+
+  Reference workaround in the meantime: two separate `rolling()` calls
+  off the same source. Documented as the "if you find yourself wanting
+  this" footnote in the eventual `tap` RFC.
+
 ### Shipped: Trigger as a first-class concept (v0.12.0)
 
 > **Status note (2026-05-01):** the RFC below was approved and
