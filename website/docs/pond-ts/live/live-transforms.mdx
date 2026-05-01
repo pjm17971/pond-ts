@@ -532,9 +532,9 @@ declared via `{ groups }` emit in declared order; auto-spawned partitions
 emit in observation order.
 
 **Composes with chained sugar.** A clock trigger also works after
-chained methods like `fill`, `select`, `map`, `filter`. The chain
-factory runs per partition and the sync rolling subscribes to each
-chain output:
+chained methods on the partitioned surface (`fill`, `diff`, `rate`,
+`pctChange`, `cumulative`). The chain factory runs per partition and
+the sync rolling subscribes to each chain output:
 
 ```ts
 // Per-host gap-filling before synchronised tick aggregation

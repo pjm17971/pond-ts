@@ -466,16 +466,41 @@ export class LivePartitionedSeries<
   /**
    * Per-partition `rolling`. See {@link LiveSeries.rolling}.
    *
-   * **Partition column drops by default.** `rolling`'s output
-   * schema only retains columns named in `mapping`. Without
-   * including the partition column, the unified output of the
-   * chain loses the partition tag (e.g. `host` becomes
-   * `undefined`). To keep the partition column visible, include
-   * it in `mapping` with a passthrough reducer:
+   * Two emission modes, chosen by the `trigger` option:
+   *
+   * **Default (no trigger / `Trigger.event()`):** per-partition
+   * rolling — each partition has its own `LiveRollingAggregation`
+   * emitting per source event. Returns a chainable
+   * `LivePartitionedView`.
+   *
+   * In this mode the partition column **drops by default** —
+   * `rolling`'s output schema only retains columns named in
+   * `mapping`. Without including the partition column, the unified
+   * output of the chain loses the partition tag (e.g. `host` becomes
+   * `undefined`). To keep the partition column visible, include it
+   * with a passthrough reducer:
    *
    * ```ts
    * partitioned.rolling('5m', { cpu: 'avg', host: 'last' })
    * //                                       ^^^^^^^^^^^^^^
+   * ```
+   *
+   * **`Trigger.clock(seq)`:** synchronised partitioned rolling — all
+   * partitions share one bucket index and emit together at each
+   * boundary crossing. Returns a flat `LiveSource<RowSchema>` whose
+   * schema is `[time, <partitionColumn>, ...mappingColumns]`.
+   *
+   * In this mode the partition column is **auto-injected** from the
+   * routing key — do NOT include it in `mapping`. A collision
+   * between the partition column name and any reducer-output column
+   * is rejected at construction with a clear error.
+   *
+   * ```ts
+   * partitioned.rolling(
+   *   '5m',
+   *   { cpu: 'avg' },                  // host is auto-injected
+   *   { trigger: Trigger.clock(Sequence.every('200ms')) },
+   * );
    * ```
    */
   rolling<const M extends AggregateMap<S>>(

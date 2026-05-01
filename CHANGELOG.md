@@ -16,8 +16,8 @@ type-level changes; patch bumps are strictly additive.
 Strictly additive over v0.12.0. Closes the chained-view restriction
 on synchronised partitioned rolling. The trigger option now applies
 consistently across the entire `rolling()` surface — chained sugar
-methods (`fill`, `select`, `map`, `filter`, `diff`, `rate`, `cumulative`)
-no longer break it.
+methods on the partitioned surface (`fill`, `diff`, `rate`,
+`pctChange`, `cumulative`) no longer break it.
 
 ### Changed
 
