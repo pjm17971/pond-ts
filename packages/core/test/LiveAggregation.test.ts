@@ -277,7 +277,7 @@ describe('edge cases', () => {
         new LiveAggregation(live, Sequence.every('5s'), {
           nonexistent: 'sum',
         } as any),
-    ).toThrow(/unknown column/);
+    ).toThrow(/unknown source column/);
   });
 
   it('works with 1-second buckets', () => {

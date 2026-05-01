@@ -1,3 +1,7 @@
+import {
+  normalizeAggregateColumns,
+  type AggregateColumnSpec,
+} from './aggregate-columns.js';
 import { Event } from './Event.js';
 import { Time } from './Time.js';
 import { resolveReducer, type RollingReducerState } from './reducers/index.js';
@@ -10,17 +14,12 @@ import type { RollingWindow } from './LiveRollingAggregation.js';
 import { parseDuration } from './utils/duration.js';
 import type {
   AggregateMap,
+  AggregateOutputMap,
   ColumnValue,
   EventForSchema,
   LiveSource,
   SeriesSchema,
 } from './types.js';
-
-type ColumnSpec = {
-  source: string;
-  reducer: string;
-  kind: string;
-};
 
 type WindowEntry = {
   index: number;
@@ -60,7 +59,7 @@ export class LivePartitionedSyncRolling<
   readonly schema: Out;
 
   readonly #byColumn: string;
-  readonly #columns: ColumnSpec[];
+  readonly #columns: AggregateColumnSpec[];
   readonly #trigger: ClockTrigger;
   readonly #windowMs: number | undefined;
   readonly #windowCount: number | undefined;
@@ -112,7 +111,7 @@ export class LivePartitionedSyncRolling<
     byColumnKind: string,
     reducerInputSchema: SeriesSchema,
     window: RollingWindow,
-    mapping: AggregateMap<SeriesSchema>,
+    mapping: AggregateMap<SeriesSchema> | AggregateOutputMap<SeriesSchema>,
     trigger: ClockTrigger,
     options: { minSamples?: number; declaredGroups?: ReadonlyArray<K> } = {},
   ) {
@@ -142,38 +141,40 @@ export class LivePartitionedSyncRolling<
 
     // Resolve the rolling output columns from `mapping` against the
     // reducer-input schema (source schema in the root case, chain
-    // output schema in the chained case).
-    const colsByName = new Map(
-      reducerInputSchema.slice(1).map((c) => [c.name, c] as const),
-    );
-    this.#columns = [];
-    for (const [name, reducer] of Object.entries(
-      mapping as Record<string, string>,
-    )) {
-      const col = colsByName.get(name);
-      if (!col) throw new TypeError(`unknown column '${name}'`);
-      const outputKind = resolveReducer(reducer).outputKind;
-      const kind =
-        outputKind === 'number'
-          ? 'number'
-          : outputKind === 'array'
-            ? 'array'
-            : col.kind;
-      this.#columns.push({ source: name, reducer, kind });
+    // output schema in the chained case). Accepts either
+    // `AggregateMap` or `AggregateOutputMap` shapes via the shared
+    // helper.
+    this.#columns = normalizeAggregateColumns(reducerInputSchema, mapping);
+
+    // Live rolling currently only supports built-in (string) reducers
+    // — they have incremental rolling-state machinery (`add`/`remove`)
+    // that custom functions don't. Validate eagerly so the error
+    // surfaces at construction time, not when the first partition
+    // spawns. (Same gate as `LiveRollingAggregation`.)
+    for (const c of this.#columns) {
+      if (typeof c.reducer !== 'string') {
+        throw new TypeError(
+          `live partitioned sync rolling reducer for output '${c.output}' must be a built-in name; ` +
+            'custom function reducers are not supported on live rolling. ' +
+            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
+            'to compose multiple built-in reducers from one source column.',
+        );
+      }
     }
 
     // Reject column-name collisions between the partition column and
-    // any reducer output column. Without this, the emit loop's record
-    // would overwrite the partition tag with the reducer output (or
-    // vice versa) silently — both columns share a name in the output
-    // schema, but `record[name]` only holds one value. Catch it at
-    // construction with a clear error.
-    if (this.#columns.some((c) => c.source === byColumn)) {
+    // any reducer-OUTPUT column. The emit loop's record would
+    // overwrite the partition tag with the reducer output (or vice
+    // versa) silently — both share a name in the output schema, but
+    // `record[name]` only holds one value. With AggregateOutputMap,
+    // the alias is the user's choice — they can resolve a collision
+    // by renaming.
+    if (this.#columns.some((c) => c.output === byColumn)) {
       throw new TypeError(
         `LivePartitionedSyncRolling: partition column '${byColumn}' collides ` +
-          `with a reducer-output column of the same name. Rename the reducer ` +
-          `output (e.g. via a dedicated alias once AggregateOutputMap is ` +
-          `supported on live rolling), or partition by a different column.`,
+          `with a reducer-output column of the same name. Rename the alias ` +
+          `(e.g. \`{ ${byColumn}_avg: { from: '${byColumn}', using: 'avg' } }\`) ` +
+          `or partition by a different column.`,
       );
     }
     // Also reject collision with 'time' — though unlikely (partition
@@ -194,7 +195,9 @@ export class LivePartitionedSyncRolling<
       { name: 'time', kind: 'time' },
       { name: byColumn, kind: byColumnKind, required: false },
       ...this.#columns.map((c) => ({
-        name: c.source,
+        // Output column NAME is `c.output` — same as `c.source` for
+        // AggregateMap mappings, the user's alias for AggregateOutputMap.
+        name: c.output,
         kind: c.kind,
         required: false,
       })),
@@ -315,9 +318,12 @@ export class LivePartitionedSyncRolling<
   #ensurePartition(key: K): PartitionState {
     let state = this.#partitionStates.get(key);
     if (state) return state;
+    // The constructor's eager check guarantees every reducer is a
+    // built-in string by the time we get here, so `c.reducer` is
+    // safe to pass directly to `resolveReducer`.
     state = {
       states: this.#columns.map((c) =>
-        resolveReducer(c.reducer).rollingState(),
+        resolveReducer(c.reducer as string).rollingState(),
       ),
       entries: [],
       nextIndex: 0,
@@ -393,7 +399,7 @@ export class LivePartitionedSyncRolling<
       const record: Record<string, ColumnValue | undefined> = {};
       record[byCol] = key;
       for (let i = 0; i < colsLen; i++) {
-        record[cols[i]!.source] = warmup
+        record[cols[i]!.output] = warmup
           ? undefined
           : state.states[i]!.snapshot();
       }

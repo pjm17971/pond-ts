@@ -7,9 +7,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.13.0...HEAD
 
 ## [Unreleased]
+
+## [0.13.0] — 2026-05-01
+
+The "AggregateOutputMap on live" release. Closes the feature-parity
+gap between batch and live aggregation: the `{ alias: { from, using } }`
+mapping shape that batch `TimeSeries.rolling`/`aggregate` already
+accepted now works on `LiveSeries.rolling`, `LiveSeries.aggregate`,
+and the synchronised partitioned form. Multiple stats from one
+source column in a single rolling deque — no more "one rolling per
+percentile" workaround.
+
+The shared runtime helper (`normalizeAggregateColumns`) was already
+doing the work for batch; this release extracts it to
+`aggregate-columns.ts` and threads the type-level overloads through
+the live surface.
+
+### Added
+
+- **`AggregateOutputMap` on `LiveSeries.rolling` and
+  `LiveSeries.aggregate`.** Compose multiple built-in reducers from
+  one source column in a single pass:
+
+  ```ts
+  const band = live.rolling('1m', {
+    mean: { from: 'cpu', using: 'avg' },
+    sd: { from: 'cpu', using: 'stdev' },
+  });
+  band.value(); // { mean, sd } — single deque, one walk
+  ```
+
+  Threaded through `LiveView.rolling`/`aggregate`,
+  `LiveAggregation.rolling`, `LiveRollingAggregation.aggregate`,
+  `LivePartitionedSeries.rolling`, and `LivePartitionedView.rolling`
+  — so chained pipelines (`live.filter(...).rolling(...)`,
+  `live.partitionBy(c).fill(...).rolling(..., { trigger: ... })`)
+  accept either shape.
+
+- **Synchronised partitioned rolling with `AggregateOutputMap`.**
+  `partitionBy(col).rolling(window, mapping, { trigger: Trigger.clock(seq) })`
+  now accepts the alias form. Output schema becomes
+  `[time, <partitionColumn>, ...aliasColumns]`. The collision check
+  rejects when an alias output collides with the partition column
+  name (compare against the alias, not the source column).
+
+### Changed
+
+- **Better error message when a custom-function reducer is passed to
+  live aggregation.** `LiveAggregation` already failed at construction
+  via `resolveReducer(reducer)` (with a generic `unsupported aggregate
+  reducer` message); now the eager built-in-name check runs first and
+  emits a targeted error pointing at the `AggregateOutputMap` alias
+  workaround. Same eager behavior on `LivePartitionedSyncRolling`,
+  which previously failed lazily when the first partition spawned —
+  now fails at construction. Aligns with `LiveRollingAggregation`'s
+  long-standing eager check.
+
+- **Shared `normalizeAggregateColumns` helper.** Extracted from
+  `TimeSeries.ts` into `aggregate-columns.ts` and used by all three
+  live accumulators (`LiveRollingAggregation`, `LiveAggregation`,
+  `LivePartitionedSyncRolling`). Single source of truth for column
+  normalisation; identical error messages across batch and live
+  (`unknown source column`).
+
+### Constraints
+
+- **Custom-function reducers remain batch-only.** Live rolling and
+  live aggregation still require built-in reducer names (`'avg'`,
+  `'p95'`, etc.). Custom `(values) => ...` functions don't have the
+  incremental add/remove machinery the live path needs and are
+  rejected at construction with a clear error pointing at the
+  `AggregateOutputMap` workaround. This is the established
+  recommendation: alias multiple built-ins to compose stats from
+  one source column.
+
+### Fixed
+
+- **`partitionBy(...).rolling(..., options)` now accepts `options` as
+  a variable typed `LiveRollingOptions`, not just inline literals.**
+  Pre-fix, the four narrowed overloads on
+  `LivePartitionedSeries.rolling` and `LivePartitionedView.rolling`
+  required TS to see the `trigger` field's discriminator at the call
+  site — so a caller writing
+  `const opts: LiveRollingOptions = { trigger: Trigger.event() };
+  partitioned.rolling(window, mapping, opts);` got `TS2769 No
+  overload matches this call`. Pre-existing hole on the partitioned
+  surface; surfaced by the v0.13.0 Codex adversarial pass. Closed by
+  adding catch-all overloads that accept the broader
+  `LiveRollingOptions` and return the union of both trigger
+  branches; the four narrowed overloads above still match inline
+  literals first, so callers keep the precise return type when they
+  pass the trigger inline. Pinned with `test-d/types.test-d.ts`
+  coverage using both inline-literal and variable forms.
+
+### Tests
+
+- 16 new tests in `test/LiveAggregateOutputMap.test.ts` covering:
+  flat live rolling/aggregate with the alias form, chained-view
+  rolling/aggregate, `LiveAggregation.rolling` and
+  `LiveRollingAggregation.aggregate` chainable accumulators,
+  per-partition rolling, synchronised partitioned rolling with
+  alias outputs, output-vs-source column-collision rejection on
+  the synced form, and explicit kind override.
+- 2 existing tests updated (`LiveAggregation` and
+  `LiveRollingAggregation` "unknown column" → "unknown source column"
+  to match the shared helper's error string).
+- Test count: 1060 (was 1044).
+
+### Docs
+
+- `transforms/rolling.mdx`: live section now documents the
+  `AggregateOutputMap` shape with a band-chart example, plus a
+  callout that custom functions remain batch-only.
+- `recipes/telemetry-reporting.mdx`: "Want multiple percentiles?"
+  section rewritten — the workaround note is gone, replaced with
+  the single-pass `{ p50, p95, p99 }` pattern.
+
+[0.13.0]: https://github.com/pjm17971/pond-ts/compare/v0.12.1...v0.13.0
 
 ## [0.12.1] — 2026-05-01
 

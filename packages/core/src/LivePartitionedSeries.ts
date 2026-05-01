@@ -11,6 +11,7 @@ import {
 import type { Trigger } from './triggers.js';
 import {
   type AggregateMap,
+  type AggregateOutputMap,
   type DiffSchema,
   type EventDataForSchema,
   type EventForSchema,
@@ -20,6 +21,7 @@ import {
   type RowForSchema,
   type SeriesSchema,
 } from './types.js';
+import type { RollingOutputMapSchema } from './types-aggregate.js';
 import type { DurationInput } from './utils/duration.js';
 import type {
   LiveRollingOptions,
@@ -508,16 +510,43 @@ export class LivePartitionedSeries<
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
   ): LivePartitionedView<S, RollingSchema<S, M>, K>;
+  rolling<const M extends AggregateOutputMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+  ): LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>;
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
+  ): LiveSource<SeriesSchema>;
+  // Catch-all overloads for callers that pass `options` as a variable
+  // typed `LiveRollingOptions` (rather than an inline literal whose
+  // `trigger` field TS can narrow). Without these the four narrowed
+  // overloads above don't match — the trigger discriminator is unknown
+  // at the call site, so the result is the union of both branches.
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
+    options: LiveRollingOptions,
+  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ):
+    | LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>
+    | LiveSource<SeriesSchema>;
+  rolling(
+    window: RollingWindow,
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
     options?: LiveRollingOptions,
-  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema> {
+  ): any {
     // Clock trigger → synchronised partitioned emission. Returns a
     // LiveSource<RowSchema> directly (no LivePartitionedView wrap)
     // because the output is already a flat per-partition-row stream;
@@ -565,15 +594,15 @@ export class LivePartitionedSeries<
     }
 
     // Default: per-partition rolling with per-partition emission.
-    return new LivePartitionedView<S, RollingSchema<S, M>, K>(
+    return new LivePartitionedView<S, SeriesSchema, K>(
       this,
       (sub) =>
         new LiveRollingAggregation(
           sub,
           window,
-          mapping as AggregateMap<S>,
+          mapping,
           options,
-        ) as unknown as LiveSource<RollingSchema<S, M>>,
+        ) as unknown as LiveSource<SeriesSchema>,
     );
   }
 
@@ -994,18 +1023,43 @@ export class LivePartitionedView<
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
   ): LivePartitionedView<SBase, RollingSchema<R, M>, K>;
+  rolling<const M extends AggregateOutputMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+  ): LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>;
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
+  ): LiveSource<SeriesSchema>;
+  // Catch-all overloads for callers that pass `options` as a variable
+  // typed `LiveRollingOptions`. See the matching block on
+  // `LivePartitionedSeries.rolling` for the full rationale.
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
-    options?: LiveRollingOptions,
+    options: LiveRollingOptions,
   ):
     | LivePartitionedView<SBase, RollingSchema<R, M>, K>
-    | LiveSource<SeriesSchema> {
+    | LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateOutputMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions,
+  ):
+    | LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>
+    | LiveSource<SeriesSchema>;
+  rolling(
+    window: RollingWindow,
+    mapping: AggregateMap<R> | AggregateOutputMap<R>,
+    options?: LiveRollingOptions,
+  ): any {
     // Clock trigger → synchronised partitioned emission on the chain
     // output. The chain factory runs once per partition; the sync
     // rolling subscribes to each chain output's events (so reducers
@@ -1053,15 +1107,15 @@ export class LivePartitionedView<
     }
 
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
+    return new LivePartitionedView<SBase, SeriesSchema, K>(
       this.#root,
       (sub) =>
         new LiveRollingAggregation(
           prev(sub),
           window,
-          mapping as AggregateMap<R>,
+          mapping,
           options,
-        ) as unknown as LiveSource<RollingSchema<R, M>>,
+        ) as unknown as LiveSource<SeriesSchema>,
     );
   }
 }

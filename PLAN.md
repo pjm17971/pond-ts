@@ -1489,16 +1489,22 @@ useLiveQuery(timings, () => rolling.value());
   `live.rolling(...).sample(seq)` — make a deliberate aggregation
   decision, then emit the reduced result at intervals.
 
-- **`AggregateOutputMap` overload on `LiveSeries.rolling()`** — the
-  batch `series.rolling()` accepts both `AggregateMap<S>`
-  (`{ existingCol: reducer }`) and `AggregateOutputMap<S>`
-  (`{ alias: { from, using } }`); the live counterpart only takes the
-  former, so multi-reducer-per-column patterns
-  (`{ p50: { from: 'latency', using: 'p50' }, p95: ... }`) are
-  batch-only on the live side. Worth landing as a follow-up — same
-  type plumbing as the batch side, just plumbed through
-  `LiveRollingAggregation`. Surfaces in the telemetry recipe as the
-  "want multiple percentiles?" workaround section.
+- **`AggregateOutputMap` overload on `LiveSeries.rolling()`** —
+  **shipped in v0.13.0.** The batch `series.rolling()` accepted both
+  `AggregateMap<S>` (`{ existingCol: reducer }`) and
+  `AggregateOutputMap<S>` (`{ alias: { from, using } }`); live
+  rolling/aggregate now do too. The runtime helper
+  (`normalizeAggregateColumns`) was already doing the work for batch
+  — extracted to `aggregate-columns.ts` and threaded through the
+  three live accumulators (`LiveRollingAggregation`,
+  `LiveAggregation`, `LivePartitionedSyncRolling`) plus the public
+  surface (`LiveSeries`, `LiveView`, `LivePartitionedSeries`,
+  `LivePartitionedView`, plus the chainable `LiveAggregation.rolling`
+  / `LiveRollingAggregation.aggregate`). Custom-function reducers
+  remain batch-only — guarded at construction with a clear error
+  pointing at the alias workaround. The telemetry recipe's "want
+  multiple percentiles?" section was rewritten around the
+  single-pass `{ p50, p95, p99 }` pattern.
 
 - **`live.rolling(Sequence, ...)` overload.** Not coming back. The
   composition form (`live.rolling(...).sample(seq)`) is clearer about

@@ -1,3 +1,7 @@
+import {
+  normalizeAggregateColumns,
+  type AggregateColumnSpec,
+} from './aggregate-columns.js';
 import { Event } from './Event.js';
 import { Time } from './Time.js';
 import { LiveAggregation } from './LiveAggregation.js';
@@ -19,6 +23,8 @@ import {
 } from './triggers.js';
 import type {
   AggregateMap,
+  AggregateOutputMap,
+  AggregateSchema,
   DiffSchema,
   EventDataForSchema,
   EventForSchema,
@@ -28,15 +34,10 @@ import type {
   SeriesSchema,
   ColumnValue,
 } from './types.js';
+import type { AggregateOutputMapResultSchema } from './types-aggregate.js';
 
 import type { DurationInput } from './utils/duration.js';
 import { parseDuration } from './utils/duration.js';
-
-type ColumnSpec = {
-  source: string;
-  reducer: string;
-  kind: string;
-};
 
 type WindowEntry = {
   index: number;
@@ -91,7 +92,7 @@ export class LiveRollingAggregation<
   readonly name: string;
   readonly schema: Out;
 
-  readonly #columns: ColumnSpec[];
+  readonly #columns: AggregateColumnSpec[];
   readonly #states: RollingReducerState[];
   readonly #entries: WindowEntry[];
 
@@ -121,7 +122,7 @@ export class LiveRollingAggregation<
   constructor(
     source: LiveSource<S>,
     window: RollingWindow,
-    mapping: AggregateMap<S>,
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
     options: LiveRollingOptions = {},
   ) {
     this.name = source.name;
@@ -149,37 +150,50 @@ export class LiveRollingAggregation<
       this.#windowCount = undefined;
     }
 
-    const colsByName = new Map(
-      source.schema.slice(1).map((c) => [c.name, c] as const),
+    // Normalise the mapping into the unified column-spec shape used
+    // by both batch (`TimeSeries.rolling/aggregate`) and live
+    // (`LiveRollingAggregation`, `LiveAggregation`,
+    // `LivePartitionedSyncRolling`) paths. Accepts either
+    // `AggregateMap<S>` (one reducer per existing source column) or
+    // `AggregateOutputMap<S>` (named alias outputs, multiple
+    // reducers per source column).
+    this.#columns = normalizeAggregateColumns(
+      source.schema,
+      mapping as AggregateMap<S> | AggregateOutputMap<S>,
     );
-    this.#columns = [];
-    for (const [name, reducer] of Object.entries(
-      mapping as Record<string, string>,
-    )) {
-      const col = colsByName.get(name);
-      if (!col) throw new TypeError(`unknown column '${name}'`);
-      const outputKind = resolveReducer(reducer).outputKind;
-      const kind =
-        outputKind === 'number'
-          ? 'number'
-          : outputKind === 'array'
-            ? 'array'
-            : col.kind;
-      this.#columns.push({ source: name, reducer, kind });
-    }
 
     this.schema = Object.freeze([
       source.schema[0],
       ...this.#columns.map((c) => ({
-        name: c.source,
+        // Output column NAME is `c.output` — same as `c.source` for
+        // AggregateMap mappings, can differ for AggregateOutputMap.
+        name: c.output,
         kind: c.kind,
         required: false,
       })),
     ]) as unknown as Out;
 
-    this.#states = this.#columns.map((c) =>
-      resolveReducer(c.reducer).rollingState(),
-    );
+    this.#states = this.#columns.map((c) => {
+      if (typeof c.reducer !== 'string') {
+        // Live rolling currently only supports built-in (string)
+        // reducers — they have incremental rolling-state machinery
+        // (`add`/`remove`/`snapshot`) that custom functions don't.
+        // Use AggregateOutputMap aliases over built-ins to compose
+        // multiple stats from one column:
+        //   `{ avg: { from: 'cpu', using: 'avg' },
+        //      sd:  { from: 'cpu', using: 'stdev' } }`
+        // Custom-function support on live rolling is queued as
+        // separate work — would require recomputing over the
+        // rolling deque on every emission.
+        throw new TypeError(
+          `live rolling reducer for output '${c.output}' must be a built-in name; ` +
+            'custom function reducers are not supported on live rolling. ' +
+            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
+            'to compose multiple built-in reducers from one source column.',
+        );
+      }
+      return resolveReducer(c.reducer).rollingState();
+    });
     this.#entries = [];
     this.#nextIndex = 0;
     this.#outputEvents = [];
@@ -210,7 +224,9 @@ export class LiveRollingAggregation<
     const result: Record<string, ColumnValue | undefined> = {};
     const warmup = this.#entries.length < this.#minSamples;
     for (let i = 0; i < this.#columns.length; i++) {
-      result[this.#columns[i]!.source] = warmup
+      // Output keyed by `output` name (= source name for AggregateMap;
+      // user-chosen alias for AggregateOutputMap).
+      result[this.#columns[i]!.output] = warmup
         ? undefined
         : this.#states[i]!.snapshot();
     }
@@ -308,6 +324,14 @@ export class LiveRollingAggregation<
   aggregate<const M extends AggregateMap<Out>>(
     sequence: Sequence,
     mapping: M,
+  ): LiveAggregation<Out, AggregateSchema<Out, M>>;
+  aggregate<const M extends AggregateOutputMap<Out>>(
+    sequence: Sequence,
+    mapping: M,
+  ): LiveAggregation<Out, AggregateOutputMapResultSchema<Out, M>>;
+  aggregate(
+    sequence: Sequence,
+    mapping: AggregateMap<Out> | AggregateOutputMap<Out>,
   ): LiveAggregation<Out> {
     return new LiveAggregation(this as any, sequence, mapping as any);
   }
@@ -354,7 +378,7 @@ export class LiveRollingAggregation<
     const warmup = this.#entries.length < this.#minSamples;
     const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
-      record[this.#columns[i]!.source] = warmup
+      record[this.#columns[i]!.output] = warmup
         ? undefined
         : this.#states[i]!.snapshot();
     }
