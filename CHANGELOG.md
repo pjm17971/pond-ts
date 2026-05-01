@@ -7,9 +7,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.12.1...HEAD
 
 ## [Unreleased]
+
+## [0.12.1] — 2026-05-01
+
+Strictly additive over v0.12.0. Closes the chained-view restriction
+on synchronised partitioned rolling. The trigger option now applies
+consistently across the entire `rolling()` surface — chained sugar
+methods on the partitioned surface (`fill`, `diff`, `rate`,
+`pctChange`, `cumulative`) no longer break it.
+
+### Changed
+
+- **`partitionBy(col).<chained>().rolling(window, m, { trigger: Trigger.clock(seq) })` now works.**
+  Previously this threw a clear-but-restrictive error. The chain
+  factory runs per partition; the sync rolling subscribes to each
+  chain output instead of the raw partition events. Output schema is
+  unchanged (`[time, <partitionColumn>, ...mappingColumns]`); the
+  partition tag is set from the routing key, so chains that drop the
+  partition column still emit correctly.
+
+  Motivating example — per-host gap-filling before synchronised
+  ticks:
+
+  ```ts
+  const ticks = live
+    .partitionBy('host')
+    .fill({ cpu: 'hold' })
+    .rolling(
+      '1m',
+      { cpu: 'avg' },
+      { trigger: Trigger.clock(Sequence.every('200ms')) },
+    );
+  ```
+
+  Coherence-of-feature fix: the trigger concept now applies wherever
+  `rolling()` appears in the partitioned chain, not just in the
+  one-step case. Captured in the RFC's post-implementation notes
+  alongside the deferred-and-now-shipped section.
+
+### Tests
+
+- 4 new tests in `test/Triggers.test.ts` covering chained-view sync
+  rolling: `fill().rolling(.., trigger)`, output schema, cross-
+  partition synchronisation through the chain, dispose semantics
+  through the chain, and replay-on-construction with the chain factory.
+- 1 test removed (the throw-on-chained-view assertion that no longer
+  applies).
+- Test count: 34 (was 30). Total core tests: 1043 (was 1039).
+
+[0.12.1]: https://github.com/pjm17971/pond-ts/compare/v0.12.0...v0.12.1
 
 ## [0.12.0] — 2026-05-01
 

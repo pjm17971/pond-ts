@@ -473,21 +473,204 @@ describe('partitionBy().rolling clock-trigger — late-spawn partitions', () => 
   });
 });
 
-// ── Chained-view rejection ─────────────────────────────────────────
+// ── Chained-view sync rolling ──────────────────────────────────────
 
-describe('LivePartitionedView.rolling rejects clock trigger', () => {
-  it('clock trigger after a chained sugar method throws with a clear message', () => {
+describe('LivePartitionedView.rolling — clock trigger after chained sugar', () => {
+  it('partitionBy().fill().rolling(..., { trigger }) works and uses chain output', () => {
+    // The chain factory output's events feed sync.ingest. fill
+    // transforms values within existing events (replaces undefined
+    // with held values); it doesn't add events, so the bucket-index
+    // logic operates on the same timestamps regardless.
+    const schemaWithGaps = [
+      { name: 'time', kind: 'time' },
+      { name: 'cpu', kind: 'number', required: false },
+      { name: 'host', kind: 'string' },
+    ] as const;
+    const live = new LiveSeries({ name: 'test', schema: schemaWithGaps });
+
+    const ticks = live
+      .partitionBy('host')
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // Push events; one has a missing cpu that fill should hold from
+    // the previous value.
+    live.push([0, 0.4, 'api-1']);
+    live.push([5_000, undefined, 'api-1']); // fill('hold') → 0.4
+    live.push([10_000, 0.6, 'api-1']);
+    live.push([30_001, 0.8, 'api-1']); // crosses 30s boundary
+
+    expect(ticks.length).toBe(1);
+    expect(ticks.at(0)!.begin()).toBe(30_000);
+    expect(ticks.at(0)!.get('host')).toBe('api-1');
+    // After fill('hold'): values seen by rolling = [0.4, 0.4, 0.6, 0.8]
+    expect(ticks.at(0)!.get('cpu')).toBeCloseTo((0.4 + 0.4 + 0.6 + 0.8) / 4, 5);
+  });
+
+  it('output schema is [time, partitionColumn, ...mappingColumns] regardless of chain', () => {
     const live = makePartitioned();
-    expect(() =>
-      live
-        .partitionBy('host')
-        .fill({ cpu: 'hold' })
-        .rolling(
-          '1m',
-          { cpu: 'avg' },
-          { trigger: Trigger.clock(Sequence.every('30s')) },
-        ),
-    ).toThrowError(/only supported directly after partitionBy/);
+    const ticks = live
+      .partitionBy('host')
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    expect(ticks.schema).toHaveLength(3);
+    expect(ticks.schema[0]!.name).toBe('time');
+    expect(ticks.schema[1]!.name).toBe('host');
+    expect(ticks.schema[2]!.name).toBe('cpu');
+  });
+
+  it('synchronisation across partitions still holds with chained sugar', () => {
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    live.push([0, 0.4, 'api-1']);
+    live.push([5_000, 0.5, 'api-2']);
+    live.push([30_001, 0.6, 'api-1']); // crosses 30s; both should emit
+
+    expect(ticks.length).toBe(2);
+    expect(ticks.at(0)!.begin()).toBe(30_000);
+    expect(ticks.at(1)!.begin()).toBe(30_000); // same boundary ts
+    const hosts = new Set([ticks.at(0)!.get('host'), ticks.at(1)!.get('host')]);
+    expect(hosts).toEqual(new Set(['api-1', 'api-2']));
+  });
+
+  it('dispose semantics work through the chain', () => {
+    const live = makePartitioned();
+    const ticks = live
+      .partitionBy('host')
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    const spy = vi.fn();
+    ticks.on('event', spy);
+
+    live.push([0, 0.4, 'api-1']);
+    live.push([30_001, 0.6, 'api-1']);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    (ticks as any).dispose();
+
+    live.push([60_001, 0.7, 'api-1']);
+    expect(spy).toHaveBeenCalledTimes(1); // no new events after dispose
+  });
+
+  it('disposing a chained sync rolling tears down the chain views (no orphan partition listeners)', () => {
+    // Codex review item: the chained path's factory creates a
+    // LiveView/LiveRollingAggregation per partition. Each chain
+    // output subscribes UPSTREAM to its partition. Without
+    // explicitly disposing those chain outputs on sync.dispose(),
+    // the partitions keep firing events into the chain views, and
+    // the chain views keep buffering them — even though the sync
+    // rolling itself no longer emits.
+    //
+    // Verify by counting listeners on the partitions: after
+    // construction the partition has 1 listener (the chain view);
+    // after sync.dispose() it should have 0.
+    const live = makePartitioned();
+    const partitioned = live.partitionBy('host', { groups: ['api-1'] });
+    const partition = partitioned.toMap().get('api-1')!;
+
+    // Wrap partition.on to count active listeners
+    const realOn = partition.on.bind(partition);
+    let activeListeners = 0;
+    (partition as any).on = ((type: any, fn: any) => {
+      const unsub = realOn(type, fn);
+      activeListeners++;
+      return () => {
+        activeListeners--;
+        if (typeof unsub === 'function') return unsub();
+      };
+    }) as any;
+
+    const ticks = partitioned
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // The chain view (fill output, a LiveView) subscribes to BOTH
+    // `'event'` and `'evict'` on its upstream partition (the partition
+    // advertises EMITS_EVICT). So 2 active listeners: one per channel.
+    expect(activeListeners).toBe(2);
+
+    (ticks as any).dispose();
+
+    // After dispose: the chain view is also disposed (because the
+    // chained path passes ownsFactoryOutput: true), releasing both
+    // its event and evict subscriptions on the partition.
+    expect(activeListeners).toBe(0);
+  });
+
+  it('replay works for chained-view path: pre-existing events feed the sync via the chain (with fill actually doing work)', () => {
+    // Pin that the chain factory's transformation is applied during
+    // replay, not bypassed. Use `required: false` cpu and push some
+    // undefined values: fill('hold') should carry forward the
+    // previous value, so the rolling avg differs from "raw avg with
+    // undefined skipped."
+    const optionalSchema = [
+      { name: 'time', kind: 'time' },
+      { name: 'cpu', kind: 'number', required: false },
+      { name: 'host', kind: 'string' },
+    ] as const;
+    const live = new LiveSeries({ name: 'test', schema: optionalSchema });
+
+    // Pre-populate. host 'a' has [0.4, undefined, undefined]; with
+    // fill('hold') those undefineds become 0.4, so rolling sees
+    // three 0.4 values. Without fill, rolling would average just
+    // the one 0.4 (or zero — depending on how undefined is treated).
+    live.push([0, 0.4, 'a']);
+    live.push([5_000, undefined, 'a']);
+    live.push([10_000, undefined, 'a']);
+    live.push([20_000, 0.5, 'b']);
+    live.push([30_001, 0.4, 'a']); // crosses 30s
+
+    const ticks = live
+      .partitionBy('host')
+      .fill({ cpu: 'hold' })
+      .rolling(
+        '1m',
+        { cpu: 'avg' },
+        { trigger: Trigger.clock(Sequence.every('30s')) },
+      );
+
+    // Two partitions, one tick fired during replay (30_001 crossed).
+    expect(ticks.length).toBe(2);
+    expect(ticks.at(0)!.begin()).toBe(30_000);
+    expect(ticks.at(1)!.begin()).toBe(30_000);
+
+    // Verify host 'a' shows fill applied: window has [0.4, 0.4 (held),
+    // 0.4 (held), 0.4] → avg = 0.4. If fill were bypassed, the
+    // undefineds would skip and avg would be different (or
+    // undefined for the count-zero case depending on reducer).
+    const byHost = new Map<unknown, unknown>();
+    for (let i = 0; i < ticks.length; i++) {
+      const e = ticks.at(i)!;
+      byHost.set(e.get('host'), e.get('cpu'));
+    }
+    expect(byHost.get('a')).toBeCloseTo(0.4, 5);
+    expect(byHost.get('b')).toBeCloseTo(0.5, 5);
   });
 });
 

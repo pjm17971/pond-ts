@@ -466,16 +466,41 @@ export class LivePartitionedSeries<
   /**
    * Per-partition `rolling`. See {@link LiveSeries.rolling}.
    *
-   * **Partition column drops by default.** `rolling`'s output
-   * schema only retains columns named in `mapping`. Without
-   * including the partition column, the unified output of the
-   * chain loses the partition tag (e.g. `host` becomes
-   * `undefined`). To keep the partition column visible, include
-   * it in `mapping` with a passthrough reducer:
+   * Two emission modes, chosen by the `trigger` option:
+   *
+   * **Default (no trigger / `Trigger.event()`):** per-partition
+   * rolling — each partition has its own `LiveRollingAggregation`
+   * emitting per source event. Returns a chainable
+   * `LivePartitionedView`.
+   *
+   * In this mode the partition column **drops by default** —
+   * `rolling`'s output schema only retains columns named in
+   * `mapping`. Without including the partition column, the unified
+   * output of the chain loses the partition tag (e.g. `host` becomes
+   * `undefined`). To keep the partition column visible, include it
+   * with a passthrough reducer:
    *
    * ```ts
    * partitioned.rolling('5m', { cpu: 'avg', host: 'last' })
    * //                                       ^^^^^^^^^^^^^^
+   * ```
+   *
+   * **`Trigger.clock(seq)`:** synchronised partitioned rolling — all
+   * partitions share one bucket index and emit together at each
+   * boundary crossing. Returns a flat `LiveSource<RowSchema>` whose
+   * schema is `[time, <partitionColumn>, ...mappingColumns]`.
+   *
+   * In this mode the partition column is **auto-injected** from the
+   * routing key — do NOT include it in `mapping`. A collision
+   * between the partition column name and any reducer-output column
+   * is rejected at construction with a clear error.
+   *
+   * ```ts
+   * partitioned.rolling(
+   *   '5m',
+   *   { cpu: 'avg' },                  // host is auto-injected
+   *   { trigger: Trigger.clock(Sequence.every('200ms')) },
+   * );
    * ```
    */
   rolling<const M extends AggregateMap<S>>(
@@ -506,73 +531,36 @@ export class LivePartitionedSeries<
       if (options.minSamples !== undefined)
         syncOptions.minSamples = options.minSamples;
       if (this.groups !== undefined) syncOptions.declaredGroups = this.groups;
+      // Look up the partition column's kind from the source schema —
+      // it stays the same across both root and chained cases and is
+      // used only for the output schema's byColumn entry.
+      const byCol = this.schema.find((c) => c.name === this.by);
+      if (!byCol) {
+        throw new TypeError(
+          `LivePartitionedSeries.rolling: column '${this.by}' not in source schema`,
+        );
+      }
       const sync = new LivePartitionedSyncRolling<S, K, SeriesSchema>(
         this.name,
-        this.schema,
         this.by,
+        byCol.kind,
+        this.schema,
         window,
-        mapping as AggregateMap<S>,
+        mapping as AggregateMap<SeriesSchema>,
         options.trigger,
         syncOptions,
       );
-      // Wire existing partitions and future spawns into the sync
-      // rolling. Each per-partition LiveSeries emits its own events;
-      // we forward them all into the shared sync state.
-      //
-      // Disposer ownership: each partition listener's unsubscribe is
-      // registered with BOTH the sync rolling (so `sync.dispose()`
-      // detaches them) and the parent series's `#disposers` (so the
-      // parent's dispose path also detaches them). Both paths are
-      // idempotent — calling them in either order, or both, is safe.
-      const subscribe = (key: K, partition: LiveSource<S>) => {
-        const unsub = partition.on('event', (event) => sync.ingest(key, event));
-        sync._registerUnsubscribe(unsub);
-        this.#disposers.add(unsub);
-      };
-
-      // Replay existing partition events into the sync rolling in
-      // global timestamp order. Without this, a sync rolling
-      // constructed against a pre-populated source would discard the
-      // existing history and only see future events — and the very
-      // first future event would just initialise lastBucketIdx
-      // instead of crossing it. Mirrors the LiveRollingAggregation
-      // constructor's `for (let i = 0; i < source.length; i++)
-      // this.#ingest(...)` replay pattern, generalised across
-      // partitions: events from different partitions must interleave
-      // by timestamp so the bucket index advances monotonically
-      // (otherwise a later-iterated partition's earlier events would
-      // be silently discarded as bucketIdx <= lastBucketIdx).
-      type Existing = { ts: number; key: K; event: EventForSchema<S> };
-      const existing: Existing[] = [];
-      for (const [key, partition] of this.#partitions) {
-        for (let i = 0; i < partition.length; i++) {
-          const ev = partition.at(i)!;
-          existing.push({ ts: ev.begin(), key, event: ev });
-        }
-      }
-      existing.sort((a, b) => a.ts - b.ts);
-      for (const { key, event } of existing) {
-        sync.ingest(key, event);
-      }
-
-      // Subscribe to future events on every existing partition.
-      for (const [key, partition] of this.#partitions) {
-        subscribe(key, partition);
-      }
-
-      // Spawn listener — captures `sync` to subscribe future
-      // partitions. Register a remover with `sync.dispose()` so the
-      // parent series doesn't retain a closure on the disposed sync
-      // (which would prevent garbage collection on long-lived
-      // high-cardinality partitioned sources with create/dispose
-      // cycles).
-      const onSpawnSet = this.#onSpawn;
-      const spawnHandler: SpawnListener<S, K> = (key, partition) => {
-        subscribe(key, partition);
-      };
-      onSpawnSet.add(spawnHandler);
-      sync._registerUnsubscribe(() => onSpawnSet.delete(spawnHandler));
-
+      // Wire the sync rolling: subscribe to each partition's raw
+      // events. Root case — factory is identity (the partition IS the
+      // event source). Pass ownsFactoryOutput: false because the
+      // partition LiveSeries is owned by this series, not by the
+      // sync rolling — disposing the sync must NOT tear down the
+      // partition itself.
+      this.#wireSyncRolling(
+        sync,
+        (partition) => partition,
+        /* ownsFactoryOutput */ false,
+      );
       return sync;
     }
 
@@ -620,6 +608,127 @@ export class LivePartitionedSeries<
   }
 
   // ─── Internal ─────────────────────────────────────────────────
+
+  /**
+   * Wire a `LivePartitionedSyncRolling` into this partitioned series.
+   *
+   * Used by both the root case (`partitionBy(c).rolling(..., trigger)`,
+   * factory is identity) and the chained-view case
+   * (`partitionBy(c).fill(...).rolling(..., trigger)`, factory is the
+   * chain's compose function), so the cross-partition replay,
+   * subscription, and spawn-listener cleanup logic lives in one place.
+   *
+   * - Calls `factory(partition)` once per existing partition to
+   *   produce a per-partition event source. For the root case, this
+   *   is the partition's own `LiveSeries`; for the chained case, it's
+   *   the post-chain `LiveSource<R>`.
+   * - Replays each event source's existing events into `sync.ingest`
+   *   in **global timestamp order across partitions** so the shared
+   *   bucket index advances monotonically. (Per-partition order alone
+   *   would let a later-iterated partition's earlier events silently
+   *   no-op as `bucketIdx <= lastBucketIdx`.)
+   * - Subscribes `sync.ingest` to each event source's `'event'`
+   *   stream for future events.
+   * - Adds a spawn listener to the parent so newly-spawned partitions
+   *   get their factory invoked + sync subscribed automatically.
+   * - All disposers are registered with BOTH `sync` (so
+   *   `sync.dispose()` detaches them) and the parent's `#disposers`
+   *   (so the parent's dispose path also detaches them). Idempotent
+   *   in either order.
+   *
+   * **Factory-output ownership.** When `ownsFactoryOutput` is true
+   * (chained-view case — factory creates a LiveView / Rolling /
+   * Aggregation that itself subscribes upstream), we ALSO register
+   * `out.dispose()` so the chain output's upstream subscription
+   * tears down. Without this, disposing the sync rolling only
+   * removes our listener; the chain view keeps processing
+   * partition events into its own buffer indefinitely (real leak,
+   * surfaces under repeated create/dispose cycles or high-cardinality
+   * partitions). The root case (`ownsFactoryOutput: false`) skips
+   * dispose because the partition LiveSeries is owned by the parent
+   * series, not by the sync rolling.
+   */
+  #wireSyncRolling<R extends SeriesSchema>(
+    sync: LivePartitionedSyncRolling<R, K, SeriesSchema>,
+    factory: (partition: LiveSeries<S>) => LiveSource<R>,
+    ownsFactoryOutput: boolean,
+  ): void {
+    // Build per-partition factory outputs once. Reused for both
+    // replay (existing events) and subscription (future events) so
+    // we don't run the factory twice on the same partition.
+    const factoryOutputs = new Map<K, LiveSource<R>>();
+    for (const [key, partition] of this.#partitions) {
+      factoryOutputs.set(key, factory(partition));
+    }
+
+    // Cross-partition timestamp-ordered replay of existing events.
+    type Existing = { ts: number; key: K; event: EventForSchema<R> };
+    const existing: Existing[] = [];
+    for (const [key, out] of factoryOutputs) {
+      for (let i = 0; i < out.length; i++) {
+        const ev = out.at(i)!;
+        existing.push({ ts: ev.begin(), key, event: ev });
+      }
+    }
+    existing.sort((a, b) => a.ts - b.ts);
+    for (const { key, event } of existing) {
+      sync.ingest(key, event);
+    }
+
+    // Subscribe to each existing factory output's future events.
+    // If we own the output, also register its dispose() so the
+    // chain's upstream subscription tears down on cleanup.
+    const wireOutput = (out: LiveSource<R>, key: K): void => {
+      const unsub = out.on('event', (event) => sync.ingest(key, event));
+      const cleanup = ownsFactoryOutput
+        ? () => {
+            unsub();
+            // Duck-typed: chain outputs (LiveView, LiveRolling-
+            // Aggregation, LiveAggregation) all expose `dispose()`;
+            // a defensive `?.` covers any future LiveSource impl
+            // that doesn't.
+            (out as LiveSource<R> & { dispose?: () => void }).dispose?.();
+          }
+        : unsub;
+      sync._registerUnsubscribe(cleanup);
+      this.#disposers.add(cleanup);
+    };
+    for (const [key, out] of factoryOutputs) {
+      wireOutput(out, key);
+    }
+
+    // Future spawns: invoke factory on each new partition and
+    // subscribe sync to its output. Newly-spawned partitions have no
+    // existing events, so no replay is needed for them.
+    const onSpawnSet = this.#onSpawn;
+    const spawnHandler: SpawnListener<S, K> = (key, partition) => {
+      // The SpawnListener signature uses LiveSource<S> for back-
+      // compatibility with collect/apply, but #spawnPartition always
+      // creates a LiveSeries<S> — safe to narrow here.
+      wireOutput(factory(partition as LiveSeries<S>), key);
+    };
+    onSpawnSet.add(spawnHandler);
+    // Register the spawn-handler removal with sync.dispose() so the
+    // parent doesn't retain the disposed sync via this closure
+    // (would otherwise leak across create/dispose cycles).
+    sync._registerUnsubscribe(() => onSpawnSet.delete(spawnHandler));
+  }
+
+  /**
+   * @internal — used by `LivePartitionedView.rolling`'s clock-trigger
+   * branch to wire a sync rolling whose reducer-input schema is the
+   * chain output `R` rather than the source schema `S`. The view
+   * passes its composed factory; this method delegates to
+   * `#wireSyncRolling` with `ownsFactoryOutput: true` because the
+   * chain output (a LiveView / LiveRollingAggregation / etc.) has
+   * its own upstream subscription that must be torn down on dispose.
+   */
+  _wireSyncRollingFromView<R extends SeriesSchema>(
+    sync: LivePartitionedSyncRolling<R, K, SeriesSchema>,
+    factory: (partition: LiveSeries<S>) => LiveSource<R>,
+  ): void {
+    this.#wireSyncRolling(sync, factory, /* ownsFactoryOutput */ true);
+  }
 
   #spawnPartition(key: K): LiveSeries<S> {
     const opts: LiveSeriesOptions<S> = {
@@ -883,20 +992,66 @@ export class LivePartitionedView<
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
+    options?: LiveRollingOptions & { trigger?: { kind: 'event' } },
+  ): LivePartitionedView<SBase, RollingSchema<R, M>, K>;
+  rolling<const M extends AggregateMap<R>>(
+    window: RollingWindow,
+    mapping: M,
+    options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
+  ): LiveSource<SeriesSchema>;
+  rolling<const M extends AggregateMap<R>>(
+    window: RollingWindow,
+    mapping: M,
     options?: LiveRollingOptions,
-  ): LivePartitionedView<SBase, RollingSchema<R, M>, K> {
-    // MVP cap: synchronised partitioned rolling (clock trigger) is
-    // only supported directly after partitionBy(), not after chained
-    // sugar like fill().rolling(...). The chained shape needs the
-    // factory output's schema threaded into the sync rolling, which
-    // we'll plumb when a real use case appears.
-    if (options?.trigger && options.trigger.kind !== 'event') {
-      throw new TypeError(
-        'Clock-triggered partitioned rolling is only supported directly ' +
-          'after partitionBy(), not after chained sugar methods. Restructure as ' +
-          '`live.partitionBy(col).rolling(window, mapping, { trigger: ... })`.',
+  ):
+    | LivePartitionedView<SBase, RollingSchema<R, M>, K>
+    | LiveSource<SeriesSchema> {
+    // Clock trigger → synchronised partitioned emission on the chain
+    // output. The chain factory runs once per partition; the sync
+    // rolling subscribes to each chain output's events (so reducers
+    // operate on `R`, not the raw source `S`). Output rows still tag
+    // each event with the partition key from the routing layer, so
+    // even chains that drop the partition column (e.g. `.select()`
+    // without retaining it) emit correctly.
+    if (options?.trigger?.kind === 'clock') {
+      const root = this.#root;
+      const byCol = root.schema.find((c) => c.name === root.by);
+      if (!byCol) {
+        throw new TypeError(
+          `LivePartitionedView.rolling: column '${root.by}' not in source schema`,
+        );
+      }
+
+      const syncOptions: {
+        minSamples?: number;
+        declaredGroups?: ReadonlyArray<K>;
+      } = {};
+      if (options.minSamples !== undefined)
+        syncOptions.minSamples = options.minSamples;
+      if (root.groups !== undefined) syncOptions.declaredGroups = root.groups;
+
+      // The reducer-input schema is the chain output schema `R`,
+      // captured upfront on this view (via the factory-stub run in
+      // the constructor).
+      const sync = new LivePartitionedSyncRolling<R, K, SeriesSchema>(
+        root.name,
+        root.by,
+        byCol.kind,
+        this.schema,
+        window,
+        mapping as AggregateMap<SeriesSchema>,
+        options.trigger,
+        syncOptions,
       );
+
+      // Wire via the root's helper, but pass the composed chain
+      // factory (so each partition's events flow through the chain
+      // before reaching the sync rolling).
+      const chainFactory = this.#factory;
+      root._wireSyncRollingFromView(sync, chainFactory);
+      return sync;
     }
+
     const prev = this.#factory;
     return new LivePartitionedView<SBase, RollingSchema<R, M>, K>(
       this.#root,

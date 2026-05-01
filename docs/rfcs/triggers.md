@@ -269,7 +269,19 @@ Adversarial review on PR #94 surfaced four real items that landed as fixes befor
 - **Tests added** for column-collision rejection, dispose semantics, multi-partition multi-boundary jump, and late-spawn partition behavior. Test count: 25 (was 20).
 - **Documentation** updated to flag late-spawn partition semantics, the column-collision rejection rule, and the npm peer-dep mixing warning when consumers cross dist-tags.
 
-**Deferred for stable `0.12.0`:**
+**Deferred to follow-ups:**
 
 - **Typed return shape** for the synchronised-partitioned path. Currently `LiveSource<SeriesSchema>` — runtime schema is correct, but static types widen. Needs a `RowSchemaForSyncRolling<S, M, ByCol>` helper that combines the partition column type from the source schema with the rolling output columns. Real type-plumbing work; better done once the surface is settled.
 - **Late-spawn semantics revisit.** Currently late partitions get no retroactive row in the current tick. If a real use case wants "every declared partition in every tick" or "partitions emit their first row for the tick they spawn in," the semantics can shift. Documented as an explicit limit for now.
+
+## Post-publish (v0.12.1, 2026-05-01) — chained-view path
+
+The "chained sugar rejects clock trigger" restriction was re-evaluated and lifted in v0.12.1. The original framing — "deferred until a real use case appears" — was wrong: this isn't a speculative feature, it's the same `{ trigger }` option behaving inconsistently across the API surface. A user who's paid the cost of learning `Trigger.clock(seq)` should be able to apply it wherever `rolling()` appears in the partitioned chain, not just in the one-step case.
+
+**What shipped:**
+
+- `LivePartitionedView.rolling(window, m, { trigger: Trigger.clock(seq) })` now constructs a sync rolling against the chain output schema rather than throwing.
+- `LivePartitionedSyncRolling`'s constructor was refactored to accept the partition column kind and reducer-input schema separately (chain output may not include the partition column at all; the partition tag is set from the routing key, not read from event data).
+- The cross-partition replay + spawn-listener wiring was extracted into a single `#wireSyncRolling` helper on `LivePartitionedSeries`, parameterised on a per-partition factory. Root case uses identity factory (`(p) => p`); chained case uses the composed chain factory. One implementation, two call sites.
+
+Coherence-of-feature win: `partitionBy(c).<any-chain>().rolling(..., { trigger })` works uniformly. The teaching story collapses to "trigger is an option on rolling, period." 4 new tests cover `fill().rolling(..., trigger)`, output schema consistency, cross-partition synchronisation through the chain, dispose semantics through the chain, and pre-existing-data replay through the chain.
