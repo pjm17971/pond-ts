@@ -314,6 +314,53 @@ export class LiveSeries<S extends SeriesSchema> {
   }
 
   /**
+   * @internal — fast-path ingest for events that have already been
+   * validated by another trusted pond pipeline (e.g. a source
+   * `LiveSeries` whose events are being routed into a partition
+   * sub-series with the same schema). Skips `#validateRow` and the
+   * `Event` reconstruction it implies — the caller passes the source
+   * Event reference through directly.
+   *
+   * Behaviour is otherwise identical to {@link pushMany}: the same
+   * `#insert` ordering rules apply (so out-of-order/late-event handling
+   * still works), and `'event'` / `'batch'` / `'evict'` listeners fire
+   * normally.
+   *
+   * **Trust contract.** The caller guarantees the events conform to
+   * this series' schema. Currently used only by
+   * `LivePartitionedSeries.#routeEvent`, where the source and partition
+   * sub-series share the same `S`. Not exported in the public type
+   * surface; reach for `pushMany` from any other context.
+   *
+   * Surfaced by the gRPC experiment's V3 profiling pass (PR #14):
+   * `Event` constructor + `#validateRow` together account for ~7% of
+   * per-event self time at saturation, and the partition router was
+   * round-tripping `Event → row → Event` for every routed event. This
+   * fast path closes that loop.
+   */
+  _pushTrustedEvents(events: ReadonlyArray<EventForSchema<S>>): void {
+    if (events.length === 0) return;
+
+    const added: EventForSchema<S>[] = [];
+
+    for (const event of events) {
+      if (this.#insert(event)) {
+        added.push(event);
+        for (const fn of this.#onEvent) fn(event);
+      }
+    }
+
+    if (added.length === 0) return;
+
+    const evicted = this.#applyRetention();
+
+    for (const fn of this.#onBatch) fn(added);
+    if (evicted.length > 0) {
+      for (const fn of this.#onEvict) fn(evicted);
+    }
+  }
+
+  /**
    * Example: `live.pushJson(rows)`. Bulk JSON-shape ingest: takes
    * an array of `JsonRowForSchema<S>` (or the object-form variant),
    * parses each row through {@link parseJsonRow} (translates `null`

@@ -191,6 +191,77 @@ describe('push and access', () => {
   });
 });
 
+// ── Internal trusted-pipeline path ──────────────────────────────
+
+describe('_pushTrustedEvents (internal trusted path)', () => {
+  it('inserts events without re-validation, mirroring pushMany', () => {
+    const source = makeLive();
+    source.push([0, 10, 'a'], [1000, 20, 'b']);
+
+    const trusted = makeLive();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (trusted as any)._pushTrustedEvents([source.at(0)!, source.at(1)!]);
+
+    expect(trusted.length).toBe(2);
+    expect(trusted.at(0)!.get('value')).toBe(10);
+    expect(trusted.at(1)!.get('host')).toBe('b');
+  });
+
+  it('fires event/batch listeners and applies retention like pushMany', () => {
+    const source = makeLive();
+    source.push([0, 10, 'a'], [1000, 20, 'b'], [2000, 30, 'c']);
+
+    const trusted = makeLive({ retention: { maxEvents: 2 } });
+    let eventFires = 0;
+    let batchSize = 0;
+    let evictedSize = 0;
+    trusted.on('event', () => eventFires++);
+    trusted.on('batch', (events) => (batchSize = events.length));
+    trusted.on('evict', (events) => (evictedSize = events.length));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (trusted as any)._pushTrustedEvents([
+      source.at(0)!,
+      source.at(1)!,
+      source.at(2)!,
+    ]);
+
+    expect(eventFires).toBe(3);
+    expect(batchSize).toBe(3);
+    // maxEvents: 2 evicts the oldest after the batch
+    expect(evictedSize).toBe(1);
+    expect(trusted.length).toBe(2);
+    expect(trusted.first()!.begin()).toBe(1000);
+  });
+
+  it('honors ordering rules — strict rejects out-of-order even on the trusted path', () => {
+    // The trust contract is only about validation+allocation; ordering
+    // is part of #insert and still applies.
+    const source = makeLive();
+    source.push([0, 10, 'a'], [2000, 20, 'b']);
+
+    const trusted = makeLive(); // strict default
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() =>
+      (trusted as any)._pushTrustedEvents([source.at(1)!]),
+    ).not.toThrow();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => (trusted as any)._pushTrustedEvents([source.at(0)!])).toThrow(
+      /out-of-order/,
+    );
+  });
+
+  it('no-op for empty array', () => {
+    const trusted = makeLive();
+    let fires = 0;
+    trusted.on('batch', () => fires++);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (trusted as any)._pushTrustedEvents([]);
+    expect(trusted.length).toBe(0);
+    expect(fires).toBe(0);
+  });
+});
+
 // ── Ordering modes ──────────────────────────────────────────────
 
 describe('ordering: strict', () => {
