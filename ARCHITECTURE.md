@@ -183,7 +183,7 @@ Notable internals:
 ### `LiveSeries<S>` (`LiveSeries.ts`)
 
 Bounded buffer for live ingestion. Configurable retention
-(`maxEvents` / `maxAge` / `maxBytes`), grace window (for late events
+(`maxEvents` / `maxAge`), grace window (for late events
 in `'reorder'` ordering), and three subscription channels:
 `'event'`, `'batch'`, `'evict'`. Implements `LiveSource<S>`.
 

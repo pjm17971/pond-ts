@@ -571,7 +571,7 @@ Scope:
 - [x] `LiveSeries<S>` — mutable, append-optimized buffer sharing the same schema
       type as `TimeSeries`
 - [x] push/append APIs
-- [x] retention policies (`maxEvents`, `maxAge`, `maxBytes`)
+- [x] retention policies (`maxEvents`, `maxAge`); ~~`maxBytes`~~ removed in v0.14.0 as unused
 - [x] immutable snapshot via `toTimeSeries()`
 - [x] ordering modes (`strict`, `drop`, `reorder`) and late-arrival policy
 - [x] subscriptions (`event`, `batch`, `evict`) — synchronous, inline with push
@@ -609,9 +609,11 @@ events redundantly but keeps the two classes fully decoupled. Snapshot is not a
 hot path — if profiling proves otherwise, a trusted constructor bridge can be
 added later.
 
-**Byte estimation** for `maxBytes`: rough per-event estimate (64 bytes base +
-8 per number + 2×length per string + 4 per boolean). Intentionally approximate —
-the goal is order-of-magnitude memory capping, not precise measurement.
+**Byte estimation** (`maxBytes`) was shipped in this phase but removed in
+v0.14.0 — no real user reached for it, and the gRPC experiment's V3 profile
+flagged the per-push estimator as the largest single self-time line (6.2%)
+purely maintaining a counter no working app consulted. Pre-1.0 cleanup;
+`maxEvents` covers the eviction patterns real apps actually need.
 
 Definition of done:
 

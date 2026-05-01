@@ -328,9 +328,12 @@ export class LiveSeries<S extends SeriesSchema> {
    *
    * **Trust contract.** The caller guarantees the events conform to
    * this series' schema. Currently used only by
-   * `LivePartitionedSeries.#routeEvent`, where the source and partition
-   * sub-series share the same `S`. Not exported in the public type
-   * surface; reach for `pushMany` from any other context.
+   * `LivePartitionedSeries` — the partition router (`#routeEvent`),
+   * the `collect()` replay-prefix and live subscriber, and `apply()`'s
+   * historical replay, live forwarding, and auto-spawn factory wiring.
+   * Each site has compile-time schema identity between source and
+   * target. Not exported in the public type surface; reach for
+   * `pushMany` from any other context.
    *
    * Surfaced by the gRPC experiment's V3 profiling pass (PR #14):
    * `Event` constructor + `#validateRow` together account for ~7% of
