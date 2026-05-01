@@ -531,10 +531,31 @@ code rebuckets per-tick by grouping on `event.begin()`. Partitions
 declared via `{ groups }` emit in declared order; auto-spawned partitions
 emit in observation order.
 
-**Restrictions in this release:**
+**Composes with chained sugar.** A clock trigger also works after
+chained methods like `fill`, `select`, `map`, `filter`. The chain
+factory runs per partition and the sync rolling subscribes to each
+chain output:
 
-- **Only supported directly after `partitionBy(col)`** — not after a
-  chained sugar method (`partitionBy(c).fill(...).rolling(...)`).
+```ts
+// Per-host gap-filling before synchronised tick aggregation
+const ticks = live
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling(
+    '1m',
+    { cpu: 'avg' },
+    { trigger: Trigger.clock(Sequence.every('200ms')) },
+  );
+```
+
+The output schema stays `[time, <partitionColumn>, ...mappingColumns]`
+regardless of how many chain steps preceded the rolling. Partition tags
+are set from the routing key, so even chains that drop the partition
+column (e.g. `.select(...)` without explicitly retaining it) still emit
+correctly.
+
+**Restrictions:**
+
 - **Partition column name must not collide** with a reducer-output
   column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
   is rejected at construction; rename the reducer output (when

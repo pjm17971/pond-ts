@@ -86,12 +86,33 @@ export class LivePartitionedSyncRolling<
   readonly #unsubscribes: Set<() => void>;
   #disposed: boolean;
 
+  /**
+   * Internal — constructed by `LivePartitionedSeries.rolling` (root case)
+   * or `LivePartitionedView.rolling` (chained case) when a clock trigger
+   * is supplied.
+   *
+   * The constructor takes the schemas separately so the two call sites
+   * can share this implementation:
+   *
+   * - `byColumnKind` is the partition column's kind, looked up by the
+   *   caller from the **original source schema**. The chain output may
+   *   not include the partition column (e.g., after `.select(...)`),
+   *   but the sync source's emitted rows still carry the partition tag
+   *   set directly from the routing key — no schema lookup needed at
+   *   emit time.
+   * - `reducerInputSchema` is the schema the rolling reducers operate
+   *   on. For the root case it is the source schema `S`; for the
+   *   chained case it is the chain output schema `R`. Mapping column
+   *   names are resolved against this schema, and reducer output kinds
+   *   inherit from its column kinds.
+   */
   constructor(
     upstreamName: string,
-    upstreamSchema: S,
     byColumn: string,
+    byColumnKind: string,
+    reducerInputSchema: SeriesSchema,
     window: RollingWindow,
-    mapping: AggregateMap<S>,
+    mapping: AggregateMap<SeriesSchema>,
     trigger: ClockTrigger,
     options: { minSamples?: number; declaredGroups?: ReadonlyArray<K> } = {},
   ) {
@@ -119,9 +140,11 @@ export class LivePartitionedSyncRolling<
       this.#windowCount = undefined;
     }
 
-    // Resolve the rolling output columns from `mapping`.
+    // Resolve the rolling output columns from `mapping` against the
+    // reducer-input schema (source schema in the root case, chain
+    // output schema in the chained case).
     const colsByName = new Map(
-      upstreamSchema.slice(1).map((c) => [c.name, c] as const),
+      reducerInputSchema.slice(1).map((c) => [c.name, c] as const),
     );
     this.#columns = [];
     for (const [name, reducer] of Object.entries(
@@ -137,14 +160,6 @@ export class LivePartitionedSyncRolling<
             ? 'array'
             : col.kind;
       this.#columns.push({ source: name, reducer, kind });
-    }
-
-    // Locate the partition column's kind in the upstream schema.
-    const byCol = upstreamSchema.find((c) => c.name === byColumn);
-    if (!byCol) {
-      throw new TypeError(
-        `LivePartitionedSyncRolling: column '${byColumn}' not in upstream schema`,
-      );
     }
 
     // Reject column-name collisions between the partition column and
@@ -172,9 +187,12 @@ export class LivePartitionedSyncRolling<
     }
 
     // Output schema: [time, <byColumn>, ...mappingColumns].
+    // The byColumn's kind comes from the caller (looked up against the
+    // original source schema), not the reducer-input schema — the
+    // partition column may have been dropped by chained sugar.
     this.schema = Object.freeze([
       { name: 'time', kind: 'time' },
-      { name: byColumn, kind: byCol.kind, required: false },
+      { name: byColumn, kind: byColumnKind, required: false },
       ...this.#columns.map((c) => ({
         name: c.source,
         kind: c.kind,
