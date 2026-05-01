@@ -68,6 +68,10 @@ import type {
   ValueColumn,
   ValueColumnsForSchema,
 } from './types.js';
+import {
+  isAggregateOutputSpec,
+  normalizeAggregateColumns,
+} from './aggregate-columns.js';
 import { BoundedSequence } from './BoundedSequence.js';
 import { parseTimestampString, type TimeZoneOptions } from './calendar.js';
 import { Interval } from './Interval.js';
@@ -502,83 +506,11 @@ function applyAggregateReducer(
     : (reducer as CustomAggregateReducer)(values);
 }
 
-type AggregateColumnSpec = {
-  output: string;
-  source: string;
-  reducer: AggregateReducer;
-  kind: ScalarKind;
-};
-
-function isAggregateOutputSpec<S extends SeriesSchema>(
-  value: unknown,
-): value is AggregateOutputSpec<S> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'from' in value &&
-    'using' in value
-  );
-}
-
-function normalizeAggregateColumns<S extends SeriesSchema>(
-  schema: S,
-  mapping: AggregateMap<S> | AggregateOutputMap<S>,
-): AggregateColumnSpec[] {
-  const columnsByName = new Map(
-    schema.slice(1).map((column) => [column.name, column] as const),
-  );
-  const normalized: AggregateColumnSpec[] = [];
-
-  for (const [outputName, raw] of Object.entries(mapping)) {
-    const sourceName = isAggregateOutputSpec<S>(raw) ? raw.from : outputName;
-    const sourceColumn = columnsByName.get(sourceName);
-    if (!sourceColumn) {
-      throw new TypeError(
-        `aggregate mapping references unknown source column '${sourceName}'`,
-      );
-    }
-    if (
-      sourceColumn.kind !== 'number' &&
-      sourceColumn.kind !== 'string' &&
-      sourceColumn.kind !== 'boolean' &&
-      sourceColumn.kind !== 'array'
-    ) {
-      throw new TypeError(
-        `aggregate source column '${sourceName}' must be a value column`,
-      );
-    }
-    const reducer = isAggregateOutputSpec<S>(raw) ? raw.using : raw;
-    if (typeof reducer !== 'string' && typeof reducer !== 'function') {
-      throw new TypeError(
-        `aggregate reducer for '${outputName}' must be a built-in name or function`,
-      );
-    }
-    const explicitKind = isAggregateOutputSpec<S>(raw) ? raw.kind : undefined;
-    let resolvedKind: ScalarKind;
-    if (explicitKind !== undefined) {
-      resolvedKind = explicitKind;
-    } else if (typeof reducer === 'string') {
-      const builtIn = resolveReducer(reducer);
-      if (builtIn.outputKind === 'number') {
-        resolvedKind = 'number';
-      } else if (builtIn.outputKind === 'array') {
-        resolvedKind = 'array';
-      } else {
-        resolvedKind = sourceColumn.kind;
-      }
-    } else {
-      resolvedKind = sourceColumn.kind;
-    }
-    normalized.push({
-      output: outputName,
-      source: sourceName,
-      reducer,
-      kind: resolvedKind,
-    });
-  }
-
-  return normalized;
-}
+// `normalizeAggregateColumns`, `isAggregateOutputSpec`, and the
+// `AggregateColumnSpec` shape are extracted to `aggregate-columns.ts`
+// so the live accumulators (LiveRollingAggregation, LiveAggregation,
+// LivePartitionedSyncRolling) share the same normalisation. See the
+// import below.
 
 function createAggregateBucketState(
   operation: AggregateFunction,

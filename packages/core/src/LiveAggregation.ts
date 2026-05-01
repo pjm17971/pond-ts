@@ -1,3 +1,7 @@
+import {
+  normalizeAggregateColumns,
+  type AggregateColumnSpec,
+} from './aggregate-columns.js';
 import { Event } from './Event.js';
 import { Interval } from './Interval.js';
 import {
@@ -18,6 +22,7 @@ import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
+  AggregateOutputMap,
   AggregateSchema,
   DiffSchema,
   EventDataForSchema,
@@ -25,20 +30,15 @@ import type {
   LiveSource,
   NumericColumnNameForSchema,
   ColumnValue,
+  RollingSchema,
   SelectSchema,
   SeriesSchema,
   ValueColumnsForSchema,
 } from './types.js';
+import type { RollingOutputMapSchema } from './types-aggregate.js';
 
 import { parseDuration } from './utils/duration.js';
 import type { DurationInput } from './utils/duration.js';
-
-type ColumnSpec = {
-  output: string;
-  source: string;
-  reducer: string;
-  kind: string;
-};
 
 type PendingBucket = {
   start: number;
@@ -63,7 +63,7 @@ export class LiveAggregation<
   readonly name: string;
   readonly schema: Out;
 
-  readonly #columns: ColumnSpec[];
+  readonly #columns: AggregateColumnSpec[];
   readonly #stepMs: number;
   readonly #anchorMs: number;
   readonly #graceMs: number;
@@ -80,7 +80,7 @@ export class LiveAggregation<
   constructor(
     source: LiveSource<S>,
     sequence: Sequence,
-    mapping: AggregateMap<S>,
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
     options?: LiveAggregationOptions,
   ) {
     this.name = source.name;
@@ -96,23 +96,31 @@ export class LiveAggregation<
       ? parseDuration(options.grace as any)
       : sourceGraceMs;
 
-    const colsByName = new Map(
-      source.schema.slice(1).map((c) => [c.name, c] as const),
+    // Normalise the mapping into the unified column-spec shape used
+    // by both batch and live aggregation paths. Accepts either
+    // `AggregateMap<S>` (one reducer per existing source column) or
+    // `AggregateOutputMap<S>` (named alias outputs, multiple
+    // reducers per source column).
+    this.#columns = normalizeAggregateColumns(
+      source.schema,
+      mapping as AggregateMap<S> | AggregateOutputMap<S>,
     );
-    this.#columns = [];
-    for (const [name, reducer] of Object.entries(
-      mapping as Record<string, string>,
-    )) {
-      const col = colsByName.get(name);
-      if (!col) throw new TypeError(`unknown column '${name}'`);
-      const outputKind = resolveReducer(reducer).outputKind;
-      const kind =
-        outputKind === 'number'
-          ? 'number'
-          : outputKind === 'array'
-            ? 'array'
-            : col.kind;
-      this.#columns.push({ output: name, source: name, reducer, kind });
+
+    // Live aggregation currently only supports built-in (string)
+    // reducers. They have incremental bucket-state machinery
+    // (`add`/`snapshot`) that custom functions don't. Validate
+    // eagerly so the error surfaces at construction time, not on
+    // the first event arrival. Use AggregateOutputMap aliases over
+    // built-ins to compose multiple stats from one source column.
+    for (const c of this.#columns) {
+      if (typeof c.reducer !== 'string') {
+        throw new TypeError(
+          `live aggregation reducer for output '${c.output}' must be a built-in name; ` +
+            'custom function reducers are not supported on live aggregation. ' +
+            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
+            'to compose multiple built-in reducers from one source column.',
+        );
+      }
     }
 
     this.schema = Object.freeze([
@@ -258,9 +266,19 @@ export class LiveAggregation<
     return makeCumulativeView(this as any, spec);
   }
 
+  rolling<const M extends AggregateMap<Out>>(
+    windowSize: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<Out, RollingSchema<Out, M>>;
+  rolling<const M extends AggregateOutputMap<Out>>(
+    windowSize: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<Out, RollingOutputMapSchema<Out, M>>;
   rolling(
     windowSize: RollingWindow,
-    mapping: AggregateMap<Out>,
+    mapping: AggregateMap<Out> | AggregateOutputMap<Out>,
     options?: LiveRollingOptions,
   ): LiveRollingAggregation<Out> {
     return new LiveRollingAggregation(
@@ -299,9 +317,24 @@ export class LiveAggregation<
       pending = {
         start: bucket.start,
         end: bucket.end,
-        states: this.#columns.map((c) =>
-          resolveReducer(c.reducer).bucketState(),
-        ),
+        states: this.#columns.map((c) => {
+          if (typeof c.reducer !== 'string') {
+            // Live aggregation currently only supports built-in
+            // (string) reducers — they have incremental
+            // bucket-state machinery (`add`/`snapshot`) that custom
+            // functions don't. Use AggregateOutputMap aliases over
+            // built-ins to compose multiple stats from one source
+            // column. Custom-function support on live aggregation
+            // is queued as separate work.
+            throw new TypeError(
+              `live aggregation reducer for output '${c.output}' must be a built-in name; ` +
+                'custom function reducers are not supported on live aggregation. ' +
+                'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
+                'to compose multiple built-in reducers from one source column.',
+            );
+          }
+          return resolveReducer(c.reducer).bucketState();
+        }),
       };
       this.#pending.set(bucket.start, pending);
     }

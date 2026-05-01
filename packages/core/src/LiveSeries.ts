@@ -29,6 +29,7 @@ import type { Sequence } from './Sequence.js';
 import {
   EMITS_EVICT,
   type AggregateMap,
+  type AggregateOutputMap,
   type AggregateSchema,
   type DiffSchema,
   type EventDataForSchema,
@@ -48,6 +49,10 @@ import {
   type TimeSeriesJsonOutputArray,
   type TimeSeriesJsonOutputObject,
 } from './types.js';
+import type {
+  AggregateOutputMapResultSchema,
+  RollingOutputMapSchema,
+} from './types-aggregate.js';
 
 import type { DurationInput } from './utils/duration.js';
 import { parseDuration } from './utils/duration.js';
@@ -525,21 +530,34 @@ export class LiveSeries<S extends SeriesSchema> {
   aggregate<const M extends AggregateMap<S>>(
     sequence: Sequence,
     mapping: M,
-  ): LiveAggregation<S, AggregateSchema<S, M>> {
-    return new LiveAggregation(this, sequence, mapping as AggregateMap<S>);
+  ): LiveAggregation<S, AggregateSchema<S, M>>;
+  aggregate<const M extends AggregateOutputMap<S>>(
+    sequence: Sequence,
+    mapping: M,
+  ): LiveAggregation<S, AggregateOutputMapResultSchema<S, M>>;
+  aggregate(
+    sequence: Sequence,
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
+  ): LiveAggregation<S> {
+    return new LiveAggregation(this, sequence, mapping);
   }
 
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions,
-  ): LiveRollingAggregation<S, RollingSchema<S, M>> {
-    return new LiveRollingAggregation(
-      this,
-      window,
-      mapping as AggregateMap<S>,
-      options,
-    );
+  ): LiveRollingAggregation<S, RollingSchema<S, M>>;
+  rolling<const M extends AggregateOutputMap<S>>(
+    window: RollingWindow,
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<S, RollingOutputMapSchema<S, M>>;
+  rolling(
+    window: RollingWindow,
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
+    options?: LiveRollingOptions,
+  ): LiveRollingAggregation<S> {
+    return new LiveRollingAggregation(this, window, mapping, options);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

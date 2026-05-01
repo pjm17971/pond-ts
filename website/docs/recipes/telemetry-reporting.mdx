@@ -65,30 +65,38 @@ listener at the trigger cadence) and the in-app display (via
 
 ### Want multiple percentiles?
 
-Live `rolling()` currently accepts one reducer per existing column —
-the batch `AggregateOutputMap` form (`{ p50: { from: 'latency', using: 'p50' } }`)
-isn't on `LiveSeries.rolling()` yet. Two pragmatic options:
-
-**1. One rolling per percentile** (most common). Each rolling maintains
-its own deque, but they share the source's event stream and trigger:
+Use the `AggregateOutputMap` form to compute multiple stats from one
+source column in a single rolling pass — same deque, same trigger,
+all percentiles populated together:
 
 ```ts
-const trigger = { trigger: Trigger.clock(Sequence.every('30s')) };
-const p50 = timings.rolling(
+const stats = timings.rolling(
   '1m',
-  { latency: 'p50' },
-  { ...trigger, minSamples: 10 },
+  {
+    p50: { from: 'latency', using: 'p50' },
+    p95: { from: 'latency', using: 'p95' },
+    p99: { from: 'latency', using: 'p99' },
+  },
+  { trigger: Trigger.clock(Sequence.every('30s')), minSamples: 10 },
 );
-const p95 = timings.rolling(
-  '1m',
-  { latency: 'p95' },
-  { ...trigger, minSamples: 10 },
-);
+
+stats.on('event', (event) => {
+  fetch('/api/telemetry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ts: event.begin(),
+      p50: event.get('p50'),
+      p95: event.get('p95'),
+      p99: event.get('p99'),
+    }),
+  });
+});
 ```
 
-**2. Snapshot to batch when you need multi-reducer**. Read raw events
-into a `TimeSeries` and use the full batch `rolling()` API once per
-report cycle. Heavier per-tick but covers any reducer combo.
+The runtime uses a shared O(N) deque — emitting more percentiles
+adds reducer state per column but doesn't multiply the per-event
+work the way running multiple `rolling()` calls would.
 
 ## Collecting events
 

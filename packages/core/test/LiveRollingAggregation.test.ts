@@ -183,7 +183,7 @@ describe('edge cases', () => {
     expect(
       () =>
         new LiveRollingAggregation(live, '5s', { nonexistent: 'sum' } as any),
-    ).toThrow(/unknown column/);
+    ).toThrow(/unknown source column/);
   });
 
   it('many rapid pushes with count window', () => {
