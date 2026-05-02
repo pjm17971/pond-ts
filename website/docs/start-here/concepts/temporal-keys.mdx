@@ -141,10 +141,9 @@ work on any of the three uniformly through `begin()` / `end()`.
   `align(seq, …)` always produce `Interval`-keyed events. See
   [Aggregation](../../pond-ts/transforms/aggregation) and
   [Alignment](../../pond-ts/transforms/sampling-overview).
-- **Selection vocabulary** — operations like `tail`, `between`,
+- **Temporal relations** — operations like `tail`, `between`,
   `within`, `overlapping`, `trim` all work in terms of `begin()` /
-  `end()`. See
-  [Selection vocabulary](../concepts#selection-vocabulary).
+  `end()`. See [Temporal relations](./temporal-relations).
 - **Sequences** — a `Sequence` defines a grid of bucket boundaries
   that `aggregate` and `align` consume to produce `Interval` keys.
   See [Sequences](./sequences).
