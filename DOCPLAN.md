@@ -224,7 +224,7 @@ Update this section as work lands. Use ✅ done, 🔄 in flight, ⏸ paused.
 
 - ✅ Phase 1 — direct-class-reference bug fix (PR #100, merged)
 - ✅ Phase 2 — existing reference-page sweep (PR #101, merged 2026-05-02; human-reviewed and approved)
-- ⬜ Wave 3.1 — temporal-keys.mdx + sequences.mdx
+- 🔄 Wave 3.1 — temporal-keys.mdx + sequences.mdx (PR open, awaiting tone review)
 - ⬜ Wave 3.2 — remaining concept pages (series, temporal-relations, windowing, triggers, partitioning, late-data, index)
 - ⬜ Wave 3.3 — operator-page reshapes (alignment / aggregation symmetry, rolling/reduce trim)
 - ⬜ Wave 3.4 — renames + position moves (ingest→creating, eventwise→transformations, cleaning move)
