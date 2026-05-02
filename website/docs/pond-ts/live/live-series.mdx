@@ -10,10 +10,13 @@ Use it when data arrives incrementally — from WebSockets, message queues,
 polling loops, or any streaming source — and you need to maintain a
 rolling window of recent events.
 
-pond-ts is batch-first: `LiveSeries` is a bounded in-order buffer with
-an opt-in grace window for moderate reordering at ingest, not a full
-streaming engine. For the specifics of what that does and doesn't
-cover once data leaves the buffer, see
+`LiveSeries` is a bounded in-order buffer with an opt-in grace
+window for moderate reordering at ingest. It's not a full streaming
+engine like Beam or Flink — pond-ts trades exactly-once semantics
+and watermark/retraction handling for a simpler "data is the clock,
+ordered ingest with bounded reorder tolerance" model. For the
+specifics of what that does and doesn't cover once data leaves the
+buffer, see
 [Live Transforms → Late-event scope](./live-transforms#late-event-scope).
 
 If you're coming from pandas: there's no direct equivalent — pandas

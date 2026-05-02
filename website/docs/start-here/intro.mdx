@@ -164,10 +164,13 @@ dashboard patterns.
   transform output narrows off it. No `as` casts at the call site.
 - **Immutable** — `Event` and `TimeSeries` are frozen; transforms
   return new instances.
-- **Batch-first** — the core library is in-memory transforms over a
-  complete `TimeSeries`. The live side is a bounded buffer with
-  moderate reordering tolerance at ingest, not a full streaming
-  engine (see [Live Transforms → Late-event scope](./pond-ts/live/live-transforms#late-event-scope)).
+- **Batch and streaming as peers** — `TimeSeries` is in-memory
+  transforms over a complete dataset; `LiveSeries` is a bounded
+  buffer with moderate reordering tolerance at ingest. Same schema
+  type, same operator surface, different cost models. Not a full
+  streaming engine like Beam or Flink (see
+  [Live Transforms → Late-event scope](./pond-ts/live/live-transforms#late-event-scope)
+  for what that does and doesn't cover).
 - **Framework-agnostic** — the core has no React dependency;
   `@pond-ts/react` is strictly optional.
 

@@ -156,11 +156,18 @@ each interval the resulting `Time` lands.
 
 :::note[Live equivalent]
 For sampling a streaming rolling-window aggregate at sequence
-boundaries (e.g. emit p95 every 30 s of event time), see
-[`rolling.sample(seq)`](./rolling#sampling-on-a-sequence-rollingsampleseq).
-The verb "sample" overlaps with `align`'s `sample: 'begin' | 'center' | 'end'`
-option name — they're different concepts. `align`'s `sample` picks
-**where inside a grid step** to read the source value; `rolling.sample()`
-is a method that emits a **snapshot of the rolling state** when source
-data crosses a sequence boundary.
+boundaries (e.g. emit p95 every 30 s of event time), pass
+`{ trigger: Trigger.every('30s') }` to `live.rolling(...)`. See
+[Reporting at a regular cadence](./rolling#reporting-at-a-regular-cadence-clock-triggers)
+on the rolling page and
+[Live transforms → Trigger-based emission](../live/live-transforms#trigger-based-emission)
+for the full semantics.
+
+Note: `align`'s `sample: 'begin' | 'center' | 'end'` option name
+overlaps verbally with the older `.sample()` method that v0.12
+replaced with the trigger-based approach — they were always
+different concepts. `align`'s `sample` picks **where inside a
+grid step** to read the source value; the trigger-based approach
+emits a **snapshot of the rolling state** when source data crosses
+a sequence boundary.
 :::
