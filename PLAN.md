@@ -1635,6 +1635,65 @@ useLiveQuery(timings, () => rolling.value());
   reducer state across batches that pond's primitives can't see
   is shareable"). Until then, parked.
 
+- **`'collect'` reducer + lifted custom-function restriction on
+  live — queued for v0.14.1.** Surfaced by the gRPC experiment's
+  step-4 (anomaly density). The use case: per-host per-200ms tick,
+  count samples exceeding `k·σ` from the baseline mean for several
+  `k` thresholds. Mean/stdev come from a 1m baseline rolling (works
+  fine via `AggregateOutputMap`); the threshold counts need the
+  **raw values** from a 200ms current-tick window. None of pond's
+  built-ins yield "all values" — `unique` deduplicates, `top${N}`
+  bounds, `keep` is the unique-or-undefined sentinel (and is
+  pervasively misread to mean "keep all values" — the agent
+  tripped on this).
+
+  Custom-function reducers (`(values) => values.slice()`) cover
+  the use case cleanly. Batch already accepts them; live rejects
+  with a runtime TypeError pointing at AggregateOutputMap aliases,
+  which don't actually solve "all values" either. Asymmetry the
+  agent reasonably stumbled on.
+
+  **Two related changes ship together in v0.14.1:**
+
+  - **`'collect'` built-in reducer** — returns the window's values
+    as an array. Library-implemented; no custom-function-on-hot-
+    path concerns; sits beside `unique` and `top${N}` (same
+    array-output kind, same type-system narrowing). `add` O(1),
+    `remove` O(N) on eviction, `snapshot` O(N). Memory O(W) for
+    window size W. Doc-note: "use on bounded windows."
+
+  - **Lift the custom-function-reducer runtime guard on live
+    rolling and live aggregation.** Document the perf characteristic
+    instead of rejecting. Custom functions don't have incremental
+    add/remove machinery — on live they re-run over the full
+    window every event (O(W) per event vs O(1) for built-ins).
+    For low-rate dashboards / debug aggregations / prototype
+    pipelines the convenience matters more than the perf cliff;
+    for high-rate use built-ins or `'collect'`. JSDoc on
+    `LiveRollingAggregation` / `LiveAggregation` mapping options
+    + a callout on the live transforms doc page telegraph the
+    cost so callers make an informed choice.
+
+  **Why both rather than just `'collect'`** (decision 2026-05-02
+  during the docs phase): the batch-vs-live asymmetry is itself
+  the friction. The agent assumed "same reducer shape on both,"
+  hit the runtime guard, then had to find a different escape
+  hatch. Cleaner to align the surface. Many real use cases gain
+  ergonomic value from custom-function reducers; the perf cliff
+  is real but documentable, not a footgun once telegraphed. The
+  v0.14.1 patch closes both gaps in one motion.
+
+  **Why deferred (vs ship-now):** the perf-doc story lands in the
+  windowing concept page (DOCPLAN Wave 3.2). Better to ship the
+  reducer + guard removal alongside the docs that explain the
+  perf characteristic, rather than ship the API and then write
+  the docs separately.
+
+  Scope: ~50-80 lines for `'collect'` + tests, ~10 lines to drop
+  the runtime guards in `LiveRollingAggregation` /
+  `LiveAggregation` / `LivePartitionedSyncRolling`, ~20 lines of
+  perf-doc prose.
+
 ### RFC sketch: trigger taxonomy expansion (post-v0.13.2)
 
 Surfaced by Codex feedback after adopting v0.12 triggers in the
