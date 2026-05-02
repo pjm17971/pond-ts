@@ -226,7 +226,7 @@ Update this section as work lands. Use ✅ done, 🔄 in flight, ⏸ paused.
 - ✅ Phase 2 — existing reference-page sweep (PR #101, merged 2026-05-02; human-reviewed and approved)
 - ✅ Wave 3.1 — temporal-keys.mdx + sequences.mdx (PR #102, merged 2026-05-02; tone approved)
 - ✅ Wave 3.2 — remaining concept pages (PR #103, merged 2026-05-02; full concepts/ structure live)
-- ⬜ Wave 3.3 — operator-page reshapes (alignment / aggregation symmetry, rolling/reduce trim)
+- 🔄 Wave 3.3 — operator-page reshapes (PR open; sampling-overview→alignment + symmetry footers + rolling cross-link)
 - ⬜ Wave 3.4 — renames + position moves (ingest→creating, eventwise→transformations, cleaning move)
 - ⬜ Wave 3.5 — live triggering page
 - ⬜ Wave 3.6 — cross-link audit + sidebar finalisation

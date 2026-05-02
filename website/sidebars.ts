@@ -38,7 +38,7 @@ const sidebars: SidebarsConfig = {
             'pond-ts/transforms/queries',
             'pond-ts/transforms/eventwise',
             'pond-ts/transforms/cleaning',
-            'pond-ts/transforms/sampling-overview',
+            'pond-ts/transforms/alignment',
             'pond-ts/transforms/aggregation',
             'pond-ts/transforms/reshape',
             'pond-ts/transforms/rolling',
