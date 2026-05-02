@@ -211,19 +211,23 @@ re-scan historical windows to include it. See
 for the full picture.
 :::
 
-### Sampling on a Sequence: `rolling.sample(seq)`
+### Reporting at a regular cadence: clock triggers
 
 The live-side `rolling()` doesn't accept a `Sequence` directly the way
 batch `rolling(seq, window, mapping)` does — emission shapes differ
-(per-event for live, per-bucket for batch). When you want to **report**
-the rolling state at a regular cadence (e.g. push p95 to a backend
-every 30 s), tap the rolling with `.sample(sequence)`:
+(per-event by default for live, per-bucket for batch). When you want
+to **report** the rolling state at a regular cadence (e.g. push p95
+to a backend every 30 s), set a `Trigger.every(duration)` on the
+rolling:
 
 ```ts
-const rolling = live.rolling('1m', { latency: 'p95' });
+const rolling = live.rolling(
+  '1m',
+  { latency: 'p95' },
+  { trigger: Trigger.every('30s') },
+);
 
-const reported = rolling.sample(Sequence.every('30s'));
-reported.on('event', (event) => {
+rolling.on('event', (event) => {
   fetch('/api/telemetry', {
     method: 'POST',
     body: JSON.stringify({ ts: event.begin(), p95: event.get('latency') }),
@@ -235,9 +239,9 @@ rolling.value(); // { latency: 180 }
 ```
 
 Emission is data-driven (no `setInterval`); one event fires when a
-source event crosses an epoch-aligned sequence boundary. `sequence`
-must be fixed-step. See
-[Live transforms → Sampling on a Sequence](../live/live-transforms#sampling-on-a-sequence-rollingsampleseq)
+source event crosses an epoch-aligned boundary of the underlying
+sequence. The duration must be a fixed-step value. See
+[Live transforms → Trigger-based emission](../live/live-transforms#trigger-based-emission)
 for the full semantics, and the
 [Telemetry reporting recipe](../../recipes/telemetry-reporting) for an
 end-to-end pattern.

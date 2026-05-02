@@ -591,9 +591,9 @@ correctly.
 
 - **Partition column name must not collide** with a reducer-output
   column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
-  is rejected at construction; rename the reducer output (when
-  `AggregateOutputMap` lands on live rolling) or partition by a
-  different column.
+  is rejected at construction; rename the reducer output via an
+  `AggregateOutputMap` alias (e.g. `{ cpu_avg: { from: 'cpu', using: 'avg' } }`)
+  or partition by a different column.
 - **Late-spawn partitions** only appear in ticks **after** their first
   event arrives. A partition not yet known to the sync source
   contributes no row to the current tick — it joins the rotation when
@@ -603,24 +603,6 @@ correctly.
   schema-narrowed shape). The schema is correct at runtime; only the
   static types are widened. Tighter typing is queued for a follow-up
   release once the surface settles.
-
-:::note[New in 0.12.0]
-The `Trigger` API and the synchronised-partition output shape are
-new in `0.12.0`. The `event` and `clock` trigger variants are
-locked; future trigger types (`count`, `custom`, compound triggers)
-are reserved but not yet shipped.
-:::
-
-:::note[Multiple percentiles per column]
-The live-side `rolling()` only accepts the `AggregateMap<S>` shape
-(`{ existingColumnName: reducer }`) — one reducer per existing column.
-The batch `series.rolling()` also accepts `AggregateOutputMap<S>`
-(`{ alias: { from, using } }`) for multi-reducer-per-column cases like
-`{ p50: { from: 'latency', using: 'p50' }, p95: { from: 'latency', using: 'p95' } }`.
-That overload isn't on `LiveSeries.rolling()` yet. For now, run
-multiple `LiveRollingAggregation`s side-by-side, or snapshot to
-`TimeSeries` and use the batch path.
-:::
 
 ## Per-event transforms: diff, rate, pctChange
 

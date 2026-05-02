@@ -234,7 +234,7 @@ no convention-based stripping (`/^_cpu$/`) so renamed-column edge
 cases stay obvious. Wide columns not in the mapping pass through
 unchanged into the output schema.
 
-For now, the today's workaround using existing primitives:
+For now, the workaround using existing primitives:
 
 ```ts
 const wideCols = ['api-1_cpu', 'api-2_cpu'] as const;
