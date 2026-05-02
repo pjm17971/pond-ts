@@ -1,15 +1,93 @@
 ---
-sidebar_position: 10
+sidebar_position: 4
 ---
 
-# Ingest
+# Creating series
 
-`TimeSeries` and `LiveSeries` round-trip through JSON via `toJSON` /
-`fromJSON`. This page is the detailed reference — the shape of the
-JSON payload, the timestamp-parsing rules, and the one genuinely
-tricky corner (wall-clock strings and time zones).
+Two ways to build a pond series:
 
-This page covers:
+- **Batch** — `new TimeSeries({ name, schema, rows })` for a complete,
+  immutable dataset built once and queried many times.
+- **Live** — `new LiveSeries({ name, schema })` for a streaming
+  buffer that grows incrementally as `push` is called.
+
+Same schema type, same operator surface — see
+[Concepts → Series](./concepts/series) for the conceptual model.
+This page covers the construction patterns and the JSON wire format
+both directions share.
+
+If you're coming from pandas: `TimeSeries.fromJSON` ≈
+`pd.read_json(..., convert_dates=True, date_format='iso')`; `toJSON` ≈
+`.to_json(orient='records'|'values', date_format='iso')`;
+`parse.timeZone` ≈ `.tz_localize(...)` on a naive `DatetimeIndex`.
+
+## Batch construction
+
+```ts
+import { TimeSeries } from 'pond-ts';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'cpu', kind: 'number' },
+  { name: 'host', kind: 'string' },
+] as const;
+
+const cpu = new TimeSeries({
+  name: 'cpu',
+  schema,
+  rows: [
+    [Date.parse('2025-01-01T00:00:00Z'), 0.31, 'api-1'],
+    [Date.parse('2025-01-01T00:01:00Z'), 0.44, 'api-1'],
+  ],
+});
+```
+
+The `as const` on the schema is load-bearing — without it,
+TypeScript widens the schema tuple to a regular array and the column
+kinds widen to `string`, breaking type inference across every
+transform.
+
+For the full schema-as-contract story (kinds, narrowing,
+`required: false`), see [Concepts → Series](./concepts/series).
+For messy or partially-bad input, see
+[Cleaning data](../pond-ts/transforms/cleaning).
+
+## Live construction
+
+```ts
+import { LiveSeries } from 'pond-ts';
+
+const live = new LiveSeries({
+  name: 'cpu',
+  schema,                              // same schema as batch
+  retention: { maxEvents: 10_000 },    // bounded buffer
+  ordering:  'reorder',                // accept moderately late events
+  graceWindow: '5s',                   // ... up to 5s late
+});
+
+live.push([Date.now(), 0.42, 'api-1']);
+live.pushMany([
+  [Date.now() + 1, 0.43, 'api-1'],
+  [Date.now() + 2, 0.45, 'api-2'],
+]);
+```
+
+Retention and ordering details are on [Late data](./concepts/late-data);
+the LiveSeries reference page is
+[LiveSeries](../pond-ts/live/live-series).
+
+`live.toTimeSeries()` snapshots to an immutable batch series at any
+time — the snapshot is independent of future pushes.
+
+## JSON round-trip
+
+Both `TimeSeries` and `LiveSeries` round-trip through JSON via
+`toJSON` / `fromJSON`. The shape is identical for both; consumers
+of the JSON don't need to know which side it came from.
+
+This is the rest of the page — the shape of the JSON payload, the
+timestamp-parsing rules, and the one genuinely tricky corner
+(wall-clock strings and time zones):
 
 - [**The JSON shape**](#the-json-shape) — what `toJSON` emits and
   what `fromJSON` accepts.
@@ -20,11 +98,6 @@ This page covers:
 - [**Calendar-aware sequences**](#calendar-aware-sequences) — the
   timezone-sensitive sibling to `Sequence.every`.
 - [**Pitfalls**](#pitfalls).
-
-If you're coming from pandas: `TimeSeries.fromJSON` ≈
-`pd.read_json(..., convert_dates=True, date_format='iso')`; `toJSON` ≈
-`.to_json(orient='records'|'values', date_format='iso')`;
-`parse.timeZone` ≈ `.tz_localize(...)` on a naive `DatetimeIndex`.
 
 ## The JSON shape
 
