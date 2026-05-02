@@ -228,5 +228,5 @@ Update this section as work lands. Use ✅ done, 🔄 in flight, ⏸ paused.
 - ✅ Wave 3.2 — remaining concept pages (PR #103, merged 2026-05-02; full concepts/ structure live)
 - ✅ Wave 3.3 — operator-page reshapes (PR #104, merged 2026-05-02)
 - ✅ Wave 3.4 — renames + position moves (PR #105, merged 2026-05-02)
-- 🔄 Wave 3.5 — live triggering page (PR open)
-- ⬜ Wave 3.6 — cross-link audit + sidebar finalisation
+- ✅ Wave 3.5 — live triggering page (PR #106, merged 2026-05-02)
+- 🔄 Wave 3.6 — cross-link audit + sidebar finalisation (PR open)
