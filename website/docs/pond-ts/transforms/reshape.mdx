@@ -42,7 +42,7 @@ This page covers eight ops, grouped by what they do:
 
 For per-event shape changes — `select`, `rename`, `collapse`,
 `map(newSchema, fn)` — see
-[Eventwise transforms → Per-event-only](./eventwise#per-event-only).
+[Eventwise transforms → Per-event-only](./transformations#per-event-only).
 
 ## Picking the right op
 
@@ -637,9 +637,9 @@ each group spawns multiple derived columns.
 
 | Op                    | Page                                   | Shape                                               |
 | --------------------- | -------------------------------------- | --------------------------------------------------- |
-| `select(...cols)`     | [Eventwise](./eventwise#select)        | narrow columns; row count unchanged                 |
-| `rename(mapping)`     | [Eventwise](./eventwise#rename)        | rename columns; row count unchanged                 |
-| `collapse(cols, out)` | [Eventwise](./eventwise#collapse)      | merge several columns into one; row count unchanged |
-| `map(schema, fn)`     | [Eventwise](./eventwise#map)           | per-event schema transform                          |
+| `select(...cols)`     | [Eventwise](./transformations#select)        | narrow columns; row count unchanged                 |
+| `rename(mapping)`     | [Eventwise](./transformations#rename)        | rename columns; row count unchanged                 |
+| `collapse(cols, out)` | [Eventwise](./transformations#collapse)      | merge several columns into one; row count unchanged |
+| `map(schema, fn)`     | [Eventwise](./transformations#map)           | per-event schema transform                          |
 | `aggregate(seq, m)`   | [Aggregation](./aggregation#aggregate) | collapse to fewer events on a grid                  |
 | `reduce(mapping)`     | [Aggregation](./aggregation#reduce)    | collapse whole series to one record                 |
