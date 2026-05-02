@@ -15,7 +15,9 @@ const rollingAvg = cpu.rolling('5m', { cpu: 'avg' });
 
 Same reducer vocabulary as [`aggregate`](./aggregation) — every
 built-in works, plus custom functions. The difference is per-event
-output cadence vs. one-per-bucket.
+output cadence vs. one-per-bucket. For the mental model placing
+rolling alongside aggregate, reduce, and the streaming variant,
+see [Concepts → Windowing](../../start-here/concepts/windowing).
 
 ## Window alignment
 
