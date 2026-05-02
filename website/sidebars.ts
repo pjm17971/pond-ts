@@ -9,6 +9,14 @@ const sidebars: SidebarsConfig = {
         'start-here/intro',
         'start-here/getting-started',
         'start-here/concepts',
+        {
+          type: 'category',
+          label: 'Concepts (in progress)',
+          items: [
+            'start-here/concepts/temporal-keys',
+            'start-here/concepts/sequences',
+          ],
+        },
       ],
     },
     {
