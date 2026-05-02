@@ -1635,7 +1635,7 @@ useLiveQuery(timings, () => rolling.value());
   reducer state across batches that pond's primitives can't see
   is shareable"). Until then, parked.
 
-- **`'collect'` reducer + lifted custom-function restriction on
+- **`'samples'` reducer + lifted custom-function restriction on
   live — queued for v0.14.1.** Surfaced by the gRPC experiment's
   step-4 (anomaly density). The use case: per-host per-200ms tick,
   count samples exceeding `k·σ` from the baseline mean for several
@@ -1655,12 +1655,19 @@ useLiveQuery(timings, () => rolling.value());
 
   **Two related changes ship together in v0.14.1:**
 
-  - **`'collect'` built-in reducer** — returns the window's values
+  - **`'samples'` built-in reducer** — returns the window's values
     as an array. Library-implemented; no custom-function-on-hot-
     path concerns; sits beside `unique` and `top${N}` (same
     array-output kind, same type-system narrowing). `add` O(1),
     `remove` O(N) on eviction, `snapshot` O(N). Memory O(W) for
     window size W. Doc-note: "use on bounded windows."
+
+    **Naming note (2026-05-02):** initially proposed as `'collect'`,
+    renamed to `'samples'` to avoid collision with
+    `LivePartitionedSeries.collect()` (already used to fan partitions
+    back into a unified buffer). `'samples'` also reads naturally
+    as a "subset of a population," which dovetails with the
+    deferred parameterized form below.
 
   - **Lift the custom-function-reducer runtime guard on live
     rolling and live aggregation.** Document the perf characteristic
@@ -1689,10 +1696,52 @@ useLiveQuery(timings, () => rolling.value());
   perf characteristic, rather than ship the API and then write
   the docs separately.
 
-  Scope: ~50-80 lines for `'collect'` + tests, ~10 lines to drop
+  Scope: ~50-80 lines for `'samples'` + tests, ~10 lines to drop
   the runtime guards in `LiveRollingAggregation` /
   `LiveAggregation` / `LivePartitionedSyncRolling`, ~20 lines of
   perf-doc prose.
+
+- **`'samples(n)'` parameterized form — deferred.** Random thought
+  during the v0.14.1 naming pass (2026-05-02): if `'samples'`
+  reads as "subset of a population," then `samples(n)` could
+  return a uniform random subsample of size `n` — useful for
+  bounded-memory representations of large buckets.
+
+  - **Batch:** straightforward reservoir sampling (Algorithm R).
+    O(N) time, O(n) memory, classic.
+  - **Live rolling:** harder. Reservoir sampling assumes each
+    element is seen exactly once; a sliding window has elements
+    *exiting* too (the reservoir might hold an element that's
+    just aged out). Sliding-window-reservoir algorithms exist
+    (priority sampling with random keys, time-bucketed chunked
+    sampling) but each has tradeoffs and adds real implementation
+    complexity. Not a one-line addition.
+
+  **Defer.** The default `samples()` (no arg = all values) covers
+  every use case the experiments have surfaced. Revisit if a real
+  user lands a "I need bounded-memory subsamples of high-cardinality
+  windows" pattern.
+
+- **Reducer composition / chaining — deferred RFC.** Same naming
+  pass surfaced: it would be useful to chain `samples(20).avg()`
+  to mean "subsample 20, then average." That's a two-stage
+  reduction — reduce events to 20 values, then reduce those to 1.
+
+  Pond's reducer registry today maps strings to single-stage
+  reducers. Chaining means either parsing a string DSL
+  (`'avg(samples(20))'`) or shifting the API toward composable
+  reducer *objects* (`avg.of(samples(20))` or
+  `pipe(samples(20), avg)`). Both are RFC-shaped — they'd touch
+  the reducer-registry contract, the type-system narrowing, and
+  the AggregateOutputMap mapping shape.
+
+  **Defer.** Custom-function reducers (shipping in v0.14.1) cover
+  the same use case as one-liners today:
+  `{ avgSample: { from: 'cpu', using: vals => avg(reservoir(vals, 20)) } }`.
+  Lift composition into the registry only after we see two or
+  three users hit the pattern frequently enough that the custom-
+  function workaround feels like a workaround. Until then the
+  custom-function form is the right escape hatch.
 
 ### RFC sketch: trigger taxonomy expansion (post-v0.13.2)
 
