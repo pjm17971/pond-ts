@@ -1,0 +1,296 @@
+---
+sidebar_position: 3
+---
+
+# Triggering
+
+Operator-level reference for the `trigger` option on `live.rolling`.
+For the conceptual model (when to use which trigger, how triggers
+relate to windows), see
+[Concepts → Triggers](../../start-here/concepts/triggers).
+
+A **trigger** controls when a live rolling emits a snapshot. The
+window itself is always current; the trigger is purely about
+output cadence. Three flavours, all data-driven (no wall-clock,
+no `setInterval` inside the library):
+
+| Trigger              | Fires                                          |
+| -------------------- | ---------------------------------------------- |
+| `Trigger.event()`    | Once per source event (the default)            |
+| `Trigger.every(d)`   | Once per epoch-aligned boundary crossing       |
+| `Trigger.clock(seq)` | Same as `every`, with a custom `Sequence`      |
+| `Trigger.count(n)`   | Once per `n` source events                     |
+
+## `Trigger.event()` — per source event
+
+Default. Each `live.push` produces one output snapshot per attached
+rolling.
+
+```ts
+import { Trigger } from 'pond-ts';
+
+const rolling = live.rolling('1m', { cpu: 'avg' });
+// Equivalent to: { trigger: Trigger.event() }
+
+rolling.on('event', e => {
+  // Fires once per live.push call
+});
+```
+
+`Trigger.event()` is a frozen sentinel — calling it multiple times
+returns the same object reference.
+
+## `Trigger.every(duration, { anchor? })` — per fixed cadence
+
+Sugar for `Trigger.clock(Sequence.every(duration, { anchor }))`. Use
+this when you want a fixed-step emission cadence and don't already
+have a `Sequence` object.
+
+```ts
+const rolling = live.rolling(
+  '1m',
+  { cpu: 'p95' },
+  { trigger: Trigger.every('30s') },
+);
+
+rolling.on('event', e => {
+  // e.begin() === <boundary timestamp> (0, 30000, 60000, ...)
+});
+
+// Anchored at 5_000ms instead of epoch:
+Trigger.every('30s', { anchor: 5_000 });
+```
+
+`duration` accepts the standard duration string format
+(`ms` / `s` / `m` / `h` / `d`) or a millisecond number. Calendar
+sequences (`Sequence.daily()`, `Sequence.weekly()`) are rejected
+because boundary indexing requires a constant step.
+
+## `Trigger.clock(sequence)` — explicit Sequence form
+
+Use when you already hold a `Sequence` object (e.g. one shared
+across batch `series.aggregate(seq, ...)` and live triggers).
+`Trigger.every` always builds a fresh `Sequence`; `Trigger.clock`
+takes one as an argument.
+
+```ts
+import { Sequence, Trigger } from 'pond-ts';
+
+const tickSeq = Sequence.every('30s', { anchor: 5_000 });
+const trigger = Trigger.clock(tickSeq);
+
+// Same sequence drives both batch + live for guaranteed alignment
+const live  = liveSource.rolling('1m', mapping, { trigger });
+const batch = batchSource.aggregate(tickSeq, mapping);
+```
+
+Same fixed-step constraint as `every`. `Trigger.clock` rejects
+calendar sequences with a `TypeError` at construction.
+
+## `Trigger.count(n)` — per N events
+
+Fires every `n` source events. Counter resets on each fire (so it
+measures "events since the last emission"). The first emission
+fires on the `n`th event, not the first.
+
+```ts
+const rolling = live.rolling(
+  '5m',
+  { latency: 'p95' },
+  { trigger: Trigger.count(1000) },
+);
+
+rolling.on('event', e => {
+  // e.begin() === <triggering event's timestamp>
+});
+```
+
+Right choice for hot streams where event-time boundaries lag during
+burst load — the count trigger fires on events themselves, not on
+the time they cover. `Trigger.count(1)` is behaviourally identical
+to `Trigger.event()`.
+
+Validation: `Trigger.count(n)` requires a positive integer.
+`Trigger.count(0)`, `Trigger.count(-1)`, `Trigger.count(1.5)`, and
+`Trigger.count(NaN)` all throw at construction.
+
+## `rolling.value()` — independent of trigger
+
+The trigger controls when subscribers see a new event. The window
+itself is always current.
+
+```ts
+rolling.value();
+// → current { ...mapping } record, regardless of when the trigger
+// last fired
+```
+
+This powers the **single-rolling, two-consumer pattern**:
+
+```ts
+const rolling = live.rolling(
+  '1m',
+  { latency: 'p95' },
+  { trigger: Trigger.every('30s') },
+);
+
+// Backend reporting fires at the 30s cadence
+rolling.on('event', e => fetch('/api/telemetry', { ... }));
+
+// In-app display reads continuously, gets the up-to-date value
+function PerformancePanel() {
+  const stats = useLiveQuery(rolling, () => rolling.value(), {
+    throttleMs: 1_000,
+  });
+  return <Display value={stats.latency} />;
+}
+```
+
+One rolling, two consumers, one deque. No duplicated state.
+
+## Emission semantics (clock triggers)
+
+Each of these applies to `Trigger.every` / `Trigger.clock`:
+
+- **Data-driven, not timer-driven.** No `setInterval` inside the
+  library. If the source goes quiet for a minute, no snapshots are
+  emitted during that minute.
+- **One emission per crossing.** A source event that jumps multiple
+  boundaries at once (e.g. after a quiet period) fires exactly one
+  event at the start of the new bucket — not one per skipped
+  boundary.
+- **Snapshot timing.** The rolling-window snapshot is read after the
+  boundary-crossing event has been ingested by the rolling, so the
+  emitted value includes that event's contribution.
+- **Out-of-order events.** Late arrivals (under `ordering: 'reorder'`
+  on the source) do not trigger emission — only events that advance
+  the bucket index do. Late events are absorbed silently by the
+  rolling window's normal recompute.
+
+Count-trigger semantics are simpler — every Nth event fires; quiet
+periods produce no output by definition.
+
+## Synchronised partitioned rolling
+
+When you partition first and pass a clock trigger, **all partitions
+emit synchronously on every boundary crossing** — when any
+partition's event crosses the boundary, every known partition's
+rolling snapshot fires at the same instant.
+
+```ts
+const ticks = live
+  .partitionBy('host')
+  .rolling(
+    '1m',
+    { cpu: 'avg' },
+    { trigger: Trigger.every('200ms') },
+  );
+
+ticks.on('event', e => {
+  console.log(
+    e.begin(),       // boundary timestamp, same for every host this tick
+    e.get('host'),   // partition tag, auto-injected from routing key
+    e.get('cpu'),    // rolling value at this boundary
+  );
+});
+```
+
+The output is a `LiveSource` whose schema is
+`[time, <partitionColumn>, ...mappingColumns]` — one event per known
+partition per tick, all carrying the same boundary timestamp.
+Partitions declared via `{ groups }` emit in declared order;
+auto-spawned partitions emit in observation order.
+
+### With chained partition operators
+
+A clock trigger also works after chained methods on the partitioned
+surface (`fill`, `diff`, `rate`, `pctChange`, `cumulative`). The
+chain factory runs per partition; the sync rolling subscribes to
+each chain output:
+
+```ts
+// Per-host gap-filling before synchronised tick aggregation
+const ticks = live
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling(
+    '1m',
+    { cpu: 'avg' },
+    { trigger: Trigger.every('200ms') },
+  );
+```
+
+Output schema stays `[time, <partitionColumn>, ...mappingColumns]`
+regardless of how many chain steps preceded the rolling. Partition
+tags are set from the routing key, so chains that drop the
+partition column (e.g. `.select(...)` without explicitly retaining
+it) still emit correctly.
+
+### Restrictions
+
+- **Partition column name must not collide** with a reducer-output
+  column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
+  is rejected at construction; rename the reducer output via an
+  `AggregateOutputMap` alias (e.g.
+  `{ cpu_avg: { from: 'cpu', using: 'avg' } }`) or partition by a
+  different column.
+- **Late-spawn partitions** only appear in ticks **after** their
+  first event arrives. A partition not yet known to the sync source
+  contributes no row to the current tick — it joins the rotation
+  when its first event lands. To eagerly include a partition before
+  any events, declare it via `partitionBy(col, { groups: [...] })`.
+- **Return type is loose** (`LiveSource<SeriesSchema>` rather than
+  a schema-narrowed shape). The schema is correct at runtime; only
+  the static types are widened. Tighter typing is queued for a
+  follow-up release once the surface settles.
+
+## Trigger × partition matrix
+
+| Setup                                                              | Behaviour                                                              |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `live.rolling(...)` (no partition, no trigger)                     | Per source event                                                       |
+| `live.rolling(..., { trigger: Trigger.every(d) })`                 | One snapshot per epoch-aligned boundary                                |
+| `live.rolling(..., { trigger: Trigger.count(n) })`                 | One snapshot every `n` events                                          |
+| `partitionBy(c).rolling(...)` (no trigger)                         | Per-partition rolling, each fires per source event independently       |
+| `partitionBy(c).rolling(..., { trigger: Trigger.every(d) })`       | **Synchronised** — every known partition emits one row per boundary    |
+| `partitionBy(c).rolling(..., { trigger: Trigger.count(n) })`       | Per-partition count — each partition fires after its own Nth event     |
+
+## Migration from `rolling.sample(seq)`
+
+Pre-v0.12 pond exposed `LiveRollingAggregation.sample(sequence)` as
+a separate method that emitted snapshots at sequence boundaries.
+v0.12 deleted that method and folded the use case into the trigger
+model:
+
+```ts
+// Pre-v0.12 (removed)
+const reported = live
+  .rolling('1m', { cpu: 'p95' })
+  .sample(Sequence.every('30s'));
+
+// v0.12+
+const reported = live.rolling(
+  '1m',
+  { cpu: 'p95' },
+  { trigger: Trigger.every('30s') },
+);
+```
+
+The new shape is one rolling with explicit cadence; the deprecated
+shape was a rolling with a sub-sample. Functionally equivalent, but
+the trigger version is more compositional (the cadence concept is
+the same shape across event/clock/count) and cheaper (no separate
+sub-aggregation deque).
+
+## See also
+
+- [Concepts → Triggers](../../start-here/concepts/triggers) — the
+  mental model
+- [Concepts → Sequences](../../start-here/concepts/sequences) —
+  what clock triggers consume
+- [Concepts → Partitioning](../../start-here/concepts/partitioning)
+  — how synchronised partitioned rolling fits in
+- [Live transforms](./live-transforms) — the rolling and aggregation
+  operators that triggers attach to
+- [Telemetry recipe](../../recipes/telemetry-reporting) — end-to-end
+  worked example using `Trigger.every`
