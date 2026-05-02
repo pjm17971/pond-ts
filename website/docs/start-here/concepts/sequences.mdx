@@ -88,7 +88,7 @@ Calendar sequences are **rejected by some operators** that require
 constant-step boundaries — notably clock-triggered live rolling
 (`Trigger.clock(seq)` / `Trigger.every(duration)`). The boundary
 indexing math assumes a constant step. See
-[Live transforms → Trigger-based emission](../../pond-ts/live/live-transforms#trigger-based-emission).
+[Triggering](../../pond-ts/live/triggering).
 
 ## `Sequence.kind()` — discriminator
 
@@ -166,6 +166,6 @@ real telemetry.
   `Trigger.every(duration)` sugar use a sequence to define the
   emission cadence of live rolling. Calendar sequences are rejected.
   See
-  [Live transforms → Trigger-based emission](../../pond-ts/live/live-transforms#trigger-based-emission).
+  [Triggering](../../pond-ts/live/triggering).
 - **`Interval` keys** — every operator that consumes a sequence
   produces `Interval`-keyed output. See [Temporal keys](./temporal-keys).

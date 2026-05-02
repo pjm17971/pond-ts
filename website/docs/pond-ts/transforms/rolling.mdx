@@ -215,12 +215,11 @@ for the full picture.
 
 ### Reporting at a regular cadence: clock triggers
 
-The live-side `rolling()` doesn't accept a `Sequence` directly the way
-batch `rolling(seq, window, mapping)` does — emission shapes differ
-(per-event by default for live, per-bucket for batch). When you want
-to **report** the rolling state at a regular cadence (e.g. push p95
-to a backend every 30 s), set a `Trigger.every(duration)` on the
-rolling:
+The live-side `rolling()` doesn't accept a `Sequence` directly the
+way batch `rolling(seq, window, mapping)` does — emission shapes
+differ (per-event by default for live, per-bucket for batch). When
+you want to **report** the rolling state at a regular cadence (e.g.
+push p95 to a backend every 30 s), set a `Trigger.every(duration)`:
 
 ```ts
 const rolling = live.rolling(
@@ -228,22 +227,10 @@ const rolling = live.rolling(
   { latency: 'p95' },
   { trigger: Trigger.every('30s') },
 );
-
-rolling.on('event', (event) => {
-  fetch('/api/telemetry', {
-    method: 'POST',
-    body: JSON.stringify({ ts: event.begin(), p95: event.get('latency') }),
-  });
-});
-
-// Same rolling drives an in-app live display — no second deque
-rolling.value(); // { latency: 180 }
 ```
 
-Emission is data-driven (no `setInterval`); one event fires when a
-source event crosses an epoch-aligned boundary of the underlying
-sequence. The duration must be a fixed-step value. See
-[Live transforms → Trigger-based emission](../live/live-transforms#trigger-based-emission)
-for the full semantics, and the
-[Telemetry reporting recipe](../../recipes/telemetry-reporting) for an
-end-to-end pattern.
+For the full trigger reference (event / clock / count, semantics,
+sync partitioned rolling, migration from `.sample()`), see
+[Triggering](../live/triggering). The
+[Telemetry reporting recipe](../../recipes/telemetry-reporting) is
+the end-to-end worked example.

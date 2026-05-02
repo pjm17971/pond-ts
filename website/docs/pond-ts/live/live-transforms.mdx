@@ -443,166 +443,29 @@ output buffer grows unboundedly — downstream consumers can compose with
 
 ### Trigger-based emission
 
-A rolling aggregation's emission cadence is controlled by an optional
-`trigger` on the `rolling` call. The default is per-event emission (the
-historical behaviour). Three triggers are available:
-
-- **`Trigger.event()`** — emit per source event (the default).
-- **`Trigger.every(duration)`** / **`Trigger.clock(sequence)`** — emit
-  one snapshot when a source event crosses an epoch-aligned boundary.
-- **`Trigger.count(n)`** — emit one snapshot every `n` source events.
+A rolling aggregation's emission cadence is controlled by an
+optional `trigger` on the `rolling` call:
 
 ```ts
 import { Trigger } from 'pond-ts';
 
-// Webapp telemetry: backend report every 30 s of event time;
-// rolling.value() drives the in-app display from the same state.
 const rolling = timings.rolling(
   '1m',
   { latency: 'p95' },
   { trigger: Trigger.every('30s') },
 );
-
-rolling.on('event', (event) => {
-  fetch('/api/telemetry', {
-    method: 'POST',
-    body: JSON.stringify({
-      ts: event.begin(), // 0, 30 000, 60 000, … (epoch-aligned)
-      p95: event.get('latency'),
-    }),
-  });
-});
-
-console.log(rolling.value()); // { latency: 180 } — current state
 ```
 
-`Trigger.every(duration)` is sugar for the explicit
-`Trigger.clock(Sequence.every(duration))` form. Reach for the explicit
-form when you already hold a `Sequence` object (e.g. one shared across
-batch `series.aggregate(seq, ...)` and live triggers) — `Trigger.every`
-always builds a fresh `Sequence`. Both forms require a fixed-step
-duration; calendar sequences (`Sequence.daily()`, `Sequence.weekly()`)
-are rejected — boundary indexing needs a constant step.
+Three triggers are available — `Trigger.event()` (default, per
+source event), `Trigger.every(duration)` /
+`Trigger.clock(sequence)` (per epoch-aligned boundary), and
+`Trigger.count(n)` (per N events). Synchronised partitioned
+rolling builds on clock triggers — every known partition emits
+together at each boundary tick.
 
-**Emission semantics:**
-
-- **Data-driven, not timer-driven.** No `setInterval` inside the
-  library. If the source goes quiet for a minute, no snapshots are
-  emitted during that minute.
-- **One emission per crossing.** A source event that jumps multiple
-  boundaries at once (e.g. after a quiet period) fires exactly one
-  event at the start of the new bucket — not one per skipped boundary.
-- **Snapshot timing.** The rolling-window snapshot is read after the
-  boundary-crossing event has been ingested by the rolling, so the
-  emitted value includes that event's contribution.
-- **Out-of-order events.** Late arrivals (under `ordering: 'reorder'`
-  on the source) do not trigger emission — only events that advance
-  the bucket index do. Late events are absorbed silently by the
-  rolling window's normal recompute.
-- **`rolling.value()` is independent of trigger.** It always reports
-  the current rolling-window snapshot, regardless of when the trigger
-  last fired. Use it to drive a live display alongside trigger-based
-  backend reporting (one rolling, two consumers, no duplicated state).
-
-#### Count trigger
-
-For very hot metrics where event-time boundaries lag during bursts —
-but per-event emission is too noisy — switch to a count trigger that
-fires every `n` source events:
-
-```ts
-// Emit one snapshot every 1000 source events. Counter resets on each
-// fire, so this measures "events since the last emission," not "every
-// 1000th event modulo the input."
-const rolling = timings.rolling(
-  '5m',
-  { p95: { from: 'latency', using: 'p95' } },
-  { trigger: Trigger.count(1000) },
-);
-```
-
-Like the clock trigger, `Trigger.count` is **data-driven** — the
-counter only advances on event ingestion, no `setTimeout` inside the
-library. The first emission fires on the `n`th event, not the first.
-
-When applied to `partitionBy(...).rolling(...)`, **each partition counts
-independently** — count does not synchronise emission across partitions.
-Use `Trigger.clock` for cross-partition synchronisation; use
-`Trigger.count` when each partition's burstiness is what you're
-measuring.
-
-### Synchronised partitioned rolling
-
-When you partition first and pass a clock trigger, **all partitions
-emit synchronously on every boundary crossing** — when any partition's
-event crosses the boundary, every known partition's rolling snapshot
-fires at the same instant.
-
-```ts
-const ticks = live
-  .partitionBy('host')
-  .rolling(
-    '1m',
-    { cpu: 'avg' },
-    { trigger: Trigger.every('200ms') },
-  );
-
-// One row per host per tick, all sharing the same boundary timestamp
-ticks.on('event', (event) => {
-  console.log(
-    event.begin(), // boundary timestamp, same for every host this tick
-    event.get('host'),
-    event.get('cpu'),
-  );
-});
-```
-
-The output is a `LiveSource` whose schema is
-`[time, <partitionColumn>, ...mappingColumns]` — one event per known
-partition per tick, all carrying the same boundary timestamp. Consumer
-code rebuckets per-tick by grouping on `event.begin()`. Partitions
-declared via `{ groups }` emit in declared order; auto-spawned partitions
-emit in observation order.
-
-**Composes with chained sugar.** A clock trigger also works after
-chained methods on the partitioned surface (`fill`, `diff`, `rate`,
-`pctChange`, `cumulative`). The chain factory runs per partition and
-the sync rolling subscribes to each chain output:
-
-```ts
-// Per-host gap-filling before synchronised tick aggregation
-const ticks = live
-  .partitionBy('host')
-  .fill({ cpu: 'hold' })
-  .rolling(
-    '1m',
-    { cpu: 'avg' },
-    { trigger: Trigger.every('200ms') },
-  );
-```
-
-The output schema stays `[time, <partitionColumn>, ...mappingColumns]`
-regardless of how many chain steps preceded the rolling. Partition tags
-are set from the routing key, so even chains that drop the partition
-column (e.g. `.select(...)` without explicitly retaining it) still emit
-correctly.
-
-**Restrictions:**
-
-- **Partition column name must not collide** with a reducer-output
-  column. `partitionBy('cpu').rolling('1m', { cpu: 'avg' }, { trigger })`
-  is rejected at construction; rename the reducer output via an
-  `AggregateOutputMap` alias (e.g. `{ cpu_avg: { from: 'cpu', using: 'avg' } }`)
-  or partition by a different column.
-- **Late-spawn partitions** only appear in ticks **after** their first
-  event arrives. A partition not yet known to the sync source
-  contributes no row to the current tick — it joins the rotation when
-  its first event lands. To eagerly include a partition before any
-  events, declare it via `partitionBy(col, { groups: [...] })`.
-- **Return type is loose** (`LiveSource<SeriesSchema>` rather than a
-  schema-narrowed shape). The schema is correct at runtime; only the
-  static types are widened. Tighter typing is queued for a follow-up
-  release once the surface settles.
+For the full reference (parameters, emission semantics, trigger ×
+partition matrix, sync-rolling restrictions, migration from
+pre-v0.12 `.sample()`), see [Triggering](./triggering).
 
 ## Per-event transforms: diff, rate, pctChange
 

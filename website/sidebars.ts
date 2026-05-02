@@ -50,7 +50,11 @@ const sidebars: SidebarsConfig = {
         {
           type: 'category',
           label: 'LiveSeries',
-          items: ['pond-ts/live/live-series', 'pond-ts/live/live-transforms'],
+          items: [
+            'pond-ts/live/live-series',
+            'pond-ts/live/live-transforms',
+            'pond-ts/live/triggering',
+          ],
         },
         {
           type: 'category',
