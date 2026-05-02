@@ -230,3 +230,19 @@ Update this section as work lands. Use ✅ done, 🔄 in flight, ⏸ paused.
 - ✅ Wave 3.4 — renames + position moves (PR #105, merged 2026-05-02)
 - ✅ Wave 3.5 — live triggering page (PR #106, merged 2026-05-02)
 - ✅ Wave 3.6 — cross-link audit + sidebar finalisation (PR #107, merged 2026-05-02)
+- ✅ Docs deployed live — initial deploy failed on relative-path
+  rot from Waves 3.4/3.5 file moves (Docusaurus
+  `onBrokenLinks: 'throw'`); fixed in commit `5db5ba5`, redeploy
+  succeeded 2026-05-02 13:12.
+
+## Lesson for future doc moves
+
+The `verify` CI (`npm run verify`) does **not** run the docs build —
+it covers format-check, TypeScript build, and tests. Broken-link
+detection only runs in the `docs.yml` workflow which fires on `v*`
+tag pushes or manual `workflow_dispatch`. After any wave that
+moves or renames doc files, run `gh workflow run docs.yml --ref main`
+**before declaring the wave done**, not after the merge train. This
+catches relative-path rot that sed-driven bulk updates miss
+(typically: `../X` paths that were correct before a file moved
+levels and need an extra `../`).
