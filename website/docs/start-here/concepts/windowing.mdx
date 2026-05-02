@@ -195,13 +195,16 @@ reduction range.
 
 ## Where this shows up
 
-- **Operator pages** — [`reduce`](../../pond-ts/transforms/rolling#tail-temporal-slice),
-  [`aggregate`](../../pond-ts/transforms/aggregation),
-  [`rolling`](../../pond-ts/transforms/rolling).
+- **Operator pages** —
+  [`aggregate`](../../pond-ts/transforms/aggregation#aggregate),
+  [`reduce`](../../pond-ts/transforms/aggregation#reduce),
+  [`rolling`](../../pond-ts/transforms/rolling),
+  [`align`](../../pond-ts/transforms/alignment).
 - **Live transforms** —
   [Live transforms](../../pond-ts/live/live-transforms) covers
   `LiveAggregation`, `LiveRollingAggregation`, and the
-  trigger-based emission story.
+  trigger-based emission story; the trigger reference lives at
+  [Triggering](../../pond-ts/live/triggering).
 - **Reducers** — every windowing operator accepts the same reducer
   registry. See [Reducer reference](../../pond-ts/transforms/reducer-reference).
 - **Sequences and triggers** — `aggregate` and grid-form `rolling`
