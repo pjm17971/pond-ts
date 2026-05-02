@@ -8,13 +8,19 @@ const sidebars: SidebarsConfig = {
       items: [
         'start-here/intro',
         'start-here/getting-started',
-        'start-here/concepts',
         {
           type: 'category',
-          label: 'Concepts (in progress)',
+          label: 'Concepts',
+          link: { type: 'doc', id: 'start-here/concepts/index' },
           items: [
             'start-here/concepts/temporal-keys',
             'start-here/concepts/sequences',
+            'start-here/concepts/series',
+            'start-here/concepts/temporal-relations',
+            'start-here/concepts/windowing',
+            'start-here/concepts/triggers',
+            'start-here/concepts/partitioning',
+            'start-here/concepts/late-data',
           ],
         },
       ],
