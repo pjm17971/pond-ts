@@ -191,7 +191,7 @@ If you construct pond-ts live objects outside a hook (e.g. in a
 
 ```tsx
 useEffect(() => {
-  const agg = new LiveAggregation(live, Sequence.every('1m'), { cpu: 'avg' });
+  const agg = live.aggregate(Sequence.every('1m'), { cpu: 'avg' });
   const unsub = agg.on('close', (e) => log(e));
   return () => {
     unsub();

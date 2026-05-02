@@ -97,7 +97,7 @@ Call `dispose()` to unsubscribe a view from its source and stop receiving events
 Buckets finalize as the data advances past their boundary.
 
 ```ts
-const agg = new LiveAggregation(live, Sequence.every('1m'), {
+const agg = live.aggregate(Sequence.every('1m'), {
   cpu: 'avg',
   mem: 'max',
 });
@@ -298,11 +298,10 @@ const live = new LiveSeries({
 });
 
 // Grace defaults from the source's graceWindow — no need to repeat it
-const agg = new LiveAggregation(live, Sequence.every('1m'), { cpu: 'avg' });
+const agg = live.aggregate(Sequence.every('1m'), { cpu: 'avg' });
 
 // Or override with an explicit value
-const agg2 = new LiveAggregation(
-  live,
+const agg2 = live.aggregate(
   Sequence.every('1m'),
   { cpu: 'avg' },
   { grace: '5s' },
@@ -424,7 +423,7 @@ event containing the rolling aggregate at that point, preserving the source
 event's timestamp:
 
 ```ts
-const rolling = new LiveRollingAggregation(live, '5m', { cpu: 'avg' });
+const rolling = live.rolling('5m', { cpu: 'avg' });
 
 // Output buffer grows with each source event
 rolling.length; // number of output events so far

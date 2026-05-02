@@ -201,7 +201,7 @@ The live counterpart to `aggregate`. Buckets close incrementally as
 the watermark advances:
 
 ```ts
-import { LiveAggregation, LiveSeries, Sequence } from 'pond-ts';
+import { LiveSeries, Sequence } from 'pond-ts';
 
 const live = new LiveSeries({
   name: 'cpu',
@@ -209,7 +209,7 @@ const live = new LiveSeries({
   retention: { maxAge: '1h' },
 });
 
-const agg = new LiveAggregation(live, Sequence.every('1m'), {
+const agg = live.aggregate(Sequence.every('1m'), {
   cpu: 'avg',
   host: 'last',
 });
