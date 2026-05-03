@@ -27,6 +27,7 @@ you want:
 | Constant metadata column (e.g. `host` after bucketing) | [`keep`](#keep)                                       |
 | Distinct values in a bucket                            | [`unique`](#unique)                                   |
 | Most-frequent values                                   | [`top(n)`](#topn--topnumber)                          |
+| All values (with duplicates, for downstream computation) | [`samples`](#samples)                               |
 | None of the above                                      | [Custom reducer function](#custom-reducers)           |
 
 Pandas analogues in order: `.sum()`, `.count()`, `.mean()`,
@@ -372,6 +373,58 @@ O(k log k) where k is the distinct value count.
 
 Returns `[]` for an empty bucket.
 
+### `samples`
+
+All defined values in the bucket, returned as an array in arrival order. **Duplicates are
+preserved** (this is what distinguishes `samples` from `unique` and `top${N}`). Reach for
+`samples` when a downstream computation needs the raw value list — anomaly density
+against an externally-computed baseline, custom thresholding, histogramming, or feeding
+into a non-pond pipeline.
+
+```ts
+const cpu = new TimeSeries({
+  name: 'cpu',
+  schema: [
+    { name: 'time', kind: 'time' },
+    { name: 'cpu', kind: 'number' },
+  ] as const,
+  rows: [
+    // bucket [0s, 3s) ─────────────────
+    [0, 0.4],
+    [1000, 0.5],
+    [2000, 0.4],
+    // bucket [3s, 6s) ─────────────────
+    [3500, 0.6],
+    [4000, 0.7],
+  ],
+});
+
+const agg = cpu.aggregate(Sequence.every('3s'), {
+  vals: { from: 'cpu', using: 'samples' },
+});
+
+// agg.at(0)!.get('vals')  =>  [0.4, 0.5, 0.4]   — duplicates preserved
+// agg.at(1)!.get('vals')  =>  [0.6, 0.7]
+```
+
+Like `unique`, `samples` flattens one level on array-kind source columns:
+
+```ts
+tagged.aggregate(Sequence.every('3s'), {
+  flat: { from: 'tags', using: 'samples' },
+});
+// bucket [0s, 3s) — sources [['5xx','timeout'], ['5xx'], ['retry']]
+//   .get('flat')  =>  ['5xx', 'timeout', '5xx', 'retry']   — flat, ordered, with duplicates
+```
+
+**Use on bounded windows.** Memory is O(window size); per-event cost is O(1) `add` and
+O(1) `remove` (Map-keyed by event index); `snapshot` is O(N) for the array copy. For
+unbounded `reduce(mapping)` on a large series, expect to allocate one array of every
+defined value — `count` or a custom function is usually cheaper if you don't actually
+need the values.
+
+Returns `[]` for an empty bucket.
+
 ## Custom reducers
 
 Supply a function wherever a built-in name is accepted. The function receives all values
@@ -386,7 +439,29 @@ series.aggregate(Sequence.every('10m'), {
 });
 ```
 
-Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`.
+Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, `collapse()`, and (since
+v0.14.1) every live counterpart — `live.aggregate()`, `live.rolling()`, and
+`partitionBy(c).rolling(...)`.
+
+:::caution[Performance characteristic on live]
+
+Built-in reducers maintain incremental state — `add`/`remove`/`snapshot` are each O(1).
+Custom functions don't have that machinery, so the live adapter buffers values and re-runs
+the function over the entire current window at each `snapshot()` call. Per-event cost is
+still O(1) for state maintenance, but **`snapshot()` is O(window size)** — the function
+re-runs every time the accumulator emits.
+
+For high-throughput live use, prefer:
+
+- a built-in reducer (`avg`, `p95`, `stdev`, ...) when one fits, or
+- `'samples'` to collapse the window to a value list once, then run your custom logic on
+  the consumer side after the snapshot has fired.
+
+Custom-function reducers shine on low-rate streams where convenience matters more than
+per-snapshot cost — debug aggregations, prototype pipelines, dashboards under
+~1k events/sec.
+
+:::
 
 ## Empty-bucket behavior
 
@@ -406,6 +481,7 @@ Custom reducers work in `aggregate()`, `reduce()`, `rolling()`, and `collapse()`
 | `p50`...     | `undefined`  |
 | `unique`     | `[]`         |
 | `top3`...    | `[]`         |
+| `samples`    | `[]`         |
 
 ## Rolling window behavior
 
@@ -419,6 +495,11 @@ All built-in reducers work with `rolling()`. Most use O(1) incremental add/remov
 | `median`, percentiles, `difference` | O(N) per event (sorted array insert/remove) |
 | `keep`, `unique`                    | O(1) per event (value count map)            |
 | `top(n)`                            | O(1) add/remove; O(k log k) snapshot sort   |
+| `samples`                           | O(1) add/remove; O(N) snapshot              |
+| Custom function                     | O(1) add/remove; O(N) snapshot              |
 
 For typical rolling windows (tens to hundreds of events), the sorted array approach
-is fast enough. For very large windows with median/percentile, consider a custom reducer.
+is fast enough. For very large windows with median/percentile, consider a custom reducer
+— but note that custom functions on live also pay O(N) per snapshot (the function re-runs
+over the current window each emit). See [Custom reducers](#custom-reducers) for the
+trade-off.

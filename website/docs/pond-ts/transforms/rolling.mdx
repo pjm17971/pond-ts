@@ -193,13 +193,15 @@ The same shape works on `live.aggregate(seq, ...)` and on the
 synchronised partitioned form
 (`live.partitionBy(col).rolling(window, ..., { trigger: Trigger.clock(seq) })`).
 
-:::note[Custom-function reducers are batch-only]
-On live rolling and live aggregation the `using` slot must be a
-built-in reducer name (`'avg'`, `'sum'`, `'max'`, `'p95'`, …).
-Custom `(values) => ...` functions don't have the incremental
-add/remove machinery the live path needs, so they're rejected at
-construction with a clear error pointing at this workaround:
-compose multiple built-ins via aliases.
+:::note[Custom-function reducers on live: O(N) per snapshot]
+Custom `(values) => ...` reducers work on live rolling and live
+aggregation (since v0.14.1) but pay an O(window-size) cost at each
+`snapshot()` — the function re-runs over every value in the current
+window each time the accumulator emits. For high-throughput streams
+prefer a built-in (`'avg'`, `'p95'`, `'samples'`, …) or compose
+multiple built-ins via `AggregateOutputMap` aliases. See the
+[Custom reducers](./reducer-reference#custom-reducers) entry on the
+reducer reference for the full trade-off.
 :::
 
 The output buffer grows unbounded — compose with

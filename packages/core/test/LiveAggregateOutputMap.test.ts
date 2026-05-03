@@ -115,20 +115,28 @@ describe('LiveSeries.rolling — AggregateOutputMap', () => {
     ).toThrow(/unknown source column/);
   });
 
-  it('rejects custom-function reducers with a clear error pointing at the workaround', () => {
+  it('accepts custom-function reducers on live rolling (v0.14.1)', () => {
+    // The pre-v0.14.1 runtime guard rejected functions; now they work
+    // via a generic adapter that re-runs the function over the
+    // current window at each emit. See `rollingStateFor` for the
+    // perf characteristic.
     const live = makeFlat();
-    expect(() =>
-      live.rolling('5s', {
-        mean: {
-          from: 'value',
-          using: ((vs: ReadonlyArray<number | undefined>) => {
-            const nums = vs.filter((v): v is number => typeof v === 'number');
-            return nums.reduce((s, v) => s + v, 0) / Math.max(1, nums.length);
-          }) as any,
-          kind: 'number' as const,
-        },
-      }),
-    ).toThrow(/custom function reducers are not supported on live rolling/);
+    const rolling = live.rolling('5s', {
+      mean: {
+        from: 'value',
+        using: ((vs: ReadonlyArray<number | undefined>) => {
+          const nums = vs.filter((v): v is number => typeof v === 'number');
+          return nums.length === 0
+            ? undefined
+            : nums.reduce((s, v) => s + v, 0) / nums.length;
+        }) as any,
+        kind: 'number' as const,
+      },
+    });
+
+    live.push([0, 10, 'a'], [1000, 20, 'a'], [2000, 30, 'a']);
+    expect(rolling.value().mean).toBe(20);
+    rolling.dispose();
   });
 });
 
@@ -156,20 +164,28 @@ describe('LiveSeries.aggregate — AggregateOutputMap', () => {
     agg.dispose();
   });
 
-  it('rejects custom-function reducers on live aggregation', () => {
+  it('accepts custom-function reducers on live aggregation (v0.14.1)', () => {
+    // The pre-v0.14.1 guard rejected functions; now they work via a
+    // generic bucket-state adapter that buffers values and runs the
+    // function at snapshot time.
     const live = makeFlat();
-    expect(() =>
-      live.aggregate(Sequence.every('1s'), {
-        mean: {
-          from: 'value',
-          using: ((vs: ReadonlyArray<number | undefined>) => {
-            const nums = vs.filter((v): v is number => typeof v === 'number');
-            return nums.reduce((s, v) => s + v, 0);
-          }) as any,
-          kind: 'number' as const,
-        },
-      }),
-    ).toThrow(/custom function reducers are not supported on live aggregation/);
+    const agg = live.aggregate(Sequence.every('1s'), {
+      sum: {
+        from: 'value',
+        using: ((vs: ReadonlyArray<number | undefined>) => {
+          const nums = vs.filter((v): v is number => typeof v === 'number');
+          return nums.reduce((s, v) => s + v, 0);
+        }) as any,
+        kind: 'number' as const,
+      },
+    });
+
+    // Bucket [0, 1000): 10 + 20 = 30
+    live.push([0, 10, 'a'], [500, 20, 'a']);
+    // Push a watermark to close the first bucket
+    live.push([1500, 30, 'a']);
+    expect(agg.closed().at(0)!.get('sum')).toBe(30);
+    agg.dispose();
   });
 });
 

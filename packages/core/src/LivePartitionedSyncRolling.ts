@@ -4,7 +4,7 @@ import {
 } from './aggregate-columns.js';
 import { Event } from './Event.js';
 import { Time } from './Time.js';
-import { resolveReducer, type RollingReducerState } from './reducers/index.js';
+import { rollingStateFor, type RollingReducerState } from './reducers/index.js';
 import {
   bucketIndexFor,
   boundaryTimestampFor,
@@ -145,22 +145,6 @@ export class LivePartitionedSyncRolling<
     // `AggregateMap` or `AggregateOutputMap` shapes via the shared
     // helper.
     this.#columns = normalizeAggregateColumns(reducerInputSchema, mapping);
-
-    // Live rolling currently only supports built-in (string) reducers
-    // — they have incremental rolling-state machinery (`add`/`remove`)
-    // that custom functions don't. Validate eagerly so the error
-    // surfaces at construction time, not when the first partition
-    // spawns. (Same gate as `LiveRollingAggregation`.)
-    for (const c of this.#columns) {
-      if (typeof c.reducer !== 'string') {
-        throw new TypeError(
-          `live partitioned sync rolling reducer for output '${c.output}' must be a built-in name; ` +
-            'custom function reducers are not supported on live rolling. ' +
-            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
-            'to compose multiple built-in reducers from one source column.',
-        );
-      }
-    }
 
     // Reject column-name collisions between the partition column and
     // any reducer-OUTPUT column. The emit loop's record would
@@ -318,13 +302,12 @@ export class LivePartitionedSyncRolling<
   #ensurePartition(key: K): PartitionState {
     let state = this.#partitionStates.get(key);
     if (state) return state;
-    // The constructor's eager check guarantees every reducer is a
-    // built-in string by the time we get here, so `c.reducer` is
-    // safe to pass directly to `resolveReducer`.
+    // Built-ins use their dedicated O(1) machinery; custom functions
+    // use a generic adapter that re-runs the function over the current
+    // window at each `snapshot()` (O(N) per snapshot — see
+    // `rollingStateFor` for the perf characteristic).
     state = {
-      states: this.#columns.map((c) =>
-        resolveReducer(c.reducer as string).rollingState(),
-      ),
+      states: this.#columns.map((c) => rollingStateFor(c.reducer)),
       entries: [],
       nextIndex: 0,
     };
