@@ -1113,6 +1113,30 @@ const reduceTopCpu: ReadonlyArray<number> | undefined = reduceSeries.reduce({
 void reduceTopHosts;
 void reduceTopCpu;
 
+// `samples` (v0.14.1) — same source-kind narrowing as `unique` and
+// `top${N}`. Returns the source column's values as an array, with
+// duplicates preserved (distinct from `unique` which deduplicates).
+const reduceSamplesHosts: ReadonlyArray<string> | undefined =
+  reduceSeries.reduce({ host: 'samples' }).host;
+const reduceSamplesCpu: ReadonlyArray<number> | undefined = reduceSeries.reduce(
+  { cpu: 'samples' },
+).cpu;
+const reduceSamplesHealthy: ReadonlyArray<boolean> | undefined =
+  reduceSeries.reduce({ healthy: 'samples' }).healthy;
+void reduceSamplesHosts;
+void reduceSamplesCpu;
+void reduceSamplesHealthy;
+
+// `samples` is also accepted in `aggregate` mappings — pre-v0.14.2
+// the type system rejected it with "Type '\"samples\"' is not
+// assignable to type 'AggregateReducer'". Now narrows to an
+// array-output column kind via AggregateKindForColumn.
+const aggregateWithSamples = reduceSeries.aggregate(
+  Sequence.every('5s'),
+  { host: 'samples', cpu: 'samples' },
+);
+void aggregateWithSamples;
+
 // The narrow type is assignable to the wide one — code written against
 // v0.5.2's `ReadonlyArray<ScalarValue>` assertion keeps compiling.
 const reduceUniqueWide: ReadonlyArray<string | number | boolean> | undefined =

@@ -38,7 +38,7 @@ type ColumnByName<S extends SeriesSchema, Name extends string> = Extract<
  *
  * - Numeric-output reducers (`'sum'`, `'avg'`, `'count'`, `'median'`,
  *   `'stdev'`, `'difference'`, any `p${number}`) → `number | undefined`.
- * - Array-output reducers (`'unique'`, any `top${number}`) →
+ * - Array-output reducers (`'unique'`, `'samples'`, any `top${number}`) →
  *   `ReadonlyArray<T> | undefined`, where `T` is the source column's
  *   element type — `ReadonlyArray<string>` for a `kind: 'string'`
  *   column, `ReadonlyArray<number>` for `kind: 'number'`, etc.
@@ -65,7 +65,7 @@ export type ReduceResult<S extends SeriesSchema, Mapping> = {
     | 'difference'
     | `p${number}`
     ? number | undefined
-    : Mapping[K] extends 'unique' | `top${number}`
+    : Mapping[K] extends 'unique' | 'samples' | `top${number}`
       ? K extends ValueColumnsForSchema<S>[number]['name']
         ? ColumnByName<S, K>['kind'] extends 'number'
           ? ReadonlyArray<number> | undefined

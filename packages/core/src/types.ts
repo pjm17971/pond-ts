@@ -554,6 +554,7 @@ export type AggregateFunction =
   | 'difference'
   | 'keep'
   | 'unique'
+  | 'samples'
   | `p${number}`
   | `top${number}`;
 /**
@@ -581,6 +582,7 @@ type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
         | 'last'
         | 'keep'
         | 'unique'
+        | 'samples'
         | `top${number}`
         | CustomAggregateReducer
     :
@@ -589,6 +591,7 @@ type AggregateFunctionsForKind<Kind extends ScalarKind> = Kind extends 'number'
         | 'last'
         | 'keep'
         | 'unique'
+        | 'samples'
         | `top${number}`
         | CustomAggregateReducer;
 
@@ -632,7 +635,7 @@ type AggregateKindForColumn<
 > = Op extends AggregateFunction
   ? Op extends 'sum' | 'avg' | 'count'
     ? 'number'
-    : Op extends 'unique' | `top${number}`
+    : Op extends 'unique' | 'samples' | `top${number}`
       ? 'array'
       : Column['kind']
   : Column['kind'];
@@ -742,7 +745,7 @@ export type ArrayAggregateKind<
   ? ExplicitKind
   : Op extends NumericAggregateFunction
     ? 'number'
-    : Op extends 'unique' | `top${number}`
+    : Op extends 'unique' | 'samples' | `top${number}`
       ? 'array'
       : 'string';
 

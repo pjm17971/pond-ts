@@ -1701,6 +1701,34 @@ useLiveQuery(timings, () => rolling.value());
   `LiveAggregation` / `LivePartitionedSyncRolling`, ~20 lines of
   perf-doc prose.
 
+  **Shipped 2026-05-03 as v0.14.1**, hotfixed same-day as v0.14.2
+  to close a type-narrowing gap the Layer 2 review caught
+  post-merge: `'samples'` was registered in the runtime registry
+  but missing from `AggregateFunction`, `AggregateFunctionsForKind`,
+  `AggregateKindForColumn`, `ArrayAggregateKind`, and
+  `ReduceResult`. Build passed because `tsconfig.json` excludes
+  `test/` and `npm run verify`'s `test:type` step uses
+  `tsconfig.types.json` (covers `src` + `test-d/` only). v0.14.2
+  added the missing entries plus a `test-d/types.test-d.ts` block
+  pinning narrowing parity with `unique` / `top${N}`.
+
+- **CI safety-net widening — deferred.** v0.14.1 review surfaced
+  that `npm run verify`'s `test:type` step doesn't run `tsc -p
+  tsconfig.vitest.json` (which covers `test/`). Vitest itself
+  uses esbuild and strips types, so `npm run test:runtime` doesn't
+  catch type errors in test files either. Net: a new public-API
+  type entry can break user-facing call sites without `verify`
+  failing.
+
+  Fix path: add a `test:type:vitest` script that runs `tsc -p
+  tsconfig.vitest.json --noEmit`, wire it into `verify`. **Blocked
+  by:** existing test files have ~30 unrelated type errors under
+  the vitest tsconfig (mostly pushing `undefined` into required
+  number columns without `as any` — patterns that work because
+  vitest doesn't typecheck but would fail tsc). Cleaning those up
+  is its own piece of work, ~half a day. Worth it because the next
+  similar slip costs as much as v0.14.2 did to clean up.
+
 - **`'samples(n)'` parameterized form — deferred.** Random thought
   during the v0.14.1 naming pass (2026-05-02): if `'samples'`
   reads as "subset of a population," then `samples(n)` could

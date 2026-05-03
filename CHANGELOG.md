@@ -7,9 +7,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.2...HEAD
 
 ## [Unreleased]
+
+## [0.14.2] — 2026-05-03
+
+Hotfix over v0.14.1 — closes a type-narrowing gap on the new
+`'samples'` reducer that the v0.14.1 Layer 2 review caught
+post-merge. The runtime worked, but TypeScript didn't know about
+`'samples'`: passing it through `series.aggregate({ col: 'samples' })`
+or `live.rolling(window, { col: 'samples' })` produced
+`Type '"samples"' is not assignable to type 'AggregateReducer'`,
+and `series.reduce({ col: 'samples' }).col` fell through to
+`ColumnValue | undefined` instead of the narrowed array type.
+
+### Fixed
+
+- **`'samples'` is now in the type system everywhere.** Added to
+  `AggregateFunction` union, both branches of
+  `AggregateFunctionsForKind` (numeric and array/string/boolean),
+  `AggregateKindForColumn` (so output columns get
+  `kind: 'array'`), `ArrayAggregateKind`, and the array branch of
+  `ReduceResult` in `types-reduce.ts`.
+
+  ```ts
+  // Pre-v0.14.2: TS error, but ran correctly.
+  // Post-v0.14.2: typechecks and narrows the same way `unique` and
+  // `top${N}` do — `ReadonlyArray<T>` for source kind T.
+  series.reduce({ vals: 'samples' }).vals; // ReadonlyArray<number> | undefined
+
+  series.aggregate(Sequence.every('5s'), { vals: 'samples' });
+  // Output column: { name: 'vals', kind: 'array' }
+  ```
+
+- **`reducer-reference.mdx`** updated: "14 built-in reducers" → 15.
+
+### Added
+
+- `test-d/types.test-d.ts` block pinning `'samples'` narrowing
+  parity with `'unique'` / `'top${N}'`. Closes the regression hole
+  the v0.14.1 review surfaced.
+
+### Known follow-up
+
+The v0.14.1 review also flagged that `npm run verify`'s
+`test:type` step uses `tsconfig.types.json` (covers `src` +
+`test-d/`), not `tsconfig.vitest.json` (covers `test/`) — that's
+why the missing `'samples'` narrowing didn't fail CI even though
+`packages/core/test/samples-reducer.test.ts` had ~30 type errors.
+Captured in DOCPLAN.md / PLAN.md as a future safety-net widening;
+not in scope for v0.14.2 because pre-existing test files have
+their own type drift that would need cleanup first.
+
+[0.14.2]: https://github.com/pjm17971/pond-ts/compare/v0.14.1...v0.14.2
 
 ## [0.14.1] — 2026-05-03
 
