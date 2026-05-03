@@ -14,6 +14,11 @@ Unix epoch. Operators that consume a sequence either intersect it
 with the data (`aggregate(seq, mapping)`) or with an explicit range
 to produce a finite slice.
 
+![Time-keyed cpu events bucketed by Sequence.every('5m'); aggregate
+produces one Interval-keyed event per bucket. Buckets are
+half-open [start, end), so an event at exactly the boundary lands
+in the later bucket](/img/concepts-sequence.png)
+
 ## `Sequence.every(duration)` — fixed-step
 
 Equally-spaced boundaries every `duration` milliseconds.
@@ -51,11 +56,16 @@ align across operators.
 ### Convenience aliases
 
 ```ts
-Sequence.hourly();      // = Sequence.every('1h')
+Sequence.hourly();                  // = Sequence.every('1h')
 Sequence.hourly({ anchor: 1800_000 });
+Sequence.daily();                   // = Sequence.every('1d')
+Sequence.daily({ anchor: 5 * 3600_000 }); // anchor at 05:00 UTC
 ```
 
-Same shape as `Sequence.every`, just named for the common case.
+Same shape as `Sequence.every`, just named for the common cases.
+Note that `daily()` here is **fixed-step** (86,400,000 ms exactly,
+no DST awareness) — for local-calendar daily boundaries reach for
+[`Sequence.calendar('day', { timeZone })`](#sequencecalendarunit-options--calendar-aligned).
 
 ## `Sequence.calendar(unit, options)` — calendar-aligned
 

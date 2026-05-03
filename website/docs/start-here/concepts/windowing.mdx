@@ -42,7 +42,12 @@ chain afterwards because there's no temporal axis left.
 ## Fixed buckets
 
 Bucket events onto a [`Sequence`](./sequences) grid and reduce each
-bucket independently.
+bucket independently. Each bucket is independent — events in bucket
+A don't influence bucket B. The output keys are `Interval`s aligned
+to the sequence's boundary grid. Use when the question is
+"summarise per N-second period."
+
+### Fixed buckets — batch
 
 ```ts
 series.aggregate(Sequence.every('5m'), {
@@ -52,12 +57,12 @@ series.aggregate(Sequence.every('5m'), {
 // → new TimeSeries: one Interval-keyed event per 5-minute bucket
 ```
 
-Each bucket is independent — events in bucket A don't influence
-bucket B. The output keys are `Interval`s aligned to the sequence's
-boundary grid. Use when the question is "summarise per N-second
-period."
+One walk over the source, one output series. The bucket boundaries
+are determined entirely by the sequence — events that fall into the
+same bucket are reduced together; empty buckets emit per the reducer's
+empty-bucket policy.
 
-The same pattern works on live data:
+### Fixed buckets — live
 
 ```ts
 live.aggregate(Sequence.every('5m'), {
@@ -66,9 +71,18 @@ live.aggregate(Sequence.every('5m'), {
 // → LiveAggregation: emits 'close' events as buckets finalize
 ```
 
-A live aggregation closes a bucket once the watermark advances
-past its end — events arrive incrementally, buckets finalise
-incrementally.
+A live aggregation closes a bucket once the watermark advances past
+its end — events arrive incrementally, buckets finalise
+incrementally. The accumulator emits a `'close'` event when each
+bucket finalises and a `'bucket'` event continuously while the
+current bucket is still open. `rolling.value()`-style continuous
+reads are also available via `.snapshot()`.
+
+Two streams from one accumulator: the close stream is the durable
+"this bucket is final" signal (good for backend reporting); the
+bucket stream is the provisional "in-progress" signal (good for
+live-display previews of the partial value). Same accumulator, same
+bucket state, no duplicated work.
 
 ## Rolling windows (batch)
 

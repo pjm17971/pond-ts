@@ -11,6 +11,10 @@ a `TimeSeries`'s schema and is what every transform indexes against.
 Three shapes are available; which one you pick is a modeling choice
 that says how the event sits on the timeline.
 
+![Three temporal-key shapes on a timeline: Time as one instant,
+TimeRange as an unlabeled extent, Interval as an extent that picks
+up its identity from the sequence that produced it](/img/concepts-temporal-keys.png)
+
 | Key         | Shape on the timeline              | Use when                                                  |
 | ----------- | ---------------------------------- | --------------------------------------------------------- |
 | `Time`      | One instant                        | The event is a point measurement                          |
