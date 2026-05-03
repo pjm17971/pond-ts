@@ -1573,37 +1573,110 @@ useLiveQuery(timings, () => rolling.value());
 
 - **Sub-window primitive — `rolling(...).tap(seq, mapping)` over a
   shared event buffer.** Surfaced by the gRPC experiment's
-  `HostAggregator` walkback (2026-05-01) and the v0.13.0 retrospective
-  on multi-window patterns. The agent's two-window pattern (1m
-  baseline `{ mean, sd, n }` for "what's normal" + 200ms current-tick
-  for "right now on screen") is now half-covered by v0.13.0:
-  `AggregateOutputMap` collapses the baseline stats into one rolling.
-  But the second window — the current-tick aggregation at the
-  dashboard's update cadence — still requires its own `rolling()` with
-  its own deque, so a custom aggregator that shares the buffer across
-  both cutoffs can beat pond on memory at high partition × event-rate
-  scale.
+  `HostAggregator` walkback (2026-05-01) and refined in the
+  2026-05-03 design pass.
 
-  Sketched primitive: `tap` returns a sub-rolling that reads from the
-  parent rolling's deque, maintains its own reducer state, and
-  enforces a sub-window cutoff (typed-constraint: sub-window ≤ parent
-  window). Type system allows it; runtime cost is the parent's add
-  loop plus an O(1) per-event sub-state update. Memory savings are
-  parent-buffer-only — saves `N_parent × 8` bytes per partition per
-  sub-window.
+  **What tap actually solves.** Two windows over the same source
+  events where window B is a strict subset of window A. The custom
+  HostAggregator's win wasn't ergonomic (the agent could already
+  correlate two rollings via shared trigger); it was **shared buffer
+  storage**. At the gRPC saturation regime (1000 partitions × kHz
+  ingest), a 200ms sub-window inside a 1m parent costs ~24 KB per
+  partition if it stores indices into the parent's deque, vs ~72 KB
+  if it duplicates entries. At 1000 partitions that's 48 MB saved.
+  At dashboard scale (50 hosts), the saving is KB. So `tap` is a
+  knob for the saturation-regime user, not the typical case.
+
+  Framing: `tap` is the right primitive **when memory dominates**,
+  not "the right primitive for multi-window." Multi-window with
+  separate rollings stays the default; `tap` is a perf opt-in.
+
+  **Core mechanic.** Parent rolling holds the deque
+  (`{ index, timestamp, values }`); child holds **only
+  `{ index, timestamp }`** pairs over its smaller window plus its own
+  reducer state. On each parent ingest, parent dispatches
+  `add(idx, value)` to every registered child; child reads value
+  from parent's deque at remove time. Child's window cutoff advances
+  independently — child evicts entries that aged out of *its*
+  window, not the parent's.
+
+  Reducer state is fully incremental in the child (same machinery
+  as `LiveRollingAggregation` today). Snapshot stays O(1) for
+  built-ins; O(child-window-N) for custom functions, same perf-cliff
+  story as v0.14.1.
+
+  **API shape.**
+
+  ```ts
+  const baseline = live.rolling('1m', {
+    mean: { from: 'cpu', using: 'avg' },
+    sd:   { from: 'cpu', using: 'stdev' },
+  });
+
+  const current = baseline.tap('200ms', {
+    now: { from: 'cpu', using: 'avg' },
+  });
+
+  baseline.on('event', e => /* baseline snapshot */);
+  current.on('event', e => /* current snapshot */);
+  ```
+
+  `tap` returns a `LiveRollingAggregation<S, ChildOut>` — looks just
+  like a rolling, subscribers behave the same. Same overload pattern
+  as today's `rolling()`: `AggregateMap` + `AggregateOutputMap` +
+  catch-all for variable-typed options. Custom functions allowed
+  (post-v0.14.1).
+
+  **Constraints.**
+  - **`childWindow <= parentWindow`** — runtime check at construction.
+    Type-level enforcement is hard (windows are runtime values), so
+    a clear `TypeError` at construct time is the right guard.
+  - **Trigger** is independent on the child; defaults to
+    `Trigger.event()`. The agent's use case becomes:
+    ```ts
+    const baseline = live.rolling('1m', m1, { trigger: Trigger.every('200ms') });
+    const current  = baseline.tap('200ms', m2,  { trigger: Trigger.every('200ms') });
+    ```
+    Both fire at the same 200ms tick; consumer subscribes to either or
+    both and uses the shared boundary timestamp to correlate. Same
+    trigger value isn't enforced — different cadences are valid.
+
+  **Partitioned variant.** Mirrors `rolling()`'s partition behaviour.
+  `live.partitionBy('host').rolling('1m', m).tap('200ms', m')`
+  returns a per-partition tapped view; with a clock trigger, the
+  synced rolling shape extends the same way (one row per partition
+  per tick).
+
+  **Open questions to settle pre-ship.**
+  - **Tap-of-tap.** Conceptually fine — chained sub-windows form a
+    tree. Allow it. Doc-note that nesting doesn't compound savings;
+    every tap converges on the root parent's storage.
+  - **Disposal semantics.** Dispose parent → dispose all taps. Dispose
+    a tap → detach without affecting parent. State explicitly.
+  - **Break-even point.** Need a benchmark showing at what
+    `parent.windowMs / child.windowMs` ratio and what event rate tap
+    pays for itself. Guess: ratio > ~10× and rate > ~1k ev/s/partition.
+    Below that, two separate rollings are within noise. Bench answers
+    "recommend by default" vs "mention as a perf knob."
+  - **Vs. multi-window declarative.** Alternative shape:
+    `live.rollings({ baseline: { window, mapping }, current: { ... } })`
+    returning one composite accumulator. More declarative, less
+    compositional. Lean `tap` (it composes — can be built on top of
+    an existing rolling without redeclaring), but want a second
+    user's gut reaction before locking the API.
 
   **Why deferred:** the savings only matter at extreme scale (≥10k
-  partitions or kHz/partition), which the gRPC experiment isn't yet
-  hitting. The naive "two rollings" pattern is good enough for the
-  ≥99% telemetry/observability dashboard regime. Pondjs never claimed
-  parity with custom aggregators at extreme scale; v0.13's writeup
-  honesty section says exactly this. Revisit when a second user lands
-  on the same wall — that's the design signal worth more than one
-  user's data.
+  partitions or kHz/partition). The naive "two rollings" pattern is
+  good enough for the ≥99% telemetry/observability dashboard regime.
+  Pondjs never claimed parity with custom aggregators at extreme
+  scale; v0.13's writeup honesty section says exactly this. Revisit
+  when a **second user** lands on the same wall — that's the design
+  signal worth more than one user's data.
 
-  Reference workaround in the meantime: two separate `rolling()` calls
-  off the same source. Documented as the "if you find yourself wanting
-  this" footnote in the eventual `tap` RFC.
+  Reference workaround in the meantime: two separate `rolling()`
+  calls off the same source, both with the same trigger. Document
+  as the "if you find yourself wanting this" footnote in the
+  eventual `tap` RFC.
 
 - **Reducer batching — deferred per the V4 bench.** The gRPC
   experiment's V4 profile (after v0.14.0 shipped) confirms
