@@ -13,7 +13,7 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './LiveView.js';
-import { resolveReducer, type RollingReducerState } from './reducers/index.js';
+import { rollingStateFor, type RollingReducerState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
 import {
   bucketIndexFor,
@@ -189,27 +189,12 @@ export class LiveRollingAggregation<
       })),
     ]) as unknown as Out;
 
-    this.#states = this.#columns.map((c) => {
-      if (typeof c.reducer !== 'string') {
-        // Live rolling currently only supports built-in (string)
-        // reducers — they have incremental rolling-state machinery
-        // (`add`/`remove`/`snapshot`) that custom functions don't.
-        // Use AggregateOutputMap aliases over built-ins to compose
-        // multiple stats from one column:
-        //   `{ avg: { from: 'cpu', using: 'avg' },
-        //      sd:  { from: 'cpu', using: 'stdev' } }`
-        // Custom-function support on live rolling is queued as
-        // separate work — would require recomputing over the
-        // rolling deque on every emission.
-        throw new TypeError(
-          `live rolling reducer for output '${c.output}' must be a built-in name; ` +
-            'custom function reducers are not supported on live rolling. ' +
-            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
-            'to compose multiple built-in reducers from one source column.',
-        );
-      }
-      return resolveReducer(c.reducer).rollingState();
-    });
+    // Build per-column rolling state. Built-in reducers use their
+    // dedicated O(1) `add`/`remove`/`snapshot` machinery; custom
+    // functions use a generic adapter that re-runs the function over
+    // the current window at each `snapshot()` (O(N) per snapshot —
+    // see {@link rollingStateFor} for the perf characteristic).
+    this.#states = this.#columns.map((c) => rollingStateFor(c.reducer));
     this.#entries = [];
     this.#nextIndex = 0;
     this.#outputEvents = [];

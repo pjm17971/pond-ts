@@ -7,9 +7,116 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.1...HEAD
 
 ## [Unreleased]
+
+## [0.14.1] — 2026-05-03
+
+The "samples reducer + lifted custom-fn guard" release. Surfaced by
+the gRPC experiment's step-4 (anomaly density) walkback: the use
+case "compute counts of values exceeding `k·σ` from a baseline" needs
+the **raw values** from the rolling window, but pond's existing
+built-ins all collapse to scalars or deduplicate. Custom-function
+reducers — which would cover the use case cleanly — worked on batch
+but were rejected at runtime on live with a `TypeError` pointing at
+`AggregateOutputMap` aliases (which don't actually solve "all values"
+either). Two related changes ship together to close both gaps.
+
+### Added
+
+- **`'samples'` built-in reducer.** Returns the bucket's defined
+  values as an array, in arrival order, with duplicates preserved.
+  Sits beside `'unique'` (which deduplicates) and `'top${N}'` (which
+  bounds and frequency-orders) — same array-output kind, same
+  type-system narrowing through `AggregateOutputMap`. Library-
+  implemented; per-event cost is O(1) `add` / O(1) `remove`
+  (Map-keyed by event index); `snapshot` is O(N) array copy.
+  Memory O(window size).
+
+  ```ts
+  // Anomaly density: count samples > k·σ from a separate baseline.
+  const stats = live.rolling(
+    '1m',
+    {
+      mean: { from: 'cpu', using: 'avg' },
+      sd:   { from: 'cpu', using: 'stdev' },
+    },
+    { trigger: Trigger.every('30s') },
+  );
+
+  const recent = live.rolling('200ms', {
+    vals: { from: 'cpu', using: 'samples' },
+  });
+
+  // At each tick, count threshold crossings against the baseline:
+  stats.on('event', (e) => {
+    const samples = recent.value().vals as ReadonlyArray<number>;
+    const counts = thresholds.map(
+      (k) => samples.filter((v) => v - e.get('mean') > k * e.get('sd')).length,
+    );
+    // ... emit anomaly density
+  });
+  ```
+
+  Like `unique`, `samples` flattens one level on array-kind source
+  columns. Returns `[]` for an empty bucket.
+
+### Changed
+
+- **Custom-function reducers now work on live.** Removed the runtime
+  `TypeError` guards on `LiveAggregation`, `LiveRollingAggregation`,
+  and `LivePartitionedSyncRolling` that previously rejected
+  function-typed reducers. New `bucketStateFor` and `rollingStateFor`
+  helpers in `reducers/index.ts` route built-ins to their dedicated
+  O(1) machinery and wrap custom functions in a generic adapter:
+
+  - **Bucket adapter** (`LiveAggregation`): buffers values, calls
+    the function once at `snapshot()` time. O(N) per snapshot.
+  - **Rolling adapter** (`LiveRollingAggregation`,
+    `LivePartitionedSyncRolling`): Map-keyed by event index for O(1)
+    `add` / O(1) `remove`; `snapshot()` calls the function with
+    `Array.from(map.values())` in arrival order. **O(N) per
+    snapshot** — the function re-runs over the current window each
+    time the accumulator emits.
+
+  Documented as the explicit trade-off: convenience of writing
+  `(values) => ...` inline against the perf cliff at high event
+  rates. For high-throughput streams prefer built-ins or `'samples'`
+  (collapse the window once on the producer side, run custom logic
+  on the consumer). For low-rate dashboards / debug pipelines /
+  prototypes, the convenience usually wins.
+
+  Pre-v0.14.1, calling `live.rolling(...)` with a custom-function
+  reducer threw `TypeError: live rolling reducer for output 'X' must
+  be a built-in name; ...`. Post-v0.14.1, the same call constructs
+  successfully and runs.
+
+### Tests
+
+- 15 new tests in `test/samples-reducer.test.ts` covering: batch
+  reduce / aggregate / rolling (including the array-source
+  flattening); live aggregate (per-bucket arrays); live rolling
+  (window eviction, snapshot correctness through multiple cycles);
+  synced partitioned rolling with samples per partition; an
+  end-to-end anomaly-density-against-baseline scenario.
+- 2 obsolete tests in `LiveAggregateOutputMap.test.ts` rewritten —
+  previously asserted the rejection error, now assert that custom
+  functions construct successfully and produce the right value.
+- Total core tests: 1087 (was 1072).
+
+### Docs
+
+- `pond-ts/transforms/reducer-reference.mdx`: new `'samples'` entry
+  in the Array-producing reducers section; "Choosing a reducer"
+  matrix updated; empty-bucket and rolling-complexity tables
+  updated; Custom reducers section gained the live perf-cliff
+  callout.
+- `pond-ts/transforms/rolling.mdx`: replaced the "Custom-function
+  reducers are batch-only" note with the new "O(N) per snapshot on
+  live" perf-cliff note pointing at the reducer reference.
+
+[0.14.1]: https://github.com/pjm17971/pond-ts/compare/v0.14.0...v0.14.1
 
 ## [0.14.0] — 2026-05-01
 

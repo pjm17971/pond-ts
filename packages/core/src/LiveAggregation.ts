@@ -18,7 +18,7 @@ import {
   type RollingWindow,
 } from './LiveRollingAggregation.js';
 import { TimeSeries } from './TimeSeries.js';
-import { resolveReducer, type AggregateBucketState } from './reducers/index.js';
+import { bucketStateFor, type AggregateBucketState } from './reducers/index.js';
 import type { Sequence } from './Sequence.js';
 import type {
   AggregateMap,
@@ -105,23 +105,6 @@ export class LiveAggregation<
       source.schema,
       mapping as AggregateMap<S> | AggregateOutputMap<S>,
     );
-
-    // Live aggregation currently only supports built-in (string)
-    // reducers. They have incremental bucket-state machinery
-    // (`add`/`snapshot`) that custom functions don't. Validate
-    // eagerly so the error surfaces at construction time, not on
-    // the first event arrival. Use AggregateOutputMap aliases over
-    // built-ins to compose multiple stats from one source column.
-    for (const c of this.#columns) {
-      if (typeof c.reducer !== 'string') {
-        throw new TypeError(
-          `live aggregation reducer for output '${c.output}' must be a built-in name; ` +
-            'custom function reducers are not supported on live aggregation. ' +
-            'Use AggregateOutputMap aliases (`{ alias: { from, using } }`) ' +
-            'to compose multiple built-in reducers from one source column.',
-        );
-      }
-    }
 
     this.schema = Object.freeze([
       { name: 'time', kind: 'interval' },
@@ -314,15 +297,13 @@ export class LiveAggregation<
 
     let pending = this.#pending.get(bucket.start);
     if (!pending) {
-      // The constructor's eager check guarantees every reducer is a
-      // built-in string by the time we get here, so `c.reducer` is
-      // safe to pass directly to `resolveReducer`.
+      // Built-ins use their dedicated O(1) machinery; custom functions
+      // use a generic adapter that buffers values and runs the
+      // function at snapshot time (O(N) per snapshot).
       pending = {
         start: bucket.start,
         end: bucket.end,
-        states: this.#columns.map((c) =>
-          resolveReducer(c.reducer as string).bucketState(),
-        ),
+        states: this.#columns.map((c) => bucketStateFor(c.reducer)),
       };
       this.#pending.set(bucket.start, pending);
     }
