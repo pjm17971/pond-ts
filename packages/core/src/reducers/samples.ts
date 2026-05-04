@@ -59,11 +59,26 @@ export const samples: ReducerDef = {
   rollingState() {
     // Map keyed by event index so `remove` is O(1). `Array.from(map.values())`
     // returns insertion order, which matches arrival order.
-    const items = new Map<number, ScalarValue[]>();
+    //
+    // Stored value is `ScalarValue | ScalarValue[]`: scalar source columns
+    // (the common case at kHz × N-partition load) skip wrapping each event
+    // in a 1-element array, dropping one allocation per `add`. Only
+    // array-kind sources need a sub-array (so a single event's contributions
+    // can be dropped together on `remove(index)`).
+    const items = new Map<number, ScalarValue | ScalarValue[]>();
     return {
       add(index, v) {
+        if (v === undefined) return;
+        if (isScalar(v)) {
+          items.set(index, v);
+          return;
+        }
+        // Array-kind source: flatten one level, store the sub-array so
+        // remove(index) drops every contribution from this event.
         const collected: ScalarValue[] = [];
-        collectInto(collected, v);
+        for (const element of v) {
+          if (isScalar(element)) collected.push(element);
+        }
         if (collected.length > 0) items.set(index, collected);
       },
       remove(index, _v) {
@@ -71,8 +86,12 @@ export const samples: ReducerDef = {
       },
       snapshot() {
         const out: ScalarValue[] = [];
-        for (const arr of items.values()) {
-          for (const v of arr) out.push(v);
+        for (const v of items.values()) {
+          if (Array.isArray(v)) {
+            for (const x of v) out.push(x);
+          } else {
+            out.push(v);
+          }
         }
         return out;
       },

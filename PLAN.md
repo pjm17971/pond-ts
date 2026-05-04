@@ -1597,7 +1597,7 @@ useLiveQuery(timings, () => rolling.value());
   reducer state. On each parent ingest, parent dispatches
   `add(idx, value)` to every registered child; child reads value
   from parent's deque at remove time. Child's window cutoff advances
-  independently — child evicts entries that aged out of *its*
+  independently — child evicts entries that aged out of _its_
   window, not the parent's.
 
   Reducer state is fully incremental in the child (same machinery
@@ -1634,8 +1634,12 @@ useLiveQuery(timings, () => rolling.value());
   - **Trigger** is independent on the child; defaults to
     `Trigger.event()`. The agent's use case becomes:
     ```ts
-    const baseline = live.rolling('1m', m1, { trigger: Trigger.every('200ms') });
-    const current  = baseline.tap('200ms', m2,  { trigger: Trigger.every('200ms') });
+    const baseline = live.rolling('1m', m1, {
+      trigger: Trigger.every('200ms'),
+    });
+    const current = baseline.tap('200ms', m2, {
+      trigger: Trigger.every('200ms'),
+    });
     ```
     Both fire at the same 200ms tick; consumer subscribes to either or
     both and uses the shared boundary timestamp to correlate. Same
@@ -1673,6 +1677,17 @@ useLiveQuery(timings, () => rolling.value());
   when a **second user** lands on the same wall — that's the design
   signal worth more than one user's data.
 
+  **Second signal logged (2026-05-04).** gRPC experiment V7's
+  numbers (all-pond pipeline using `samples()`) regressed ~19%
+  throughput vs V6 at saturation; v0.14.3's allocation fix
+  (`samples.rollingState()`) closes the per-event leak but the
+  architectural gap remains — V7 routes events through two full
+  `LiveRollingAggregation` pipelines where V6 had one rolling
+  plus a passive `array.push` listener. The gap is the
+  "shared-buffer rolling" shape that `tap` would solve. Same
+  user, same experiment — counts as 1.5 signals, not 2. Still
+  parked. The third signal (or a different user) ships it.
+
   Reference workaround in the meantime: two separate `rolling()`
   calls off the same source, both with the same trigger. Document
   as the "if you find yourself wanting this" footnote in the
@@ -1686,7 +1701,6 @@ useLiveQuery(timings, () => rolling.value());
   updates ARE associative, so an `addMany([values])` reducer
   interface that processes a contiguous run of events in one call
   is sound. But:
-
   - **Bench validates the user's earlier triage.** Production target
     on the experiment is 100k events/sec; V4 hits 256k/s (2.56×
     headroom). The remaining ceiling gap to V1 is real but doesn't
@@ -1727,7 +1741,6 @@ useLiveQuery(timings, () => rolling.value());
   agent reasonably stumbled on.
 
   **Two related changes ship together in v0.14.1:**
-
   - **`'samples'` built-in reducer** — returns the window's values
     as an array. Library-implemented; no custom-function-on-hot-
     path concerns; sits beside `unique` and `top${N}` (same
@@ -1751,8 +1764,8 @@ useLiveQuery(timings, () => rolling.value());
     pipelines the convenience matters more than the perf cliff;
     for high-rate use built-ins or `'collect'`. JSDoc on
     `LiveRollingAggregation` / `LiveAggregation` mapping options
-    + a callout on the live transforms doc page telegraph the
-    cost so callers make an informed choice.
+    - a callout on the live transforms doc page telegraph the
+      cost so callers make an informed choice.
 
   **Why both rather than just `'collect'`** (decision 2026-05-02
   during the docs phase): the batch-vs-live asymmetry is itself
@@ -1785,16 +1798,75 @@ useLiveQuery(timings, () => rolling.value());
   added the missing entries plus a `test-d/types.test-d.ts` block
   pinning narrowing parity with `unique` / `top${N}`.
 
+  **v0.14.3 — `samples.rollingState()` allocation fix
+  (2026-05-04).** gRPC experiment V7 (all-pond pipeline using
+  `samples()`) regressed throughput ~19% vs V6 (hybrid pond-
+  rolling + manual deque) at the saturation regime (1k partitions
+  × 1k events/s, 1M target: 209k/s vs 258k/s) and ran +17% heap
+  at moderate loads. Two suspects:
+  1. **Per-event 1-element `ScalarValue[]` allocations** in the
+     rolling state's `add()` — wraps every scalar value in a
+     fresh array even though `remove(index)` only needs the
+     wrap when the source is array-kind (a single event
+     contributing multiple scalars together).
+  2. **Two full LiveRollingAggregation pipelines** (baseline +
+     samples) where V6 had one rolling + one passive
+     `array.push` listener — Map ops + reducer state + trigger
+     dispatch + subscriber fan-out duplicated per pipeline.
+
+  Suspect 1 is fixable in-pond and ships in v0.14.3: branch on
+  `typeof v` in `add` to store scalars directly; only build a
+  sub-array on array-kind sources; snapshot branches on
+  `Array.isArray` to flatten the mixed map. Behavior preserved;
+  all 15 existing `samples-reducer.test.ts` assertions pass
+  unmodified.
+
+  Bench (`packages/core/scripts/perf-samples-reducer.mjs`):
+  focused micro-bench (5M scalar add+remove cycles) drops
+  239.85ms → 209.09ms median (−12.8%). Integration scenarios
+  (100k events × N hosts through full LiveSeries+partition
+  pipeline) show tight wall-clock parity within run-to-run
+  noise — allocation pressure isn't the dominant cost at that
+  scale; the fix compounds at saturation regimes where GC
+  pressure stacks. Heap-end snapshots (`process.memoryUsage`)
+  are dominated by retained window state, not transient
+  allocations, so the saturation-regime benefit isn't directly
+  measurable in this script — the gRPC experiment's writeup is
+  the load-bearing measurement, and v0.14.3 should narrow the
+  V7-vs-V6 gap on heap pressure even if it doesn't close the
+  throughput gap.
+
+  **Suspect 2 (architectural cliff) is NOT chased in v0.14.3.**
+  Closing the V7-vs-V6 throughput gap would need either a
+  "lite" rolling primitive (no trigger dispatch, no subscriber
+  fan-out) or shared-buffer storage via the parked `tap()`
+  primitive. At the kHz × 1k-partition saturation regime, V6's
+  hybrid (one pond rolling for stats + manual deque for raw
+  values) is genuinely the right architectural shape; pond's
+  `samples` is for typical loads where the per-event pipeline
+  overhead is invisible. The honest framing for the writeup:
+  v0.14.3 closes the leak; the architectural cliff is
+  inherent — pond convenience pays a tax that custom code
+  doesn't, and at saturation that tax is visible. Fine outcome.
+
+  **Second signal toward `tap()`.** The V7 numbers are the
+  second data point (after the gRPC HostAggregator walkback)
+  pointing at shared-buffer rolling as the right primitive
+  for the saturation regime. Still deferred — see the `tap()`
+  entry above — but the design pressure is real enough that
+  the next user landing on the same wall should be the
+  trigger to ship.
+
 - **CI safety-net widening — deferred.** v0.14.1 review surfaced
   that `npm run verify`'s `test:type` step doesn't run `tsc -p
-  tsconfig.vitest.json` (which covers `test/`). Vitest itself
+tsconfig.vitest.json` (which covers `test/`). Vitest itself
   uses esbuild and strips types, so `npm run test:runtime` doesn't
   catch type errors in test files either. Net: a new public-API
   type entry can break user-facing call sites without `verify`
   failing.
 
   Fix path: add a `test:type:vitest` script that runs `tsc -p
-  tsconfig.vitest.json --noEmit`, wire it into `verify`. **Blocked
+tsconfig.vitest.json --noEmit`, wire it into `verify`. **Blocked
   by:** existing test files have ~30 unrelated type errors under
   the vitest tsconfig (mostly pushing `undefined` into required
   number columns without `as any` — patterns that work because
@@ -1807,12 +1879,11 @@ useLiveQuery(timings, () => rolling.value());
   reads as "subset of a population," then `samples(n)` could
   return a uniform random subsample of size `n` — useful for
   bounded-memory representations of large buckets.
-
   - **Batch:** straightforward reservoir sampling (Algorithm R).
     O(N) time, O(n) memory, classic.
   - **Live rolling:** harder. Reservoir sampling assumes each
     element is seen exactly once; a sliding window has elements
-    *exiting* too (the reservoir might hold an element that's
+    _exiting_ too (the reservoir might hold an element that's
     just aged out). Sliding-window-reservoir algorithms exist
     (priority sampling with random keys, time-bucketed chunked
     sampling) but each has tradeoffs and adds real implementation
@@ -1831,7 +1902,7 @@ useLiveQuery(timings, () => rolling.value());
   Pond's reducer registry today maps strings to single-stage
   reducers. Chaining means either parsing a string DSL
   (`'avg(samples(20))'`) or shifting the API toward composable
-  reducer *objects* (`avg.of(samples(20))` or
+  reducer _objects_ (`avg.of(samples(20))` or
   `pipe(samples(20), avg)`). Both are RFC-shaped — they'd touch
   the reducer-registry contract, the type-system narrowing, and
   the AggregateOutputMap mapping shape.
@@ -1891,17 +1962,17 @@ misclassified asks.
   wall clock. Two architectural forks:
 
   a) **Accept wall-clock.** `setTimeout`-driven, only armed when a
-     subscriber is attached. Ergonomic, real, but commits pond to a
-     `setTimeout` dependency it has explicitly avoided through v0.12
-     ("data-driven, no setInterval inside the library").
+  subscriber is attached. Ergonomic, real, but commits pond to a
+  `setTimeout` dependency it has explicitly avoided through v0.12
+  ("data-driven, no setInterval inside the library").
 
   b) **User-driven tap.** Pond exposes `rolling.checkIdle(now)` or
-     similar; user wires their own `requestAnimationFrame` /
-     `setTimeout`. Keeps the pure data-driven model but defeats the
-     ergonomic promise — the user is now responsible for the tick
-     loop.
+  similar; user wires their own `requestAnimationFrame` /
+  `setTimeout`. Keeps the pure data-driven model but defeats the
+  ergonomic promise — the user is now responsible for the tick
+  loop.
 
-  **Lean: (a).** Idle is fundamentally about *absence*, and absence
+  **Lean: (a).** Idle is fundamentally about _absence_, and absence
   isn't a data event. A user-side workaround re-implements the
   same `setTimeout` pond would have done, just less centrally. The
   ergonomic win for the targeted use case (interactive UIs, scroll
@@ -1939,8 +2010,8 @@ misclassified asks.
 - **`Trigger.threshold(column, predicate)` — misclassified.**
   Codex even hedged: "maybe this belongs as a filter after rolling
   rather than a trigger." Confirmed: it does. A trigger answers
-  "*when* do we emit?" uniformly across all output events; a
-  threshold answers "*do we emit this event?*" — that's filter
+  "_when_ do we emit?" uniformly across all output events; a
+  threshold answers "_do we emit this event?_" — that's filter
   semantics. Already trivially expressible:
   `live.rolling(window, mapping, options).filter(e => e.get('current') > x)`.
   Document this answer in the trigger doc's "what about
@@ -1949,7 +2020,7 @@ misclassified asks.
 
 - **`Trigger.manual()` / externally poked — sugar over existing.**
   The unload case is `addEventListener('beforeunload', () =>
-  post(rolling.value()))`. Debug export is `rolling.value()`.
+post(rolling.value()))`. Debug export is `rolling.value()`.
   Reconnect-on-disconnect is the same pattern. If a real version
   ever earns its keep (multiple users hitting it), the right shape
   is `rolling.emit()` as an explicit method on the accumulator,
