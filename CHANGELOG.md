@@ -7,9 +7,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.14.3...HEAD
 
 ## [Unreleased]
+
+## [0.14.3] — 2026-05-04
+
+A targeted allocation fix in the `'samples'` reducer's rolling-state
+implementation. Motivated by gRPC experiment V7 numbers — at the
+ceiling regime (1k partitions × 1k events/s, 1M target) the all-
+pond pipeline using `samples()` regressed throughput ~19% vs V6's
+hybrid pond-rolling + manual-deque pattern, with +17% heap at
+moderate loads. Per-event cost analysis pointed at a 1-element
+`ScalarValue[]` allocation per scalar `add()` — one wasted
+allocation per event compounding under sustained kHz × N-partition
+load.
+
+### Changed
+
+- **`samples.rollingState()` skips array wrap for scalar source
+  columns.** Scalar values (the common case at saturation) now
+  store directly into the keyed map; only array-kind sources
+  build a sub-array (because `remove(index)` needs to drop a
+  single event's contributions together). Snapshot branches on
+  `Array.isArray` to flatten the mixed map.
+
+  ```
+  Focused micro-bench (5M scalar add+remove cycles):
+                       median (ms)   min (ms)   max (ms)
+  baseline (v0.14.2)      239.85      236.62     244.58
+  v0.14.3                 209.09      207.42     215.26
+  delta                   −12.8%      −12.3%     −12.0%
+
+  Integration bench (100k events × N hosts, full pipeline):
+  Tight wall-clock parity within run-to-run noise across all
+  scenarios (samples 1m/5s, scalar/array). Allocation pressure
+  isn't the dominant cost at this scale; the optimization
+  compounds only at saturation regimes where GC pressure stacks.
+  ```
+
+  Behavior is preserved bit-for-bit — every existing
+  `samples-reducer.test.ts` assertion passes without modification.
+
+### Added
+
+- `packages/core/scripts/perf-samples-reducer.mjs` — benchmark
+  covering the focused micro-bench + four integration scenarios
+  (scalar moderate / scalar high-cardinality / scalar high-churn
+  / array source) with a comparison anchor against `'avg'` on
+  the same shape. Run with `node --expose-gc` for heap numbers.
+
+### Note on saturation regimes
+
+V7's regression isn't fully closed by this fix. The remaining gap
+is architectural — V7 routes events through two full
+`LiveRollingAggregation` pipelines (Map ops + reducer state +
+trigger dispatch + subscriber fan-out per pipeline), where V6's
+hybrid had one pond rolling for stats plus a passive
+`array.push` listener for raw values. At the kHz × 1k-partition
+saturation regime, the manual-deque pattern is genuinely the
+right shape; pond's `samples` is for typical loads where per-
+event overhead is invisible. A shared-buffer primitive (parked
+as `tap()` in PLAN.md) would close the saturation gap; out of
+scope for v0.14.3.
+
+[0.14.3]: https://github.com/pjm17971/pond-ts/compare/v0.14.2...v0.14.3
 
 ## [0.14.2] — 2026-05-03
 
@@ -91,7 +153,7 @@ either). Two related changes ship together to close both gaps.
     '1m',
     {
       mean: { from: 'cpu', using: 'avg' },
-      sd:   { from: 'cpu', using: 'stdev' },
+      sd: { from: 'cpu', using: 'stdev' },
     },
     { trigger: Trigger.every('30s') },
   );
@@ -121,7 +183,6 @@ either). Two related changes ship together to close both gaps.
   function-typed reducers. New `bucketStateFor` and `rollingStateFor`
   helpers in `reducers/index.ts` route built-ins to their dedicated
   O(1) machinery and wrap custom functions in a generic adapter:
-
   - **Bucket adapter** (`LiveAggregation`): buffers values, calls
     the function once at `snapshot()` time. O(N) per snapshot.
   - **Rolling adapter** (`LiveRollingAggregation`,
@@ -140,7 +201,7 @@ either). Two related changes ship together to close both gaps.
 
   Pre-v0.14.1, calling `live.rolling(...)` with a custom-function
   reducer threw `TypeError: live rolling reducer for output 'X' must
-  be a built-in name; ...`. Post-v0.14.1, the same call constructs
+be a built-in name; ...`. Post-v0.14.1, the same call constructs
   successfully and runs.
 
 ### Tests
@@ -180,13 +241,13 @@ re-allocations). Both root-caused, both fixed.
 Benchmark deltas on `scripts/perf-live-partitioned.mjs`
 (100k events, median ms):
 
-| Scenario                              | Before | After  | Δ       |
-| ------------------------------------- | -----: | -----: | ------: |
-| bare `LiveSeries.push`                |  41.11 |  30.08 | **−27%** |
-| `partitionBy('host')` routing (10)    |  83.14 |  39.10 | **−53%** |
-| `partitionBy + collect()`             | 124.82 |  49.96 | **−60%** |
-| `partitionBy + apply(fill)`           | 120.53 |  49.64 | **−59%** |
-| `partitionBy('host')` routing (1000)  | 105.92 |  43.23 | **−59%** |
+| Scenario                             | Before | After |        Δ |
+| ------------------------------------ | -----: | ----: | -------: |
+| bare `LiveSeries.push`               |  41.11 | 30.08 | **−27%** |
+| `partitionBy('host')` routing (10)   |  83.14 | 39.10 | **−53%** |
+| `partitionBy + collect()`            | 124.82 | 49.96 | **−60%** |
+| `partitionBy + apply(fill)`          | 120.53 | 49.64 | **−59%** |
+| `partitionBy('host')` routing (1000) | 105.92 | 43.23 | **−59%** |
 
 The bare-push delta is from the byte-estimate removal; the
 partition-routing deltas are from the trusted-pipeline path that
@@ -429,7 +490,7 @@ the live surface.
 - **Better error message when a custom-function reducer is passed to
   live aggregation.** `LiveAggregation` already failed at construction
   via `resolveReducer(reducer)` (with a generic `unsupported aggregate
-  reducer` message); now the eager built-in-name check runs first and
+reducer` message); now the eager built-in-name check runs first and
   emits a targeted error pointing at the `AggregateOutputMap` alias
   workaround. Same eager behavior on `LivePartitionedSyncRolling`,
   which previously failed lazily when the first partition spawned —
@@ -463,8 +524,8 @@ the live surface.
   required TS to see the `trigger` field's discriminator at the call
   site — so a caller writing
   `const opts: LiveRollingOptions = { trigger: Trigger.event() };
-  partitioned.rolling(window, mapping, opts);` got `TS2769 No
-  overload matches this call`. Pre-existing hole on the partitioned
+partitioned.rolling(window, mapping, opts);` got `TS2769 No
+overload matches this call`. Pre-existing hole on the partitioned
   surface; surfaced by the v0.13.0 Codex adversarial pass. Closed by
   adding catch-all overloads that accept the broader
   `LiveRollingOptions` and return the union of both trigger
