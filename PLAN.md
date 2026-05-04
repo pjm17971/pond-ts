@@ -1419,6 +1419,142 @@ into pond-ts core. The default JSON path stays directly on
 `LiveSeries.toJSON()` / `pushJson()` / `fromJSON()` — the most
 common case shouldn't pay an adaptor-indirection tax.
 
+### Queued: live API parity for the buffer-as-window persona (logged 2026-05-04)
+
+Surfaced by the gRPC experiment's metric agent code:
+
+```ts
+const rolling = series.rolling(
+  RETENTION,
+  { p50: 'p50', p75: 'p75', p95: 'p95', count: 'count' },
+  { minSamples: 1, trigger: rollingReportTrigger },
+);
+```
+
+The agent wrote `rolling(RETENTION, ...)` because they wanted "stats
+over my entire current buffer, emitted on a trigger" — and the
+explicit form was the closest primitive available. It works, but
+it's a workaround. The user holds a `LiveSeries` with retention as
+their only window; the buffer **is** the window. Forcing them to
+declare a two-level structure (retention + a rolling window matched
+to retention) reads as ceremony when the simpler intent is "reduce
+the buffer streaming-style."
+
+This is a recurring shape — many users will not want a two-level
+series (rolling-window buffer via retention plus a rolling window
+inside it). The library's job is to make the one-level case as
+obvious to write as the two-level case.
+
+**Triage of gaps surfaced when comparing `LiveSeries` / `LiveView`
+to batch `TimeSeries` for this persona:**
+
+**Tier 1 — direct asks for the buffer-as-window user.**
+
+- **`live.reduce(mapping, opts?)`** — full-window streaming reduce.
+  Mirrors batch `series.reduce(mapping)` semantically: "no window,
+  just everything in scope." Returns an accumulator with
+  `value()` + `on('event', ...)`. Implementation is thin — under
+  the hood it's `rolling(retention-bound, mapping, { history: false })`
+  with the window taken from `LiveSeries`'s own retention. Pairs
+  with the `history: false` tactical fix.
+
+  **Open questions to settle pre-ship:**
+  - **No retention case.** If the source has no retention bound
+    (or unbounded `maxEvents`), `live.reduce` reduces over the
+    whole history. Doc-note: "memory grows with `LiveSeries`
+    retention; use bounded retention for high-rate sources." Same
+    caveat as live rolling, but more invisible because the user
+    didn't write the window down — louder doc treatment warranted.
+  - **Retention change after construction.** Probably an error or
+    stale-state case; needs explicit handling.
+  - **Late events / grace.** Should follow whatever the source
+    buffer does — a late event accepted within grace updates the
+    reduce; an evicted event is removed. Same machinery as today's
+    rolling.
+
+- **`live.timeRange()`** — span of the current buffer
+  (`last.begin() - first.begin()`). Trivial to implement; "how much
+  data am I holding?" is a question this persona genuinely asks.
+  Batch has it; live doesn't.
+
+- **`live.eventRate(): number`** — events per second over the buffer.
+  `LiveView` already exposes this (line 240); `LiveSeries` does
+  not. Today the user does `live.window('1m').eventRate()` to get
+  rate over the last minute — fine when they want "last minute"
+  specifically; needless detour when they want "rate over what's
+  retained." Pure parity addition.
+
+- **Naming consistency: `live.count()` vs `live.length`.** `LiveView`
+  has both `count()` (line 218) and `length`; `LiveSeries` exposes
+  only `length`. Either give `LiveSeries` a `count()` alias for
+  symmetry, or drop `LiveView.count()` in favor of `length`. Lean
+  toward dropping `LiveView.count()` — `length` is the JS-idiomatic
+  shape. Minor; settle alongside the other Tier 1 work.
+
+**Tier 2 — query primitives on the sorted live buffer.**
+
+`TimeSeries` has these; `LiveSeries` and `LiveView` do not:
+
+- **Predicate query:** `find(pred)`, `some(pred)`, `every(pred)`.
+  Linear scan; trivial.
+- **Key-position query:** `includesKey(key)`, `bisect(key)`,
+  `atOrBefore(key)`, `atOrAfter(key)`. Binary search on the sorted
+  buffer; cheap.
+
+Use cases: "is there already an event with key K?" / "what was the
+most recent event before time T?" Both come up in dashboard /
+monitoring patterns where the buffer **is** the working set.
+
+**Tier 3 — range slicing and the `window` vs `tail` naming.**
+
+`TimeSeries` has `tail(duration)`, `within(range)`, `before(t)`,
+`after(t)`, `trim(range)`, `overlapping(range)`, `containedBy(range)`.
+
+`LiveSeries.window(size)` is conceptually a tail-like `LiveView` —
+"recent slice." But `window` collides with the windowing-operator
+concept (`rolling`, `aggregate`, `reduce` are all "windowing modes"
+per the docs). Two open questions:
+
+- **Rename `window` → `tail`?** Better matches batch and reads
+  more clearly. Public-API rename — needs deprecation. Reach for
+  this only if it's part of a broader live-naming pass.
+- **Add `live.within(range)` / `before(t)` / `after(t)`?** Same
+  machinery as `window`, scoped differently. Returns `LiveView`.
+  Useful for the buffer-as-window persona who wants "events
+  between two timestamps."
+
+Ship Tier 3 only after Tier 1 + 2 land and the persona's actual
+usage patterns reveal which slicing shapes matter most.
+
+**Not gaps (intentional):**
+
+- `live.align(seq, ...)`, `live.materialize(seq, ...)`,
+  `live.smooth(...)`, `live.shift(...)` — these need historical
+  context the live buffer doesn't have stable footing for. The
+  snapshot-then-batch pattern (`live.toTimeSeries().align(...)`)
+  is the right one. Phase 4's "Live composition" makes this an
+  intentional split.
+
+**Suggested PR structure:**
+
+- **PR 1 — Tier 1 core:** `live.reduce()` + `live.timeRange()` +
+  `live.eventRate()` + `live.count()` parity decision (~150 LoC
+  - tests).
+- **PR 2 — Tier 2 query parity:** `find` / `some` / `every` /
+  `includesKey` / `bisect` / `atOrBefore` / `atOrAfter` (~100 LoC,
+  pure parity additions, no design questions).
+- **PR 3 — Tier 3 if/when:** range-slicing parity + `window` vs
+  `tail` decision. Defer until Tier 1 + 2 ship and the API-usage
+  shape suggests which slicing matters.
+
+**Why queued and not blocked-on-something:** all three tiers are
+small, well-scoped, and motivated by direct user evidence (the
+metric agent's call site for Tier 1, batch parity gaps for Tier
+2, naming consistency for Tier 3). No design surface needs a
+second user signal first — the gaps are visible from the existing
+batch-vs-live contrast. Schedule alongside the next live-API pass
+or when a buffer-as-window user reports specific friction.
+
 ### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot (v0.11.8, superseded by v0.12 triggers)
 
 > **Status note (2026-05-01):** `.sample()` and
