@@ -196,3 +196,23 @@ if (chainedSample) {
   void h;
   void a;
 }
+
+// V8 workaround back-compat (Layer 2 caught this on PR #117):
+//   partitionBy<'host'>('host').rolling({...}, { trigger })
+// — the explicit-arg form was the gRPC V8 workaround for the
+// pre-v0.15.1 narrowing gap. Type-parameter order is
+// `<ByCol, K>` so the explicit `'host'` binds to `ByCol`,
+// preserving narrowing on existing callers.
+const v8Workaround = live
+  .partitionBy<'host'>('host')
+  .rolling(
+    { '1m': { cpu_avg: { from: 'cpu', using: 'avg' } } },
+    { trigger: Trigger.every('1s') },
+  );
+const v8Sample = v8Workaround.at(0);
+if (v8Sample) {
+  const h: string | undefined = v8Sample.get('host');
+  const a: number | undefined = v8Sample.get('cpu_avg');
+  void h;
+  void a;
+}

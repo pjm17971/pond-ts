@@ -45,10 +45,13 @@ captures the column literal directly so the workaround can drop.
   // event.get('host') resolves correctly.
   ```
 
-  Existing callers using the workaround continue to work — the
-  `<'host'>` form fills `K` (which has no semantic meaning when
-  no `groups` are declared) and the new `ByCol` is still inferred
-  from `by`.
+  Existing V8 callers using the `partitionBy<'host'>('host')`
+  workaround continue to narrow correctly. Type-parameter order
+  on `partitionBy` is `<ByCol, K>` (column name first, value type
+  second) so the explicit `<'host'>` binds the literal to `ByCol`
+  — exactly what the workaround intended pre-v0.15.1. The
+  workaround can now drop because automatic inference does the
+  same job, but it doesn't have to.
 
 ### Type system
 
