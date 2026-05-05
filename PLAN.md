@@ -1783,32 +1783,19 @@ retention`). Currently Path B (own deque); same API, perf
   - **Tighter `DurationString` template-literal type.** Today's
     is permissive (`'1min'` may pass); runtime `parseDuration`
     catches it. Tightening is a follow-up.
-  - **`partitionBy` partition-column literal narrowing** (newly
-    exposed, logged 2026-05-05). gRPC V8 found that
-    `live.partitionBy('host').rolling({...})` widens the
-    partition-column type, breaking the `SeriesSchema` constraint
-    on `FusedPartitionedRollingSchema<S, ByCol, FM>`. Workaround:
-    `live.partitionBy<'host'>('host')` — abuses the value-type
-    parameter K to fill the column-name slot. Pre-existing
-    pond limitation, exposed by the fused-rolling typing chain.
-
-    Fix: add a column-name type parameter to `partitionBy` /
-    `LivePartitionedSeries` / `LivePartitionedView` that's
-    inferred from the `by` argument:
-
-    ```ts
-    partitionBy<
-      ByCol extends keyof EventDataForSchema<S> & string,
-      K extends string = string,
-    >(by: ByCol, opts?: ...): LivePartitionedSeries<S, K, ByCol>
-    ```
-
-    Then `FusedPartitionedRollingSchema<S, ByCol, FM>` resolves
-    correctly without the workaround. ~50-80 lines of type-only
-    changes across `LivePartitionedSeries.ts` (class generic +
-    method signatures + `LivePartitionedView`). Mechanical but
-    touches many sites. **Not blocking V8.** Schedule alongside
-    the next type-narrowing pass.
+  - **`partitionBy` partition-column literal narrowing —
+    SHIPPED v0.15.1 (2026-05-05).** gRPC V8 found that
+    `live.partitionBy('host').rolling({...})` widened the
+    partition-column type, with the V8 workaround
+    `live.partitionBy<'host'>('host')` clobbering the value-type
+    parameter K. v0.15.1 added `ByCol` as a third generic
+    parameter on `LivePartitionedSeries<S, K, ByCol>` and
+    `LivePartitionedView<SBase, R, K, ByCol>`, captured from the
+    `by` argument; threaded through every per-partition method
+    so chained pipelines (`partitionBy('host').fill(...).rolling(
+{...})`) survive the narrowing. The workaround can drop;
+    `partitionBy('host')` is now sufficient. type-d block
+    extended to pin both root and chained narrowing.
 
   ***
 

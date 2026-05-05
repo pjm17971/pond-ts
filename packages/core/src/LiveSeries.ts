@@ -702,11 +702,15 @@ export class LiveSeries<S extends SeriesSchema> {
    *
    * See {@link LivePartitionedSeries}.
    */
-  partitionBy<K extends string = string>(
-    by: keyof EventDataForSchema<S> & string,
+  partitionBy<
+    K extends string = string,
+    ByCol extends keyof EventDataForSchema<S> & string =
+      keyof EventDataForSchema<S> & string,
+  >(
+    by: ByCol,
     options?: LivePartitionedOptions<K>,
-  ): LivePartitionedSeries<S, K> {
-    return new LivePartitionedSeries<S, K>(this, by, options);
+  ): LivePartitionedSeries<S, K, ByCol> {
+    return new LivePartitionedSeries<S, K, ByCol>(this, by, options);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;

@@ -156,3 +156,43 @@ const fC = partitioned.rolling(
 );
 declare const _eC: ReturnType<typeof fC.at>;
 void _eC;
+
+// ── partitionBy narrows the partition column literal ─────────
+//
+// Pinned 2026-05-05 after the gRPC V8 migration surfaced this
+// (pond-grpc-experiment#22). Pre-fix, callers needed the
+// workaround `partitionBy<'host'>('host')` because the column
+// literal wasn't captured in the return generic. Post-fix, the
+// `by` argument's literal type narrows automatically and
+// `event.get('host')` resolves through the schema.
+
+const sampleEvent = fC.at(0);
+if (sampleEvent) {
+  // host narrows to string (the column kind in `numericSchema`).
+  const h: string | undefined = sampleEvent.get('host');
+  // value columns narrow per their reducer.
+  const a: number | undefined = sampleEvent.get('cpu_avg');
+  const m: number | undefined = sampleEvent.get('cpu_max');
+  void h;
+  void a;
+  void m;
+}
+
+// Threading through chained pipelines:
+//   partitionBy('host').fill(...).rolling({...}, { trigger })
+// — the fused-partitioned schema must still narrow the partition
+// column from the root's `by` argument, even after a chain hop.
+const chained = live
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling(
+    { '1m': { cpu_avg: { from: 'cpu', using: 'avg' } } },
+    { trigger: Trigger.every('1s') },
+  );
+const chainedSample = chained.at(0);
+if (chainedSample) {
+  const h: string | undefined = chainedSample.get('host');
+  const a: number | undefined = chainedSample.get('cpu_avg');
+  void h;
+  void a;
+}
