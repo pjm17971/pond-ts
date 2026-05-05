@@ -1450,13 +1450,31 @@ to batch `TimeSeries` for this persona:**
 
 **Tier 1 — direct asks for the buffer-as-window user.**
 
+> **Cross-reference (2026-05-05):** `live.reduce()` is the
+> single-buffer face of the **Fused multi-window rolling +
+> buffer-as-window unification** primitive (see "Deferred from this
+> wave" below). Design `live.reduce()` from the start as sugar for
+> the fused form (record API) with the `'buffer'` sentinel:
+>
+> ```ts
+> live.reduce(mapping, opts) ===
+>   live.rolling({ buffer: mapping }, { history: false, ...opts });
+> ```
+>
+> This makes the API future-compatible: extending to multi-window
+> via `live.rolling({ '1m': m1, '200ms': m2 }, opts)` is "add
+> another entry to the record" not "introduce a new primitive
+> shape." Ship Tier 1 first if fused-rolling lands later; if both
+> ship together, ship as the unified buffer-as-window release.
+
 - **`live.reduce(mapping, opts?)`** — full-window streaming reduce.
   Mirrors batch `series.reduce(mapping)` semantically: "no window,
   just everything in scope." Returns an accumulator with
   `value()` + `on('event', ...)`. Implementation is thin — under
   the hood it's `rolling(retention-bound, mapping, { history: false })`
   with the window taken from `LiveSeries`'s own retention. Pairs
-  with the `history: false` tactical fix.
+  with the `history: false` tactical fix and is sugar over the
+  fused multi-window primitive.
 
   **Open questions to settle pre-ship:**
   - **No retention case.** If the source has no retention bound
@@ -1707,182 +1725,305 @@ useLiveQuery(timings, () => rolling.value());
   semantics across partitions are ambiguous (per-partition? global?)
   and there's no killer use case for either.
 
-- **Sub-window primitive — `rolling(...).tap(seq, mapping)` over a
-  shared event buffer.** Surfaced by the gRPC experiment's
-  `HostAggregator` walkback (2026-05-01) and refined in the
-  2026-05-03 design pass.
+- **Fused multi-window rolling + buffer-as-window unification
+  (consolidated 2026-05-05).** Two independent signals merged into
+  one design. The earlier `rolling(...).tap()` framing —
+  hierarchical parent/child with shared deque — is preserved as
+  compositional sugar over this primitive, but the primitive itself
+  is peer-windows-with-shared-ingest. Tap-by-itself was overfitting
+  to the gRPC use case; the fused form covers both gRPC and the
+  buffer-as-window persona without hierarchy bookkeeping.
 
-  **What tap actually solves.** Two windows over the same source
-  events where window B is a strict subset of window A. The custom
-  HostAggregator's win wasn't ergonomic (the agent could already
-  correlate two rollings via shared trigger); it was **shared buffer
-  storage**. At the gRPC saturation regime (1000 partitions × kHz
-  ingest), a 200ms sub-window inside a 1m parent costs ~24 KB per
-  partition if it stores indices into the parent's deque, vs ~72 KB
-  if it duplicates entries. At 1000 partitions that's 48 MB saved.
-  At dashboard scale (50 hosts), the saving is KB. So `tap` is a
-  knob for the saturation-regime user, not the typical case.
+  **The two signals:**
+  1. **gRPC profile-diff (PR #19, 2026-05-05).** Profile-grade
+     evidence that V7's regression is the second
+     `LivePartitionedSyncRolling`, not the `samples` reducer.
+     Every per-event pond hop roughly doubled in inclusive time
+     vs V6 (`#routeEvent` 15.0% → 28.9%, `ingest` 11.5% → 25.0%,
+     `_pushTrustedEvents` 13.1% → 27.4%). The reducer itself is
+     ~2.3% self-time; v0.14.3's allocation fix closed that leak.
+     The architectural cost is doubled per-event ingest. Closing
+     it needs a single ingest pass that updates multiple windowed
+     reducer states.
 
-  Framing: `tap` is the right primitive **when memory dominates**,
-  not "the right primitive for multi-window." Multi-window with
-  separate rollings stays the default; `tap` is a perf opt-in.
+  2. **Buffer-as-window persona (metric agent's call site).**
+     `series.rolling(RETENTION, mapping, ...)` is the workaround
+     when the buffer IS the window. The user has retention; they
+     want stats over the buffer; they shouldn't have to declare a
+     two-level structure (retention + a matched rolling window) to
+     get there. `live.reduce(mapping)` covers the single-buffer
+     case, but the broader pattern is "buffer + zero-or-more
+     sub-windows." Same primitive answers both.
 
-  **Core mechanic.** Parent rolling holds the deque
-  (`{ index, timestamp, values }`); child holds **only
-  `{ index, timestamp }`** pairs over its smaller window plus its own
-  reducer state. On each parent ingest, parent dispatches
-  `add(idx, value)` to every registered child; child reads value
-  from parent's deque at remove time. Child's window cutoff advances
-  independently — child evicts entries that aged out of _its_
-  window, not the parent's.
-
-  Reducer state is fully incremental in the child (same machinery
-  as `LiveRollingAggregation` today). Snapshot stays O(1) for
-  built-ins; O(child-window-N) for custom functions, same perf-cliff
-  story as v0.14.1.
-
-  **API shape.**
+  **The unified user-facing shape.** A `LiveSeries` with retention
+  IS a buffer; the buffer IS the implicit longest window of any
+  rolling computation attached to it. Declared sub-windows are
+  tighter cursors into that buffer. Three APIs over the same
+  machinery:
 
   ```ts
-  const baseline = live.rolling('1m', {
-    mean: { from: 'cpu', using: 'avg' },
-    sd:   { from: 'cpu', using: 'stdev' },
-  });
+  // Single buffer (the buffer-as-window common case):
+  const stats = live.reduce({ p95: 'p95', count: 'count' });
 
-  const current = baseline.tap('200ms', {
-    now: { from: 'cpu', using: 'avg' },
-  });
+  // Single sub-window (today's shape; no change):
+  const r = live.rolling('200ms', { samples: 'samples' });
 
-  baseline.on('event', e => /* baseline snapshot */);
-  current.on('event', e => /* current snapshot */);
+  // Multi-window (the fused form — new), record-form API:
+  const fused = live.rolling(
+    {
+      '1m': { cpu_avg: 'avg', cpu_sd: 'stdev', cpu_n: 'count' },
+      '200ms': { cpu_samples: 'samples' },
+    },
+    { trigger },
+  );
   ```
 
-  `tap` returns a `LiveRollingAggregation<S, ChildOut>` — looks just
-  like a rolling, subscribers behave the same. Same overload pattern
-  as today's `rolling()`: `AggregateMap` + `AggregateOutputMap` +
-  catch-all for variable-typed options. Custom functions allowed
-  (post-v0.14.1).
+  User mental model is unified: "what windows do I want?" The
+  buffer is just the longest one (clipped to retention; see below).
+  All three APIs share the same trigger / output / event-subscriber
+  surface — they're sugar over the same primitive.
 
-  **Constraints.**
-  - **`childWindow <= parentWindow`** — runtime check at construction.
-    Type-level enforcement is hard (windows are runtime values), so
-    a clear `TypeError` at construct time is the right guard.
-  - **Trigger** is independent on the child; defaults to
-    `Trigger.event()`. The agent's use case becomes:
-    ```ts
-    const baseline = live.rolling('1m', m1, {
-      trigger: Trigger.every('200ms'),
+  **Record vs array form (settled 2026-05-05 design pass).** The
+  record form `{ '1m': mapping, '200ms': mapping }` is the primary
+  API; it's the cleanest read for the common case (window known up
+  front, single trigger applies to all). The array form is the
+  escape hatch for per-window options:
+
+  ```ts
+  // Per-window triggers (dashboard pattern: baseline at 30s,
+  // current at 200ms) — array form when options differ:
+  const [baseline, current] = live.rolling([
+    { window: '1m',    output: { ... }, trigger: Trigger.every('30s') },
+    { window: '200ms', output: { ... }, trigger: Trigger.every('200ms') },
+  ]);
+  ```
+
+  Internal canonical form is the array. The record form is parsed
+  into the array form at construction:
+  - Keys → `window` (string `'1m'` or numeric `100` for count form)
+  - Values → `output` mapping (the `AggregateOutputMap`)
+  - Top-level `{ trigger }` opts apply uniformly to all windows
+  - `'buffer'` key resolves to the LiveSeries retention sentinel
+
+  Return shape mirrors input shape:
+  - **Record form input:** returns a record keyed by the same
+    window strings — `fused.get('1m')` / `fused.get('200ms')`,
+    or destructure as needed.
+  - **Array form input:** returns an array of accumulators in
+    declared order — `const [a, b] = live.rolling([...])`.
+
+  This keeps the record form pure sugar — same internal machinery,
+  same correctness guarantees, just nicer reading for the common
+  case. Bench / typing / single-window-equivalence all happen at
+  the canonical-array layer; record form is parsed before any of
+  that runs.
+
+  **Storage model.** One shared deque of `{ absIdx, ts, values }`,
+  sized by the longest declared window. Each window holds:
+  - `head: absIdx` — absolute event index of the oldest event still
+    in this window's reducer state (monotonic across the rolling's
+    life; survives deque compaction)
+  - `reducerStates: RollingReducerState[]` — one per output column
+
+  Per-event work:
+
+  ```
+  ingest(event):
+    deque.push({ absIdx, ts, values })          # 1 append (was N)
+    for window in windows:
+      cutoff = event.ts - window.duration
+      while getEntry(window.head).ts < cutoff:
+        for col: col.state.remove(window.head, ...)
+        window.head++
+      for col in window.cols:
+        col.state.add(event.absIdx, ...)
+    deque.dropFrontTo(min(window.head for window in windows))
+  ```
+
+  Cost story matches the gRPC profile-diff:
+  - `#routeEvent` / `_pushTrustedEvents` runs once instead of N →
+    kills the V6→V7 doubled inclusive-time
+  - Per-window add/remove cost unchanged (same as N rollings)
+  - Shared deque storage → kills V7's +17% heap delta (the second
+    rolling's per-bucket array state goes away)
+
+  **Cursor representation: absolute event indices.** `head` is the
+  absIdx of the oldest event still in the window. Stable across
+  deque compaction (`deque.frontAbsIdx` translates absIdx → array
+  position). Matches how `RollingReducerState.add(index, ...)`
+  already takes an absolute index for `Map`-keyed remove.
+
+  **Path A vs Path B — the buffer-as-window optimization.**
+
+  If the longest declared window ≤ retention, the LiveSeries buffer
+  already holds every event the fused rolling needs. The fused-
+  rolling's own deque becomes redundant.
+
+  | Path                            | Behavior                                                                     | Cost                                                                                                           |
+  | ------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+  | **A** — share LiveSeries buffer | Fused holds only cursors + reducer state; events live once                   | Bigger refactor: fused needs read access into LiveSeries' deque shape; eviction wiring crosses module boundary |
+  | **B** — own deque               | Fused subscribes via `'event'`, maintains its own deque alongside LiveSeries | Smaller change; same code shape as today's rolling. Events held twice when longest_window ≤ retention          |
+
+  **Ship B first.** It gets the gRPC win immediately (single ingest
+  pass eliminates the doubled per-event hop) and the API surface
+  is identical to A. Path A is a buffer-as-window perf follow-up —
+  a runtime optimization that's invisible to the user. Storage
+  duplication at typical scale (~100 hosts × low-rate streams) is
+  invisible; at saturation (1k partitions × kHz) it's measurable
+  but not blocking.
+
+  **Constraint: windows clip to retention.** When a declared window
+  exceeds retention, the rolling reduces over whatever's currently
+  retained. No fallback, no escape hatch — buffer-as-window users
+  already accept this semantic by virtue of choosing retention as
+  their bound. The rule is consistent: declaring a window through
+  the fused form means "this is a sub-window of the buffer."
+
+  Users who need exact-window semantics regardless of buffer size
+  keep using today's-shape `live.rolling(window, mapping)` — that
+  primitive maintains its own deque independent of LiveSeries
+  retention and is preserved unchanged. The choice between fused
+  and standalone-rolling becomes "are you a buffer-as-window user
+  (fused, clipped) or do you want exact-window-no-matter-what
+  (standalone)?"
+
+  **Single-window equivalence — load-bearing pin.**
+  `live.rolling(window, mapping, opts)` (today's shape) MUST
+  produce identical output to `live.rolling([{ window, output:
+mapping }], opts)` (fused with one entry). Tested explicitly.
+  Otherwise the unification is incomplete — users would observe a
+  silent behavior shift when adding a second window.
+
+  **`live.reduce()` as fused-with-one-entry.** Design `live.reduce(
+mapping, opts)` from the start as sugar for the fused form over
+  the buffer:
+
+  ```ts
+  live.reduce(mapping, opts) ===
+    live.rolling([{ window: 'buffer', output: mapping }], {
+      history: false,
+      ...opts,
     });
-    const current = baseline.tap('200ms', m2, {
-      trigger: Trigger.every('200ms'),
-    });
-    ```
-    Both fire at the same 200ms tick; consumer subscribes to either or
-    both and uses the shared boundary timestamp to correlate. Same
-    trigger value isn't enforced — different cadences are valid.
+  ```
 
-  **Partitioned variant.** Mirrors `rolling()`'s partition behaviour.
-  `live.partitionBy('host').rolling('1m', m).tap('200ms', m')`
-  returns a per-partition tapped view; with a clock trigger, the
-  synced rolling shape extends the same way (one row per partition
-  per tick).
+  Same trigger options, same `value()` shape, same event-subscriber
+  surface. The `'buffer'` sentinel resolves to retention at
+  construction. No API divergence; either Path A or Path B
+  implements correctly.
 
-  **Open questions to settle pre-ship.**
-  - **Tap-of-tap.** Conceptually fine — chained sub-windows form a
-    tree. Allow it. Doc-note that nesting doesn't compound savings;
-    every tap converges on the root parent's storage.
-  - **Disposal semantics.** Dispose parent → dispose all taps. Dispose
-    a tap → detach without affecting parent. State explicitly.
-  - **Break-even point.** Need a benchmark showing at what
-    `parent.windowMs / child.windowMs` ratio and what event rate tap
-    pays for itself. Guess: ratio > ~10× and rate > ~1k ev/s/partition.
-    Below that, two separate rollings are within noise. Bench answers
-    "recommend by default" vs "mention as a perf knob."
-  - **Vs. multi-window declarative.** Alternative shape:
-    `live.rollings({ baseline: { window, mapping }, current: { ... } })`
-    returning one composite accumulator. More declarative, less
-    compositional. Lean `tap` (it composes — can be built on top of
-    an existing rolling without redeclaring), but want a second
-    user's gut reaction before locking the API. A more opinionated
-    variant — `live.stats(col, { baseline: { window, using }, current:
-{ window, using } })` — was sketched in a 2026-05-04 blind review
-    by Codex; it's the same compositional point with the recipe
-    pre-named. Keep tap as the lower-level primitive; if `stats`
-    earns its keep, build it on top.
-  - **`excludeCurrentFromBaseline` semantic.** When the child window
-    is a strict subset of the parent's by time, the parent's
-    snapshot includes events that the child is _also_ using. For
-    z-score-style use cases (current vs. baseline-mean ± k·σ), this
-    biases baseline toward current. Multi-window-stats consumers
-    will want a knob: "compute baseline over parent minus child's
-    overlap." Cheap to implement on shared storage (parent's deque
-    minus the child's index range); doesn't make sense without
-    shared storage. Flag as a stats-recipe option, not a tap-core
-    feature.
+  **Tap reframed as compositional sugar.** The earlier tap RFC's
+  hierarchical parent/child design becomes a one-method addition
+  on top of fused:
 
-  **Complementary axis: tile-mode summary primitive.** Codex's
-  blind 2026-05-04 review surfaced an alternative direction worth
-  capturing as a sibling to `tap`, not a substitute. `tap` shares
-  _exact-storage_ — every event the parent retains is reusable by
-  children, samples / median / exact eviction all work. **Tile
-  mode** keeps a ring of fixed-duration tiles (e.g. 1s) with
-  per-column composable moments (`{ n, sum, sumSq }`, optionally
-  `{ min, max }`) and computes window stats by combining tile
-  summaries. For a 5m baseline at 1s resolution that's 300 tile
-  summaries vs. ~150M raw events at 500k/s — three orders of
-  magnitude less storage and per-tile O(1) update.
+  ```ts
+  // Tap sugar (still useful for compositional add-after-the-fact):
+  const baseline = live.rolling('5m', { p95: 'p95' });
+  const current = baseline.tap('200ms', { samples: 'samples' });
+  // ≡ live.rolling([
+  //     { window: '5m',    output: { p95: 'p95' } },
+  //     { window: '200ms', output: { samples: 'samples' } },
+  //   ])
+  ```
 
-  Tradeoff axes:
+  Tap-of-tap, parent disposal, and the rest fall out as sugar
+  expansions. The earlier "Open questions to settle pre-ship"
+  list (childWindow ≤ parentWindow, disposal semantics, break-even
+  point, vs. multi-window declarative) collapse to: tap is sugar,
+  fused answers all of them. Ship fused first; tap is bolt-on
+  later if compositional add-after-the-fact lands as a real
+  pattern.
 
-  | Axis             | tap (exact)             | tile (summary)              |
-  | ---------------- | ----------------------- | --------------------------- |
-  | Storage          | O(parent window × N)    | O(window / resolution)      |
-  | Reducers covered | All built-ins           | Composable only (avg/stdev/ |
-  |                  |                         | sum/count/min/max)          |
-  | Eviction grain   | Per-event               | Per-tile boundary           |
-  | Late data        | Same as today's rolling | Bounded to tile boundary    |
-  | Result freshness | Exact at any moment     | Lags by < `resolution`      |
+  **Tile-mode storage axis (preserved as alternative).** Fused-
+  rolling stores raw events in the shared deque. For composable-
+  reducer-only workloads (`avg`/`stdev`/`count`/`sum`/`min`/`max`),
+  the deque could store fixed-duration tile summaries instead —
+  `{ n, sum, sumSq, ts_start, ts_end }` per tile. 5m at 1s
+  resolution = 300 tile entries vs ~150M raw events at 500k/s ×
+  5m. Three orders of magnitude less storage; per-tile O(1)
+  update.
 
-  Tile mode is the right shape for "high-rate normality monitoring"
-  patterns: 5m baseline avg/stdev + 5s current avg/sum + z-score
-  deviation, all at 500k/s. Exact mode is the right shape when the
-  reducer set includes `samples` / `median` / `top` — which the
-  gRPC anomaly-density experiment did, ironically, so tap is the
-  right primitive for _that_ use case even though tile would crush
-  the storage cost on a stats-only variant.
+  Tile mode is an alternative storage shape for fused-rolling; it
+  applies when the reducer set is closed under associative summary.
+  Defer until fused ships and we see the workload mix that
+  motivates adding it. Sibling axis to "Path A vs Path B" — both
+  are perf optimizations on the fused primitive, transparent to
+  user-facing API.
 
-  **Decision posture.** Both are deferred behind the same
-  second-user signal. The tile-mode primitive shouldn't ship before
-  tap does because tap's semantics (shared deque, child-as-cursor)
-  are the simpler conceptual ground; tile is an optimization on top
-  ("here's a way to compress the shared storage to summaries when
-  the reducer set permits"). When the third signal lands, evaluate
-  which shape the user actually wants — tile if the reducer set is
-  composable-only, tap if exact reducers are in the mix.
+  **Implementation rough estimate.**
+  - New class `LiveFusedRolling<S, Out[]>` (or extend
+    `LiveRollingAggregation` to accept array form): ~300-400 LoC
+  - Public surface: overload on `LiveSeries.rolling` /
+    `LivePartitionedSeries.rolling` / `LiveView.rolling` to accept
+    array form
+  - `live.reduce(mapping)`: ~20 LoC of sugar over the array form
+  - Tap sugar: ~10 LoC `LiveFusedRolling.tap(w, m)` adds an entry
+  - Single-window equivalence test: today's-shape produces
+    identical output to fused-with-one-entry
+  - Multi-window correctness tests: ~200 LoC
+  - Partitioned variant tests: ~100 LoC
+  - Bench `perf-fused-rolling.mjs`: V6-vs-V7-style cost diff plus
+    buffer-as-window storage footprint
 
-  **Why deferred:** the savings only matter at extreme scale (≥10k
-  partitions or kHz/partition). The naive "two rollings" pattern is
-  good enough for the ≥99% telemetry/observability dashboard regime.
-  Pondjs never claimed parity with custom aggregators at extreme
-  scale; v0.13's writeup honesty section says exactly this. Revisit
-  when a **second user** lands on the same wall — that's the design
-  signal worth more than one user's data.
+  Total ~800-1000 LoC + tests + bench. Medium PR; not multi-week.
 
-  **Second signal logged (2026-05-04).** gRPC experiment V7's
-  numbers (all-pond pipeline using `samples()`) regressed ~19%
-  throughput vs V6 at saturation; v0.14.3's allocation fix
-  (`samples.rollingState()`) closes the per-event leak but the
-  architectural gap remains — V7 routes events through two full
-  `LiveRollingAggregation` pipelines where V6 had one rolling
-  plus a passive `array.push` listener. The gap is the
-  "shared-buffer rolling" shape that `tap` would solve. Same
-  user, same experiment — counts as 1.5 signals, not 2. Still
-  parked. The third signal (or a different user) ships it.
+  **Open design questions to settle pre-ship.**
+  - **Per-window triggers — settled (record/array dual API).** The
+    record form `{ '1m': m1, '200ms': m2 }` shares one top-level
+    trigger; the array form `[{ window, output, trigger? }, ...]`
+    allows per-window triggers. Common case (single trigger) reads
+    cleanly as record; dashboard case (different cadences) drops
+    to array. Single internal canonical representation; record is
+    sugar.
+
+  - **Output shape — settled.** Mirrors input shape:
+    `live.rolling({ '1m': m1, '200ms': m2 })` returns a record
+    keyed by window strings; `live.rolling([{w1, m1}, {w2, m2}])`
+    returns an array in declared order. Single-window equivalence
+    holds either way (length-1 record / array → same accumulator
+    shape as today's `live.rolling(window, mapping)`).
+
+  - **Partitioned variant.** `live.partitionBy('host').rolling(
+[...], opts)` — one shared deque per partition, all windows
+    over that partition's deque. At 1k partitions × 2 windows,
+    fused saves the 1k duplicated deques V7 builds today.
+    Per-partition partitioned variant uses the existing
+    `LivePartitionedSyncRolling` machinery; the changes are in
+    how it stores/iterates per-partition state to support multiple
+    windows.
+
+  - **Path A boundary case.** When `longest_window ≤ retention`
+    changes at runtime (e.g., user mutates retention), Path A
+    detects and degrades to Path B. Document explicitly. Most
+    users won't change retention at runtime; the case worth
+    handling is the construct-time choice.
+
+  - **Custom-function reducers.** Same per-window O(W) snapshot
+    cost as today's rolling; doc-note unchanged. Fused doesn't
+    make this cheaper — the per-event work is shared, but the
+    snapshot cost is per-window-per-emit and that's already what
+    custom functions cost today.
+
+  - **`window: 'buffer'` sentinel resolution.** When does it
+    resolve — construct time (capture retention then; reject if
+    retention later changes), or runtime (re-resolve every emit
+    against current retention)? Lean construct-time + reject-on-
+    change for predictability. If a user genuinely needs dynamic
+    retention coupling, they declare `window: live.retention()`
+    explicitly and we expose a method for it.
+
+  **Why ship.** Two distinct user signals (gRPC profile-diff +
+  buffer-as-window metric-agent call site), one clean primitive
+  design that covers both, fits the existing API surface as
+  `rolling`'s array overload, shipping unblocks both the buffer-
+  as-window release AND the gRPC saturation regime. The earlier
+  parking rationale ("wait for second user") is satisfied by the
+  two signals being independent — different agent, different
+  experiment context, same primitive answers both.
 
   Reference workaround in the meantime: two separate `rolling()`
-  calls off the same source, both with the same trigger. Document
-  as the "if you find yourself wanting this" footnote in the
-  eventual `tap` RFC.
+  calls off the same source, both with the same trigger.
+  Documented in the eventual fused-rolling RFC as the "before-
+  v0.X" pattern.
 
 - **Reducer batching — deferred per the V4 bench.** The gRPC
   experiment's V4 profile (after v0.14.0 shipped) confirms
@@ -1926,21 +2067,39 @@ useLiveQuery(timings, () => rolling.value());
   path; if no, leave as-is. Independent of the bigger reducer-
   batching question.
 
-- **Live rolling tactical fixes (logged 2026-05-04, not yet
-  scheduled).** Two operational items surfaced in Codex's blind
-  multi-window review against the live-rolling source. Independent
-  of any larger redesign — both are local fixes inside
-  `LiveRollingAggregation`.
-  - **`Array.shift()` eviction at `LiveRollingAggregation.ts:447`.**
-    `#removeFirst()` evicts via `this.#entries.shift()`. V8 amortizes
-    `shift` to O(1) on long arrays through a hidden offset, but the
-    constant matters at 500k events/s — and the optimization isn't
-    guaranteed across engines. A plain head-index pointer (`#head`)
-    with periodic compaction, or a true ring buffer when window
-    capacity is known a priori (count-window case), is the right
-    shape. Bench against the V4-bench harness to confirm a win
-    before shipping; small enough that it doesn't earn a design
-    pass, just a measurement and a PR.
+- **Live rolling tactical fixes (logged 2026-05-04, expanded
+  2026-05-05, not yet scheduled).** Operational items surfaced in
+  Codex's blind multi-window review and the gRPC profile-diff
+  (PR #19). Independent of any larger redesign — local fixes
+  inside the live-rolling classes.
+  - **`Array.shift()` eviction at three call sites.** Same
+    pattern in two classes:
+    - `LiveRollingAggregation.ts:447` (`#removeFirst()`)
+    - `LivePartitionedSyncRolling.ts:323` (`#evictPartition`,
+      time-window branch)
+    - `LivePartitionedSyncRolling.ts:331` (`#evictPartition`,
+      count-window branch)
+
+    All three call `this.#entries.shift()` (or
+    `state.entries.shift()`) in a while loop. V8 amortizes `shift`
+    to O(1) on long arrays through a hidden offset, but the
+    constant matters at 500k events/s — and the optimization
+    isn't guaranteed across engines. The gRPC profile-diff (PR #19)
+    flags `#evictPartition` at **8.8% self-time, NEW in V7's
+    top-25** — surprising for a per-tick cleanup path; the
+    `Array.shift` constant is the leading suspect.
+
+    A plain head-index pointer (`#head`) with periodic compaction,
+    or a true ring buffer when window capacity is known a priori
+    (count-window case), is the right shape. Same fix shipped
+    across all three sites; bench-then-ship against the V4-bench
+    harness to confirm a win. Small enough that it doesn't earn
+    a design pass — just a measurement and a PR.
+
+    Note: this fix is independent of fused multi-window rolling
+    (which would also reduce `#evictPartition` pressure by
+    eliminating the second rolling, but doesn't address the
+    underlying primitive cost). Land both; they compose.
 
   - **`history: false | RetentionPolicy` on live rolling outputs.**
     `LiveRollingAggregation.ts:403` does `this.#outputEvents.push`
@@ -2084,26 +2243,36 @@ useLiveQuery(timings, () => rolling.value());
   V7-vs-V6 gap on heap pressure even if it doesn't close the
   throughput gap.
 
-  **Suspect 2 (architectural cliff) is NOT chased in v0.14.3.**
-  Closing the V7-vs-V6 throughput gap would need either a
-  "lite" rolling primitive (no trigger dispatch, no subscriber
-  fan-out) or shared-buffer storage via the parked `tap()`
-  primitive. At the kHz × 1k-partition saturation regime, V6's
+  **Suspect 2 (architectural cliff) is NOT chased in v0.14.3 —
+  shipping addressed by fused-rolling.** Closing the V7-vs-V6
+  throughput gap needs shared-buffer storage with single-ingest
+  dispatch. At the kHz × 1k-partition saturation regime, V6's
   hybrid (one pond rolling for stats + manual deque for raw
   values) is genuinely the right architectural shape; pond's
   `samples` is for typical loads where the per-event pipeline
-  overhead is invisible. The honest framing for the writeup:
-  v0.14.3 closes the leak; the architectural cliff is
-  inherent — pond convenience pays a tax that custom code
-  doesn't, and at saturation that tax is visible. Fine outcome.
+  overhead is invisible. v0.14.3 closes the per-event allocation
+  leak; the architectural cliff needed a primitive design.
 
-  **Second signal toward `tap()`.** The V7 numbers are the
-  second data point (after the gRPC HostAggregator walkback)
-  pointing at shared-buffer rolling as the right primitive
-  for the saturation regime. Still deferred — see the `tap()`
-  entry above — but the design pressure is real enough that
-  the next user landing on the same wall should be the
-  trigger to ship.
+  **Profile-grade isolation (PR #19, 2026-05-05).** The gRPC
+  agent's V6→V7 profile-diff confirmed the cost story is doubled
+  per-event hop, not the `samples` reducer (which is fine, ~2.3%
+  self-time). Inclusive-time deltas:
+  - `LivePartitionedSeries.#routeEvent` 15.0% → 28.9% (+13.9 pp)
+  - `LivePartitionedSyncRolling.ingest` 11.5% → 25.0% (+13.5 pp)
+  - `LiveSeries._pushTrustedEvents` 13.1% → 27.4% (+14.3 pp)
+
+  Every per-event pond hop roughly doubled. Single-ingest fused
+  rolling closes this directly.
+
+  **Two signals merged into the fused-rolling entry.** The V7
+  profile-diff plus the buffer-as-window persona's metric-agent
+  call site are independent signals (different agents, different
+  experiments) pointing at the same primitive. Combined design
+  is captured in the **Fused multi-window rolling + buffer-as-
+  window unification** entry above. The earlier `tap()` framing
+  (hierarchical parent/child) is preserved as compositional sugar
+  on top; fused-rolling is the lower-level primitive that ships
+  first.
 
 - **CI safety-net widening — deferred.** v0.14.1 review surfaced
   that `npm run verify`'s `test:type` step doesn't run `tsc -p
