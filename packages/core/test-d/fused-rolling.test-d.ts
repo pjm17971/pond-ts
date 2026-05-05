@@ -156,3 +156,63 @@ const fC = partitioned.rolling(
 );
 declare const _eC: ReturnType<typeof fC.at>;
 void _eC;
+
+// ── partitionBy narrows the partition column literal ─────────
+//
+// Pinned 2026-05-05 after the gRPC V8 migration surfaced this
+// (pond-grpc-experiment#22). Pre-fix, callers needed the
+// workaround `partitionBy<'host'>('host')` because the column
+// literal wasn't captured in the return generic. Post-fix, the
+// `by` argument's literal type narrows automatically and
+// `event.get('host')` resolves through the schema.
+
+const sampleEvent = fC.at(0);
+if (sampleEvent) {
+  // host narrows to string (the column kind in `numericSchema`).
+  const h: string | undefined = sampleEvent.get('host');
+  // value columns narrow per their reducer.
+  const a: number | undefined = sampleEvent.get('cpu_avg');
+  const m: number | undefined = sampleEvent.get('cpu_max');
+  void h;
+  void a;
+  void m;
+}
+
+// Threading through chained pipelines:
+//   partitionBy('host').fill(...).rolling({...}, { trigger })
+// — the fused-partitioned schema must still narrow the partition
+// column from the root's `by` argument, even after a chain hop.
+const chained = live
+  .partitionBy('host')
+  .fill({ cpu: 'hold' })
+  .rolling(
+    { '1m': { cpu_avg: { from: 'cpu', using: 'avg' } } },
+    { trigger: Trigger.every('1s') },
+  );
+const chainedSample = chained.at(0);
+if (chainedSample) {
+  const h: string | undefined = chainedSample.get('host');
+  const a: number | undefined = chainedSample.get('cpu_avg');
+  void h;
+  void a;
+}
+
+// V8 workaround back-compat (Layer 2 caught this on PR #117):
+//   partitionBy<'host'>('host').rolling({...}, { trigger })
+// — the explicit-arg form was the gRPC V8 workaround for the
+// pre-v0.15.1 narrowing gap. Type-parameter order is
+// `<ByCol, K>` so the explicit `'host'` binds to `ByCol`,
+// preserving narrowing on existing callers.
+const v8Workaround = live
+  .partitionBy<'host'>('host')
+  .rolling(
+    { '1m': { cpu_avg: { from: 'cpu', using: 'avg' } } },
+    { trigger: Trigger.every('1s') },
+  );
+const v8Sample = v8Workaround.at(0);
+if (v8Sample) {
+  const h: string | undefined = v8Sample.get('host');
+  const a: number | undefined = v8Sample.get('cpu_avg');
+  void h;
+  void a;
+}

@@ -7,9 +7,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.15.1...HEAD
 
 ## [Unreleased]
+
+## [0.15.1] — 2026-05-05
+
+Type-narrowing follow-up to v0.15.0. The fused partitioned-rolling
+typing chain exposed a pre-existing pond limitation where
+`partitionBy('host')` widened the partition-column type instead of
+narrowing it to the literal `'host'`. The gRPC experiment's V8
+migration ([pond-grpc-experiment#22](https://github.com/pjm17971/pond-grpc-experiment/pull/22))
+worked around it as `partitionBy<'host'>('host')` — clobbering the
+value-type parameter `K` to fill the column-name slot. v0.15.1
+captures the column literal directly so the workaround can drop.
+
+### Fixed
+
+- **`partitionBy` narrows the partition column literal.** The
+  `by` argument's literal type now flows into a new `ByCol`
+  generic on `LivePartitionedSeries<S, K, ByCol>` and
+  `LivePartitionedView<SBase, R, K, ByCol>`. Threaded through every
+  per-partition method (`fill`, `diff`, `rate`, `pctChange`,
+  `cumulative`, `apply`, the rolling overloads). The fused
+  partitioned-rolling overload's
+  `FusedPartitionedRollingSchema<S, ByCol, FM>` now resolves
+  correctly without the `<'host'>` workaround:
+
+  ```ts
+  // Before v0.15.1: needed the explicit type arg to narrow
+  // host through the fused-rolling schema chain.
+  live.partitionBy<'host'>('host').rolling({ ... }, { trigger });
+
+  // v0.15.1+: the literal 'host' is captured automatically.
+  live.partitionBy('host').rolling({ ... }, { trigger });
+  // Output schema includes `host` narrowed to its column kind;
+  // event.get('host') resolves correctly.
+  ```
+
+  Existing V8 callers using the `partitionBy<'host'>('host')`
+  workaround continue to narrow correctly. Type-parameter order
+  on `partitionBy` is `<ByCol, K>` (column name first, value type
+  second) so the explicit `<'host'>` binds the literal to `ByCol`
+  — exactly what the workaround intended pre-v0.15.1. The
+  workaround can now drop because automatic inference does the
+  same job, but it doesn't have to.
+
+### Type system
+
+- `LivePartitionedSeries<S, K, ByCol>` — third generic added with
+  default `keyof EventDataForSchema<S> & string`. Backwards-
+  compatible: existing references to `LivePartitionedSeries<S, K>`
+  and `LivePartitionedSeries<S>` resolve to the upper-bound default.
+- `LivePartitionedView<SBase, R, K, ByCol>` — same shape; `ByCol`
+  threaded through every chain hop so partition-column literals
+  survive `partitionBy('host').fill(...).rolling({...}, opts)`.
+
+### Test surface
+
+`test-d/fused-rolling.test-d.ts` extended to pin the narrowing at
+both the root and chained levels:
+
+```ts
+const fC = live.partitionBy('host').rolling({ ... }, { trigger });
+sampleEvent.get('host'); // narrows to string | undefined
+
+const chained = live.partitionBy('host').fill({ cpu: 'hold' })
+  .rolling({ '1m': { cpu_avg: ... } }, { trigger });
+chainedSample.get('host'); // narrows correctly through the chain
+```
+
+All 1115 + 55 runtime tests still pass; type-d clean.
+
+[0.15.1]: https://github.com/pjm17971/pond-ts/compare/v0.15.0...v0.15.1
 
 ## [0.15.0] — 2026-05-05
 

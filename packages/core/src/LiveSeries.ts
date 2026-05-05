@@ -702,11 +702,30 @@ export class LiveSeries<S extends SeriesSchema> {
    *
    * See {@link LivePartitionedSeries}.
    */
-  partitionBy<K extends string = string>(
-    by: keyof EventDataForSchema<S> & string,
+  /**
+   * Type-parameter order is `<ByCol, K>` (column name first, then
+   * partition value type) so the explicit-arg form
+   * `partitionBy<'host'>('host')` binds the literal to `ByCol`.
+   * That preserves backwards compatibility with the v0.15.0 V8
+   * workaround pattern (which used the explicit-arg form to force
+   * column-literal narrowing through the fused-rolling typing
+   * chain) — and matches what callers usually want when they reach
+   * for the explicit form: declare the partition column.
+   *
+   * `K` (the partition VALUE type) typically narrows from
+   * `groups`; an explicit `<ByCol, K>` second arg is rare. If a
+   * caller wants an explicit value union, the natural form is
+   * `partitionBy('host', { groups: [...] as const })`.
+   */
+  partitionBy<
+    ByCol extends keyof EventDataForSchema<S> & string =
+      keyof EventDataForSchema<S> & string,
+    K extends string = string,
+  >(
+    by: ByCol,
     options?: LivePartitionedOptions<K>,
-  ): LivePartitionedSeries<S, K> {
-    return new LivePartitionedSeries<S, K>(this, by, options);
+  ): LivePartitionedSeries<S, K, ByCol> {
+    return new LivePartitionedSeries<S, K, ByCol>(this, by, options);
   }
 
   on(type: 'event', fn: EventListener<S>): () => void;

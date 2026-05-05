@@ -125,6 +125,8 @@ function partitionKey(
 export class LivePartitionedSeries<
   S extends SeriesSchema,
   K extends string = string,
+  ByCol extends keyof EventDataForSchema<S> & string =
+    keyof EventDataForSchema<S> & string,
 > {
   // NOTE: `LivePartitionedSeries` is intentionally NOT a `LiveSource` —
   // it has no `on()` method and does not emit events directly.
@@ -133,9 +135,17 @@ export class LivePartitionedSeries<
   // sources). We deliberately do not declare `EMITS_EVICT` so that
   // `LiveView`'s duck-typed eviction subscription (`EMITS_EVICT in
   // source`) doesn't trip on this class.
+  //
+  // `ByCol` (added 2026-05-05) is the narrowed literal type of the
+  // partition column's name (e.g. `'host'`). Captured from the `by`
+  // argument at construction so the partitioned-rolling fused
+  // overload's `FusedPartitionedRollingSchema<S, ByCol, FM>` resolves
+  // without forcing callers to write `partitionBy<'host'>('host')`.
+  // Default is the union of all valid column names — the natural
+  // upper bound when the literal can't be inferred.
   readonly name: string;
   readonly schema: S;
-  readonly by: keyof EventDataForSchema<S> & string;
+  readonly by: ByCol;
   readonly groups?: ReadonlyArray<K>;
 
   readonly #partitions: Map<K, LiveSeries<S>>;
@@ -150,7 +160,7 @@ export class LivePartitionedSeries<
 
   constructor(
     source: LiveSource<S>,
-    by: keyof EventDataForSchema<S> & string,
+    by: ByCol,
     options: LivePartitionedOptions<K> = {},
   ) {
     this.name = source.name;
@@ -407,7 +417,7 @@ export class LivePartitionedSeries<
 
   // ─── Chainable typed sugar (returns LivePartitionedView) ──────
   //
-  // Each sugar method returns a `LivePartitionedView<NewSchema, K>`
+  // Each sugar method returns a `LivePartitionedView<NewSchema, K, ByCol>`
   // — a chained view that composes the operator factory with any
   // future chain steps. Use these when you want the full
   // operator chain at the type level:
@@ -421,8 +431,8 @@ export class LivePartitionedSeries<
   fill(
     strategy: LiveFillStrategy | LiveFillMapping<S>,
     options?: { limit?: number },
-  ): LivePartitionedView<S, S, K> {
-    return new LivePartitionedView<S, S, K>(this, (sub) =>
+  ): LivePartitionedView<S, S, K, ByCol> {
+    return new LivePartitionedView<S, S, K, ByCol>(this, (sub) =>
       makeFillView(sub, strategy, options),
     );
   }
@@ -431,8 +441,8 @@ export class LivePartitionedSeries<
   diff<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
-    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol>(
       this,
       (sub) =>
         makeDiffView(sub, 'diff', columns, options) as unknown as LiveSource<
@@ -445,8 +455,8 @@ export class LivePartitionedSeries<
   rate<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
-    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol>(
       this,
       (sub) =>
         makeDiffView(sub, 'rate', columns, options) as unknown as LiveSource<
@@ -459,8 +469,8 @@ export class LivePartitionedSeries<
   pctChange<const Target extends NumericColumnNameForSchema<S>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<S, DiffSchema<S, Target>, K> {
-    return new LivePartitionedView<S, DiffSchema<S, Target>, K>(
+  ): LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol> {
+    return new LivePartitionedView<S, DiffSchema<S, Target>, K, ByCol>(
       this,
       (sub) =>
         makeDiffView(
@@ -480,8 +490,8 @@ export class LivePartitionedSeries<
       | 'min'
       | 'count'
       | ((acc: number, value: number) => number);
-  }): LivePartitionedView<S, DiffSchema<S, Targets>, K> {
-    return new LivePartitionedView<S, DiffSchema<S, Targets>, K>(
+  }): LivePartitionedView<S, DiffSchema<S, Targets>, K, ByCol> {
+    return new LivePartitionedView<S, DiffSchema<S, Targets>, K, ByCol>(
       this,
       (sub) =>
         makeCumulativeView(sub, spec) as unknown as LiveSource<
@@ -534,12 +544,12 @@ export class LivePartitionedSeries<
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
-  ): LivePartitionedView<S, RollingSchema<S, M>, K>;
+  ): LivePartitionedView<S, RollingSchema<S, M>, K, ByCol>;
   rolling<const M extends AggregateOutputMap<S>>(
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
-  ): LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>;
+  ): LivePartitionedView<S, RollingOutputMapSchema<S, M>, K, ByCol>;
   rolling<const M extends AggregateMap<S>>(
     window: RollingWindow,
     mapping: M,
@@ -559,13 +569,15 @@ export class LivePartitionedSeries<
     window: RollingWindow,
     mapping: M,
     options: LiveRollingOptions,
-  ): LivePartitionedView<S, RollingSchema<S, M>, K> | LiveSource<SeriesSchema>;
+  ):
+    | LivePartitionedView<S, RollingSchema<S, M>, K, ByCol>
+    | LiveSource<SeriesSchema>;
   rolling<const M extends AggregateOutputMap<S>>(
     window: RollingWindow,
     mapping: M,
     options: LiveRollingOptions,
   ):
-    | LivePartitionedView<S, RollingOutputMapSchema<S, M>, K>
+    | LivePartitionedView<S, RollingOutputMapSchema<S, M>, K, ByCol>
     | LiveSource<SeriesSchema>;
   /**
    * Keyed-form fused multi-window partitioned rolling. Maintains N
@@ -589,7 +601,7 @@ export class LivePartitionedSeries<
   rolling<const FM extends FusedMapping<S>>(
     fusedMapping: FM,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
-  ): LiveSource<FusedPartitionedRollingSchema<S, K & string, FM>>;
+  ): LiveSource<FusedPartitionedRollingSchema<S, ByCol, FM>>;
   rolling(
     arg1: RollingWindow | FusedMapping<S>,
     mappingOrOptions?:
@@ -695,7 +707,7 @@ export class LivePartitionedSeries<
     }
 
     // Default: per-partition rolling with per-partition emission.
-    return new LivePartitionedView<S, SeriesSchema, K>(
+    return new LivePartitionedView<S, SeriesSchema, K, ByCol>(
       this,
       (sub) =>
         new LiveRollingAggregation(
@@ -923,8 +935,8 @@ export class LivePartitionedSeries<
  * ```ts
  * const cpuSmoothed = live
  *   .partitionBy('host')
- *   .fill({ cpu: 'hold' })       // → LivePartitionedView<S, S, K>
- *   .rolling('1m', { cpu: 'avg' }) // → LivePartitionedView<S, R, K>
+ *   .fill({ cpu: 'hold' })       // → LivePartitionedView<S, S, K, ByCol>
+ *   .rolling('1m', { cpu: 'avg' }) // → LivePartitionedView<S, R, K, ByCol>
  *   .collect();                    // → LiveSeries<R>
  * ```
  *
@@ -933,13 +945,19 @@ export class LivePartitionedSeries<
  *   input type is correct).
  * @typeParam R - schema of the current chained output.
  * @typeParam K - partition key type.
+ * @typeParam ByCol - partition column name (literal). Threaded
+ *   through from the root `LivePartitionedSeries` so chained-rolling
+ *   typing chains (e.g. `partitionBy('host').fill(...).rolling({...})`)
+ *   resolve `FusedPartitionedRollingSchema<R, ByCol, FM>` correctly.
  */
 export class LivePartitionedView<
   SBase extends SeriesSchema,
   R extends SeriesSchema,
   K extends string = string,
+  ByCol extends keyof EventDataForSchema<SBase> & string =
+    keyof EventDataForSchema<SBase> & string,
 > {
-  readonly #root: LivePartitionedSeries<SBase, K>;
+  readonly #root: LivePartitionedSeries<SBase, K, ByCol>;
   readonly #factory: (sub: LiveSeries<SBase>) => LiveSource<R>;
 
   /**
@@ -950,7 +968,7 @@ export class LivePartitionedView<
 
   /** @internal — used by sugar methods to chain. */
   constructor(
-    root: LivePartitionedSeries<SBase, K>,
+    root: LivePartitionedSeries<SBase, K, ByCol>,
     factory: (sub: LiveSeries<SBase>) => LiveSource<R>,
   ) {
     this.#root = root;
@@ -1029,9 +1047,9 @@ export class LivePartitionedView<
   fill(
     strategy: LiveFillStrategy | LiveFillMapping<R>,
     options?: { limit?: number },
-  ): LivePartitionedView<SBase, R, K> {
+  ): LivePartitionedView<SBase, R, K, ByCol> {
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, R, K>(this.#root, (sub) =>
+    return new LivePartitionedView<SBase, R, K, ByCol>(this.#root, (sub) =>
       makeFillView(prev(sub), strategy, options),
     );
   }
@@ -1039,9 +1057,9 @@ export class LivePartitionedView<
   diff<const Target extends NumericColumnNameForSchema<R>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol> {
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol>(
       this.#root,
       (sub) =>
         makeDiffView(
@@ -1056,9 +1074,9 @@ export class LivePartitionedView<
   rate<const Target extends NumericColumnNameForSchema<R>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol> {
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol>(
       this.#root,
       (sub) =>
         makeDiffView(
@@ -1073,9 +1091,9 @@ export class LivePartitionedView<
   pctChange<const Target extends NumericColumnNameForSchema<R>>(
     columns: Target | readonly Target[],
     options?: { drop?: boolean },
-  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K> {
+  ): LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol> {
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K>(
+    return new LivePartitionedView<SBase, DiffSchema<R, Target>, K, ByCol>(
       this.#root,
       (sub) =>
         makeDiffView(
@@ -1094,9 +1112,9 @@ export class LivePartitionedView<
       | 'min'
       | 'count'
       | ((acc: number, value: number) => number);
-  }): LivePartitionedView<SBase, DiffSchema<R, Targets>, K> {
+  }): LivePartitionedView<SBase, DiffSchema<R, Targets>, K, ByCol> {
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, DiffSchema<R, Targets>, K>(
+    return new LivePartitionedView<SBase, DiffSchema<R, Targets>, K, ByCol>(
       this.#root,
       (sub) =>
         makeCumulativeView(prev(sub), spec) as unknown as LiveSource<
@@ -1115,12 +1133,12 @@ export class LivePartitionedView<
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
-  ): LivePartitionedView<SBase, RollingSchema<R, M>, K>;
+  ): LivePartitionedView<SBase, RollingSchema<R, M>, K, ByCol>;
   rolling<const M extends AggregateOutputMap<R>>(
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions & { trigger?: { kind: 'event' | 'count' } },
-  ): LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>;
+  ): LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K, ByCol>;
   rolling<const M extends AggregateMap<R>>(
     window: RollingWindow,
     mapping: M,
@@ -1139,14 +1157,14 @@ export class LivePartitionedView<
     mapping: M,
     options: LiveRollingOptions,
   ):
-    | LivePartitionedView<SBase, RollingSchema<R, M>, K>
+    | LivePartitionedView<SBase, RollingSchema<R, M>, K, ByCol>
     | LiveSource<SeriesSchema>;
   rolling<const M extends AggregateOutputMap<R>>(
     window: RollingWindow,
     mapping: M,
     options: LiveRollingOptions,
   ):
-    | LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K>
+    | LivePartitionedView<SBase, RollingOutputMapSchema<R, M>, K, ByCol>
     | LiveSource<SeriesSchema>;
   /**
    * Keyed-form fused multi-window rolling on a chained
@@ -1161,7 +1179,7 @@ export class LivePartitionedView<
   rolling<const FM extends FusedMapping<R>>(
     fusedMapping: FM,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
-  ): LiveSource<FusedPartitionedRollingSchema<R, K & string, FM>>;
+  ): LiveSource<FusedPartitionedRollingSchema<R, ByCol, FM>>;
   rolling(
     arg1: RollingWindow | FusedMapping<R>,
     mappingOrOptions?:
@@ -1265,7 +1283,7 @@ export class LivePartitionedView<
     }
 
     const prev = this.#factory;
-    return new LivePartitionedView<SBase, SeriesSchema, K>(
+    return new LivePartitionedView<SBase, SeriesSchema, K, ByCol>(
       this.#root,
       (sub) =>
         new LiveRollingAggregation(
