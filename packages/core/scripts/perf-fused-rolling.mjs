@@ -268,4 +268,83 @@ const results = [];
   );
 }
 
+// ── 4. Scaling — N rollings vs fused-N-windows ────────────────
+// The architectural argument: every per-event pond hop runs ONCE
+// in fused vs N times in N separate rollings. So the win should
+// compound at N=3, 4, 5 even before the doubled-deque heap effect
+// stacks. These scenarios make that scaling visible.
+//
+// Each rolling/window uses a different reducer over the same
+// source column — `avg`, `stdev`, `max`, `min`, `count`. Different
+// windows for diversity.
+
+const reducerKinds = ['avg', 'stdev', 'max', 'min', 'count'];
+const windowDurations = ['1m', '30s', '10s', '5s', '1s'];
+
+function buildSeparate(live, n, trig) {
+  const accs = [];
+  for (let i = 0; i < n; i++) {
+    accs.push(
+      live
+        .partitionBy('host')
+        .rolling(
+          windowDurations[i],
+          {
+            [`cpu_${reducerKinds[i]}`]: { from: 'cpu', using: reducerKinds[i] },
+          },
+          { trigger: trig },
+        ),
+    );
+  }
+  return accs;
+}
+
+function buildFused(live, n, trig) {
+  const mapping = {};
+  for (let i = 0; i < n; i++) {
+    mapping[windowDurations[i]] = {
+      [`cpu_${reducerKinds[i]}`]: { from: 'cpu', using: reducerKinds[i] },
+    };
+  }
+  return live.partitionBy('host').rolling(mapping, { trigger: trig });
+}
+
+{
+  const N = 100_000;
+  const hosts = 100;
+  const trig = Trigger.every('100ms');
+
+  for (const n of [2, 3, 4, 5]) {
+    results.push(
+      benchmark(
+        `scaling — ${n} separate rollings — ${N} events × ${hosts} hosts`,
+        () => {
+          const live = new LiveSeries({ name: 'cpu', schema });
+          const accs = buildSeparate(live, n, trig);
+          void accs;
+          for (let i = 0; i < N; i++) {
+            live.push([i, i % 100, `host-${i % hosts}`]);
+          }
+        },
+        3,
+      ),
+    );
+
+    results.push(
+      benchmark(
+        `scaling — fused ${n}-window — ${N} events × ${hosts} hosts`,
+        () => {
+          const live = new LiveSeries({ name: 'cpu', schema });
+          const r = buildFused(live, n, trig);
+          void r;
+          for (let i = 0; i < N; i++) {
+            live.push([i, i % 100, `host-${i % hosts}`]);
+          }
+        },
+        3,
+      ),
+    );
+  }
+}
+
 console.log(JSON.stringify(results, null, 2));

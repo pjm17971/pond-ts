@@ -88,32 +88,54 @@ point at one primitive; both shipped together. RFC #20 in
 ### Performance
 
 `packages/core/scripts/perf-fused-rolling.mjs` — bench against
-gRPC RFC #20 acceptance criteria. Headline numbers (median of 3-5
+gRPC RFC #20 acceptance criteria. Headline numbers (median of 3
 runs, `node --expose-gc`):
 
 ```
-Partitioned, 100k events × 100 hosts:
+Partitioned, 100k events × 100 hosts (the gRPC use case):
                                      wall (ms)    heap (MB)
-  single rolling baseline               91.82       69.47
-  two separate rollings (V7 shape)     148.69      101.68
-  fused two-window (V8 shape)          107.23       72.22
+  single rolling baseline                95.20       74.33
+  two separate rollings (V7 shape)      141.12      101.71
+  fused two-window (V8 shape)           112.36       68.46
 
-Fused vs V7 shape:    -27.9% wall,  -29.0% heap
-Fused vs baseline:    +16.8% wall,   +4.0% heap
+Fused vs V7 shape:    -20.4% wall,  -32.7% heap
+Fused vs baseline:    +18.0% wall,   -7.9% heap
 
 Partitioned, 100k events × 1000 hosts (saturation):
                                      wall (ms)    heap (MB)
-  two separate rollings (V7 shape)     662.72      556.77
-  fused two-window (V8 shape)          452.24      309.27
+  two separate rollings (V7 shape)      700.35      556.56
+  fused two-window (V8 shape)           446.21      309.25
 
-Fused vs V7 shape:    -31.8% wall,  -44.5% heap
+Fused vs V7 shape:    -36.3% wall,  -44.4% heap
 ```
 
-The architectural cliff is closed. Fused is a small constant
-overhead above single-rolling (extra reducer state for the second
-window) but eats most of the doubled-pipeline tax. Heap delta vs
-V7 shape is dramatic at saturation — the second rolling's
-duplicate per-partition deques + reducer state are gone.
+**Scaling beyond two windows — the architectural argument
+verified.** Every per-event pond hop runs ONCE in fused vs N times
+in N separate rollings. The bench scales N from 2 to 5 windows
+over the same 100k-events × 100-hosts source:
+
+```
+                Separate (ms)   Fused (ms)   Wall delta
+  N = 2            152.91         102.91       -32.7%
+  N = 3            186.63          79.89       -57.2%
+  N = 4            245.42         107.51       -56.2%
+  N = 5            279.79         118.90       -57.5%
+
+                Separate (MB)   Fused (MB)   Heap delta
+  N = 2            108.13          72.20       -33.2%
+  N = 3             93.30          43.08       -53.8%
+  N = 4            113.69          47.19       -58.5%
+  N = 5            137.17          47.12       -65.6%
+```
+
+Fused stays roughly constant (~100ms) across N=2..5; separate
+scales linearly. At N=5: **2.4× faster wall, 34% of the heap.**
+
+The architectural cliff is closed and the win compounds with N.
+Fused rolling's per-event cost is O(1) in the number of windows
+for pipeline overhead — only O(N) for the unavoidable per-window
+reducer-state updates (which separate also pays). Heap is
+dominated by the saved per-rolling deque + per-partition state.
 
 ### Notes on what this does NOT include
 
