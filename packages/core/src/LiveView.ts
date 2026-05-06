@@ -6,6 +6,7 @@ import {
   type RollingWindow,
 } from './LiveRollingAggregation.js';
 import { LiveFusedRolling } from './LiveFusedRolling.js';
+import { LiveReduce } from './LiveReduce.js';
 import { TimeSeries } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
 import {
@@ -309,6 +310,25 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
       mappingOrOptions as AggregateMap<S> | AggregateOutputMap<S>,
       options,
     );
+  }
+
+  /**
+   * Streaming reduce over the view's current buffer. See
+   * {@link LiveSeries.reduce} for the full surface.
+   */
+  reduce<const M extends AggregateMap<S>>(
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S, RollingSchema<S, M>>;
+  reduce<const M extends AggregateOutputMap<S>>(
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S, RollingOutputMapSchema<S, M>>;
+  reduce(
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S> {
+    return new LiveReduce(this, mapping, options);
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(

@@ -54,6 +54,7 @@ import type {
   RollingOutputMapSchema,
 } from './types-aggregate.js';
 import { LiveFusedRolling } from './LiveFusedRolling.js';
+import { LiveReduce } from './LiveReduce.js';
 import type {
   FusedMapping,
   FusedRollingSchema,
@@ -636,6 +637,67 @@ export class LiveSeries<S extends SeriesSchema> {
       mappingOrOptions as AggregateMap<S> | AggregateOutputMap<S>,
       options,
     );
+  }
+
+  /**
+   * Streaming counterpart to batch `series.reduce(mapping)`.
+   * Reduces over the source's *current buffer* — every push
+   * adds to the reducer state, every retention eviction removes.
+   * The snapshot at any moment is the reduction over what's
+   * currently retained.
+   *
+   * Same mapping shape as `aggregate` / `rolling`; same trigger
+   * options as `rolling`. The "window" here is implicit — it's
+   * whatever the source retains. For an explicit time-bounded
+   * window, use `rolling(duration, mapping, opts)` instead.
+   *
+   * Returns a `LiveSource<Out>` whose schema is
+   * `[time, ...mappingColumns]`. Composes with the rest of the
+   * live operator surface.
+   */
+  reduce<const M extends AggregateMap<S>>(
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S, RollingSchema<S, M>>;
+  reduce<const M extends AggregateOutputMap<S>>(
+    mapping: M,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S, RollingOutputMapSchema<S, M>>;
+  reduce(
+    mapping: AggregateMap<S> | AggregateOutputMap<S>,
+    options?: LiveRollingOptions,
+  ): LiveReduce<S> {
+    return new LiveReduce(this, mapping, options);
+  }
+
+  /**
+   * Time span of the current buffer — `last.begin() - first.begin()`
+   * in milliseconds. Returns `0` if the buffer is empty or holds a
+   * single event. Useful for the "how much data am I holding right
+   * now?" question that buffer-as-window users ask.
+   *
+   * `O(1)` — reads first/last directly.
+   */
+  timeRange(): number {
+    if (this.#events.length < 2) return 0;
+    return (
+      this.#events[this.#events.length - 1]!.begin() - this.#events[0]!.begin()
+    );
+  }
+
+  /**
+   * Events per second over the current buffer. Computed as
+   * `length / (timeRange / 1000)`. Returns `0` if the buffer is
+   * empty or holds a single event (no time span to divide by).
+   *
+   * Mirrors {@link LiveView.eventRate}; available directly on
+   * `LiveSeries` for the buffer-as-window pattern where the user
+   * doesn't want a separate windowed view.
+   */
+  eventRate(): number {
+    const span = this.timeRange();
+    if (span === 0) return 0;
+    return (this.#events.length / span) * 1000;
   }
 
   diff<const Target extends NumericColumnNameForSchema<S>>(
