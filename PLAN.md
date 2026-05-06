@@ -2331,34 +2331,40 @@ sub.rolling(...))` or `partitionBy.collect()` — both do more
   Codex's blind multi-window review and the gRPC profile-diff
   (PR #19). Independent of any larger redesign — local fixes
   inside the live-rolling classes.
-  - **`Array.shift()` eviction at three call sites.** Same
-    pattern in two classes:
-    - `LiveRollingAggregation.ts:447` (`#removeFirst()`)
-    - `LivePartitionedSyncRolling.ts:323` (`#evictPartition`,
-      time-window branch)
-    - `LivePartitionedSyncRolling.ts:331` (`#evictPartition`,
-      count-window branch)
+  - **`Array.shift()` eviction — SHIPPED v0.15.2 (2026-05-06).**
+    The gRPC experiment's step 6
+    (pond-grpc-experiment#26) escalated this from "tactical
+    follow-up" to "shipping blocker" — they hit a 4× throughput
+    regression (88k/s → 21k/s) when adding a non-partitioned
+    `live.rolling({...}, { trigger })` next to the partitioned
+    per-host one. The cliff is the same `Array.shift()` cost,
+    just exposed by the firehose-rolling shape instead of the
+    multi-second-window-many-evictions shape PLAN originally
+    expected.
 
-    All three call `this.#entries.shift()` (or
-    `state.entries.shift()`) in a while loop. V8 amortizes `shift`
-    to O(1) on long arrays through a hidden offset, but the
-    constant matters at 500k events/s — and the optimization
-    isn't guaranteed across engines. The gRPC profile-diff (PR #19)
-    flags `#evictPartition` at **8.8% self-time, NEW in V7's
-    top-25** — surprising for a per-tick cleanup path; the
-    `Array.shift` constant is the leading suspect.
+    All four call sites converted to the head-index pointer
+    pattern + periodic batched compaction:
+    - `LiveFusedRolling.#compactFront`
+    - `LivePartitionedFusedRolling.#compactPartitionFront`
+    - `LiveRollingAggregation.#removeFirst` / `#evict`
+    - `LivePartitionedSyncRolling.#evictPartition` (time + count
+      branches)
 
-    A plain head-index pointer (`#head`) with periodic compaction,
-    or a true ring buffer when window capacity is known a priori
-    (count-window case), is the right shape. Same fix shipped
-    across all three sites; bench-then-ship against the V4-bench
-    harness to confirm a win. Small enough that it doesn't earn
-    a design pass — just a measurement and a PR.
+    Per-event eviction is now O(1) amortized at all deque sizes.
+    Compact-batch threshold = 1024 stale entries (or half the
+    array, whichever comes first); above either threshold, the
+    deque splice-removes the dead prefix and resets the pointer.
 
-    Note: this fix is independent of fused multi-window rolling
-    (which would also reduce `#evictPartition` pressure by
-    eliminating the second rolling, but doesn't address the
-    underlying primitive cost). Land both; they compose.
+    Bench (`packages/core/scripts/perf-fused-rolling.mjs`):
+    worst-case shift pattern (50s window, 50k fill + 50k evict)
+    drops 1123ms → 53ms — **21× faster** at the cliff. Steady-
+    state deque without eviction is unchanged (V8's hidden-offset
+    optimization already handled that well; the cliff was
+    specific to large-deque + per-ingest-eviction).
+
+    The agent's manual-counter workaround in `aggregate.ts` can
+    now drop; non-partitioned `live.rolling` is viable at the
+    rates the experiment cares about.
 
   - **`history: false | RetentionPolicy` on live rolling outputs.**
     `LiveRollingAggregation.ts:403` does `this.#outputEvents.push`

@@ -64,6 +64,18 @@ type FusedEntry = {
 type EventListener = (event: any) => void;
 
 /**
+ * Threshold of stale-prefix entries above which the deque triggers
+ * a batched `splice` compaction. Picked at 1024 — large enough that
+ * the splice is amortized to O(1) per ingest at firehose rates,
+ * small enough that an inactive rolling doesn't sit on megabytes of
+ * dead-prefix memory after a burst. The other compaction guard
+ * (`frontIdx > entries.length / 2`) handles the case where a
+ * shorter rolling never accumulates 1024 stale entries but still
+ * spends most of the array on dead prefix.
+ */
+const COMPACT_BATCH_THRESHOLD = 1024;
+
+/**
  * Multi-window rolling that maintains N windows in one ingest pass
  * over a single shared deque. Replaces the workaround of multiple
  * separate `LiveRollingAggregation`s sharing the same source — the
@@ -102,8 +114,21 @@ export class LiveFusedRolling<
   readonly name: string;
   readonly schema: Out;
 
-  /** Shared deque sized by the longest declared window. */
+  /**
+   * Shared deque sized by the longest declared window. Eviction
+   * uses a head-index pointer (`#frontIdx`) instead of `Array.shift()`
+   * — at high event rates the deque can hold tens of thousands of
+   * entries and `shift()` is worst-case O(N). The pointer makes
+   * eviction O(1) per event; periodic batched compaction keeps the
+   * underlying array from growing without bound.
+   *
+   * **Live front == `#entries[#frontIdx]`**, never `#entries[0]`,
+   * once any compaction has run. Reads should go through
+   * {@link LiveFusedRolling.#getEntry} which translates absolute
+   * event indices into array positions correctly.
+   */
   readonly #entries: FusedEntry[];
+  #frontIdx: number;
   /** Per-window state, in declared order. */
   readonly #windows: WindowState[];
   /**
@@ -152,6 +177,7 @@ export class LiveFusedRolling<
     this.#countSinceLastEmit = 0;
     this.#nextIndex = 0;
     this.#entries = [];
+    this.#frontIdx = 0;
     this.#outputEvents = [];
     this.#onEvent = new Set();
 
@@ -291,13 +317,19 @@ export class LiveFusedRolling<
 
   /**
    * Number of events currently in window `w`'s reducer state.
-   * Equals `entries.length - (w.head - frontAbsIdx)` where
-   * `frontAbsIdx = entries[0].absIdx`. Used for minSamples gating.
+   * Equals `(tail - w.head)` where `tail` is the absolute index
+   * one past the last live entry. Used for minSamples gating.
+   *
+   * With the head-index pointer the live deque is the slice
+   * `entries[frontIdx..]`; absIdx of the leftmost live entry is
+   * `entries[frontIdx]?.absIdx`. The tail absIdx is
+   * `frontEntry.absIdx + (entries.length - frontIdx)`.
    */
   #windowSize(w: WindowState): number {
-    if (this.#entries.length === 0) return 0;
-    const frontAbsIdx = this.#entries[0]!.absIdx;
-    return this.#entries.length - (w.head - frontAbsIdx);
+    if (this.#frontIdx >= this.#entries.length) return 0;
+    const liveLen = this.#entries.length - this.#frontIdx;
+    const frontAbsIdx = this.#entries[this.#frontIdx]!.absIdx;
+    return liveLen - (w.head - frontAbsIdx);
   }
 
   #ingest(event: EventForSchema<S>): void {
@@ -348,14 +380,22 @@ export class LiveFusedRolling<
   /**
    * Translate an absolute event index to its current position in
    * the shared deque. Returns `undefined` if the entry has been
-   * compacted out of the front.
+   * compacted out of the front (absIdx < live front) or is past
+   * the tail (absIdx >= nextIndex).
+   *
+   * Live front is `entries[frontIdx]`, not `entries[0]` — once
+   * eviction has advanced the head, the underlying array still
+   * holds the old (logically-evicted) entries until periodic
+   * compaction splices them off.
    */
   #getEntry(absIdx: number): FusedEntry | undefined {
-    if (this.#entries.length === 0) return undefined;
-    const front = this.#entries[0]!.absIdx;
+    if (this.#frontIdx >= this.#entries.length) return undefined;
+    const front = this.#entries[this.#frontIdx]!.absIdx;
     const offset = absIdx - front;
-    if (offset < 0 || offset >= this.#entries.length) return undefined;
-    return this.#entries[offset];
+    if (offset < 0) return undefined;
+    const arrayIdx = this.#frontIdx + offset;
+    if (arrayIdx >= this.#entries.length) return undefined;
+    return this.#entries[arrayIdx];
   }
 
   /**
@@ -363,19 +403,40 @@ export class LiveFusedRolling<
    * is less than every window's head. The longest window's head
    * defines the leftmost-still-live cursor.
    *
-   * Uses `Array.shift()` for now (matches today's
-   * `LiveRollingAggregation`); the head-index-pointer ring-buffer
-   * optimization is queued as a separate tactical fix in PLAN.md.
+   * Uses a head-index pointer (`#frontIdx`) for O(1) per-event
+   * eviction — `Array.shift()` was O(N) on the array length, which
+   * at firehose rates (deque ≥ 10k entries) gave a quadratic per-
+   * second cost. Periodic batched compaction (every COMPACT_BATCH
+   * advanced entries, or once the live slice is < half the array)
+   * splices off the old prefix so the array doesn't grow without
+   * bound. The amortized cost stays O(1) per ingest.
    */
   #compactFront(): void {
-    if (this.#entries.length === 0) return;
+    if (this.#frontIdx >= this.#entries.length) return;
     let minHead = this.#windows[0]!.head;
     for (let i = 1; i < this.#windows.length; i++) {
       const h = this.#windows[i]!.head;
       if (h < minHead) minHead = h;
     }
-    while (this.#entries.length > 0 && this.#entries[0]!.absIdx < minHead) {
-      this.#entries.shift();
+    // Advance the front pointer past evicted entries. O(1) amortized
+    // per ingest because total advances across the rolling's life is
+    // bounded by total events ingested.
+    while (
+      this.#frontIdx < this.#entries.length &&
+      this.#entries[this.#frontIdx]!.absIdx < minHead
+    ) {
+      this.#frontIdx++;
+    }
+    // Periodic batched compaction: when the dead prefix exceeds
+    // either an absolute threshold or half the array, splice it off
+    // and reset the pointer. The threshold lets the array reuse
+    // its capacity instead of growing indefinitely.
+    if (
+      this.#frontIdx >= COMPACT_BATCH_THRESHOLD ||
+      this.#frontIdx > this.#entries.length / 2
+    ) {
+      this.#entries.splice(0, this.#frontIdx);
+      this.#frontIdx = 0;
     }
   }
 

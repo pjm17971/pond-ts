@@ -285,15 +285,13 @@ function buildSeparate(live, n, trig) {
   const accs = [];
   for (let i = 0; i < n; i++) {
     accs.push(
-      live
-        .partitionBy('host')
-        .rolling(
-          windowDurations[i],
-          {
-            [`cpu_${reducerKinds[i]}`]: { from: 'cpu', using: reducerKinds[i] },
-          },
-          { trigger: trig },
-        ),
+      live.partitionBy('host').rolling(
+        windowDurations[i],
+        {
+          [`cpu_${reducerKinds[i]}`]: { from: 'cpu', using: reducerKinds[i] },
+        },
+        { trigger: trig },
+      ),
     );
   }
   return accs;
@@ -345,6 +343,77 @@ function buildFused(live, n, trig) {
       ),
     );
   }
+}
+
+// ── 5. Non-partitioned firehose regression (gRPC PR #26) ──────
+// Pre-v0.15.2 the non-partitioned rolling used `Array.shift()` to
+// evict the deque front. At firehose rates with a multi-second
+// window the deque holds tens of thousands of entries; eviction
+// loops that shift one-at-a-time fall off V8's hidden-offset
+// optimization and turn quadratic.
+//
+// The bench targets the worst case: a steady-state deque sized at
+// ~rate × window_seconds. Once full, every ingest evicts one
+// entry — the shift loop fires `entries.length` times eventually
+// across the run, with the deque large the whole time.
+
+{
+  // Steady-state deque ≈ N (tight 1ms timestamps, window covers
+  // entire run). Eviction never kicks in; just push + shift in
+  // periodic compaction.
+  const N = 200_000;
+  const trig = Trigger.every('100ms');
+  results.push(
+    benchmark(
+      `non-partitioned 5m rolling, all-events-in-window — ${N} events`,
+      () => {
+        const live = new LiveSeries({ name: 'cpu', schema });
+        const r = live.rolling(
+          '5m',
+          { events_per_sec: { from: 'cpu', using: 'count' } },
+          { trigger: trig },
+        );
+        void r;
+        for (let i = 0; i < N; i++) {
+          live.push([i, i % 100, 'host']);
+        }
+      },
+      3,
+    ),
+  );
+
+  // Worst-case shift pattern: large steady-state deque AND
+  // continuous eviction. Window narrower than total span; first
+  // half fills, second half evicts one-per-event.
+  // Configured so deque holds ~50k entries through the eviction
+  // phase (window=50s, span=100s, 1k events/s).
+  const FILL = 50_000;
+  const EVICT = 50_000;
+  results.push(
+    benchmark(
+      `non-partitioned firehose, deque ~${FILL} entries with continuous eviction`,
+      () => {
+        const live = new LiveSeries({ name: 'cpu', schema });
+        const r = live.rolling(
+          '50s',
+          { count: { from: 'cpu', using: 'count' } },
+          { trigger: trig },
+        );
+        void r;
+        // Fill phase: timestamps 0..FILL-1 (1ms apart) — deque
+        // grows to FILL entries, none evicted (50s window > 50s span).
+        for (let i = 0; i < FILL; i++) {
+          live.push([i, i % 100, 'host']);
+        }
+        // Evict phase: timestamps FILL..FILL+EVICT-1 — every event
+        // evicts the entry one window-ago. Deque stays ~FILL.
+        for (let i = 0; i < EVICT; i++) {
+          live.push([FILL + i, i % 100, 'host']);
+        }
+      },
+      3,
+    ),
+  );
 }
 
 console.log(JSON.stringify(results, null, 2));

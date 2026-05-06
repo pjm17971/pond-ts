@@ -29,11 +29,24 @@ type WindowEntry = {
 
 type PartitionState = {
   states: RollingReducerState[];
+  /**
+   * Sliding-window deque. Live front is `entries[frontIdx]`; live
+   * count is `entries.length - frontIdx`. See
+   * {@link LiveRollingAggregation}'s analogous `#entries` doc for
+   * the head-index-pointer rationale.
+   */
   entries: WindowEntry[];
+  frontIdx: number;
   nextIndex: number;
 };
 
 type EventListener = (event: any) => void;
+
+/**
+ * See {@link LiveRollingAggregation}'s analogous constant — same
+ * threshold, same rationale.
+ */
+const COMPACT_BATCH_THRESHOLD = 1024;
 
 /**
  * A `LiveSource<Out>` produced by `LivePartitionedSeries.rolling(window, mapping, { trigger: Trigger.clock(...) })`.
@@ -309,6 +322,7 @@ export class LivePartitionedSyncRolling<
     state = {
       states: this.#columns.map((c) => rollingStateFor(c.reducer)),
       entries: [],
+      frontIdx: 0,
       nextIndex: 0,
     };
     this.#partitionStates.set(key, state);
@@ -316,23 +330,44 @@ export class LivePartitionedSyncRolling<
     return state;
   }
 
+  /**
+   * Evict the front of this partition's deque against the time-
+   * cutoff and/or count-cap. Uses a head-index pointer (`frontIdx`)
+   * for O(1) per-event eviction; periodic batched compaction
+   * (`splice(0, frontIdx)`) keeps the array bounded. See
+   * {@link LiveRollingAggregation}'s analogous `#evict` for the
+   * rationale.
+   */
   #evictPartition(state: PartitionState, latestTs: number): void {
     if (this.#windowMs !== undefined) {
       const cutoff = latestTs - this.#windowMs;
-      while (state.entries.length > 0 && state.entries[0]!.timestamp < cutoff) {
-        const entry = state.entries.shift()!;
+      while (
+        state.frontIdx < state.entries.length &&
+        state.entries[state.frontIdx]!.timestamp < cutoff
+      ) {
+        const entry = state.entries[state.frontIdx]!;
+        state.frontIdx++;
         for (let i = 0; i < this.#columns.length; i++) {
           state.states[i]!.remove(entry.index, entry.values[i]);
         }
       }
     }
     if (this.#windowCount !== undefined) {
-      while (state.entries.length > this.#windowCount) {
-        const entry = state.entries.shift()!;
+      while (state.entries.length - state.frontIdx > this.#windowCount) {
+        const entry = state.entries[state.frontIdx]!;
+        state.frontIdx++;
         for (let i = 0; i < this.#columns.length; i++) {
           state.states[i]!.remove(entry.index, entry.values[i]);
         }
       }
+    }
+    // Periodic batched compaction.
+    if (
+      state.frontIdx >= COMPACT_BATCH_THRESHOLD ||
+      state.frontIdx > state.entries.length / 2
+    ) {
+      state.entries.splice(0, state.frontIdx);
+      state.frontIdx = 0;
     }
   }
 
@@ -378,7 +413,7 @@ export class LivePartitionedSyncRolling<
       // Evict this partition's stale window entries against the
       // triggering event's timestamp before snapshotting.
       this.#evictPartition(state, latestTs);
-      const warmup = state.entries.length < minSamples;
+      const warmup = state.entries.length - state.frontIdx < minSamples;
       const record: Record<string, ColumnValue | undefined> = {};
       record[byCol] = key;
       for (let i = 0; i < colsLen; i++) {

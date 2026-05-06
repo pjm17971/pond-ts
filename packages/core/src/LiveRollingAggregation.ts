@@ -48,6 +48,17 @@ type WindowEntry = {
 type UpdateListener = (value: Record<string, ColumnValue | undefined>) => void;
 type EventListener = (event: any) => void;
 
+/**
+ * Compact-batch threshold for the head-index ring buffer eviction.
+ * Once `#frontIdx` advances past this many stale-prefix entries (or
+ * past half the array length, whichever comes first), the deque
+ * splices off the dead prefix and resets the pointer. Picked at
+ * 1024 — large enough to amortize `splice` to O(1) per ingest at
+ * firehose rates, small enough that an inactive rolling doesn't
+ * sit on megabytes of dead-prefix memory after a burst.
+ */
+const COMPACT_BATCH_THRESHOLD = 1024;
+
 export type RollingWindow = DurationInput | number;
 
 export type LiveRollingOptions = {
@@ -99,7 +110,21 @@ export class LiveRollingAggregation<
 
   readonly #columns: AggregateColumnSpec[];
   readonly #states: RollingReducerState[];
+  /**
+   * Sliding-window deque. Eviction uses a head-index pointer
+   * (`#frontIdx`) instead of `Array.shift()` — at high event rates
+   * (10k+/s) the deque holds thousands of entries and `shift()` is
+   * worst-case O(N), giving a quadratic per-second cost. Pointer-
+   * based eviction is O(1) per ingest; periodic batched compaction
+   * (`splice(0, frontIdx)`) keeps the underlying array bounded.
+   *
+   * Live front is `entries[frontIdx]`; live count is
+   * `entries.length - frontIdx`. Once any compaction has run,
+   * never read `entries[0]` directly — the entries before
+   * `frontIdx` are logically evicted.
+   */
   readonly #entries: WindowEntry[];
+  #frontIdx: number;
 
   readonly #windowMs: number | undefined;
   readonly #windowCount: number | undefined;
@@ -196,6 +221,7 @@ export class LiveRollingAggregation<
     // see {@link rollingStateFor} for the perf characteristic).
     this.#states = this.#columns.map((c) => rollingStateFor(c.reducer));
     this.#entries = [];
+    this.#frontIdx = 0;
     this.#nextIndex = 0;
     this.#outputEvents = [];
     this.#onUpdate = new Set();
@@ -223,7 +249,7 @@ export class LiveRollingAggregation<
 
   value(): Record<string, ColumnValue | undefined> {
     const result: Record<string, ColumnValue | undefined> = {};
-    const warmup = this.#entries.length < this.#minSamples;
+    const warmup = this.#liveLength() < this.#minSamples;
     for (let i = 0; i < this.#columns.length; i++) {
       // Output keyed by `output` name (= source name for AggregateMap;
       // user-chosen alias for AggregateOutputMap).
@@ -235,7 +261,7 @@ export class LiveRollingAggregation<
   }
 
   get windowSize(): number {
-    return this.#entries.length;
+    return this.#liveLength();
   }
 
   on(type: 'event', fn: EventListener): () => void;
@@ -392,7 +418,7 @@ export class LiveRollingAggregation<
    * rolling-window snapshot. Used by Trigger.event() (the default).
    */
   #emitEvent(key: any): void {
-    const warmup = this.#entries.length < this.#minSamples;
+    const warmup = this.#liveLength() < this.#minSamples;
     const record: Record<string, ColumnValue | undefined> = {};
     for (let i = 0; i < this.#columns.length; i++) {
       record[this.#columns[i]!.output] = warmup
@@ -428,23 +454,64 @@ export class LiveRollingAggregation<
     }
   }
 
+  /**
+   * Number of live entries in the deque (`entries.length - frontIdx`).
+   * Used by warmup checks and the public `windowSize` getter.
+   */
+  #liveLength(): number {
+    return this.#entries.length - this.#frontIdx;
+  }
+
+  /**
+   * Evict entries from the front of the deque whose timestamp is
+   * older than the cutoff (time-based) or whose count exceeds the
+   * configured window (count-based). Uses the head-index pointer
+   * for O(1) per-event eviction; periodic batched compaction keeps
+   * the underlying array bounded.
+   *
+   * Pre-v0.15.2 used `Array.shift()` which was worst-case O(N) on
+   * the array length. At firehose rates (10k+/s, multi-second
+   * windows) the deque holds tens of thousands of entries — the
+   * `shift()` cost was quadratic per second and dominated the
+   * pipeline. See PLAN.md "Live rolling tactical fixes" for the
+   * full backstory; gRPC experiment PR #26 exposed the cliff.
+   */
   #evict(latestTimestamp: number): void {
     if (this.#windowMs !== undefined) {
       const cutoff = latestTimestamp - this.#windowMs;
-      while (this.#entries.length > 0 && this.#entries[0]!.timestamp < cutoff) {
+      while (
+        this.#frontIdx < this.#entries.length &&
+        this.#entries[this.#frontIdx]!.timestamp < cutoff
+      ) {
         this.#removeFirst();
       }
     }
 
     if (this.#windowCount !== undefined) {
-      while (this.#entries.length > this.#windowCount) {
+      while (this.#liveLength() > this.#windowCount) {
         this.#removeFirst();
       }
     }
+
+    // Periodic batched compaction — see {@link LiveFusedRolling}'s
+    // analogous comment for the rationale.
+    if (
+      this.#frontIdx >= COMPACT_BATCH_THRESHOLD ||
+      this.#frontIdx > this.#entries.length / 2
+    ) {
+      this.#entries.splice(0, this.#frontIdx);
+      this.#frontIdx = 0;
+    }
   }
 
+  /**
+   * Logically evict the front entry by advancing `#frontIdx`. The
+   * actual array entry stays in place until periodic compaction
+   * splices off the dead prefix. Per-call cost is O(1).
+   */
   #removeFirst(): void {
-    const entry = this.#entries.shift()!;
+    const entry = this.#entries[this.#frontIdx]!;
+    this.#frontIdx++;
     for (let i = 0; i < this.#columns.length; i++) {
       this.#states[i]!.remove(entry.index, entry.values[i]);
     }
