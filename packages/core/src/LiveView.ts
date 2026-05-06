@@ -7,7 +7,7 @@ import {
 } from './LiveRollingAggregation.js';
 import { LiveFusedRolling } from './LiveFusedRolling.js';
 import { LiveReduce } from './LiveReduce.js';
-import { TimeSeries } from './TimeSeries.js';
+import { TimeSeries, toKey, type KeyLike } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
 import {
   EMITS_EVICT,
@@ -155,6 +155,77 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
 
   last(): EventForSchema<S> | undefined {
     return this.#events[this.#events.length - 1];
+  }
+
+  // ── Query primitives ─────────────────────────────────────────
+  //
+  // Mirror `TimeSeries` / `LiveSeries` query parity. Live views
+  // are sorted by key (events flow through in source-order; views
+  // never re-sort). Same binary-search shape as `TimeSeries.bisect`.
+
+  /** Example: `view.find(e => e.get('value') > 0)`. */
+  find(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): EventForSchema<S> | undefined {
+    return this.#events.find((event, index) => predicate(event, index));
+  }
+
+  /** Example: `view.some(e => e.get('healthy'))`. */
+  some(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
+    return this.#events.some((event, index) => predicate(event, index));
+  }
+
+  /** Example: `view.every(e => e.get('healthy'))`. */
+  every(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
+    return this.#events.every((event, index) => predicate(event, index));
+  }
+
+  /** Example: `view.includesKey(new Time(t))`. */
+  includesKey(key: KeyLike): boolean {
+    const normalizedKey = toKey(key);
+    const index = this.bisect(normalizedKey);
+    return (
+      index < this.#events.length &&
+      this.#events[index]!.key().equals(normalizedKey)
+    );
+  }
+
+  /** Example: `view.bisect(new Time(t))`. Insertion index for `key` in the sorted view buffer (binary search). */
+  bisect(key: KeyLike): number {
+    const normalizedKey = toKey(key);
+    let low = 0;
+    let high = this.#events.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.#events[mid]!.key().compare(normalizedKey) < 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
+  }
+
+  /** Example: `view.atOrBefore(new Time(t))`. */
+  atOrBefore(key: KeyLike): EventForSchema<S> | undefined {
+    const normalizedKey = toKey(key);
+    const index = this.bisect(normalizedKey);
+    if (
+      index < this.#events.length &&
+      this.#events[index]!.key().equals(normalizedKey)
+    ) {
+      return this.#events[index];
+    }
+    return index === 0 ? undefined : this.#events[index - 1];
+  }
+
+  /** Example: `view.atOrAfter(new Time(t))`. */
+  atOrAfter(key: KeyLike): EventForSchema<S> | undefined {
+    return this.#events[this.bisect(key)];
   }
 
   filter(predicate: (event: EventForSchema<S>) => boolean): LiveView<S> {

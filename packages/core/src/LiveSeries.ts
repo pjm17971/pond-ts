@@ -20,7 +20,7 @@ import {
   type LiveRollingOptions,
   type RollingWindow,
 } from './LiveRollingAggregation.js';
-import { TimeSeries } from './TimeSeries.js';
+import { TimeSeries, toKey, type KeyLike } from './TimeSeries.js';
 import { ValidationError } from './errors.js';
 import { parseJsonRows } from './json.js';
 import type { TimeZoneOptions } from './calendar.js';
@@ -280,6 +280,85 @@ export class LiveSeries<S extends SeriesSchema> {
 
   last(): EventForSchema<S> | undefined {
     return this.#events[this.#events.length - 1];
+  }
+
+  // ── Query primitives ─────────────────────────────────────────
+  //
+  // Mirror the equivalent methods on `TimeSeries`. Live buffers
+  // are sorted by key (under all three `OrderingMode`s), so the
+  // binary-search shape from batch transfers directly. Useful for
+  // dashboard / monitoring consumers where the live buffer IS the
+  // working set ("is there an event at key K already?", "what was
+  // the last event before time T?").
+
+  /** Example: `live.find(e => e.get('value') > 0)`. First event matching the predicate, or undefined. */
+  find(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): EventForSchema<S> | undefined {
+    return this.#events.find((event, index) => predicate(event, index));
+  }
+
+  /** Example: `live.some(e => e.get('healthy'))`. True when at least one event matches. */
+  some(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
+    return this.#events.some((event, index) => predicate(event, index));
+  }
+
+  /** Example: `live.every(e => e.get('healthy'))`. True when every event matches. */
+  every(
+    predicate: (event: EventForSchema<S>, index: number) => boolean,
+  ): boolean {
+    return this.#events.every((event, index) => predicate(event, index));
+  }
+
+  /** Example: `live.includesKey(new Time(t))`. True when an event with an exactly matching key exists. */
+  includesKey(key: KeyLike): boolean {
+    const normalizedKey = toKey(key);
+    const index = this.bisect(normalizedKey);
+    return (
+      index < this.#events.length &&
+      this.#events[index]!.key().equals(normalizedKey)
+    );
+  }
+
+  /**
+   * Example: `live.bisect(new Time(t))`. Insertion index for `key`
+   * in the sorted live buffer (binary search; O(log N)). Same shape
+   * as `Array.prototype` semantics: returns the lowest index where
+   * an event with `key` could be inserted while preserving order.
+   */
+  bisect(key: KeyLike): number {
+    const normalizedKey = toKey(key);
+    let low = 0;
+    let high = this.#events.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.#events[mid]!.key().compare(normalizedKey) < 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
+  }
+
+  /** Example: `live.atOrBefore(new Time(t))`. Event with the exact key, or the nearest earlier one. */
+  atOrBefore(key: KeyLike): EventForSchema<S> | undefined {
+    const normalizedKey = toKey(key);
+    const index = this.bisect(normalizedKey);
+    if (
+      index < this.#events.length &&
+      this.#events[index]!.key().equals(normalizedKey)
+    ) {
+      return this.#events[index];
+    }
+    return index === 0 ? undefined : this.#events[index - 1];
+  }
+
+  /** Example: `live.atOrAfter(new Time(t))`. Event with the exact key, or the nearest later one. */
+  atOrAfter(key: KeyLike): EventForSchema<S> | undefined {
+    return this.#events[this.bisect(key)];
   }
 
   push(...rows: RowForSchema<S>[]): void {
