@@ -158,6 +158,10 @@ export class LivePartitionedSeries<
   readonly #disposers: Set<() => void>;
   readonly #unsubscribeSource: () => void;
 
+  // Pipeline counters for {@link LivePartitionedSeries.stats}.
+  // Cumulative since construction; never reset.
+  #statsEventsRouted = 0;
+
   constructor(
     source: LiveSource<S>,
     by: ByCol,
@@ -904,12 +908,41 @@ export class LivePartitionedSeries<
       }
       part = this.#spawnPartition(key);
     }
+    this.#statsEventsRouted++;
     // Trusted-pipeline fast path: the source LiveSeries already
     // constructed and validated this Event against `S`, and partition
     // sub-series share the same schema. Pass the reference through
     // instead of round-tripping `Event → row → Event` (which would
     // re-validate and re-allocate per event).
     part._pushTrustedEvents([event]);
+  }
+
+  /**
+   * Pipeline stats snapshot — current partition count plus
+   * cumulative routing counter. Cheap O(1).
+   *
+   * - `partitions`: current number of partitions (declared groups
+   *   plus auto-spawned ones). With `{ groups }`, equal to
+   *   `groups.length` once any of those values appear; without it,
+   *   grows on each new partition value.
+   * - `eventsRouted`: total source events successfully routed to
+   *   a partition. Events that throw (unknown partition value
+   *   under typed-groups) are counted only if they reach
+   *   {@link LivePartitionedSeries.#routeEvent} successfully —
+   *   they don't.
+   *
+   * Note: per-partition counters (per-partition `eventsRouted`,
+   * per-partition retention state, etc.) are intentionally NOT
+   * exposed by this method. Use `toMap()` and call
+   * {@link LiveSeries.stats} on each partition's sub-buffer for
+   * per-partition observability — that scales O(partitions) only
+   * when you actually need it.
+   */
+  stats(): { partitions: number; eventsRouted: number } {
+    return {
+      partitions: this.#partitions.size,
+      eventsRouted: this.#statsEventsRouted,
+    };
   }
 }
 

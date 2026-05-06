@@ -154,6 +154,12 @@ export class LiveRollingAggregation<
   readonly #onEvent: Set<EventListener>;
   readonly #unsubscribe: () => void;
 
+  // Pipeline counters for {@link LiveRollingAggregation.stats}.
+  // Cumulative since construction; never reset.
+  #statsEventsObserved = 0;
+  #statsEvictions = 0;
+  #statsEmissions = 0;
+
   constructor(
     source: LiveSource<S>,
     window: RollingWindow,
@@ -358,6 +364,37 @@ export class LiveRollingAggregation<
     return new LiveAggregation(this as any, sequence, mapping as any);
   }
 
+  /**
+   * Pipeline stats snapshot — cumulative counters since
+   * construction plus current window state. Cheap O(1).
+   *
+   * - `eventsObserved`: total source events ingested. Never
+   *   decreases.
+   * - `evictions`: total entries removed from the window by
+   *   retention. Never decreases.
+   * - `emissions`: total output events fired. Never decreases.
+   *   Always `<= eventsObserved`; for `Trigger.event` it equals
+   *   `eventsObserved`, for `Trigger.count(n)` and `Trigger.clock`
+   *   it can be smaller.
+   * - `windowSize`: current live window size (= `this.windowSize`).
+   *
+   * Use case: long-running pipelines that want headline counters
+   * without wiring `rolling.on('event', ...)` listeners by hand.
+   */
+  stats(): {
+    eventsObserved: number;
+    evictions: number;
+    emissions: number;
+    windowSize: number;
+  } {
+    return {
+      eventsObserved: this.#statsEventsObserved,
+      evictions: this.#statsEvictions,
+      emissions: this.#statsEmissions,
+      windowSize: this.#liveLength(),
+    };
+  }
+
   dispose(): void {
     this.#unsubscribe();
   }
@@ -365,6 +402,7 @@ export class LiveRollingAggregation<
   // ── Private ─────────────────────────────────────────────────
 
   #ingest(event: EventForSchema<S>): void {
+    this.#statsEventsObserved++;
     const data = event.data() as Record<string, ColumnValue | undefined>;
     const values = this.#columns.map((c) => data[c.source]);
     const index = this.#nextIndex++;
@@ -422,6 +460,7 @@ export class LiveRollingAggregation<
     }
     const outputEvent = new Event(key, record);
     this.#outputEvents.push(outputEvent);
+    this.#statsEmissions++;
     for (const fn of this.#onEvent) fn(outputEvent);
   }
 
@@ -504,6 +543,7 @@ export class LiveRollingAggregation<
   #removeFirst(): void {
     const entry = this.#entries[this.#frontIdx]!;
     this.#frontIdx++;
+    this.#statsEvictions++;
     for (let i = 0; i < this.#columns.length; i++) {
       this.#states[i]!.remove(entry.index, entry.values[i]);
     }
