@@ -44,10 +44,10 @@ in the consumer (compare `lastEvent.begin()` to `Date.now()`).
 | Concept                            | Beam / Flink                                    | pond-ts                                       |
 | ---------------------------------- | ----------------------------------------------- | --------------------------------------------- |
 | Time progression                   | Watermarks advance event time; processing-time timers can also fire | `latestEvent.begin()` (data-only)             |
-| Late event handling                | Configurable allowed lateness, accumulation modes, late firings / drops | `strict`, `drop`, or `reorder`; optional bounded grace; no retraction |
-| Trigger types                      | Watermark / event time, processing time, count, custom | Event, fixed-cadence clock / sequence, count |
-| Exactly-once delivery              | Supported with checkpointing plus compatible sources and sinks | No                                            |
-| Output retraction on late arrivals | Late panes, updates, or retractions depending on runner / sink configuration | No — emitted snapshots are final              |
+| Late event handling                | Configurable allowed lateness; late elements may be dropped or emitted as later panes / updates | `strict`, `drop`, or `reorder`; optional bounded grace; no retraction |
+| Trigger types                      | Event-time / watermark, processing-time, count / data-driven, and custom triggers | Event, fixed-cadence clock / sequence, count |
+| Delivery / recovery guarantees     | Engine- and runner-level concern; Flink uses checkpointed state, and end-to-end exactly-once also depends on replayable sources and transactional or idempotent sinks | No checkpointing, replay, or exactly-once guarantee |
+| Output changes after late arrivals | Additional panes or updated results depending on trigger, accumulation, runner, and sink behavior | No — emitted outputs are final                |
 | Cross-host event time              | Coordinated through watermarks across parallel inputs | Per-source; no global watermark or cross-source clock |
 | Best at                            | Distributed, fault-tolerant, large-scale pipelines | In-process live time-series buffers and transforms with a simple cost model |
 

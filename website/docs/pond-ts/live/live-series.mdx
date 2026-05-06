@@ -12,29 +12,36 @@ rolling window of recent events.
 
 `LiveSeries` is a bounded in-order buffer with an opt-in grace
 window for moderate reordering at ingest. It's not a full streaming
-engine like Beam or Flink — pond-ts trades exactly-once semantics
-and watermark/retraction handling for a simpler "data is the clock,
-ordered ingest with bounded reorder tolerance" model. For the
-specifics of what that does and doesn't cover once data leaves the
-buffer, see
+engine like Apache Beam or Apache Flink: no distributed execution,
+engine-managed watermarks, processing-time timers, checkpointed
+state, late panes, retractions, or exactly-once/replay guarantees.
+`pond-ts` instead uses a simpler "data is the clock, ordered ingest
+with bounded reorder tolerance" model. For the specifics of what
+that does and doesn't cover once data leaves the buffer, see
 [Live Transforms → Late-event scope](./live-transforms#late-event-scope).
 
 If you're coming from pandas: there's no direct equivalent — pandas
-doesn't model live data. The closest analogue is a bounded deque you
-periodically `.toTimeSeries()` on and run batch methods against; that
-"snapshot-then-batch" is the pandas-shaped escape hatch from the live
-side.
+works on already-materialized `DataFrame` / `Series` objects rather
+than a live source with subscribers. The closest analogue is a
+bounded deque you periodically `.toTimeSeries()` on and run batch
+methods against: `aggregate()` for `.resample().agg()`, `align()` for
+`.asfreq()` / fill / interpolation, `rolling()` for `.rolling().agg()`,
+and `groupBy()` for `.groupby()`.
 
-If you're coming from pondjs: `LiveSeries` takes over `Pond`'s
-live-collection role, with retention baked in instead of bolted on.
+If you're coming from PondJS: there is no one-class equivalent to
+`LiveSeries`. PondJS split live work across `Stream` for unbounded
+input, `Pipeline` for streaming or batch processing, `Aggregator` for
+windowed/grouped aggregation inside a pipeline, and
+`Collection` / `TimeSeries` for event containers. `LiveSeries` is the
+pond-ts in-process push target and retained live source.
 
-| pondjs                   | pond-ts                                        |
-| ------------------------ | ---------------------------------------------- |
-| `Pond` (live store)      | `LiveSeries`                                   |
-| `Aggregator`             | `LiveAggregation`                              |
-| custom rolling processor | `LiveRollingAggregation`                       |
-| manual eviction on push  | `retention: { maxEvents / maxAge }`            |
-| `Pipeline` for live      | method chain on `LiveSeries` / `LiveView`      |
+| PondJS                                         | pond-ts                                        |
+| ---------------------------------------------- | ---------------------------------------------- |
+| `Stream` + `Pipeline().from(stream)`           | `LiveSeries.push(...)` and live subscriptions  |
+| `Pipeline().windowBy(...).aggregate(...)`      | `live.aggregate(...)` → `LiveAggregation`      |
+| pipeline processors and output callbacks       | method chain on `LiveSeries` / `LiveView`      |
+| `Collection` / `TimeSeries` event containers   | `TimeSeries`; `live.toTimeSeries()` snapshots  |
+| source- or pipeline-managed history            | `retention: { maxEvents / maxAge }` on source  |
 
 ## Creating a LiveSeries
 
