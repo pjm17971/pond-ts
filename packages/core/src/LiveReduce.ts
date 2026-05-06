@@ -60,6 +60,25 @@ type EventListener = (event: any) => void;
  * post-retention precision use a clock trigger with cadence
  * longer than the retention overflow rate.
  *
+ * **Construction-time replay.** Sources with existing buffer
+ * content at construction (e.g. a `LiveSeries` constructed from
+ * a snapshot) replay each existing event through `#ingest`. With
+ * `Trigger.event()` (the default) this emits N immediate output
+ * events — same as `LiveRollingAggregation`'s replay shape. Use
+ * a clock or count trigger if you want to suppress the
+ * construction-time burst.
+ *
+ * **Source contract — `EMITS_EVICT` is load-bearing.** This
+ * class's reducer state stays in sync with the source's current
+ * buffer because it removes events as the source evicts them.
+ * The `'evict'` subscription is gated on the `EMITS_EVICT`
+ * symbol marker. Sources that *evict internally* but do NOT emit
+ * `'evict'` would cause `LiveReduce`'s state to grow without
+ * bound (no removes ever fire). Today every pond LiveSource that
+ * evicts also marks itself with `EMITS_EVICT` (`LiveSeries`,
+ * `LiveView` with eviction); future LiveSource implementations
+ * must preserve this contract.
+ *
  * Public API: constructed via `live.reduce(mapping, opts?)` on
  * `LiveSeries` / `LiveView`. User code doesn't import this class
  * directly.

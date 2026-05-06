@@ -73,6 +73,22 @@ describe('LiveSeries.reduce — basic semantics', () => {
     r.dispose();
   });
 
+  it('replay emits N events under the default Trigger.event', () => {
+    // Pinned by Layer 2 review: LiveRollingAggregation's behavior
+    // is to emit one output per replayed event under Trigger.event;
+    // LiveReduce matches. Users who want to suppress the
+    // construction-time burst should pass a clock or count trigger.
+    const live = makeLive();
+    live.push([0, 10, 'a']);
+    live.push([1000, 20, 'a']);
+    live.push([2000, 30, 'a']);
+
+    const r = live.reduce({ cpu: 'avg' });
+    expect(r.length).toBe(3); // one emit per replayed event
+
+    r.dispose();
+  });
+
   it('removes from reducer state when source evicts (retention)', () => {
     const live = new LiveSeries({
       name: 'with-retention',
