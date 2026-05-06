@@ -169,6 +169,14 @@ export class LiveFusedRolling<
   #statsEvictions = 0;
   #statsEmissions = 0;
 
+  /**
+   * Output retention configuration. See
+   * {@link LiveRollingOptions.history}.
+   */
+  readonly #historyEnabled: boolean;
+  readonly #historyMaxEvents: number;
+  readonly #historyMaxAgeMs: number;
+
   constructor(
     source: LiveSource<S>,
     fusedMapping: FusedMapping<S>,
@@ -189,6 +197,37 @@ export class LiveFusedRolling<
     this.#frontIdx = 0;
     this.#outputEvents = [];
     this.#onEvent = new Set();
+
+    // Resolve the `history` option. Same shape and defaults as
+    // {@link LiveRollingAggregation}'s history handling.
+    const history = options.history ?? true;
+    if (history === false) {
+      this.#historyEnabled = false;
+      this.#historyMaxEvents = 0;
+      this.#historyMaxAgeMs = 0;
+    } else if (history === true) {
+      this.#historyEnabled = true;
+      this.#historyMaxEvents = Infinity;
+      this.#historyMaxAgeMs = Infinity;
+    } else {
+      this.#historyEnabled = true;
+      const max = history.maxEvents;
+      if (max !== undefined) {
+        if (!Number.isInteger(max) || max < 1) {
+          throw new TypeError(
+            'history.maxEvents must be a positive integer (got ' +
+              String(max) +
+              ')',
+          );
+        }
+        this.#historyMaxEvents = max;
+      } else {
+        this.#historyMaxEvents = Infinity;
+      }
+      this.#historyMaxAgeMs = history.maxAge
+        ? parseDuration(history.maxAge)
+        : Infinity;
+    }
 
     // Resolve each window: parse the duration key, normalize the
     // mapping (handles bare AggregateMap, AggregateOutputMap, and the
@@ -516,9 +555,45 @@ export class LiveFusedRolling<
       key,
       record,
     ) as unknown as EventForSchema<Out>;
-    this.#outputEvents.push(outputEvent);
     this.#statsEmissions++;
+    if (this.#historyEnabled) {
+      this.#outputEvents.push(outputEvent);
+      this.#applyHistoryRetention();
+    }
     for (const fn of this.#onEvent) fn(outputEvent);
+  }
+
+  /**
+   * Trim `#outputEvents` against the configured history limits. Mirrors
+   * {@link LiveRollingAggregation.#applyHistoryRetention} — same
+   * semantics, same single-splice end pass.
+   */
+  #applyHistoryRetention(): void {
+    if (
+      this.#historyMaxEvents === Infinity &&
+      this.#historyMaxAgeMs === Infinity
+    ) {
+      return;
+    }
+    let evictCount = 0;
+    if (this.#outputEvents.length > this.#historyMaxEvents) {
+      evictCount = this.#outputEvents.length - this.#historyMaxEvents;
+    }
+    if (this.#historyMaxAgeMs !== Infinity && this.#outputEvents.length > 0) {
+      const latest = this.#outputEvents[this.#outputEvents.length - 1]!;
+      const cutoff = latest.begin() - this.#historyMaxAgeMs;
+      let i = evictCount;
+      while (
+        i < this.#outputEvents.length &&
+        this.#outputEvents[i]!.begin() < cutoff
+      ) {
+        i++;
+      }
+      evictCount = Math.max(evictCount, i);
+    }
+    if (evictCount > 0) {
+      this.#outputEvents.splice(0, evictCount);
+    }
   }
 
   #emitClock(eventTs: number, trigger: ClockTrigger): void {

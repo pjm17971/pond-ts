@@ -25,6 +25,7 @@ import {
 import type { RollingOutputMapSchema } from './types-aggregate.js';
 import type {
   FusedMapping,
+  FusedMappingValid,
   FusedPartitionedRollingSchema,
 } from './types-fused-rolling.js';
 import type { DurationInput } from './utils/duration.js';
@@ -603,7 +604,7 @@ export class LivePartitionedSeries<
    * See PLAN.md "Fused multi-window rolling" for the full design.
    */
   rolling<const FM extends FusedMapping<S>>(
-    fusedMapping: FM,
+    fusedMapping: FM & FusedMappingValid<FM>,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LivePartitionedFusedRolling<
     S,
@@ -1214,7 +1215,7 @@ export class LivePartitionedView<
    * fused — synced cross-partition emission).
    */
   rolling<const FM extends FusedMapping<R>>(
-    fusedMapping: FM,
+    fusedMapping: FM & FusedMappingValid<FM>,
     options: LiveRollingOptions & { trigger: { kind: 'clock' } & Trigger },
   ): LivePartitionedFusedRolling<
     R,
