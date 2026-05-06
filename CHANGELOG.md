@@ -7,9 +7,138 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.16.0...HEAD
 
 ## [Unreleased]
+
+## [0.16.0] — 2026-05-06
+
+Live-API ergonomic wave. Four PRs:
+[#122](https://github.com/pjm17971/pond-ts/pull/122) (buffer-as-window
+Tier 1), [#123](https://github.com/pjm17971/pond-ts/pull/123)
+(`stats()` accessor), [#124](https://github.com/pjm17971/pond-ts/pull/124)
+(`history` option + compile-time fused uniqueness),
+[#125](https://github.com/pjm17971/pond-ts/pull/125) (Tier 2 query
+primitives). Strictly additive surface — no public-API removals or
+narrowings.
+
+### Added
+
+- **`live.reduce(mapping, opts?)`** on `LiveSeries` and `LiveView`
+  — streaming reduce over the source's current buffer. Mirrors
+  `series.reduce(mapping)` from batch but reactive: per-event
+  `add`, per-eviction `remove`, microtask-deferred trigger
+  emission so retention has run before the snapshot. Closes the
+  buffer-as-window persona's biggest ergonomic gap.
+- **`live.timeRange()`** on `LiveSeries` and `LiveView` — O(1)
+  temporal extent of the current buffer (`undefined` when empty).
+- **`live.eventRate()`** on `LiveSeries` and `LiveView` — O(1)
+  events-per-second over the buffer's time span (zero when fewer
+  than two events). Convenience over the existing
+  `view.eventRate()` shape; no window argument required.
+- **`live.count()`** on `LiveSeries` (alias for `length`) for
+  parity with `LiveView.count()` and chainable composition with
+  `eventRate()`.
+- **`stats()` accessor on every live accumulator/series.** Per-class
+  shapes, all returning a plain record (cumulative integer counters
+  + current-state fields):
+
+  | Class | Shape |
+  |---|---|
+  | LiveSeries | `{ ingested, evicted, rejected, length, earliestTs?, latestTs? }` |
+  | LiveRollingAggregation | `{ eventsObserved, evictions, emissions, windowSize }` |
+  | LiveFusedRolling | `{ eventsObserved, evictions, emissions, windowSize, windowsCount }` |
+  | LiveAggregation | `{ eventsObserved, bucketsClosed, openBuckets, openBucketStart? }` |
+  | LiveReduce | `{ eventsObserved, evictions, emissions, bufferSize }` |
+  | LivePartitionedSeries | `{ partitions, eventsRouted }` |
+  | LivePartitionedSyncRolling | `{ partitions, eventsObserved, emissions, windowSize }` |
+  | LivePartitionedFusedRolling | `{ partitions, eventsObserved, emissions, windowSize, windowsCount }` |
+
+  Per-event cost: ~1-3 integer increments in already-existing
+  handlers. `stats()` itself is O(1) — or O(partitions) for the
+  max-across-partitions `windowSize` on partitioned variants.
+  Polling-based by design — wall-clock timers inside pond would
+  break the data-is-the-clock invariant.
+
+- **`history: false | RetentionPolicy` option on
+  `LiveRollingAggregation` and `LiveFusedRolling`** (and
+  partitioned variants — threaded through
+  `LivePartitionedSeries.rolling` end-to-end). Controls how much
+  of the rolling's emitted history the accumulator keeps in its
+  own output buffer (the one read by `length` / `at(i)`). Default
+  `true` preserves current behavior; `false` skips the push
+  entirely (`'event'` listeners and `value()` still work, but
+  `length` stays at 0); `RetentionPolicy` (`{ maxEvents?, maxAge? }`)
+  caps the buffer using the same shape as `LiveSeries.retention`.
+  Stricter validation: rejects 0, negative, or non-integer
+  `maxEvents`; `Infinity` is the documented "no cap" sentinel.
+
+- **Compile-time uniqueness check on fused output columns**
+  (`FusedMappingValid<FM>`). Two windows declaring the same
+  output name now fail at the call site with a branded error
+  type naming the conflict. Wired into all four fused-rolling
+  overloads (LiveSeries, LiveView, root + view
+  LivePartitionedSeries). Runtime check still in place.
+
+- **Tier 2 query primitives on `LiveSeries` and `LiveView`** —
+  pure parity additions mirroring `TimeSeries`:
+  - `find(pred)`, `some(pred)`, `every(pred)` — O(N) predicate query
+  - `includesKey(key)`, `bisect(key)`, `atOrBefore(key)`,
+    `atOrAfter(key)` — O(log N) binary search on the sorted buffer
+
+  Use cases: "is there already an event with key K?" / "what was
+  the most recent event before time T?" Both come up in dashboard
+  patterns where the live buffer IS the working set.
+
+- **`KeyLike` type** exported from the package root (re-exported
+  from `TimeSeries`). Accepts `EventKey | TimestampInput |
+  TimeRangeInput | IntervalInput`; normalised by the new query
+  primitives.
+
+- **`DurationLiteral` and `DurationUnit` types** extracted from
+  `utils/duration.ts` and exported. Same shape as before, just
+  named.
+
+- **Concrete return types from partitioned rolling overloads.**
+  `LivePartitionedSeries.rolling` and `LivePartitionedView.rolling`
+  clock-trigger and fused-mapping overloads now return the concrete
+  `LivePartitionedSyncRolling` / `LivePartitionedFusedRolling`
+  classes (instead of bare `LiveSource<...>`), exposing `stats()`
+  to callers without a cast. Strictly additive — concrete classes
+  implement `LiveSource` plus `stats()`.
+
+### Changed
+
+- **`LiveSeries.clear()`** now increments the `evicted` counter
+  on `stats()` to match the existing `'evict'` listener fan-out.
+  Previously cleared the buffer and fired listeners but didn't
+  update the counter.
+- **`LiveSeries` insertion comparator** delegates to
+  `EventKey.compare` (was previously `begin/end` only). Affects
+  interval-keyed series with same-span / different-value
+  intervals: previously stored in arrival order — and broke
+  `bisect`/`includesKey` queries — now stored in value-ascending
+  order. Time-keyed and timeRange-keyed series unaffected.
+- **`LiveView.map(fn)` runtime check** rejects re-keying maps
+  that produce non-monotonic outputs. Throws `ValidationError`
+  at append time rather than silently breaking the view's
+  sorted-buffer invariant (which Tier 2 query primitives rely
+  on). Sane transforms (data-only maps, monotonic time-shifts)
+  unaffected.
+- **`LiveAggregationOptions.grace`** type tightened from
+  `DurationInput | \`${number}${unit}\`` (redundant union) to
+  just `DurationInput`. No behavioral change.
+
+### Notes
+
+- React package (`@pond-ts/react`) version-bumped lock-step; no
+  hook surface changes in this release. New core hooks
+  (`useLiveReduce`, `useStats`, optional-window `useEventRate`)
+  are queued for a follow-up — see PLAN.md for the design.
+- Codex caught real bugs on every Layer-2-reviewed PR in this
+  wave (1 HIGH + 1 MEDIUM on PR #123, 1 HIGH + 1 MEDIUM on
+  PR #124, 2 MEDIUM on PR #125). The Layer 2 + Codex two-pass
+  protocol earned its keep again.
 
 ## [0.15.2] — 2026-05-06
 
@@ -108,6 +237,7 @@ compaction); any downstream code reading `#entries` directly would
 break, but those fields are private. Public APIs and types are
 unchanged.
 
+[0.16.0]: https://github.com/pjm17971/pond-ts/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/pjm17971/pond-ts/compare/v0.15.1...v0.15.2
 
 ## [0.15.1] — 2026-05-05
