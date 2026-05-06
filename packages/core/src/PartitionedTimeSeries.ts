@@ -1,6 +1,6 @@
 import { TimeSeries } from './TimeSeries.js';
-import type { BoundedSequence } from './BoundedSequence.js';
-import type { Sequence } from './Sequence.js';
+import { BoundedSequence } from './BoundedSequence.js';
+import { Sequence } from './Sequence.js';
 import type { DurationInput } from './utils/duration.js';
 import type { TemporalLike } from './temporal.js';
 import type {
@@ -845,15 +845,14 @@ function augmentRollingArgsWithPartitionCols(
   augment: <M>(mapping: M) => M,
 ): unknown[] {
   if (args.length < 2) return args;
-  // SequenceLike is an object with a `stepMs` method; RollingWindow
-  // is a number, string, or DurationInput (object with stepMs is
-  // never a window). This check is the same one used inside
-  // `TimeSeries.rolling` to dispatch on arg shape.
+  // Use the same `instanceof` discriminator as `TimeSeries.rolling`'s
+  // own dispatch — `BoundedSequence` is a valid sequence-first arg
+  // but doesn't expose `stepMs`, so a duck-type check on `stepMs`
+  // would fall back to the (window, mapping) shape and corrupt the
+  // window arg as the mapping. Codex caught this on PR #128 review.
   const first = args[0];
   const isSequenceFirst =
-    first !== null &&
-    typeof first === 'object' &&
-    'stepMs' in (first as object);
+    first instanceof Sequence || first instanceof BoundedSequence;
   const mappingIdx = isSequenceFirst ? 2 : 1;
   if (mappingIdx >= args.length) return args;
   const out = [...args];

@@ -170,6 +170,27 @@ describe('PartitionedTimeSeries.rolling auto-inject of partition column', () => 
     ).not.toThrow();
   });
 
+  it('Codex regression pin: BoundedSequence as the sequence-first arg', () => {
+    // First-pass discriminator was a duck-type `'stepMs' in obj`,
+    // which catches Sequence but NOT BoundedSequence (BoundedSequence
+    // doesn't expose stepMs). That fell back to the (window, mapping)
+    // shape and would have corrupted the window arg as the mapping —
+    // `parseDuration` would then reject the spread-cloned object.
+    // TimeSeries.rolling's own dispatch uses `instanceof` for both,
+    // and the helper now matches.
+    const series = makeSeries();
+    const bounded = Sequence.every('1s').bounded({ start: 1000, end: 5000 });
+    expect(() =>
+      series.partitionBy('host').rolling(bounded, '2s', { cpu: 'avg' }),
+    ).not.toThrow();
+    // Schema still picks up the auto-injected partition column.
+    const out = series
+      .partitionBy('host')
+      .rolling(bounded, '2s', { cpu: 'avg' })
+      .collect();
+    expect(out.schema.map((c) => c.name)).toContain('host');
+  });
+
   it('output schema includes the partition column', () => {
     const series = makeSeries();
     const out = series.partitionBy('host').rolling(2, { cpu: 'avg' }).collect();
