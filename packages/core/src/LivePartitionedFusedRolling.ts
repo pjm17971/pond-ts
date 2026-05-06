@@ -500,7 +500,11 @@ export class LivePartitionedFusedRolling<
    *   decreases.
    * - `windowSize`: max live deque size across all partitions
    *   right now. Useful for spotting partition skew. Returns 0
-   *   when no partitions exist.
+   *   when no partitions exist. **Note:** "across partitions"
+   *   here, not "across windows" (per-partition deques are
+   *   already shared across all declared windows). See the
+   *   {@link LivePartitionedSyncRolling.stats} cross-reference
+   *   for the same axis-vs-name caveat.
    * - `windowsCount`: number of declared windows. Static after
    *   construction.
    */

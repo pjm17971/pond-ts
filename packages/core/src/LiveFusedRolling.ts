@@ -322,8 +322,9 @@ export class LiveFusedRolling<
    * Pipeline stats snapshot — cumulative counters since
    * construction plus current shared-deque state. Cheap O(1).
    *
-   * - `eventsObserved`: total source events ingested. Never
-   *   decreases.
+   * - `eventsObserved`: total source events ingested. Includes
+   *   events replayed at construction from a non-empty source.
+   *   Never decreases.
    * - `evictions`: total events that have aged out of every
    *   declared window (= shared-deque front advances). Each value
    *   counts a single source event, regardless of how many
@@ -335,6 +336,10 @@ export class LiveFusedRolling<
    * - `windowSize`: current live size of the shared deque
    *   (= max across all windows' live counts). Use
    *   {@link LiveFusedRolling.value} for per-window snapshots.
+   *   **Note:** the partitioned variant
+   *   {@link LivePartitionedSyncRolling.stats} also has a
+   *   `windowSize` field, but it means "max across partitions"
+   *   rather than "max across windows." Different axis, same name.
    * - `windowsCount`: number of declared windows. Static after
    *   construction.
    */

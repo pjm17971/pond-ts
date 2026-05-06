@@ -102,6 +102,27 @@ describe('LiveSeries.stats', () => {
     ]);
     expect(live.stats().ingested).toBe(3);
   });
+
+  it('clear() increments evicted by the buffer size (matches evict listener fan-out)', () => {
+    const live = makeLive();
+    live.pushMany([
+      [1000, 1, 'a'],
+      [2000, 2, 'a'],
+      [3000, 3, 'a'],
+    ]);
+    expect(live.stats().evicted).toBe(0);
+    live.clear();
+    const s = live.stats();
+    expect(s.evicted).toBe(3);
+    expect(s.length).toBe(0);
+    expect(s.ingested).toBe(3); // ingested is sticky
+  });
+
+  it('clear() on an empty buffer does NOT increment evicted', () => {
+    const live = makeLive();
+    live.clear();
+    expect(live.stats().evicted).toBe(0);
+  });
 });
 
 // ── LiveRollingAggregation ─────────────────────────────────────
@@ -158,6 +179,23 @@ describe('LiveRollingAggregation.stats', () => {
     expect(s.eventsObserved).toBe(10);
     expect(s.emissions).toBe(3); // floor(10 / 3)
   });
+
+  it('replay-on-construction counts toward eventsObserved', () => {
+    // Fill the source before constructing the rolling; the rolling
+    // replays existing buffer entries through its #ingest path, so
+    // the counter should reflect the replay.
+    const live = makeLive();
+    live.pushMany([
+      [1000, 1, 'a'],
+      [2000, 2, 'a'],
+      [3000, 3, 'a'],
+    ]);
+    const rolling = live.rolling(5, { value: 'avg' });
+    const s = rolling.stats();
+    expect(s.eventsObserved).toBe(3);
+    expect(s.emissions).toBe(3);
+    expect(s.windowSize).toBe(3);
+  });
 });
 
 // ── LiveFusedRolling ───────────────────────────────────────────
@@ -209,6 +247,32 @@ describe('LiveFusedRolling.stats', () => {
     // Live window should hold roughly 5-6 events (5s window at 1s spacing).
     expect(s.windowSize).toBeGreaterThan(0);
     expect(s.windowSize).toBeLessThanOrEqual(6);
+  });
+
+  it('Trigger.count diverges emissions from eventsObserved', () => {
+    const live = makeLive();
+    const fused = live.rolling(
+      { '5s': { value: 'avg' } },
+      { trigger: Trigger.count(4) },
+    );
+    for (let i = 1; i <= 10; i++) {
+      live.push([i * 1000, i, 'a']);
+    }
+    const s = fused.stats();
+    expect(s.eventsObserved).toBe(10);
+    expect(s.emissions).toBe(2); // floor(10 / 4)
+  });
+
+  it('replay-on-construction counts toward eventsObserved', () => {
+    const live = makeLive();
+    live.pushMany([
+      [1000, 1, 'a'],
+      [2000, 2, 'a'],
+    ]);
+    const fused = live.rolling({ '5s': { value: 'avg' } });
+    const s = fused.stats();
+    expect(s.eventsObserved).toBe(2);
+    expect(s.emissions).toBe(2);
   });
 });
 
@@ -270,6 +334,33 @@ describe('LiveAggregation.stats', () => {
     const observedBefore = agg.stats().eventsObserved;
     live.push([1500, 999, 'a']);
     expect(agg.stats().eventsObserved).toBe(observedBefore);
+  });
+
+  it('source-side retention does not affect agg counters (counters are forward-only)', () => {
+    // The aggregation tracks events it has seen; it does not
+    // reach back to remove counter contributions when the source
+    // evicts an event. Verifies retention on the source doesn't
+    // muddy the agg's stats counter — the bucket has already
+    // been closed by the time eviction happens.
+    const live = makeLive({ retention: { maxEvents: 2 } });
+    const agg = live.aggregate(Sequence.every('1s'), { value: 'avg' });
+    live.push([1000, 1, 'a']);
+    live.push([2500, 2, 'a']);
+    live.push([3500, 3, 'a']); // source evicts the t=1000 event
+    const s = agg.stats();
+    expect(s.eventsObserved).toBe(3); // all three contributed
+    expect(s.bucketsClosed).toBeGreaterThanOrEqual(1);
+    expect(live.stats().evicted).toBe(1); // verify source DID evict
+  });
+
+  it('replay-on-construction counts toward eventsObserved', () => {
+    const live = makeLive();
+    live.pushMany([
+      [1000, 1, 'a'],
+      [2000, 2, 'a'],
+    ]);
+    const agg = live.aggregate(Sequence.every('1s'), { value: 'avg' });
+    expect(agg.stats().eventsObserved).toBe(2);
   });
 });
 
@@ -340,6 +431,22 @@ describe('LiveReduce.stats', () => {
     const s = r.stats();
     expect(s.eventsObserved).toBe(5);
     expect(s.evictions).toBe(2);
+    expect(s.bufferSize).toBe(3);
+  });
+
+  it('replay-on-construction counts toward eventsObserved', () => {
+    // LiveReduce replays source.at(i) through #ingest at
+    // construction. No microtask flush needed — the replay path
+    // increments eventsObserved synchronously inside the for-loop.
+    const live = makeLive();
+    live.pushMany([
+      [1000, 1, 'a'],
+      [2000, 2, 'a'],
+      [3000, 3, 'a'],
+    ]);
+    const r = live.reduce({ value: 'count' });
+    const s = r.stats();
+    expect(s.eventsObserved).toBe(3);
     expect(s.bufferSize).toBe(3);
   });
 });
@@ -429,6 +536,22 @@ describe('LivePartitionedSyncRolling.stats', () => {
     live.push([5000, 4, 'a']);
     expect(sync.stats().windowSize).toBe(4);
   });
+
+  it('windowSize stays bounded when the time window drops old events', () => {
+    // Time-based eviction inside the sync rolling itself — the 500ms
+    // window at 100ms cadence holds ~5 events at any time, regardless
+    // of total eventsObserved.
+    const live = makeLive();
+    const sync = live
+      .partitionBy('host')
+      .rolling('500ms', { value: 'avg' }, { trigger: Trigger.every('100ms') });
+    for (let i = 1; i <= 20; i++) {
+      live.push([i * 100, i, 'a']);
+    }
+    const s = sync.stats();
+    expect(s.eventsObserved).toBe(20);
+    expect(s.windowSize).toBeLessThanOrEqual(6);
+  });
 });
 
 // ── LivePartitionedFusedRolling ────────────────────────────────
@@ -483,16 +606,21 @@ describe('stats() cross-class invariants', () => {
     expect(s.latestTs).toBe(ts.last()?.begin());
   });
 
-  it('counters do not allocate per-event (smoke test on hot path)', () => {
+  it('counter values stay correct across 10k events (no overflow / drift)', () => {
+    // Sustained-volume smoke test. NOT a real allocation
+    // measurement — that would need v8 heap sampling or a
+    // process.memoryUsage() delta with GC control. This pins
+    // counter correctness under load instead, which is the
+    // observable property users actually rely on.
     const live = makeLive();
     const rolling = live.rolling(100, { value: 'avg' });
-    // Push enough events to surface allocation regressions if any
-    // counter accidentally wraps in an object.
     for (let i = 0; i < 10_000; i++) {
       live.push([i, i, 'a']);
     }
     const s = rolling.stats();
     expect(s.eventsObserved).toBe(10_000);
     expect(s.emissions).toBe(10_000);
+    // Source-side stats also stay consistent at scale.
+    expect(live.stats().ingested).toBe(10_000);
   });
 });

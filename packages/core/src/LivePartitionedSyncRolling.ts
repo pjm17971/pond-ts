@@ -446,7 +446,11 @@ export class LivePartitionedSyncRolling<
    * - `windowSize`: max across all partitions' live window counts
    *   right now. Useful for spotting partition skew (one
    *   partition's deque blowing up while others stay small).
-   *   Returns 0 when no partitions exist.
+   *   Returns 0 when no partitions exist. **Note:** the
+   *   non-partitioned {@link LiveFusedRolling.stats} also has a
+   *   `windowSize` field, but it means "max across windows"
+   *   rather than "max across partitions." Different axis, same
+   *   name.
    */
   stats(): {
     partitions: number;

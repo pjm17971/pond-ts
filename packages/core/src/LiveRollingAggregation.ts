@@ -368,8 +368,9 @@ export class LiveRollingAggregation<
    * Pipeline stats snapshot — cumulative counters since
    * construction plus current window state. Cheap O(1).
    *
-   * - `eventsObserved`: total source events ingested. Never
-   *   decreases.
+   * - `eventsObserved`: total source events ingested. Includes
+   *   events replayed at construction from a non-empty source.
+   *   Never decreases.
    * - `evictions`: total entries removed from the window by
    *   retention. Never decreases.
    * - `emissions`: total output events fired. Never decreases.

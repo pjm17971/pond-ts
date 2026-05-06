@@ -429,6 +429,11 @@ export class LiveSeries<S extends SeriesSchema> {
     const evicted = this.#events;
     this.#events = [];
     if (evicted.length > 0) {
+      // `clear()` is observable via the same `'evict'` channel as
+      // retention-driven removal, so it increments the same
+      // `evicted` counter on `stats()` for consistency. JSDoc on
+      // `stats().evicted` documents both paths.
+      this.#statsEvicted += evicted.length;
       for (const fn of this.#onEvict) fn(evicted);
     }
   }
@@ -726,8 +731,10 @@ export class LiveSeries<S extends SeriesSchema> {
    *
    * - `ingested`: total events accepted (after validation +
    *   `#insert`). Never decreases.
-   * - `evicted`: total events removed by retention. Never
-   *   decreases.
+   * - `evicted`: total events removed from the buffer — by
+   *   retention OR by an explicit {@link LiveSeries.clear} call.
+   *   Both paths fire the `'evict'` listener; this counter
+   *   matches that same fan-out. Never decreases.
    * - `rejected`: total events silently rejected (drop-mode
    *   out-of-order arrivals). Strict / reorder modes throw on
    *   rejection — those don't count here.

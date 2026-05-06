@@ -260,8 +260,9 @@ export class LiveReduce<
    * construction plus current reducer-state size. Cheap O(1).
    *
    * - `eventsObserved`: total source events ingested into reducer
-   *   state. Replay events at construction count here too. Never
-   *   decreases.
+   *   state. Includes events replayed at construction from a
+   *   non-empty source — phrased uniformly with sibling classes'
+   *   stats() docs. Never decreases.
    * - `evictions`: total events removed from reducer state via
    *   the source's `'evict'` channel. Events that predated this
    *   `LiveReduce` (so weren't in `#eventToAbsIdx`) don't count.
@@ -273,6 +274,15 @@ export class LiveReduce<
    * - `bufferSize`: current count of events in reducer state
    *   (= `eventsObserved - evictions`). Tracks the source's
    *   current retained buffer that this reduce sees.
+   *
+   * **`bufferSize` is only meaningful when the source emits
+   * `'evict'`.** This class subscribes to `'evict'` only when
+   * the source is marked with `EMITS_EVICT` (see class JSDoc).
+   * If a future `LiveSource` impl evicts internally without
+   * emitting `'evict'`, `evictions` stays at 0 and `bufferSize`
+   * grows monotonically — silently wrong. Today every pond
+   * source that evicts also marks `EMITS_EVICT`, so this is
+   * theoretical, but the contract is load-bearing.
    */
   stats(): {
     eventsObserved: number;

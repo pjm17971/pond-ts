@@ -282,11 +282,12 @@ export class LiveAggregation<
    * construction plus current bucket-state. Cheap O(1).
    *
    * - `eventsObserved`: total source events that contributed to a
-   *   bucket. Late events (those whose bucket was already closed
-   *   under the watermark + grace window) are silently dropped
-   *   and do NOT increment this counter — match the silent-drop
-   *   shape in {@link LiveSeries.stats} for late-event handling.
-   *   Never decreases.
+   *   bucket. Includes events replayed at construction from a
+   *   non-empty source. Late events (those whose bucket was
+   *   already closed under the watermark + grace window) are
+   *   silently dropped and do NOT increment this counter — match
+   *   the silent-drop shape in {@link LiveSeries.stats} for
+   *   late-event handling. Never decreases.
    * - `bucketsClosed`: total buckets finalized (= length of the
    *   closed-event stream, also exposed via `length`). Never
    *   decreases.
