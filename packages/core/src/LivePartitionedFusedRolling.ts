@@ -41,10 +41,23 @@ type WindowState = {
  * Per-partition state. Each partition has its own shared deque and
  * its own array of per-window states (one entry per declared
  * window).
+ *
+ * Eviction uses a head-index pointer (`frontIdx`) instead of
+ * `Array.shift()` — at high event rates a partition's deque can
+ * hold thousands of entries and shift is worst-case O(N). The
+ * pointer makes eviction O(1) per event; periodic batched
+ * compaction keeps the underlying array bounded.
  */
 type PartitionState = {
   /** Shared deque for this partition (sized by longest window). */
   entries: FusedEntry[];
+  /**
+   * Live front of `entries` — the array index of the leftmost
+   * still-live entry. `entries[frontIdx]` is the front; the slice
+   * `entries[frontIdx..]` is the live deque. Once any compaction
+   * has run, never read `entries[0]` directly.
+   */
+  frontIdx: number;
   /** Per-window state in declared order. */
   windows: WindowState[];
   /** Monotonic event index across this partition's lifetime. */
@@ -58,6 +71,9 @@ type FusedEntry = {
 };
 
 type EventListener = (event: any) => void;
+
+// Compaction policy: see {@link LiveFusedRolling}'s analogous
+// comment. Proportional guard only — `frontIdx > entries.length / 2`.
 
 /**
  * Per-partition column-spec template. Captured once at construction
@@ -331,6 +347,7 @@ export class LivePartitionedFusedRolling<
     }));
     state = {
       entries: [],
+      frontIdx: 0,
       windows,
       nextIndex: 0,
     };
@@ -373,23 +390,45 @@ export class LivePartitionedFusedRolling<
     }
   }
 
+  /**
+   * Translate an absolute event index to the live entry in
+   * `state.entries`, accounting for the head-index pointer. Returns
+   * `undefined` if the entry has been evicted past the front
+   * (absIdx < live front) or is past the tail (absIdx >= nextIndex).
+   */
   #getEntry(state: PartitionState, absIdx: number): FusedEntry | undefined {
-    if (state.entries.length === 0) return undefined;
-    const front = state.entries[0]!.absIdx;
+    if (state.frontIdx >= state.entries.length) return undefined;
+    const front = state.entries[state.frontIdx]!.absIdx;
     const offset = absIdx - front;
-    if (offset < 0 || offset >= state.entries.length) return undefined;
-    return state.entries[offset];
+    if (offset < 0) return undefined;
+    const arrayIdx = state.frontIdx + offset;
+    if (arrayIdx >= state.entries.length) return undefined;
+    return state.entries[arrayIdx];
   }
 
+  /**
+   * Drop entries from the front of this partition's deque whose
+   * absIdx is less than every window's head. Uses the head-index
+   * pointer for O(1) per-event eviction; periodic batched
+   * compaction keeps the array bounded. See
+   * {@link LiveFusedRolling.#compactFront} for the pattern.
+   */
   #compactPartitionFront(state: PartitionState): void {
-    if (state.entries.length === 0) return;
+    if (state.frontIdx >= state.entries.length) return;
     let minHead = state.windows[0]!.head;
     for (let i = 1; i < state.windows.length; i++) {
       const h = state.windows[i]!.head;
       if (h < minHead) minHead = h;
     }
-    while (state.entries.length > 0 && state.entries[0]!.absIdx < minHead) {
-      state.entries.shift();
+    while (
+      state.frontIdx < state.entries.length &&
+      state.entries[state.frontIdx]!.absIdx < minHead
+    ) {
+      state.frontIdx++;
+    }
+    if (state.frontIdx > state.entries.length / 2) {
+      state.entries.splice(0, state.frontIdx);
+      state.frontIdx = 0;
     }
   }
 
@@ -443,11 +482,14 @@ export class LivePartitionedFusedRolling<
   /**
    * Number of events currently in window `w`'s reducer state for
    * partition `state`. Used for the per-window minSamples gate.
+   * Live deque is `entries[frontIdx..]`; tail absIdx is
+   * `frontEntry.absIdx + liveLen`.
    */
   #windowSizeIn(state: PartitionState, w: WindowState): number {
-    if (state.entries.length === 0) return 0;
-    const frontAbsIdx = state.entries[0]!.absIdx;
-    return state.entries.length - (w.head - frontAbsIdx);
+    if (state.frontIdx >= state.entries.length) return 0;
+    const liveLen = state.entries.length - state.frontIdx;
+    const frontAbsIdx = state.entries[state.frontIdx]!.absIdx;
+    return liveLen - (w.head - frontAbsIdx);
   }
 }
 

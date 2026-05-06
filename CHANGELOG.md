@@ -7,9 +7,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.15.2...HEAD
 
 ## [Unreleased]
+
+## [0.15.2] — 2026-05-06
+
+Performance fix for live rolling at firehose rates. The gRPC
+experiment's step 6
+([pond-grpc-experiment#26](https://github.com/pjm17971/pond-grpc-experiment/pull/26))
+attempted to use the non-partitioned `live.rolling({...}, opts)`
+overload for global counters and saw throughput collapse from 88k/s
+to 21k/s — a 4× regression even worse than the V7→V6 gap that
+motivated v0.15.0. The cliff is the same `Array.shift()` pattern
+already flagged as queued tactical work in PLAN; the gRPC encounter
+made it urgent.
+
+### Fixed
+
+- **Eviction is now O(1) per ingest in all live rolling classes.**
+  Replaced `entries.shift()` (worst-case O(N) on the deque length)
+  with a head-index pointer + periodic batched compaction:
+  - `LiveFusedRolling.#compactFront` — non-partitioned multi-window
+  - `LivePartitionedFusedRolling.#compactPartitionFront` —
+    per-partition fused
+  - `LiveRollingAggregation.#removeFirst` — single-window
+    non-partitioned
+  - `LivePartitionedSyncRolling.#evictPartition` — per-partition
+    single-window synced
+
+  The pattern: track a `frontIdx` field; "evicting" advances the
+  pointer instead of shifting. When the dead prefix grows past
+  half the array length, batch-splice it off and reset the
+  pointer. Per-event cost stays O(1) amortized at every live-
+  window size — each surviving entry is copied at most once
+  between two compactions, and compactions fire at most every
+  (live-size) events.
+
+  An earlier draft also compacted on a fixed 1024-entry threshold;
+  Codex's adversarial review on PR #119 caught that this would
+  reintroduce O(live_size / 1024) per-eviction cost on large
+  windows (100k+ live entries) — the threshold would fire
+  repeatedly and copy the entire live slice each time. The
+  proportional guard alone has the right amortization invariant.
+
+### Performance
+
+`packages/core/scripts/perf-fused-rolling.mjs` — new regression
+scenario that reproduces the cliff (50k-event deque with continuous
+eviction):
+
+```
+Worst-case shift pattern (50s window, 50k fill + 50k evict):
+                    median (ms)   min (ms)   max (ms)
+  pre-fix              1123.12     1118.47    1149.95
+  v0.15.2                53.00       52.34      53.56
+  speedup                21.2×
+
+Steady-state deque, no eviction (5m window, 200k events):
+                    median (ms)   min (ms)   max (ms)
+  pre-fix                91.28       89.84      97.04
+  v0.15.2                99.28       96.80     103.94
+  delta                  +9% (within noise)
+```
+
+The fix targets the eviction-loop case specifically. Workloads with
+no eviction (or rare eviction relative to ingest) see no change —
+V8's internal hidden-offset optimization handles those well. The
+cliff appears once eviction fires per-ingest at large deque size,
+which is exactly the firehose-rolling shape.
+
+### Why the cliff was hidden
+
+V8's `Array.shift()` is amortized O(1) for shift-heavy workloads up
+to ~10k-element arrays — it maintains a hidden offset and only
+periodically compacts. Beyond that size or with mixed access
+patterns, the optimization breaks down and shift falls back to true
+O(N) memcpy. The bench scales from 1k to 50k deque sizes and the
+cliff appears around 30k-40k. Pond's tests pin behavior at small
+window sizes; the cliff was invisible to the test suite, only
+showed up under the gRPC experiment's firehose load.
+
+### What this unlocks
+
+The agent's manual-counter workaround in `aggregator/src/aggregate.ts`
+can now drop. The natural shape — a non-partitioned
+`live.rolling({...}, { trigger })` over the firehose — is now
+viable at the rates the experiment cares about. PLAN's
+"`samples` reducer would exhibit a similar shape at firehose"
+caveat also resolves: same fix in the same call sites covers
+samples too.
+
+### Note for downstream consumers
+
+This is a **strict-additive perf fix.** All output behavior is
+preserved — same eviction order, same emission timing, same
+snapshot values. The deque's internal representation changed
+(`#entries[0]` may now be a logically-evicted entry until periodic
+compaction); any downstream code reading `#entries` directly would
+break, but those fields are private. Public APIs and types are
+unchanged.
+
+[0.15.2]: https://github.com/pjm17971/pond-ts/compare/v0.15.1...v0.15.2
 
 ## [0.15.1] — 2026-05-05
 
