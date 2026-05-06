@@ -7,9 +7,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.16.1...HEAD
 
 ## [Unreleased]
+
+## [0.16.1] — 2026-05-06
+
+Patch wave addressing one ergonomic gap surfaced by the gRPC
+experiment ([pond-grpc-experiment#29](https://github.com/pjm17971/pond-grpc-experiment/pull/29))
+plus the v0.16.0 docs deploy that broke since v0.15.2.
+
+### Added
+
+- **`PartitionedTimeSeries.aggregate(...)` and `.rolling(...)` now
+  auto-inject the partition column into the user's mapping**
+  ([#128](https://github.com/pjm17971/pond-ts/pull/128)). The
+  natural shape just works:
+
+  ```ts
+  series
+    .partitionBy('host')
+    .aggregate(Sequence.every('600ms'), { cpu_avg: 'avg' });
+  ```
+
+  Pre-fix this threw `column "host" not in schema` at the rewrap
+  step because the user's mapping didn't carry the partition
+  column through; users had to add `host: 'first'` mechanically
+  to every partitioned-aggregate call. Pond now adds it
+  automatically — `'first'` is by-construction-correct since
+  every row in a single partition shares that column's value.
+  User-supplied mappings for the partition column win (auto-
+  inject is a no-op when the user has already opted in).
+  Composite partitions (`partitionBy(['host', 'region'])`)
+  auto-inject every partition column. Strictly additive — the
+  pre-fix workaround pattern still works unchanged.
+
+### Fixed
+
+- **Docs deploy workflow unblocked**
+  ([#126](https://github.com/pjm17971/pond-ts/pull/126)). Has
+  been failing since v0.15.2 with `Cannot find name
+  'queueMicrotask'` — TypeDoc runs the same tsconfig as the
+  npm-publish path but from a different cwd, where `@types/node`
+  doesn't resolve. Fixed via a one-line ambient declaration in
+  `LiveReduce.ts`. No runtime change; `queueMicrotask` is still
+  the host-provided global it always was.
+
+### Changed
+
+- **Updated `LiveSeries` tool comparisons in the docs**
+  ([#127](https://github.com/pjm17971/pond-ts/pull/127)).
+  Tightened the Beam/Flink, PondJS, and pandas comparison tables
+  to be technically accurate. Doc prose only; no code change.
+
+### Notes
+
+- **Captured `@pond-ts/charts` design constraints in PLAN.md**
+  ([#128](https://github.com/pjm17971/pond-ts/pull/128)). The
+  gRPC experiment's M3.5 friction note hit Recharts' SVG render
+  cliff at firehose loads (~75-80k SVG nodes per render, ~1 fps
+  at 10 hosts × 70k events/s). Four constraints from real
+  workload now baked into the plan so the eventual extraction
+  starts with the answer key — not new code, just durable
+  design capture.
 
 ## [0.16.0] — 2026-05-06
 
@@ -237,6 +297,7 @@ compaction); any downstream code reading `#entries` directly would
 break, but those fields are private. Public APIs and types are
 unchanged.
 
+[0.16.1]: https://github.com/pjm17971/pond-ts/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/pjm17971/pond-ts/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/pjm17971/pond-ts/compare/v0.15.1...v0.15.2
 
