@@ -1,26 +1,24 @@
 /**
- * Type-level tests for `live.sample({...})`. The headline pin: the
- * pre-partition call sites (`LiveSeries.sample`, `LiveView.sample`)
- * require `unsafeGlobal: true` in the strategy; the partitioned call
- * sites (`LivePartitionedSeries.sample`, `LivePartitionedView.sample`)
- * accept `SampleStrategy` directly with no token.
+ * Type-level tests for `live.sample({...})`.
  *
- * v0.17.0 ships **stride only** on the live side. `SampleStrategy` /
- * `GlobalSampleStrategy` therefore expose `{ stride: number }` only;
- * reservoir lives on `BatchSampleStrategy` (snapshot-side, used by
- * `TimeSeries.sample` / `PartitionedTimeSeries.sample`).
+ * v0.17.0 ships **stride only** on the live side. `SampleStrategy` is
+ * `{ stride: number }`; reservoir lives on `BatchSampleStrategy`
+ * (snapshot-side, used by `TimeSeries.sample` /
+ * `PartitionedTimeSeries.sample`).
  *
- * The bias trap was first surfaced by the gRPC experiment's M3.5
- * prototype: a global stride counter against round-robin host order
- * silently dropped 90% of hosts. This file pins that pre-partition
- * call sites cannot compile without the acknowledgment token.
+ * Multi-entity bias trap (gRPC experiment's M3.5 prototype: stride-10
+ * against round-robin host order silently kept 8 of 80 hosts) is
+ * documented in the operator JSDoc, not gated through a type-level
+ * token — same convention as `rolling` / `aggregate` / `fill` /
+ * `diff` / `rate` / `cumulative` / `pctChange` / `reduce`, all of
+ * which silently mix entities on a multi-entity stream unless scoped
+ * per-partition first.
  */
 import {
   LiveSeries,
   LiveView,
   TimeSeries,
   type BatchSampleStrategy,
-  type GlobalSampleStrategy,
   type SampleStrategy,
 } from '../src/index.js';
 
@@ -32,37 +30,24 @@ const schema = [
 
 const live = new LiveSeries({ name: 'metrics', schema });
 
-// ── LiveSeries.sample requires unsafeGlobal: true ───────────────
+// ── LiveSeries.sample accepts SampleStrategy directly ───────────
 
-// @ts-expect-error — bare { stride: N } on LiveSeries must require unsafeGlobal
-const _bare = live.sample({ stride: 10 });
-void _bare;
-
-// @ts-expect-error — { reservoir } is not a live-side strategy in v0.17.0
-const _resLive = live.sample({ reservoir: { size: 100 }, unsafeGlobal: true });
-void _resLive;
-
-// With unsafeGlobal: true and stride, compiles.
-const _stride = live.sample({ stride: 10, unsafeGlobal: true });
+const _stride = live.sample({ stride: 10 });
 void _stride;
 
-// ── LiveView.sample requires unsafeGlobal: true ─────────────────
+// @ts-expect-error — { reservoir } is not a live-side strategy in v0.17.0
+const _resLive = live.sample({ reservoir: { size: 100 } });
+void _resLive;
+
+// ── LiveView.sample is the same shape ───────────────────────────
 
 const view = live.filter((e) => (e.get('value') as number) > 0);
-
-// @ts-expect-error — bare strategy on LiveView must require unsafeGlobal
-const _viewBare = view.sample({ stride: 10 });
-void _viewBare;
-
-// With unsafeGlobal: true, compiles.
-const _viewStride = view.sample({ stride: 10, unsafeGlobal: true });
+const _viewStride = view.sample({ stride: 10 });
 void _viewStride;
 
-// ── LivePartitionedSeries.sample is safe (no token needed) ──────
+// ── LivePartitionedSeries.sample is the safe-by-construction shape ──
 
 const partitioned = live.partitionBy('host');
-
-// Bare stride compiles cleanly — partitioned is safe by construction.
 const _safe = partitioned.sample({ stride: 10 });
 void _safe;
 
@@ -70,7 +55,7 @@ void _safe;
 const _safeRes = partitioned.sample({ reservoir: { size: 100 } });
 void _safeRes;
 
-// ── LivePartitionedView.sample is safe ─────────────────────────
+// ── LivePartitionedView.sample chains cleanly ──────────────────
 
 const chained = partitioned.fill({ value: 'hold' });
 const _chainedSafe = chained.sample({ stride: 10 });
@@ -78,25 +63,21 @@ void _chainedSafe;
 
 // ── Return types ────────────────────────────────────────────────
 
-// LiveSeries.sample → LiveView<S> (so the chainable surface is available).
+// LiveSeries.sample → LiveView<S> (chainable surface available).
 declare const _liveViewType: LiveView<typeof schema>;
-const fromLive = live.sample({ stride: 10, unsafeGlobal: true });
+const fromLive = live.sample({ stride: 10 });
 const _checkLive: typeof _liveViewType = fromLive;
 void _checkLive;
 
 // Chainable post-sample (was a v0.16.x gap caught in PR #129 review).
 const _chained = live
-  .sample({ stride: 10, unsafeGlobal: true })
+  .sample({ stride: 10 })
   .filter((e) => (e.get('value') as number) > 0);
 void _chained;
 
 // SampleStrategy is stride-only on the live surface in v0.17.0.
 const _stridStrat: SampleStrategy = { stride: 10 };
 void _stridStrat;
-
-// GlobalSampleStrategy is stride-only with the token.
-const _globalStrat: GlobalSampleStrategy = { stride: 10, unsafeGlobal: true };
-void _globalStrat;
 
 // BatchSampleStrategy (snapshot-side) covers both stride and reservoir.
 const _batchStride: BatchSampleStrategy = { stride: 10 };

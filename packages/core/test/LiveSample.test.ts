@@ -41,20 +41,20 @@ function makePartLive(opts?: { retention?: { maxAge?: string } }) {
 describe('LiveSeries.sample({ stride })', () => {
   it('returns a LiveView so the chainable surface is available', () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 2, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 2 });
     expect(sampled).toBeInstanceOf(LiveView);
   });
 
   it('keeps every Nth event (stride=1 keeps all)', () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 1, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 1 });
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     expect(sampled.length).toBe(10);
   });
 
   it('stride=2 keeps every other event (deterministic)', () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 2, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 2 });
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     expect(sampled.length).toBe(5);
     // The first event passes stride=2 only on the SECOND ingest (1-indexed
@@ -67,14 +67,14 @@ describe('LiveSeries.sample({ stride })', () => {
 
   it('stride=10 keeps 1 in 10', () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 10, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 10 });
     for (let i = 1; i <= 100; i++) live.push([i * 1000, i]);
     expect(sampled.length).toBe(10);
   });
 
   it('does not affect parent series length or events', () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 5, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 5 });
     for (let i = 1; i <= 20; i++) live.push([i * 1000, i]);
     expect(live.length).toBe(20);
     expect(sampled.length).toBe(4);
@@ -82,28 +82,22 @@ describe('LiveSeries.sample({ stride })', () => {
 
   it('throws on non-positive-integer stride', () => {
     const live = makeLive();
-    expect(() => live.sample({ stride: 0, unsafeGlobal: true })).toThrow(
-      /positive integer/,
-    );
-    expect(() => live.sample({ stride: -1, unsafeGlobal: true })).toThrow(
-      /positive integer/,
-    );
-    expect(() => live.sample({ stride: 1.5, unsafeGlobal: true })).toThrow(
-      /positive integer/,
-    );
+    expect(() => live.sample({ stride: 0 })).toThrow(/positive integer/);
+    expect(() => live.sample({ stride: -1 })).toThrow(/positive integer/);
+    expect(() => live.sample({ stride: 1.5 })).toThrow(/positive integer/);
   });
 
   it('replays existing events on construction', () => {
     const live = makeLive();
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     // sample created AFTER events already exist — should replay through ingest path.
-    const sampled = live.sample({ stride: 2, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 2 });
     expect(sampled.length).toBe(5);
   });
 
   it("fires 'event' listener for each kept event", () => {
     const live = makeLive();
-    const sampled = live.sample({ stride: 3, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 3 });
     const seen: number[] = [];
     sampled.on('event', (e) => seen.push(e.get('value') as number));
     for (let i = 1; i <= 9; i++) live.push([i * 1000, i]);
@@ -120,7 +114,7 @@ describe('LiveSeries.sample({ stride }) eviction tracking', () => {
       schema,
       retention: { maxEvents: 5 },
     });
-    const sampled = live.sample({ stride: 2, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 2 });
     // Push 10 events. Source retains last 5; sampled buffer shrinks accordingly.
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     expect(live.length).toBe(5); // [6, 7, 8, 9, 10]
@@ -138,7 +132,7 @@ describe('LiveSeries.sample({ stride }) eviction tracking', () => {
       schema,
       retention: { maxEvents: 3 },
     });
-    const sampled = live.sample({ stride: 1, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 1 });
     const evicted: number[] = [];
     sampled.on('evict', (events) => {
       for (const e of events) evicted.push(e.get('value') as number);
@@ -153,7 +147,7 @@ describe('LiveSeries.sample({ stride }) eviction tracking', () => {
     // last evicted source event is itself evicted, not retained.
     const live = makeLive();
     // Stride=1 keeps every event so we can target a specific begin().
-    const sampled = live.sample({ stride: 1, unsafeGlobal: true });
+    const sampled = live.sample({ stride: 1 });
     live.push([1000, 1], [2000, 2], [3000, 3]);
     expect(sampled.length).toBe(3);
     // Evict via clear — fires 'evict' with all three events.
@@ -164,7 +158,7 @@ describe('LiveSeries.sample({ stride }) eviction tracking', () => {
 
 // ── Per-partition sample (the safe-by-construction shape) ───────
 
-describe('LivePartitionedSeries.sample (no unsafeGlobal needed)', () => {
+describe('LivePartitionedSeries.sample (safe by construction)', () => {
   it('thins each partition independently with stride', () => {
     const live = makePartLive();
     const sampled = live
@@ -241,7 +235,7 @@ describe('sample composes with downstream rolling and reduce', () => {
     // so all view-level operators chain naturally.
     const live = makeLive();
     const filtered = live
-      .sample({ stride: 2, unsafeGlobal: true })
+      .sample({ stride: 2 })
       .filter((e) => (e.get('value') as number) > 5);
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     // Stride=2 keeps [2, 4, 6, 8, 10]; filter > 5 → [6, 8, 10].
@@ -254,9 +248,7 @@ describe('sample composes with downstream rolling and reduce', () => {
 
   it('LiveSeries.sample().rolling() — pre-partition stride feeds rolling', () => {
     const live = makeLive();
-    const rolling = live
-      .sample({ stride: 2, unsafeGlobal: true })
-      .rolling(5, { value: 'avg' });
+    const rolling = live.sample({ stride: 2 }).rolling(5, { value: 'avg' });
     for (let i = 1; i <= 10; i++) live.push([i * 1000, i]);
     // Stride=2 → 5 events. Count-based window=5 fires once full.
     expect(rolling.length).toBeGreaterThan(0);

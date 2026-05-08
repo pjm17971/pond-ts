@@ -8,7 +8,7 @@ import {
 } from './LiveRollingAggregation.js';
 import { LiveFusedRolling } from './LiveFusedRolling.js';
 import { LiveReduce } from './LiveReduce.js';
-import type { GlobalSampleStrategy } from './sample.js';
+import type { SampleStrategy } from './sample.js';
 import { TimeSeries, toKey, type KeyLike } from './TimeSeries.js';
 import type { Sequence } from './Sequence.js';
 import {
@@ -272,13 +272,14 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
 
   /**
    * Bounded-memory stream sampling on a `LiveView`. Same semantics as
-   * `LiveSeries.sample` — stride only on the live side in v0.17.0,
-   * `unsafeGlobal: true` required because a `LiveView` derived from a
-   * structured source carries the same bias-trap risk as a raw
-   * `LiveSeries`. Chain after `partitionBy` for the safe-by-construction
-   * shape.
+   * `LiveSeries.sample` — stride only on the live side in v0.17.0.
+   *
+   * **Multi-entity bias trap** applies here too: a `LiveView` derived
+   * from a multi-entity source carries the same bias risk. Chain after
+   * `partitionBy(...)` for the safe-by-construction shape; see
+   * `LiveSeries.sample` for the full discussion.
    */
-  sample(strategy: GlobalSampleStrategy): LiveView<S> {
+  sample(strategy: SampleStrategy): LiveView<S> {
     return makeStrideSampleView<S>(this, strategy.stride);
   }
 

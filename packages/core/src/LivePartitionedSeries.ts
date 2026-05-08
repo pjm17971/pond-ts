@@ -448,8 +448,7 @@ export class LivePartitionedSeries<
    * Per-partition stream sampling. Each partition gets its own
    * stride counter (closure-captured inside its `LiveView`). Safe
    * by construction: chaining after `partitionBy` thins each
-   * partition's stream independently, no `unsafeGlobal: true` token
-   * required.
+   * partition's stream independently — no multi-entity bias.
    *
    * v0.17.0 ships **stride only** on the live side; see
    * {@link SampleStrategy} for why reservoir is deferred. The
@@ -1130,8 +1129,8 @@ export class LivePartitionedView<
   /**
    * Per-partition stream sampling on a chained view. Same semantics
    * as {@link LivePartitionedSeries.sample} — stride only, safe by
-   * construction; each partition's chain output is thinned
-   * independently with its own counter.
+   * construction (no multi-entity bias); each partition's chain
+   * output is thinned independently with its own counter.
    */
   sample(strategy: SampleStrategy): LivePartitionedView<SBase, R, K, ByCol> {
     const prev = this.#factory;

@@ -56,7 +56,7 @@ import type {
 } from './types-aggregate.js';
 import { LiveFusedRolling } from './LiveFusedRolling.js';
 import { LiveReduce } from './LiveReduce.js';
-import type { GlobalSampleStrategy } from './sample.js';
+import type { SampleStrategy } from './sample.js';
 import type {
   FusedMapping,
   FusedMappingValid,
@@ -672,28 +672,29 @@ export class LiveSeries<S extends SeriesSchema> {
    * (`filter`, `rolling`, `reduce`, `select`, …) is immediately
    * available downstream of the sample.
    *
-   * **Pre-partition call requires `unsafeGlobal: true`.** A single
-   * global counter applied to a structured input stream (e.g., events
-   * arriving in round-robin host order) silently keeps the same
-   * subset of partitions and drops the rest. The token forces the
-   * call site to acknowledge the risk. The safer path is to chain
-   * after `partitionBy(...)`, which thins each partition's stream
-   * independently with no `unsafeGlobal` token required:
+   * **Multi-entity bias trap.** Pre-partition `live.sample({stride: N})`
+   * applied to a structured input stream (e.g., events arriving in
+   * round-robin host order) silently keeps the same subset of
+   * partitions and drops the rest. The safe shape is to chain after
+   * `partitionBy(...)`, which thins each partition's stream
+   * independently:
    *
    * ```ts
    * // Safe by construction — per-partition counter is implicit
    * live.partitionBy('host').sample({ stride: 10 }).rolling('5m', m);
-   *
-   * // Pre-partition global sample — must opt in
-   * live.sample({ stride: 10, unsafeGlobal: true });
    * ```
+   *
+   * Same multi-entity consideration applies to `rolling` / `aggregate` /
+   * `fill` / `diff` / `rate` / `cumulative` / `pctChange` / `reduce`:
+   * every stateful live operator silently mixes data across entities
+   * on a multi-entity stream unless scoped per-partition first.
    *
    * Reducer outputs downstream of `sample` reflect the sampled
    * stream; multiply by stride to estimate true counts.
    * `live.stats().ingested` continues to count true throughput
    * upstream of any sample.
    */
-  sample(strategy: GlobalSampleStrategy): LiveView<S> {
+  sample(strategy: SampleStrategy): LiveView<S> {
     return makeStrideSampleView<S>(this, strategy.stride);
   }
 

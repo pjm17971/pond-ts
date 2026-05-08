@@ -1745,15 +1745,19 @@ Surfaced by the gRPC experiment's M3.5 finish-line work. Cross-reference:
 
 - **Live-side: stride only.** `LiveSeries.sample`, `LiveView.sample`,
   `LivePartitionedSeries.sample`, `LivePartitionedView.sample` all accept
-  `{ stride: number }` (with `unsafeGlobal: true` on pre-partition sites).
+  `SampleStrategy = { stride: number }`.
 - **Snapshot-side: stride + reservoir.** `TimeSeries.sample` and
   `PartitionedTimeSeries.sample` accept `BatchSampleStrategy` (both forms);
   reservoir uses single-pass Algorithm R, sorted by key on output to preserve
   the chronological invariant.
-- **Type-level bias-trap guard.** Pre-partition call sites require
-  `unsafeGlobal: true` in the strategy literal, with `@ts-expect-error` pins
-  in `test-d/live-sample.test-d.ts`. Partitioned sites accept the strategy
-  bare — safe by construction.
+- **Bias trap is a doc warning, not a type-level guard.** The
+  multi-entity bias risk on pre-partition `live.sample(...)` is documented
+  in the `LiveSeries.sample` / `LiveView.sample` JSDoc with the
+  `partitionBy(...).sample(...)` recommendation, matching the existing
+  convention for `rolling` / `aggregate` / `fill` / `diff` / `rate` /
+  `cumulative` / `pctChange` / `reduce`. None of those operators have a
+  type-level partition-acknowledgment token; `sample` follows the same
+  convention.
 
 #### Implementation: closure-counter inside `LiveView`
 
@@ -1847,24 +1851,21 @@ live
   .rolling('5m', { cpu_avg: 'avg', cpu_sd: 'stdev' }, { trigger });
 ```
 
-Three strategy types — split by call-site:
+Two strategy types — split by call-site:
 
 ```ts
-// Live-side, partitioned (safe by construction)
+// Live-side (all four call sites)
 type SampleStrategy = { stride: number };
-
-// Live-side, pre-partition (requires bias-trap acknowledgment)
-type GlobalSampleStrategy = { stride: number; unsafeGlobal: true };
 
 // Snapshot-side (both forms; no live-eviction concern)
 type BatchSampleStrategy = { stride: number } | { reservoir: { size: number } };
 ```
 
 `partitionBy(...).sample(...)` thins each partition's stream independently —
-the canonical safe shape. Pre-partition global sample requires explicit
-acknowledgment (see "bias trap" below). Snapshot-side `TimeSeries.sample`
-and `PartitionedTimeSeries.sample` accept the broader `BatchSampleStrategy`
-since single-pass Algorithm R is unaffected by the live-eviction protocol.
+the canonical safe shape, recommended in the JSDoc on the pre-partition
+sites. Snapshot-side `TimeSeries.sample` and `PartitionedTimeSeries.sample`
+accept the broader `BatchSampleStrategy` since single-pass Algorithm R is
+unaffected by the live-eviction protocol.
 
 #### Strategy: stride (live + snapshot)
 
@@ -1911,7 +1912,7 @@ statistics; the strict variant would need its own paper-citation review
 and chain bookkeeping. Live-side will get Option A first, on top of the
 `LiveChange` exact-removal channel.
 
-#### The bias trap, and the type-level guard
+#### The bias trap (documented in JSDoc, not gated by types)
 
 The gRPC experiment's prototype shipped with a real bug: a single global
 stride counter applied to a structured stream (round-robin host order) kept
@@ -1919,27 +1920,34 @@ the same 8 hosts every batch and dropped the other 72. Nothing in the
 cluster headline noticed. The fix was per-host counters — exactly what
 `partitionBy('host').sample(...)` does for free.
 
-To prevent this in pond's API, the type system encodes which call site is
-safe:
+This is the **same multi-entity consideration** that already applies to
+every stateful live operator — `rolling`, `aggregate`, `fill`, `diff`,
+`rate`, `cumulative`, `pctChange`, `reduce` all silently mix data across
+entities on a multi-entity stream unless scoped per-partition first. None
+of those operators have a type-level partition-acknowledgment token; the
+JSDoc warns and points users at `partitionBy(...)`. `sample` follows the
+same convention:
 
 ```ts
-// Safe by construction — per-partition counter is implicit
-class LivePartitionedSeries<S, K, ByCol> {
-  sample(strategy: SampleStrategy): LivePartitionedView<S, K, ByCol>;
+class LiveSeries<S> {
+  sample(strategy: SampleStrategy): LiveView<S>; // JSDoc warns about
+  //                                                multi-entity bias
 }
 
-// Pre-partition global sample — strategy type forces acknowledgment
-type GlobalSampleStrategy = { stride: number; unsafeGlobal: true };
-
-class LiveSeries<S> {
-  sample(strategy: GlobalSampleStrategy): LiveView<S>;
+class LivePartitionedSeries<S, K, ByCol> {
+  sample(strategy: SampleStrategy): LivePartitionedView<S, K, ByCol>;
+  // safe by construction — each partition gets its own counter
 }
 ```
 
-Same runtime; the type-level token forces the user to type `unsafeGlobal:
-true` when sampling pre-partition. Any structured-input stream that gets
-`partitionBy`'d should chain `sample` after — and the type system makes that
-the path of least resistance.
+An earlier iteration of this PR shipped a `GlobalSampleStrategy =
+{ stride; unsafeGlobal: true }` type-level token, but the user pulled it
+during review with the framing _"partitioning needs to be considered by
+the user in many of our operators"_ — token-of-the-week consistency
+beats per-operator novelty. The bias trap is captured in the
+`LiveSeries.sample` / `LiveView.sample` JSDoc, the test file's
+"bias-trap regression pin" doc-comment, and the `partitionBy().sample()`
+recommendation chain in the example mappings.
 
 #### Sample-rate metadata: Option A (observed-only)
 
@@ -2008,10 +2016,10 @@ fill/cumulative all chain naturally downstream of `.sample(...)`:
 live.partitionBy('host').sample({ stride: 10 }).rolling('5m', mapping);
 
 // pre-partition stride feeding rolling (v0.17.0 PR #129 chainability fix)
-live.sample({ stride: 10, unsafeGlobal: true }).rolling(5, mapping);
+live.sample({ stride: 10 }).rolling(5, mapping);
 
 // pre-partition stride feeding filter — chainable surface available
-live.sample({ stride: 10, unsafeGlobal: true }).filter(predicate);
+live.sample({ stride: 10 }).filter(predicate);
 
 // buffer-as-window — also valid
 live

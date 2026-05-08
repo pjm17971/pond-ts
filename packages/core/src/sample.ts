@@ -19,28 +19,36 @@
  */
 
 /**
- * Sampling strategy for live (chainable) call sites. v0.17.0 ships
- * stride only; reservoir mode is deferred — see `BatchSampleStrategy`
- * for the snapshot-side superset.
+ * Sampling strategy for live (chainable) call sites — accepted by
+ * `LiveSeries.sample`, `LiveView.sample`, `LivePartitionedSeries.sample`,
+ * and `LivePartitionedView.sample`. v0.17.0 ships stride only;
+ * reservoir mode is deferred — see {@link BatchSampleStrategy} for the
+ * snapshot-side superset.
+ *
+ * **Multi-entity bias trap.** A pre-partition `live.sample({stride: N})`
+ * applied to a structured input stream (e.g., events arriving in
+ * round-robin host order) silently keeps the same subset of partitions
+ * and drops the rest. The gRPC experiment's M3.5 prototype hit this:
+ * a stride-10 filter at the gRPC ingest layer fed a round-robin
+ * per-host event stream and silently kept 8 of 80 hosts.
+ *
+ * The safe shape is to chain after `partitionBy(...)`, which thins
+ * each partition's stream independently:
+ *
+ * ```ts
+ * // Safe by construction — per-partition counter is implicit
+ * live.partitionBy('host').sample({ stride: 10 }).rolling('5m', m);
+ * ```
+ *
+ * This is the same multi-entity consideration that applies to
+ * `rolling` / `aggregate` / `fill` / `diff` / `rate` / `cumulative` /
+ * `pctChange` / `reduce` — every stateful live operator silently
+ * mixes data across entities on a multi-entity stream unless scoped
+ * per-partition first. Same convention here: stick `partitionBy`
+ * upstream of `sample` whenever the source stream carries multiple
+ * entities.
  */
 export type SampleStrategy = { stride: number };
-
-/**
- * Sampling strategy for the pre-partition (global) live call sites
- * (`LiveSeries.sample`, `LiveView.sample`). Requires the
- * `unsafeGlobal: true` token so the call site acknowledges the
- * bias-trap risk: a single global counter against a structured
- * input stream (e.g., round-robin host order) silently keeps the
- * same subset of partitions and drops the rest. Chaining
- * `partitionBy(c).sample(...)` instead is safe by construction and
- * doesn't require this token.
- *
- * The bias trap was first surfaced by the gRPC experiment's M3.5
- * prototype (pond-grpc-experiment#33): a stride-10 filter at the
- * gRPC ingest layer, fed a round-robin per-host event stream,
- * silently kept 8 of 80 hosts and dropped 72.
- */
-export type GlobalSampleStrategy = { stride: number; unsafeGlobal: true };
 
 /**
  * Sampling strategy for snapshot-side `TimeSeries.sample` /
