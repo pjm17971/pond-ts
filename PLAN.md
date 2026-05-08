@@ -1735,6 +1735,212 @@ Cross-reference: gRPC experiment manual counter
 (pond-grpc-experiment#26 step 6); the v0.15.2 SHIPPED entry's
 "manual counter vs rolling" follow-up doc note.
 
+### Queued: `live.sample({...})` — bounded-memory stream sampling (target v0.17.0)
+
+Surfaced by the gRPC experiment's M3.5 finish-line work. Cross-reference:
+[`pond-grpc-experiment/friction-notes/rfcs/bounded-memory-sampling.md`](https://github.com/pjm17971/pond-grpc-experiment/blob/main/friction-notes/rfcs/bounded-memory-sampling.md)
+(originating RFC, with measured firehose numbers).
+
+**The window-length wall.** Streaming aggregator memory is `O(window_seconds ×
+event_rate × per_partition_count)`. At 70k events/s × 80 partitions, a 1m
+rolling baseline holds ~4.2M events × ~600 bytes ≈ 2.5 GB. A 5m baseline at
+the same rate is 170 GB — non-starter. Window length is pinned to whatever
+fits in the heap, even though operators consistently want longer baselines
+for stability (`sd / sqrt(N)` standard error scales with `N`).
+
+Sampling decouples baseline length from event rate. At firehose × stride=10:
+`cpu_avg` 0.5446 → 0.5575 (within burst-walk drift), `cpu_sd` 0.1166 → 0.1176
+(identical to 3 d.p.), `cpu_n` per host 53,282 → 5,278. The SE grows √10 ≈
+3.2× but stays an order of magnitude below the per-event noise floor for the
+gRPC experiment's reducer mix (`avg`/`sum`/`min`/`max`/`count`/percentiles).
+
+**The product framing:** "5× more stable cluster CPU baseline at the same
+memory budget" beats "30% lower aggregator memory" as a roadmap pitch.
+
+#### API shape
+
+A new chainable operator on `LiveSeries`, `LivePartitionedSeries`, `LiveView`,
+`LivePartitionedView`, `TimeSeries`, and `PartitionedTimeSeries`. Identity-on-
+schema — `sample` doesn't transform row shape, just thins the stream:
+
+```ts
+live
+  .partitionBy('host')
+  .sample({ stride: 10 })
+  .rolling('5m', { cpu_avg: 'avg', cpu_sd: 'stdev' }, { trigger });
+```
+
+Two strategies:
+
+```ts
+type SampleStrategy =
+  | { stride: number }                 // deterministic 1-in-N
+  | { reservoir: { size: number } };   // K-of-N random with drift on eviction
+```
+
+`partitionBy(...).sample(...)` thins each partition's stream independently —
+the canonical safe shape. Pre-partition global sample requires explicit
+acknowledgment (see "bias trap" below).
+
+#### Strategy: stride
+
+- Deterministic — keep events whose per-stream counter is a multiple of N
+- O(1) per event, no RNG, no allocation
+- Uniform-over-time: every moment's window is a uniform sample of events
+- **Default for sliding-window stats** (rolling, aggregate, reduce-over-window)
+
+#### Strategy: reservoir (Option A — drift-on-eviction)
+
+Algorithm R for ingest: each new event has probability `K / seen` of replacing
+a random reservoir slot. On source eviction, if the evicted event is in the
+reservoir, remove that slot; the next arriving event refills deterministically.
+
+- O(1) per event ingest, O(1) eviction-side check (Set-based reservoir membership)
+- Approximately uniform K-subset of the source's currently-retained buffer
+- Drifts slightly toward newer events under steady-state eviction (refilled
+  slots get filled by recent arrivals); bias is bounded and documented
+- **Default for population-summary and visualization** —
+  `series.sample({reservoir: {size: 500}}).toRows()` for a scatter plot is
+  the canonical case: uncorrelated points (no regular-spacing artifact),
+  fixed point count, no `aggregate(seq, ...)` collapse-to-grid
+- `Math.random()` for v1; an optional `rng?: () => number` parameter for
+  reproducible benchmarks / tests can land later if friction surfaces
+
+Strict sliding-window uniform sampling (chain sampling, Babcock-Datar-Motwani)
+is deferred — Option A's drift is acceptable for streaming statistics; the
+strict variant would need its own paper-citation review and chain bookkeeping.
+Documented in the `sample()` JSDoc:
+
+> Reservoir sampling holds K events drawn approximately uniformly from the
+> source's currently-retained buffer. Under steady-state ingest with
+> eviction, the reservoir drifts slightly toward newer events as evicted
+> slots are refilled by recent arrivals. For strict uniform sampling over a
+> sliding window, use stride sampling instead — bias-free under any
+> eviction pattern.
+
+#### The bias trap, and the type-level guard
+
+The gRPC experiment's prototype shipped with a real bug: a single global
+stride counter applied to a structured stream (round-robin host order) kept
+the same 8 hosts every batch and dropped the other 72. Nothing in the
+cluster headline noticed. The fix was per-host counters — exactly what
+`partitionBy('host').sample(...)` does for free.
+
+To prevent this in pond's API, the type system encodes which call site is
+safe:
+
+```ts
+// Safe by construction — per-partition counter is implicit
+class LivePartitionedSeries<S, K, ByCol> {
+  sample(strategy: SampleStrategy): LivePartitionedView<S, K, ByCol>;
+}
+
+// Pre-partition global sample — strategy type forces acknowledgment
+type GlobalSampleStrategy =
+  | { stride: number; unsafeGlobal: true }
+  | { reservoir: { size: number }; unsafeGlobal: true };
+
+class LiveSeries<S> {
+  sample(strategy: GlobalSampleStrategy): LiveView<S>;
+}
+```
+
+Same runtime; the type-level token forces the user to type `unsafeGlobal:
+true` when sampling pre-partition. Any structured-input stream that gets
+`partitionBy`'d should chain `sample` after — and the type system makes that
+the path of least resistance.
+
+#### Sample-rate metadata: Option A (observed-only)
+
+Reducer outputs (`'count'`, `'sum'`, `'samples'`, `topN`) reflect what
+actually flowed through the consumer. Users multiply by `1/sample_rate` to
+estimate true counts. Library does not thread sample rate through reducer
+state.
+
+Documented in the docstring with a worked example:
+
+```ts
+// Estimating true count from sampled stream:
+const sampled = live.partitionBy('host').sample({ stride: 10 });
+const counts = sampled.rolling('1m', { events: 'count' });
+// counts.value().events × 10 ≈ true count over the 1m window
+```
+
+`live.stats().ingested` and `live.on('batch', cb)` are upstream of any
+`.sample(...)` op — they continue counting true throughput. Only consumers
+downstream of `sample` see the thinned stream.
+
+#### Snapshot-side parity
+
+`TimeSeries.sample(strategy)` and `PartitionedTimeSeries.sample(strategy)`
+ship for parity. Reservoir on a `TimeSeries` is materially simpler than on
+a live source (single pass of Algorithm R over the known events array, no
+eviction concern, no Set bookkeeping). `series.sample(...).toRows()` is the
+canonical visualization path.
+
+#### Per-partition state
+
+`partitionBy(...).sample({reservoir: {size: K}})` holds a K-event reservoir
+per partition, not K shared across partitions. Same factory-per-partition
+pattern that `partitionBy(...).rolling(...)` already uses. For the gRPC
+experiment's 80 partitions × K=100 reservoir, that's 8000 events of
+reservoir state — bounded, predictable.
+
+#### Use-case mapping
+
+| Use case | Stride | Reservoir |
+|---|---|---|
+| Sliding-window stats (rolling avg / percentiles) | ✅ default | ⚠️ drift |
+| Population summary over the retained buffer | ⚠️ rolling-only | ✅ |
+| Visualization (scatter plot, sparkline samples) | ⚠️ regular-spacing artifact | ✅ default |
+| Top-K / unique reducers | ❌ misses singletons | ⚠️ also misses, with extra randomness |
+| `live.reduce()` over buffer-as-window | ✅ uniform-over-time | ⚠️ drift |
+
+Picking the wrong strategy is the highest-leverage bug the docs can prevent;
+this table belongs in the operator's JSDoc verbatim.
+
+#### Composability
+
+Composes cleanly with the rest of the live operator surface:
+
+```ts
+// rolling — primary case from the gRPC experiment
+live.partitionBy('host').sample({ stride: 10 }).rolling('5m', mapping);
+
+// buffer-as-window — also valid
+live.partitionBy('host').apply(sub =>
+  sub.sample({ stride: 10 }).reduce(mapping)
+);
+
+// snapshot-side visualization
+series.sample({ reservoir: { size: 500 } }).toRows();
+```
+
+#### Implementation scope
+
+~150 LoC of operator + counter/reservoir state, ~30 LoC for snapshot-side
+parity, ~50 tests covering: stride determinism, reservoir drift bounds under
+steady-state eviction, per-partition isolation, the bias-trap type-level
+gate (`@ts-expect-error` for `LiveSeries.sample({stride: 10})` without
+`unsafeGlobal`), composability with rolling/aggregate/reduce, snapshot
+parity. Two-pass review (Layer 2 + Codex) per the existing protocol.
+
+#### Forward dependencies
+
+None. `live.sample(...)` doesn't depend on Phase 4.5 milestone A
+(`LiveChange`) — it's a current-shape transform built on the existing
+`LiveView` infrastructure plus the `EMITS_EVICT` symbol. Lands as v0.17.0
+standalone, before milestone A starts. Mirrors the placement of
+`live.reduce()` from v0.16.0 — both are friction-driven primitives that
+slot into Phase 4 without disturbing the Phase 4.5 streaming-semantics
+work.
+
+The `sample()` operator is also independent of v0.18.0+ milestone B/C/D —
+it's a stream-content transform, not a state or finality transform. Sampled
+streams flow through the future `LiveChange` model unchanged: dropped
+events simply don't appear as `kind: 'append'` in the downstream change
+stream.
+
 ### Shipped: `rolling.sample(sequence)` — sequence-triggered rolling snapshot (v0.11.8, superseded by v0.12 triggers)
 
 > **Status note (2026-05-01):** `.sample()` and
