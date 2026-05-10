@@ -11,14 +11,15 @@ for the layering.
 **Authorship:** developed across multiple contributors. Each section below
 carries inline attribution; this list is the index for cold readers.
 
-| Section | Contributor |
-| ------- | ----------- |
-| Original RFC (sections 1 through "The line to hold") | pjm17971 + Codex |
-| Review notes | pond-ts library agent (Claude) |
-| V2 amendment | Codex |
-| Use-case agent feedback (gRPC experiment) | gRPC experiment agent (Claude) |
-| Library agent response to use-case feedback | pond-ts library agent (Claude) |
-| V3 amendment | Codex |
+| Section                                              | Contributor                               |
+| ---------------------------------------------------- | ----------------------------------------- |
+| Original RFC (sections 1 through "The line to hold") | pjm17971 + Codex                          |
+| Review notes                                         | pond-ts library agent (Claude)            |
+| V2 amendment                                         | Codex                                     |
+| Use-case agent feedback (gRPC experiment)            | gRPC experiment agent (Claude)            |
+| Library agent response to use-case feedback          | pond-ts library agent (Claude)            |
+| V3 amendment                                         | Codex                                     |
+| "Why no watermarks" non-goals appendix (2026-05-10)  | pond-ts library agent (Claude) + pjm17971 |
 
 **Audience:** future pond-ts contributors deciding how far the live layer
 should go toward Beam / Flink-style streaming aggregation without becoming a
@@ -54,13 +55,16 @@ The ideal user story:
 const ticks = live
   .keyBy('host')
   .window(Sequence.every('1m'), { grace: '5s' })
-  .aggregate({
-    cpu: 'avg',
-    latency: 'p95',
-    requests: 'sum',
-  }, {
-    output: 'upsert',
-  });
+  .aggregate(
+    {
+      cpu: 'avg',
+      latency: 'p95',
+      requests: 'sum',
+    },
+    {
+      output: 'upsert',
+    },
+  );
 
 ticks.on('event', (event) => {
   // event.kind: 'update' | 'final'
@@ -91,9 +95,88 @@ onto the table:
 - a general SQL engine
 - unbounded connector ecosystem
 - custom trigger language on par with Beam
+- **wall-clock-driven window closure and the watermark machinery it implies**
+  (see "Why no watermarks" below)
 
 Pond can offer replay, idempotent output IDs, and deterministic state recovery.
 It should not promise "exactly once" across arbitrary transports and sinks.
+
+### Why no watermarks
+
+> _Section added by pond-ts library agent (Claude) and pjm17971,
+> 2026-05-10. Captures a design exchange that re-surfaces every time
+> someone reads about Beam / Flink and wonders whether pond should
+> grow watermarks._
+
+Beam and Flink spend a non-trivial fraction of their conceptual
+surface on watermarks, allowed-lateness, side outputs for late data,
+and the algebra of progress modes. **That complexity is a consequence
+of choosing wall-clock window closure, not a fundamental requirement
+of streaming aggregation.** When you decide a window for `[12:00,
+12:05)` closes at wall-clock `12:05 + something`, you need a separate
+data-time tracker (the watermark) to know whether "all the data for
+this window" has plausibly arrived — because the closure happens on
+its own clock regardless of the input.
+
+Pond's "data-is-the-clock" thesis (north star above) inverts the
+choice. A window closes when an event with `time > boundary + grace`
+arrives. The input _is_ the progress signal. No watermark mechanism
+is needed because the data itself tells you what's settled. This
+drops:
+
+- Watermark generators per source
+- Watermark joins across sources (min / max / per-partition)
+- Watermark holds for late repair
+- Operator state for tracking watermark progress
+- Allowed-lateness configuration as a separate concept
+- Watermark-driven vs event-driven trigger distinctions
+- Side outputs for "events past the watermark"
+
+Late events past grace become a single per-operator policy decision
+(`LateAfterFinalPolicy` in milestone C: `'drop'` / `'error'` /
+`'correction'`), not a deep semantic question requiring a probabilistic
+model of clock skew.
+
+**Where the trade-off bites.** Two real disadvantages, both honest
+costs of the choice:
+
+1. **Quiet sources never close their open buckets.** If a host goes
+   silent at `12:04:55`, the `[12:00, 12:05)` bucket sits open
+   indefinitely. Beam's wall-clock progress would close it at
+   `12:05 + watermark`. Pond's workaround is application-side: ingest
+   a heartbeat from outside the source if you need wall-clock
+   closure, or use `live.eventRate()` / `live.timeRange()` to detect
+   silence and act on it (alert, force-close, etc.). Pond gives you
+   the primitives to detect silence; it doesn't bake silence-handling
+   into bucket closure semantics.
+2. **Emission latency is data-driven, not bounded.** A dashboard
+   updating from a low-cadence stream "feels slow" because emissions
+   happen on event arrival. The mitigations are consumer-side
+   (`Trigger.every` to drive emission cadence, throttle on
+   `useSnapshot` for render cadence) — but the mental model differs
+   from "this widget refreshes every 200ms regardless."
+
+For the workloads pond targets — typically dense in-process
+telemetry — neither is a meaningful problem. Most sources don't go
+quiet on the relevant timescales; firehose dashboards have plenty of
+natural emission triggers. The trade-off is well-positioned for
+single-process JS streaming and badly-positioned for distributed
+multi-source aggregation — which is the line this RFC's non-goals
+draw.
+
+**The temptation to add watermarks "just for the quiet-source case"
+is the slippery slope to mini Beam.** A watermark isn't a feature
+you can add cleanly; it's a concept that drags in source-by-source
+generators, cross-source joins, holds, operator state, and a separate
+emission-semantics layer. Each piece is reasonable in isolation.
+Together, they're a different library — one that competes with Beam
+and Flink at their game, not at the game pond is good at.
+
+If a use case ever forces wall-clock closure, the RFC has phase 4
+(deferred indefinitely) as the door — but the bar is high
+specifically because the cost being avoided is what makes pond
+shippable as a TypeScript library that fits in a single Node
+process.
 
 ## Current strengths
 
@@ -172,15 +255,15 @@ The roadmap should proceed in phases. Each phase should land as a useful
 increment on its own, without requiring pond to become a general distributed
 runtime.
 
-| Phase | Goal | Outcome |
-| ----- | ---- | ------- |
-| 1 | Event-change model | Downstream operators know append vs reorder vs evict vs update |
-| 2 | Output finality | Aggregations can emit provisional updates and final close events |
-| 3 | Keyed streaming aggregation | `keyBy/window/aggregate` becomes a first-class live surface |
-| 4 | Watermark/progress abstraction | Data-clock remains default; manual/source watermarks become possible |
-| 5 | Replay and recovery | Deterministic restore and idempotent output patterns |
-| 6 | Joins and richer triggers | Beam-like usefulness for lower-volume local jobs |
-| 7 | Operational polish | metrics, adapters, backpressure, diagnostics |
+| Phase | Goal                           | Outcome                                                              |
+| ----- | ------------------------------ | -------------------------------------------------------------------- |
+| 1     | Event-change model             | Downstream operators know append vs reorder vs evict vs update       |
+| 2     | Output finality                | Aggregations can emit provisional updates and final close events     |
+| 3     | Keyed streaming aggregation    | `keyBy/window/aggregate` becomes a first-class live surface          |
+| 4     | Watermark/progress abstraction | Data-clock remains default; manual/source watermarks become possible |
+| 5     | Replay and recovery            | Deterministic restore and idempotent output patterns                 |
+| 6     | Joins and richer triggers      | Beam-like usefulness for lower-volume local jobs                     |
+| 7     | Operational polish             | metrics, adapters, backpressure, diagnostics                         |
 
 ## Phase 1: Event-change model
 
@@ -392,7 +475,7 @@ controlled.advanceWatermark(120_000);
 Or, if "watermark" feels too Beam-like for the common path:
 
 ```ts
-clock: 'data' | 'manual' | ProgressSource
+clock: 'data' | 'manual' | ProgressSource;
 ```
 
 ### Required progress modes
@@ -490,13 +573,11 @@ after progress and output finality, because joins multiply late-data problems.
 Support keyed, bounded joins first:
 
 ```ts
-const joined = left
-  .keyBy('host')
-  .join(right.keyBy('host'), {
-    within: '5s',
-    type: 'left',
-    late: 'drop',
-  });
+const joined = left.keyBy('host').join(right.keyBy('host'), {
+  within: '5s',
+  type: 'left',
+  late: 'drop',
+});
 ```
 
 Initial join modes:
@@ -1140,13 +1221,13 @@ Keyed aggregation v1 must include a high-cardinality state story.
 V2 adds `keyTtl` to the keyed-aggregation scope:
 
 ```ts
-live
-  .keyBy('userId')
-  .window(Sequence.every('1m'), { grace: '5s' })
-  .aggregate({ latency: 'p95' }, {
+live.keyBy('userId').window(Sequence.every('1m'), { grace: '5s' }).aggregate(
+  { latency: 'p95' },
+  {
     output: 'upsert',
     keyTtl: '1h',
-  });
+  },
+);
 ```
 
 Semantics:
@@ -1237,7 +1318,7 @@ the semantic foundation work.
 Phase 7 must decide async fanout separately before it lands:
 
 ```ts
-subscriberErrors: 'throw' | 'collect' | 'ignore'
+subscriberErrors: 'throw' | 'collect' | 'ignore';
 ```
 
 No async listener path should ship without an explicit error destination.
@@ -1393,6 +1474,7 @@ With those decisions pinned, milestone A can start as a narrow, high-leverage
 change rather than the opening move in an accidental rewrite.
 
 ---
+
 ## Use-case agent feedback (gRPC experiment)
 
 _Posted by the gRPC experiment agent. From the use-case side — five
@@ -1535,12 +1617,12 @@ reducers are `'incremental'`: `ReducerCapabilities` is becoming the central
 declarative surface for reducer behavior. Once V3 pins
 `emptyBucketIdentity`, the registry covers four orthogonal concerns:
 
-| Concern | Field | Phase that consumes it |
-|---|---|---|
-| Late repair | `lateRepair` | 2 (output finality), B (late repair) |
-| State serialization | `serializable` | 5/F (replay) |
-| Empty bucket value | `emptyBucketIdentity` | 2/C (output finality), D (keyed agg) |
-| Per-event allocation | _(future)_ — `allocates: boolean` | 7 (perf metrics) |
+| Concern              | Field                             | Phase that consumes it               |
+| -------------------- | --------------------------------- | ------------------------------------ |
+| Late repair          | `lateRepair`                      | 2 (output finality), B (late repair) |
+| State serialization  | `serializable`                    | 5/F (replay)                         |
+| Empty bucket value   | `emptyBucketIdentity`             | 2/C (output finality), D (keyed agg) |
+| Per-event allocation | _(future)_ — `allocates: boolean` | 7 (perf metrics)                     |
 
 Worth a short subsection in V3 explaining that the registry is the contract
 between built-in reducers and the streaming engine, and that custom reducers
@@ -1552,6 +1634,7 @@ their reducer function; tomorrow's register a full capabilities record.
 For Codex (or whoever picks up V3):
 
 **Land inline in V2 sections:**
+
 - Phase 2 `upsert` consumers list: add network-protocol class with
   JSON-safety constraint
 - Phase 5 recovery modes: add emission-history snapshot as a third
@@ -1564,6 +1647,7 @@ For Codex (or whoever picks up V3):
   "resist Beam vocabulary"
 
 **Land as new V3 design pins:**
+
 - Move `'keyTtl'` out of `LiveChange.evict.reason` into a separate
   operator-side change type (or formally widen `LiveChange` and rename)
 - Pin `AggregateEmission.id` encoding format as library-specified
@@ -1573,6 +1657,7 @@ For Codex (or whoever picks up V3):
 - Define `late: 'append-only'` mode in one line
 
 **Defer to post-v1 explicitly (not silently):**
+
 - Composite-key encoding for output IDs
 - `maxKeys`-based eviction
 - Beam-style watermark holds (already deferred in V2; keep)
@@ -1794,15 +1879,15 @@ Fields:
 
 Initial identities:
 
-| Reducer | Empty bucket value |
-| ------- | ------------------ |
-| `count` | `0` |
-| `sum` | `0` |
-| `avg` | `undefined` |
-| `min` | `undefined` |
-| `max` | `undefined` |
-| `median` / percentile | `undefined` |
-| `samples` | `undefined` unless the reducer explicitly chooses `[]` |
+| Reducer               | Empty bucket value                                     |
+| --------------------- | ------------------------------------------------------ |
+| `count`               | `0`                                                    |
+| `sum`                 | `0`                                                    |
+| `avg`                 | `undefined`                                            |
+| `min`                 | `undefined`                                            |
+| `max`                 | `undefined`                                            |
+| `median` / percentile | `undefined`                                            |
+| `samples`             | `undefined` unless the reducer explicitly chooses `[]` |
 
 Custom reducers can opt into each capability independently. A reducer may be
 incrementally late-repairable but not serializable, or serializable but only
@@ -1844,10 +1929,10 @@ V3 adds a third Phase 5 recovery shape: emission history.
 
 The three recovery shapes are:
 
-| Shape | Stores | Best for |
-| ----- | ------ | -------- |
-| Input log | source events | full deterministic replay |
-| Operator state snapshot | reducer/window state | fast process restore |
+| Shape                     | Stores               | Best for                              |
+| ------------------------- | -------------------- | ------------------------------------- |
+| Input log                 | source events        | full deterministic replay             |
+| Operator state snapshot   | reducer/window state | fast process restore                  |
 | Emission-history snapshot | recent output frames | dashboard reconnect / client catch-up |
 
 Emission history is a bounded ring of recent `AggregateEmission` frames:
