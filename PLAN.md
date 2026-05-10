@@ -782,6 +782,95 @@ Concrete next steps when this work begins:
       — defer to the late-event work above, or carve out an in-order-only
       contract for the first cut.
 
+### Queued: live align for multi-stream joining
+
+`series.align(seq, { method: 'hold' | 'linear' })` exists on the batch
+side and is the canonical primitive for resampling irregular events
+onto a regular grid. There is no live counterpart today — earlier
+PLAN drafts classified `live.align` as an intentional gap (claiming
+the live buffer doesn't have "stable footing" for it). That framing
+was wrong: align needs a point _forward_ of each grid boundary, not
+historical context, and the live buffer has the historical side
+already. The forward-point requirement makes streaming align a
+**bounded-lag** problem, not a structural impossibility.
+
+**Use-case driver: multi-stream joining.** The textbook case is
+network counter data combined into derived timeseries — `cpu_in`
+and `cpu_out` arriving on independent producers' schedules, joined
+via `throughput = in - out` after both are aligned to a common
+grid. pondjs supported this in production for exactly this shape.
+Today's pond-ts users work around it with snapshot-then-batch on
+every tick — heavy at firehose rates and per-tick latency-bound.
+A live `align` unblocks the natural shape of the queued live join
+work above (joining two streams typically requires aligning both
+first).
+
+**Lag trade-off:**
+
+- `method: 'hold'` — emit grid point T once a source event with
+  `time > T` arrives (or once we know no source has been seen since
+  the last update past T). Lag = (next source event time) - T.
+  Bounded for dense sources; unbounded if the source goes quiet.
+  Same as batch's "no source seen since" semantics.
+- `method: 'linear'` — needs a defined source value strictly after
+  T to interpolate. Lag is strictly the inter-event gap straddling
+  T. For dense sources (the network-counter case at sub-second
+  resolution), sub-second lag; for sparse sources, indefinite.
+  Caller opts in.
+
+**Connection to streaming-RFC milestones:**
+
+- **Milestone A (`LiveChange`)** — not strictly needed; live align
+  works on top of `'event'` listeners alone.
+- **Milestone C (`AggregateEmission` finality modes)** — cleanly
+  models the lag: align could emit `kind: 'update'` when a grid
+  boundary first crosses, `kind: 'final'` once the bounding event
+  arrives. Without C, the v1 cut emits a single event per grid
+  point at the moment the lag closes — simpler shape, less rich.
+- Independent of milestones B and D.
+
+**v1 surface (proposed):**
+
+```ts
+const aligned = live.align(Sequence.every('1s'), {
+  method: 'hold',
+  emit: 'on-bound', // emit only when the bounding source confirms;
+  //   alternative: 'provisional' for milestone-C
+  //   `update`/`final` semantics later.
+});
+
+// Multi-stream join shape (depends on live merge/join above):
+const throughput = live.alignAndJoin([cpuIn.align(seq), cpuOut.align(seq)], {
+  compute: ([inV, outV]) => (inV ?? 0) - (outV ?? 0),
+});
+```
+
+The `alignAndJoin` shape is illustrative — the actual API depends
+on how the live merge/join entry resolves. If the v1 cut of merge/
+join requires aligned inputs, `align` ships first and merge/join
+chains it; if merge/join supports tolerance-window joining without
+explicit alignment, `align` is independent.
+
+**Same logic applies to `live.materialize(seq)`.** Materialize is
+align's sibling: both regularize an irregular source onto a
+sequence grid; both need a forward bound. Materialize emits the
+first / last / nearest source event inside each bucket, which only
+becomes definitive when the next-bucket event arrives. Bounded-lag
+the same way. Probably ships alongside live align as a paired
+release; defer the design until the align driver is firm.
+
+**Why not deferred indefinitely:** the multi-stream join story is
+a recurring pattern (network monitoring, financial feeds, IoT
+multi-sensor fusion). Pond's current "snapshot every tick + batch
+join" workaround is correct but expensive at scale — it pays the
+TimeSeries reconstruction cost on every tick, which dominates at
+firehose loads. Live align + live join is the structural fix.
+
+**Sequencing posture:** earns its slot when (a) a use-case agent
+hits the snapshot-then-batch friction concretely, or (b) the live
+merge/join work above starts and align is needed as a prerequisite.
+Until then, queued.
+
 ### Shipped: batch dedupe — `series.dedupe({ keep })`
 
 Real-world ingest produces duplicate events: WebSocket replays, Kafka
@@ -1560,12 +1649,24 @@ usage patterns reveal which slicing shapes matter most.
 
 **Not gaps (intentional):**
 
-- `live.align(seq, ...)`, `live.materialize(seq, ...)`,
-  `live.smooth(...)`, `live.shift(...)` — these need historical
-  context the live buffer doesn't have stable footing for. The
-  snapshot-then-batch pattern (`live.toTimeSeries().align(...)`)
-  is the right one. Phase 4's "Live composition" makes this an
-  intentional split.
+- `live.smooth({ alignment: 'centered' })`, `live.smooth('loess')` —
+  these need a forward window the live buffer can't bound generally.
+  Trailing-alignment EMA / movingAverage are online and feasible if
+  driven by friction; the centered / loess variants are best left to
+  `live.toTimeSeries().smooth(...)`.
+- `live.shift` is a re-keying transform that doesn't bring obvious
+  live value beyond `live.map(e => e.set('time', ...))` — defer
+  unless a use case argues for it.
+
+**Reclassified — moved to queued.** An earlier draft of this section
+listed `live.align(seq, ...)` and `live.materialize(seq, ...)` as
+intentional gaps because "they need historical context the live
+buffer doesn't have stable footing for." That framing was wrong —
+both operators need a point _forward_ of each grid boundary, not
+historical context, and that's a bounded-lag problem rather than a
+structural impossibility. See the new "Queued: live align for
+multi-stream joining" entry above for the use-case driver and the
+lag trade-off.
 
 **Suggested PR structure:**
 
