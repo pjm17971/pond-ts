@@ -134,7 +134,7 @@ type SeriesTuple = readonly [
   TimeSeries<SeriesSchema>,
   ...TimeSeries<SeriesSchema>[],
 ];
-const TIME_SERIES_STORES = new WeakMap<
+const timeSeriesStoreCache = new WeakMap<
   TimeSeries<SeriesSchema>,
   ColumnarStore<SeriesSchema>
 >();
@@ -146,7 +146,7 @@ const timeSeriesEventCache = new WeakMap<
 function getColumnarStore<S extends SeriesSchema>(
   series: TimeSeries<S>,
 ): ColumnarStore<S> {
-  const store = TIME_SERIES_STORES.get(
+  const store = timeSeriesStoreCache.get(
     series as unknown as TimeSeries<SeriesSchema>,
   );
   if (!store) {
@@ -907,7 +907,10 @@ export class TimeSeries<S extends SeriesSchema> {
     this.name = input.name;
     this.schema = Object.freeze(input.schema.slice()) as S;
     const events = validateAndNormalize(input);
-    TIME_SERIES_STORES.set(this, ColumnarStore.fromEvents(this.schema, events));
+    timeSeriesStoreCache.set(
+      this,
+      ColumnarStore.fromEvents(this.schema, events),
+    );
     defineEventsAccessor(this);
     Object.freeze(this);
   }
@@ -1019,7 +1022,7 @@ export class TimeSeries<S extends SeriesSchema> {
         EventForSchema<SeriesSchema>
       >,
     );
-    TIME_SERIES_STORES.set(
+    timeSeriesStoreCache.set(
       series,
       ColumnarStore.fromEvents(series.schema, series.events),
     );
