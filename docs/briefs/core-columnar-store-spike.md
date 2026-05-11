@@ -530,3 +530,31 @@ Interpretation:
   forced, the row-object cost returns and is cached for stable references.
 - Full core tests passed (`1295` runtime/type tests), so lazy materialization is
   behavior-compatible for the current suite.
+
+Phase 2.5 point-access refinement:
+
+- changed `at(i)`, `first()`, `last()`, `length`, and iteration so they no
+  longer force the full `events` array
+- added a per-index `Map` cache so repeated point access preserves event
+  identity without allocating an `Array(length)` side structure
+- full `events` materialization reuses any individually cached events, then
+  drops the per-index cache
+- extended the memory benchmark to measure `at(0)` / `last()` before `reduce()`
+  and before full `events`
+
+Updated memory signal:
+
+| Scenario                    | Lazy series delta | Point access delta | After store read | Event materialization delta |
+| --------------------------- | ----------------: | -----------------: | ---------------: | --------------------------: |
+| 100k rows, dense            |           3.59 MB |               0 MB |          4.74 MB |                    18.05 MB |
+| 100k rows, sparse/high-card |           4.01 MB |           -0.03 MB |          5.13 MB |                    17.85 MB |
+| 1M rows, dense              |          35.32 MB |           -0.04 MB |         46.73 MB |                   179.35 MB |
+
+Interpretation:
+
+- Casual point access no longer collapses the lazy-materialization benefit.
+- Iteration still creates per-event objects as it walks the series, but it does
+  so incrementally and without allocating the full `events` array up front.
+- APIs that explicitly request row arrays (`events`, `toArray`, `rows`,
+  `toRows`, `toObjects`, `toPoints`) remain the compatibility boundary where
+  row-object cost is paid.

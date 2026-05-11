@@ -142,6 +142,10 @@ const timeSeriesEventCache = new WeakMap<
   TimeSeries<SeriesSchema>,
   ReadonlyArray<EventForSchema<SeriesSchema>>
 >();
+const timeSeriesEventAtCache = new WeakMap<
+  TimeSeries<SeriesSchema>,
+  Map<number, EventForSchema<SeriesSchema>>
+>();
 
 function getColumnarStore<S extends SeriesSchema>(
   series: TimeSeries<S>,
@@ -165,12 +169,47 @@ function eventsForSeries<S extends SeriesSchema>(
     return cached as unknown as ReadonlyArray<EventForSchema<S>>;
   }
 
-  const events = getColumnarStore(series).toEvents();
+  const store = getColumnarStore(series);
+  const events = new Array<EventForSchema<S>>(store.length);
+  for (let index = 0; index < store.length; index += 1) {
+    events[index] = eventAtForSeries(series, index)!;
+  }
+  const frozen = Object.freeze(events);
   timeSeriesEventCache.set(
     series as unknown as TimeSeries<SeriesSchema>,
-    events as unknown as ReadonlyArray<EventForSchema<SeriesSchema>>,
+    frozen as unknown as ReadonlyArray<EventForSchema<SeriesSchema>>,
   );
-  return events;
+  timeSeriesEventAtCache.delete(series as unknown as TimeSeries<SeriesSchema>);
+  return frozen;
+}
+
+function eventAtForSeries<S extends SeriesSchema>(
+  series: TimeSeries<S>,
+  index: number,
+): EventForSchema<S> | undefined {
+  const events = timeSeriesEventCache.get(
+    series as unknown as TimeSeries<SeriesSchema>,
+  );
+  if (events) {
+    return events[index] as unknown as EventForSchema<S> | undefined;
+  }
+
+  const store = getColumnarStore(series);
+  if (index < 0 || index >= store.length) return undefined;
+
+  const cacheKey = series as unknown as TimeSeries<SeriesSchema>;
+  let eventCache = timeSeriesEventAtCache.get(cacheKey);
+  if (!eventCache) {
+    eventCache = new Map<number, EventForSchema<SeriesSchema>>();
+    timeSeriesEventAtCache.set(cacheKey, eventCache);
+  }
+
+  let event = eventCache.get(index);
+  if (!event) {
+    event = store.eventAt(index) as unknown as EventForSchema<SeriesSchema>;
+    eventCache.set(index, event);
+  }
+  return event as unknown as EventForSchema<S>;
 }
 
 function defineEventsAccessor<S extends SeriesSchema>(
@@ -1054,7 +1093,7 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
   at(index: number): EventForSchema<S> | undefined {
-    return this.events[index];
+    return eventAtForSeries(this, index);
   }
 
   /** Example: `series.first()`. Returns the first event in the series, if present. */
@@ -1064,9 +1103,7 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.last()`. Returns the last event in the series, if present. */
   last(): EventForSchema<S> | undefined {
-    return this.events.length === 0
-      ? undefined
-      : this.events[this.events.length - 1];
+    return this.length === 0 ? undefined : this.at(this.length - 1);
   }
 
   /** Example: `series.map(nextSchema, event => event)`. Maps each event into a new typed schema and returns a new series. */
@@ -4056,17 +4093,17 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.length`. Returns the number of events in the series. */
   get length(): number {
-    return this.events.length;
+    return getColumnarStore(this).length;
   }
 
   /** Example: `for (const event of series) { ... }`. Iterates events in order. */
   [Symbol.iterator](): Iterator<EventForSchema<S>> {
     let index = 0;
-    const events = this.events;
+    const series = this;
     return {
       next(): IteratorResult<EventForSchema<S>> {
-        if (index < events.length) {
-          return { value: events[index++]!, done: false };
+        if (index < series.length) {
+          return { value: series.at(index++)!, done: false };
         }
         return { value: undefined as any, done: true };
       },

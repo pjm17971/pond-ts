@@ -79,10 +79,16 @@ describe('TimeSeries.fromEvents', () => {
       [60_000, 0.6, 'a'],
     ]);
 
+    const first = source.at(0);
+    const last = source.last();
+
+    expect(source.at(0)).toBe(first);
+    expect(source.first()).toBe(first);
+    expect(source.last()).toBe(last);
+    expect([...source]).toEqual([first, last]);
     expect(source.events).toBe(source.events);
-    expect(source.at(0)).toBe(source.at(0));
-    expect(source.first()).toBe(source.events[0]);
-    expect(source.last()).toBe(source.events[1]);
+    expect(source.events[0]).toBe(first);
+    expect(source.events[1]).toBe(last);
     expect(Object.keys(source)).toContain('events');
   });
 

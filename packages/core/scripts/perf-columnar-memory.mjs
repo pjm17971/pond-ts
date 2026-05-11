@@ -64,6 +64,9 @@ function measureScenario(scenario) {
   const baselineMemoryMb = memoryMb();
   const { rowsMemoryMb, series } = buildSeries(scenario);
   const lazySeriesMemoryMb = memoryMb();
+  const firstEvent = series.at(0);
+  const lastEvent = series.last();
+  const afterPointAccessMemoryMb = memoryMb();
   const reduceResult = series.reduce('cpu', 'avg');
   const afterStoreReadMemoryMb = memoryMb();
   const materializedEvents = series.events;
@@ -74,12 +77,18 @@ function measureScenario(scenario) {
     baselineMemoryMb,
     rowsMemoryMb,
     lazySeriesMemoryMb,
+    afterPointAccessMemoryMb,
     afterStoreReadMemoryMb,
     afterEventsMemoryMb,
     rowsDeltaMb: deltaMb(rowsMemoryMb, baselineMemoryMb),
     lazySeriesDeltaMb: deltaMb(lazySeriesMemoryMb, baselineMemoryMb),
+    pointAccessDeltaMb: deltaMb(afterPointAccessMemoryMb, lazySeriesMemoryMb),
     materializedEventsDeltaMb: deltaMb(afterEventsMemoryMb, lazySeriesMemoryMb),
     retainedEventCount: materializedEvents.length,
+    pointAccess: {
+      firstCpu: firstEvent?.get('cpu'),
+      lastCpu: lastEvent?.get('cpu'),
+    },
     reduceResult,
   };
 }
