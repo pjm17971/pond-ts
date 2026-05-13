@@ -325,16 +325,145 @@ describe('booleanColumnFromArray', () => {
   });
 });
 
-describe('Column independence', () => {
-  it('framework primitives can be constructed and exercised without any pond-ts API import', async () => {
-    // This test only imports from columnar/. If TimeSeries / LiveSeries ever
-    // leak into the columnar/ tree, this barrel import chain will pick them
-    // up at the source level — and the framework-design boundary contract
-    // (README) calls for failure. The test passes by virtue of compiling and
-    // not throwing on the imports themselves.
+describe('Column independence (smoke)', () => {
+  // Smoke check that the barrel exports compile and resolve without
+  // pulling in pond-ts public API at this layer. **This does not pin
+  // the boundary contract** — a `TimeSeries` import leaking into
+  // `columnar/*.ts` would still satisfy this test because the import
+  // would resolve. The real cross-module independence test (with a
+  // module-graph assertion) lands in sub-step 1d alongside
+  // `ColumnarStore`.
+  it('barrel exports resolve', async () => {
     const mod = await import('../../src/columnar/index.js');
     expect(typeof mod.Float64Column).toBe('function');
     expect(typeof mod.BooleanColumn).toBe('function');
     expect(typeof mod.createValidityBitmap).toBe('function');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Multi-byte output coverage — slice / gather operations producing > 8 bits  */
+/* of output exercise the byte-boundary carry that single-byte tests above    */
+/* cannot reach. Foundational PR for 1b–1h; downstream primitives inherit     */
+/* this math.                                                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('Multi-byte slice / gather', () => {
+  // Source: 20 rows, validity bits set at every multiple of 3 → indices
+  // 0, 3, 6, 9, 12, 15, 18 (7 of 20 defined).
+  function multiByteFloat64Source(): Float64Column {
+    const values = new Float64Array(20);
+    for (let i = 0; i < 20; i += 1) values[i] = i + 1;
+    const validity = validityFromBits(
+      // 20 bits → 3 bytes; bits 0, 3, 6, 9, 12, 15, 18 set.
+      // byte 0: bits 0,3,6      → 0b01001001 = 0x49
+      // byte 1: bits 9,12,15 → bit 9 = byte1 bit 1, bit 12 = byte1 bit 4, bit 15 = byte1 bit 7 → 0b10010010 = 0x92
+      // byte 2: bit 18 = byte2 bit 2 → 0b00000100 = 0x04
+      new Uint8Array([0x49, 0x92, 0x04]),
+      20,
+    );
+    return new Float64Column(values, 20, validity);
+  }
+
+  function multiByteBooleanSource(): BooleanColumn {
+    // 20 rows, true bits at 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 (every even).
+    // byte 0: 0b01010101 = 0x55 (bits 0,2,4,6)
+    // byte 1: bits 8,10,12,14 → 0x55
+    // byte 2: bits 16, 18 → 0b00000101 = 0x05
+    const values = new Uint8Array([0x55, 0x55, 0x05]);
+    return new BooleanColumn(values, 20);
+  }
+
+  describe('Float64Column.sliceByRange across bytes', () => {
+    it('15-row slice carries validity bits into the second output byte', () => {
+      const col = multiByteFloat64Source();
+      // Slice [2, 17) → 15-row output, source defined indices in range:
+      // 3, 6, 9, 12, 15 → output indices 1, 4, 7, 10, 13.
+      const slice = col.sliceByRange(2, 17);
+      expect(slice.length).toBe(15);
+      const defined: number[] = [];
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice.read(i) !== undefined) defined.push(i);
+      }
+      expect(defined).toEqual([1, 4, 7, 10, 13]);
+      // Values themselves: indices 3,6,9,12,15 → values 4,7,10,13,16
+      expect(slice.read(1)).toBe(4);
+      expect(slice.read(4)).toBe(7);
+      expect(slice.read(7)).toBe(10);
+      expect(slice.read(10)).toBe(13);
+      expect(slice.read(13)).toBe(16);
+    });
+
+    it('zero-copy values subarray still works across byte-spanning slices', () => {
+      const col = multiByteFloat64Source();
+      const slice = col.sliceByRange(0, 16);
+      expect(slice.values.buffer).toBe(col.values.buffer);
+      expect(slice.length).toBe(16);
+    });
+  });
+
+  describe('Float64Column.sliceByIndices to multi-byte output', () => {
+    it('gathered 10-row output preserves validity from source', () => {
+      const col = multiByteFloat64Source();
+      // Pull indices 19, 18, 12, 6, 0, 3, 9, 15, 5, 11.
+      // Defined in source: 0, 3, 6, 9, 12, 15, 18 → output positions
+      // where defined: source-18 at out 1, source-12 at out 2,
+      // source-6 at out 3, source-0 at out 4, source-3 at out 5,
+      // source-9 at out 6, source-15 at out 7.
+      const indices = Int32Array.of(19, 18, 12, 6, 0, 3, 9, 15, 5, 11);
+      const slice = col.sliceByIndices(indices);
+      expect(slice.length).toBe(10);
+      const defined: number[] = [];
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice.read(i) !== undefined) defined.push(i);
+      }
+      expect(defined).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    });
+  });
+
+  describe('BooleanColumn.sliceByRange across bytes', () => {
+    it('12-row slice carries bits into the second output byte', () => {
+      const col = multiByteBooleanSource();
+      // Slice [3, 15) → 12-row output, source bits true at evens
+      // 4, 6, 8, 10, 12, 14 → output indices 1, 3, 5, 7, 9, 11.
+      const slice = col.sliceByRange(3, 15);
+      expect(slice.length).toBe(12);
+      const trueIndices: number[] = [];
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice.read(i) === true) trueIndices.push(i);
+      }
+      expect(trueIndices).toEqual([1, 3, 5, 7, 9, 11]);
+    });
+
+    it('17-row slice exercises the third output byte', () => {
+      const col = multiByteBooleanSource();
+      // Slice [2, 19) → 17-row output; source trues at 2,4,6,8,10,12,14,16,18
+      // → output indices 0, 2, 4, 6, 8, 10, 12, 14, 16.
+      const slice = col.sliceByRange(2, 19);
+      expect(slice.length).toBe(17);
+      const trueIndices: number[] = [];
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice.read(i) === true) trueIndices.push(i);
+      }
+      expect(trueIndices).toEqual([0, 2, 4, 6, 8, 10, 12, 14, 16]);
+    });
+  });
+
+  describe('BooleanColumn.sliceByIndices to multi-byte output', () => {
+    it('gathered 12-row output packs bits correctly into two bytes', () => {
+      const col = multiByteBooleanSource();
+      // Pull indices reproducing true at output positions 0, 5, 8, 11.
+      // source true at evens → pick 0,1,2,3,4,5,6,7,8,9,10,11 mapped so:
+      // out 0 ← src 0 (true), out 5 ← src 10 (true), out 8 ← src 16 (true),
+      // out 11 ← src 18 (true). Other positions pull from odd source indices.
+      const indices = Int32Array.of(0, 1, 3, 5, 7, 10, 11, 13, 16, 17, 19, 18);
+      const slice = col.sliceByIndices(indices);
+      expect(slice.length).toBe(12);
+      const trueIndices: number[] = [];
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice.read(i) === true) trueIndices.push(i);
+      }
+      expect(trueIndices).toEqual([0, 5, 8, 11]);
+    });
   });
 });

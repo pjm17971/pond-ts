@@ -278,3 +278,132 @@ describe('validityGatherByIndices', () => {
     expect(validityGatherByIndices(undefined, indices, 4)).toBeUndefined();
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Multi-byte output coverage — slice / gather producing > 8 bits exercises    */
+/* the byte-boundary carry that single-byte tests above cannot reach.          */
+/* -------------------------------------------------------------------------- */
+
+describe('validitySliceByRange — multi-byte output', () => {
+  it('packs a 9-bit slice into 2 output bytes correctly', () => {
+    // Source: 16 bits with the pattern 0b1010101010101010 (bits 1,3,5,7,9,11,13,15 set).
+    // Layout: byte 0 = 0b10101010, byte 1 = 0b10101010.
+    const bm = validityFromBits(new Uint8Array([0b10101010, 0b10101010]), 16);
+    // Slice [2, 11) → 9-bit output. Source defined at 3,5,7,9
+    // → output positions 1, 3, 5, 7. Output spans 2 bytes (bit 7 still in byte 0; bit 8 in byte 1).
+    const slice = validitySliceByRange(bm, 2, 11, 16);
+    expect(slice).toBeDefined();
+    expect(slice!.length).toBe(9);
+    const defined: number[] = [];
+    for (let i = 0; i < 9; i += 1) {
+      if (slice!.isDefined(i)) defined.push(i);
+    }
+    expect(defined).toEqual([1, 3, 5, 7]);
+    // Confirm the underlying buffer crossed the byte boundary.
+    expect(slice!.bits.length).toBe(2);
+  });
+
+  it('20-bit slice spans 3 output bytes correctly', () => {
+    // Source: 32 bits, every multiple of 3 defined: 0,3,6,9,12,15,18,21,24,27,30.
+    // byte 0 (bits 0–7):  0,3,6        → 0b01001001 = 0x49
+    // byte 1 (bits 8–15): 9,12,15      → bit 9 = byte1 bit 1, bit 12 = byte1 bit 4, bit 15 = byte1 bit 7 → 0b10010010 = 0x92
+    // byte 2 (bits 16–23): 18,21       → bit 18 = byte2 bit 2, bit 21 = byte2 bit 5 → 0b00100100 = 0x24
+    // byte 3 (bits 24–31): 24,27,30    → bit 24 = byte3 bit 0, bit 27 = byte3 bit 3, bit 30 = byte3 bit 6 → 0b01001001 = 0x49
+    const bm = validityFromBits(new Uint8Array([0x49, 0x92, 0x24, 0x49]), 32);
+    // Slice [5, 25) → 20-bit output spanning 3 bytes.
+    // Source-defined in [5, 25): 6, 9, 12, 15, 18, 21, 24 → output positions 1, 4, 7, 10, 13, 16, 19.
+    const slice = validitySliceByRange(bm, 5, 25, 32);
+    expect(slice).toBeDefined();
+    expect(slice!.length).toBe(20);
+    expect(slice!.bits.length).toBe(3);
+    const defined: number[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      if (slice!.isDefined(i)) defined.push(i);
+    }
+    expect(defined).toEqual([1, 4, 7, 10, 13, 16, 19]);
+  });
+
+  it('definedCount on multi-byte output is consistent with isDefined sweep', () => {
+    const bm = validityFromBits(new Uint8Array([0b10101010, 0b11001100]), 16);
+    const slice = validitySliceByRange(bm, 1, 13, 16);
+    expect(slice).toBeDefined();
+    expect(slice!.length).toBe(12);
+    let counted = 0;
+    for (let i = 0; i < 12; i += 1) {
+      if (slice!.isDefined(i)) counted += 1;
+    }
+    expect(slice!.definedCount).toBe(counted);
+  });
+});
+
+describe('validityGatherByIndices — multi-byte output', () => {
+  it('gathers 12 bits across 2 output bytes correctly', () => {
+    // Source: 16 bits, defined at evens 0,2,4,6,8,10,12,14 → byte 0=0b01010101, byte 1=0b01010101.
+    const bm = validityFromBits(new Uint8Array([0b01010101, 0b01010101]), 16);
+    const indices = Int32Array.of(0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15);
+    const out = validityGatherByIndices(bm, indices, 16);
+    expect(out).toBeDefined();
+    expect(out!.length).toBe(12);
+    expect(out!.bits.length).toBe(2);
+    const defined: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      if (out!.isDefined(i)) defined.push(i);
+    }
+    // Indices map to source positions 0(true),1(false),2(t),3(f),8(t),9(f),10(t),11(f),12(t),13(f),14(t),15(f).
+    expect(defined).toEqual([0, 2, 4, 6, 8, 10]);
+  });
+
+  it('gathers 20 bits across 3 output bytes correctly when source has no bitmap', () => {
+    // No source bitmap = all-defined. Indices include out-of-range slots → bitmap allocated.
+    const indices = Int32Array.of(
+      0,
+      5,
+      -1,
+      3,
+      7,
+      99,
+      1,
+      4,
+      2,
+      6,
+      8,
+      50,
+      9,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      -3,
+    );
+    const out = validityGatherByIndices(undefined, indices, 10);
+    expect(out).toBeDefined();
+    expect(out!.length).toBe(20);
+    expect(out!.bits.length).toBe(3);
+    // Out-of-range positions: 2 (-1), 5 (99), 11 (50), 19 (-3). Others defined.
+    expect(out!.isDefined(2)).toBe(false);
+    expect(out!.isDefined(5)).toBe(false);
+    expect(out!.isDefined(11)).toBe(false);
+    expect(out!.isDefined(19)).toBe(false);
+    expect(out!.definedCount).toBe(16);
+  });
+
+  it('definedCount on multi-byte gather is consistent with isDefined sweep', () => {
+    const bm = validityFromBits(new Uint8Array([0xff, 0x0f]), 12);
+    const indices = Int32Array.of(0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11);
+    const out = validityGatherByIndices(bm, indices, 12);
+    if (!out) {
+      // 12 of 12 source bits defined → output is all defined.
+      // Verify by reconstructing: indices map to source 0,4,8,1,5,9,2,6,10,3,7,11.
+      // Source bits 0–7 set, 8–11 set → all 12 indices defined.
+      // OK to be undefined per the all-defined convention.
+      return;
+    }
+    let counted = 0;
+    for (let i = 0; i < 12; i += 1) {
+      if (out.isDefined(i)) counted += 1;
+    }
+    expect(out.definedCount).toBe(counted);
+  });
+});
