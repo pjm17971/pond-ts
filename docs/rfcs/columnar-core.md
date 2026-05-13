@@ -18,12 +18,14 @@ Phase 3 implementation baseline).
 **Authorship:** developed across multiple contributors. Each section below
 carries inline attribution; this list is the index for cold readers.
 
-| Section                                             | Contributor                                           |
-| --------------------------------------------------- | ----------------------------------------------------- |
-| Original draft (thesis + evidence + open questions) | Codex, 2026-05-11                                     |
-| Library-agent response and adoption                 | pond-ts library agent (Claude) + pjm17971, 2026-05-11 |
-| Use-case agent feedback (gRPC experiment)           | gRPC experiment agent (Claude), 2026-05-13            |
-| V2 amendment (library response to gRPC feedback)    | pond-ts library agent (Claude) + pjm17971, 2026-05-13 |
+| Section                                                    | Contributor                                           |
+| ---------------------------------------------------------- | ----------------------------------------------------- |
+| Original draft (thesis + evidence + open questions)        | Codex, 2026-05-11                                     |
+| Library-agent response and adoption                        | pond-ts library agent (Claude) + pjm17971, 2026-05-11 |
+| Use-case agent feedback (gRPC experiment)                  | gRPC experiment agent (Claude), 2026-05-13            |
+| V2 amendment (library response to gRPC feedback)           | pond-ts library agent (Claude) + pjm17971, 2026-05-13 |
+| Bottom-up investigation pass (5 fresh agents)              | 5 investigation agents, 2026-05-13                    |
+| V3 amendment (library response to investigation synthesis) | pond-ts library agent (Claude) + pjm17971, 2026-05-13 |
 
 ## Original draft: Codex, 2026-05-11
 
@@ -615,3 +617,314 @@ layer (step 1) and the LiveSeries numeric ring buffer (step 7),
 not new work items.
 
 The endorsement holds. The work proceeds.
+
+---
+
+## Bottom-up investigation pass (5 fresh agents), 2026-05-13
+
+> _After the V2 amendment landed, five fresh agents — each given a
+> minimal brief and one scope of pond-ts's operator surface — were
+> tasked with answering "if you HAD to convert your scope to columnar,
+> what would happen?" The agents worked independently with no awareness
+> of each other and were deliberately excluded from reading the RFC
+> itself, to keep their reading bottom-up from the code rather than
+> downstream from the RFC's design conclusions._
+
+The five scopes:
+
+- **Storage + access core** — `TimeSeries` construction, public Event API, lazy materialization, the five public-API invariants
+- **Aggregation family** — `reduce` / `aggregate` / `rolling` / `baseline` / `outliers` + all live variants + the reducer registry
+- **Transforms** — `select` / `rename` / `collapse` / `map` / `filter` / `diff` / `rate` / `pctChange` / `cumulative` / `shift` / `fill` / `smooth` + live counterparts
+- **Reshape + multi-series** — `pivotByGroup` / `groupBy` / `join` / `joinMany` / `concat` / `align` / `materialize` / `dedupe` / `sample`
+- **Partitioning** — `PartitionedTimeSeries` / `LivePartitionedSeries` / `LivePartitionedView` + every chainable sugar method + terminals
+
+Reports landed at:
+
+- [`columnar-investigation-storage-report.md`](../briefs/columnar-investigation-storage-report.md)
+- [`columnar-investigation-aggregation-report.md`](../briefs/columnar-investigation-aggregation-report.md)
+- [`columnar-investigation-transforms-report.md`](../briefs/columnar-investigation-transforms-report.md)
+- [`columnar-investigation-reshape-report.md`](../briefs/columnar-investigation-reshape-report.md)
+- [`columnar-investigation-partitioning-report.md`](../briefs/columnar-investigation-partitioning-report.md)
+
+The synthesis pass:
+[`columnar-investigation-synthesis.md`](../briefs/columnar-investigation-synthesis.md).
+
+**Net signal:** all five agents independently endorse the substrate
+direction. None proposed reversing the decision. The reports converge
+on a small set of framework primitives, pin the answers to several
+design questions the V2 amendment left implicit, and surface three
+concrete regression risks — each with a concrete mitigation.
+
+---
+
+## V3 amendment (library response to investigation synthesis), 2026-05-13
+
+> _pjm17971 + pond-ts library agent (Claude). Pins the synthesis-driven
+> findings as RFC commitments rather than open questions. Several
+> commitments below refine or correct V2; trajectory preserved so
+> future readers see what changed and why._
+
+The bottom-up investigation produced richer detail than V2 anticipated.
+Three categories of update:
+
+- **New framework primitives** the V2 amendment didn't sketch, surfaced
+  by multiple reports independently
+- **Pinning the reducer registry shape** that V2 left implicit
+- **Refinements to V2 commitments** where the bottom-up evidence changed
+  the answer (loess reclassification, pushColumns split, etc.)
+
+### 1. Index views — the foundational primitive V2 missed
+
+**Commitment.** The framework's primary primitive for derived-series
+construction is the **index view**: a store whose columns borrow from
+a source store under an `Int32Array` of row indices, materializing on
+demand.
+
+```ts
+Store.withRowSelection(source: Store, indices: Int32Array): Store
+```
+
+Three independent reports (transforms, reshape, partitioning) arrived
+at the same shape. The framework uses this for:
+
+- `filter(pred)` returning a view; eager compaction only when
+  selectivity or downstream pattern justifies
+- `groupBy(col, fn)`'s per-group sub-stores (each is `{ source, indices }`)
+- `partitionBy(col)`'s per-partition routing (hybrid index-view +
+  compact-on-write)
+
+**Compact-on-write semantics:** read-only chains flow through indices
+end-to-end and never materialize. The first transform that derives a
+new column triggers compaction of that view. `collect()` over read-only
+chains becomes effectively zero-cost.
+
+This is the **single biggest framework-layer commitment** the V2
+amendment didn't make. Goes in framework step 1.
+
+### 2. `ColumnBuilder` for dynamic / append construction
+
+**Commitment.** The framework provides a `ColumnBuilder<T>` primitive
+for dynamic-schema batch output and live append-only rings, unified.
+
+```ts
+type ColumnBuilder<T> = {
+  append(value: T | undefined): void;
+  appendAt(rowIndex: number, value: T | undefined): void; // sparse fill
+  finalize(): Column<T>;
+};
+
+Store.fromBuilders(schema: SeriesSchema, keyBuffer: KeyBuffer, builders: ColumnBuilder[]): Store
+```
+
+Two reports independently identify the same shape. Used by:
+
+- `pivotByGroup`'s sparse-fill output (one builder per discovered group)
+- `LiveSeries`'s ring buffer (append-only typed-array growth)
+- Any future operator that constructs a store column-by-column rather
+  than row-by-row
+
+V2 didn't sketch this. Goes in framework step 1.
+
+### 3. Reducer registry shape — pinned
+
+**Commitment.** The `(add, remove, snapshot)` contract on the reducer
+registry **survives unchanged.** The framework adds **optional**
+column-aware methods alongside; built-in reducers implement them for
+fast paths, custom-function reducers stay on the existing shape, and
+operators dispatch per-column.
+
+```ts
+type ReducerDef = {
+  outputKind: 'number' | 'source' | 'array';
+
+  // Existing — kept verbatim. Custom-function reducers depend on this.
+  reduce(defined, numeric): ColumnValue | undefined;
+  bucketState(): AggregateBucketState;
+  rollingState(): RollingReducerState;
+
+  // NEW — optional. Operators prefer these when present.
+  reduceColumn?(col: Column, validity?: Uint8Array): ColumnValue | undefined;
+  reduceColumnRange?(col, start, end, validity?): ColumnValue | undefined;
+  bucketStateColumn?(): ColumnarBucketState;
+  rollingStateColumn?(): ColumnarRollingState;
+};
+```
+
+**Why it matters:** mixed mappings (numeric `avg` + custom function in
+the same `rolling`) don't regress. Each column dispatches independently
+to the fast path or fallback. Custom-function reducers — which V2
+already committed to keeping event-backed — stay on the existing shape
+unchanged.
+
+V2 didn't pin this. Goes in framework step 3 (numeric reducer
+adaptation).
+
+### 4. `loess` and `smooth({centered})` reclassified
+
+**Refinement of V2.** V2 listed `smooth({ alignment: 'centered' })` and
+`smooth('loess')` as intentional gaps — operators that don't benefit
+from columnar. The transforms agent's investigation showed:
+
+- `loess` **already operates on numeric arrays internally**
+  (`loessAnchors: number[]`, `loessValues: number[]`). Direct port to
+  `Float64Array` is **parity-to-modest-win.**
+- `smooth({centered})` for `movingAverage` is bookkeeping complexity,
+  not a columnar fight. Clean port.
+
+**Drop both from the intentional-gap list.** Both port cleanly. Live
+`smooth` stays separately deferred (LiveView's `process(event) => Event`
+shape is its own sub-spike), but the batch-side smoothers are all in
+scope.
+
+### 5. `pushColumns` split refined
+
+**Refinement of V2.** V2 said: `pushColumns(...)` public API is not in
+v1.0, but the framework's internal `appendBatch` is designed so it can
+land as v1.x without breaking v1.0.
+
+The partitioning report's `Store.scatterByPartition` is a stronger
+argument: batched live routing wins at batch sizes ≥ 100, and the
+internal scatter primitive belongs in v1.0 even when the public
+`pushColumns` API doesn't.
+
+**Refine the split:**
+
+- **`Store.scatterByPartition` internal primitive: v1.0.** Used by
+  `LivePartitionedSeries`'s routing of `pushMany` batches.
+- **Public `pushColumns(...)` API: v1.x.** Reachable from the internal
+  primitive without a substrate refactor.
+
+### 6. `groupBy` deferral + migration funnel
+
+**New commitment.** `groupBy(col, fn)`'s `Map<string, TimeSeries<S>>`
+return shape is the worst-case regression in the reshape scope (N
+independent store allocations per call). Both the reshape agent and the
+partitioning agent recommend the same fix:
+
+- **`groupBy` columnarization is explicitly deferred.** v1.0 keeps it
+  event-backed inside the substrate.
+- **Public migration funnel:** users wanting per-key transforms at scale
+  should reach for `partitionBy(col).apply(fn).collect()`, which is the
+  structurally correct shape and aligns with the index-view primitive
+  above.
+- **Documentation update:** `groupBy` JSDoc gains a "for perf-sensitive
+  cases, prefer `partitionBy(...).apply(...).collect()`" note.
+
+Not a v1.0 implementation cost; a doc + steering commitment.
+
+### 7. `mapColumn` as a new method
+
+**New commitment.** `map(schema, fn)` takes an opaque user closure
+returning `Event`; the substrate can't route through typed-array math.
+V2 said `map` stays event-backed at parity. The transforms agent
+identified a clean way to recover the common case:
+
+- **Add `mapColumn(name, fn)`** — scalar transform on one numeric
+  column. Substrate routes through typed-array transform. Clean win.
+- **Keep existing `map(schema, fn)`** event-backed inside the
+  substrate; remains parity with today.
+
+No API regression, no semantic loss. The split is principled: the
+column-shaped majority of `map` calls (`multiply 'cpu' by 100`, `cap
+'temp' to [0, 1]`) become `mapColumn` and get the win; the actual
+event-closure cases stay where they are.
+
+Lands in framework step 4 (derived transforms).
+
+### 8. Lazy ring growth as live-partition default
+
+**Refinement of V2.** V2 committed to `LiveSeries` numeric ring buffer
+scoped narrowly (numeric rolling windows, built-in reducers). The
+partitioning agent identified a concrete regression risk that wasn't
+named in V2:
+
+- At 1k hosts × 5 numeric columns × 1000-event retention × 8 bytes =
+  **~40 MB pre-allocated** at spawn time under a naive port. Today's
+  row-shape spawn is near-zero.
+
+**Mitigation (and v1.0 default):** **lazy ring growth.** Start each
+partition's typed-array columns at capacity 64; double on append until
+retention cap. Matches `Array.push` amortization. The 1k-hosts × low-
+rate-per-host common case keeps most partitions at the initial 64.
+
+**Exception:** when `partitionBy(col, { groups })` is declared, pre-
+allocate per-partition capacity to retention. The user has named the
+count; predictable footprint is fine and avoids the growth cost.
+
+This refines V2's "scoped narrowly" commitment with the concrete
+default-allocation policy. Goes in framework step 7 (LiveSeries
+numeric ring buffer).
+
+### 9. Multi-source primitives in framework scope
+
+**New commitment.** Reshape's `join` / `joinMany` / `concat` operate
+over N stores. V2 treated the framework as single-store; the reshape
+agent surfaced that multi-source operations are a real second axis:
+
+```ts
+Store.joinByKey(left: Store, right: Store, options: JoinOptions): Store
+Store.concatSorted(stores: Store[]): Store
+```
+
+`Store.concatSorted` enables **chunked-output `concat`**: when input
+stores are temporally disjoint (the "fetch this hour + last hour"
+dashboard case), the output is zero-copy. This implies a `ChunkedColumn`
+shape in the framework — the RFC's internal-shape sketch mentions
+chunks, but the reshape report shows chunks should be load-bearing,
+not optional.
+
+`joinMany` stays as a left-fold of binary joins. N-ary fusion is a
+planner-layer optimization for v1.x.
+
+Lands in framework step 5 (reshape, after step 4 derived transforms).
+
+### 10. Validity bitmaps as load-bearing
+
+**Refinement of V2.** V2's internal-shape sketch mentions validity
+bitmaps; all five investigation reports touch them. The framework needs
+to make them first-class:
+
+- Every numeric column has an **optional validity bitmap** (allocated
+  only if any cell is undefined)
+- Every reducer skips by validity
+- Every export materializes `undefined` cells correctly
+- Per-cell missing-data marker, not per-row
+
+Not a new commitment — just elevating from "mentioned" to "load-
+bearing." Goes in framework step 1.
+
+### Net effect on the RFC
+
+The framework-layer scope (step 1 in V2's implementation sequence)
+gains four new primitives:
+
+1. **Index views** (`Store.withRowSelection`)
+2. **`ColumnBuilder`** (with sparse-fill `appendAt`)
+3. **Zero-copy `Store.renameColumn`** (transforms + reshape both need)
+4. **Direct typed-array key access** (`Store.keyAt` / `beginAt` / `endAt`)
+
+Plus elevations:
+
+- **Validity bitmaps** from "mentioned" to "load-bearing first-class"
+- **Chunked columns** from "internal shape" to "load-bearing for
+  `concatSorted`"
+
+The reducer registry shape (commitment #3 above) goes in step 3. The
+multi-source primitives (commitment #9) go in step 5. The `mapColumn`
+addition (commitment #7) goes in step 4. The lazy-ring-growth default
+(commitment #8) goes in step 7.
+
+**The total scope expands modestly from V2 — most additions are small
+primitives the framework needs anyway.** Implementation estimate stays
+in the 3–4 month range; the sequencing inside steps changes but the
+step boundaries are stable.
+
+Three regression risks documented (`groupBy`, `map` user closure,
+custom-function reducers); all three have mitigations that preserve
+parity or move them to event-backed fallback inside the substrate.
+
+The endorsement (from gRPC agent V2 feedback) and the substrate
+direction (from the strategic frame) both hold. **The framework-layer
+PR now has a concrete shape.** A separate framework-layer design
+document captures the implementation-facing API surface — see
+[`docs/briefs/columnar-framework-design.md`](../briefs/columnar-framework-design.md).
