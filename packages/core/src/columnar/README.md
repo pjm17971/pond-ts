@@ -7,12 +7,13 @@ import from it via relative paths.
 
 ## What's in here
 
-| File              | Sub-step | Contents                                                                                  |
-| ----------------- | -------- | ----------------------------------------------------------------------------------------- |
-| `validity.ts`     | 1a       | `ValidityBitmap` — bit-packed validity tracking                                           |
-| `column.ts`       | 1a       | `Column` discriminated union; `Float64Column`, `BooleanColumn`                            |
-| `index.ts`        | (barrel) | Internal-only re-exports                                                                  |
-| _later sub-steps_ | 1b–1h    | `StringColumn`, `ArrayColumn`, `KeyColumn`, `ColumnarStore`, builders, views, ring buffer |
+| File               | Sub-step | Contents                                                                  |
+| ------------------ | -------- | ------------------------------------------------------------------------- |
+| `validity.ts`      | 1a       | `ValidityBitmap` — bit-packed validity tracking                           |
+| `column.ts`        | 1a       | `Column` discriminated union; `Float64Column`, `BooleanColumn`            |
+| `string-column.ts` | 1b       | `StringColumn` (dict-encoded + fallback), dictionary heuristic            |
+| `index.ts`         | (barrel) | Internal-only re-exports                                                  |
+| _later sub-steps_  | 1c–1h    | `ArrayColumn`, `KeyColumn`, `ColumnarStore`, builders, views, ring buffer |
 
 See [`docs/briefs/columnar-framework-design.md`](../../../../docs/briefs/columnar-framework-design.md)
 for the full design, including module layout and primitive contracts.

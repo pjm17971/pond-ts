@@ -338,7 +338,9 @@ describe('Column independence (smoke)', () => {
     const mod = await import('../../src/columnar/index.js');
     expect(typeof mod.Float64Column).toBe('function');
     expect(typeof mod.BooleanColumn).toBe('function');
+    expect(typeof mod.StringColumn).toBe('function');
     expect(typeof mod.createValidityBitmap).toBe('function');
+    expect(typeof mod.stringColumnFromArray).toBe('function');
   });
 });
 

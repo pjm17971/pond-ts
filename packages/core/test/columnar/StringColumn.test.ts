@@ -1,0 +1,553 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  DICT_ENCODE_MIN_LENGTH,
+  DICT_ENCODE_RATIO,
+  MAX_COLUMN_LENGTH,
+  StringColumn,
+  buildDictionaryIndex,
+  estimateDictionaryBytes,
+  stringColumnDictEncoded,
+  stringColumnFallback,
+  stringColumnFromArray,
+  validityFromBits,
+} from '../../src/columnar/index.js';
+
+/* -------------------------------------------------------------------------- */
+/* Construction & read — dict-encoded mode                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn construction (dict-encoded)', () => {
+  it('builds a dict-encoded column with shared dictionary', () => {
+    const col = stringColumnDictEncoded(
+      ['us-east', 'us-west'],
+      Int32Array.of(0, 1, 0, 0, 1),
+    );
+    expect(col.kind).toBe('string');
+    expect(col.isDictEncoded).toBe(true);
+    expect(col.length).toBe(5);
+    expect(col.dictionary).toEqual(['us-east', 'us-west']);
+    expect(col.indices).toBeDefined();
+    expect(col.fallback).toBeUndefined();
+    expect(col.validity).toBeUndefined();
+  });
+
+  it('reads through the dictionary', () => {
+    const col = stringColumnDictEncoded(
+      ['a', 'b', 'c'],
+      Int32Array.of(2, 0, 1, 2, 0),
+    );
+    expect(col.read(0)).toBe('c');
+    expect(col.read(1)).toBe('a');
+    expect(col.read(2)).toBe('b');
+    expect(col.read(3)).toBe('c');
+    expect(col.read(4)).toBe('a');
+  });
+
+  it('reads out-of-range as undefined', () => {
+    const col = stringColumnDictEncoded(['x'], Int32Array.of(0));
+    expect(col.read(-1)).toBeUndefined();
+    expect(col.read(1)).toBeUndefined();
+  });
+
+  it('respects validity bitmap', () => {
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+    const col = stringColumnDictEncoded(
+      ['a', 'b'],
+      Int32Array.of(0, 1, 1),
+      validity,
+    );
+    expect(col.read(0)).toBe('a');
+    expect(col.read(1)).toBeUndefined();
+    expect(col.read(2)).toBe('b');
+  });
+
+  it('rejects out-of-range dictionary indices at construction', () => {
+    expect(() =>
+      stringColumnDictEncoded(['x', 'y'], Int32Array.of(0, 2)),
+    ).toThrow(RangeError);
+    expect(() =>
+      stringColumnDictEncoded(['x', 'y'], Int32Array.of(0, -1)),
+    ).toThrow(RangeError);
+  });
+
+  it('rejects validity-length mismatch', () => {
+    const validity = validityFromBits(new Uint8Array([0xff]), 5);
+    expect(() =>
+      stringColumnDictEncoded(['a'], Int32Array.of(0, 0, 0), validity),
+    ).toThrow(RangeError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Construction & read — fallback mode                                        */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn construction (fallback)', () => {
+  it('builds a fallback column', () => {
+    const col = stringColumnFallback(['hello', 'world', 'foo']);
+    expect(col.kind).toBe('string');
+    expect(col.isDictEncoded).toBe(false);
+    expect(col.length).toBe(3);
+    expect(col.fallback).toEqual(['hello', 'world', 'foo']);
+    expect(col.dictionary).toBeUndefined();
+    expect(col.indices).toBeUndefined();
+  });
+
+  it('derives validity from undefined slots when none is supplied', () => {
+    const col = stringColumnFallback(['a', undefined, 'b', undefined]);
+    expect(col.validity).toBeDefined();
+    expect(col.validity!.definedCount).toBe(2);
+    expect(col.read(0)).toBe('a');
+    expect(col.read(1)).toBeUndefined();
+    expect(col.read(2)).toBe('b');
+    expect(col.read(3)).toBeUndefined();
+  });
+
+  it('omits validity bitmap when every slot is defined', () => {
+    const col = stringColumnFallback(['a', 'b', 'c']);
+    expect(col.validity).toBeUndefined();
+  });
+
+  it('accepts an explicit validity bitmap', () => {
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+    const col = stringColumnFallback(['a', 'b', 'c'], validity);
+    expect(col.validity).toBe(validity);
+    expect(col.read(1)).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Mutual exclusion of internal modes                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn mode validation', () => {
+  it('rejects construction with both dict and fallback', () => {
+    expect(
+      () =>
+        new StringColumn(2, {
+          dictionary: ['x'],
+          indices: Int32Array.of(0, 0),
+          fallback: ['x', 'x'],
+        }),
+    ).toThrow(/exactly one of/);
+  });
+
+  it('rejects construction with neither dict nor fallback', () => {
+    expect(() => new StringColumn(2, {})).toThrow(/exactly one of/);
+  });
+
+  it('rejects construction with dict but no indices', () => {
+    expect(() => new StringColumn(2, { dictionary: ['x'] })).toThrow(
+      /exactly one of/,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Length validation                                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn length validation', () => {
+  it('rejects 2**31', () => {
+    expect(() =>
+      stringColumnDictEncoded(['x'], new Int32Array(2 ** 31)),
+    ).toThrow(RangeError);
+  });
+
+  it('rejects negative length via direct constructor', () => {
+    expect(() => new StringColumn(-1, { fallback: [] })).toThrow(RangeError);
+  });
+
+  it('rejects MAX_COLUMN_LENGTH + 1', () => {
+    // Can't actually allocate; just verify validation runs.
+    expect(
+      () =>
+        new StringColumn(MAX_COLUMN_LENGTH + 1, {
+          fallback: [],
+        }),
+    ).toThrow(RangeError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* scan                                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn.scan (dict-encoded)', () => {
+  it('iterates strings in row order', () => {
+    const col = stringColumnDictEncoded(
+      ['a', 'b'],
+      Int32Array.of(1, 0, 1, 1, 0),
+    );
+    const visited: Array<[string, number]> = [];
+    col.scan((v, i) => visited.push([v, i]));
+    expect(visited).toEqual([
+      ['b', 0],
+      ['a', 1],
+      ['b', 2],
+      ['b', 3],
+      ['a', 4],
+    ]);
+  });
+
+  it('skips invalid cells by default', () => {
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+    const col = stringColumnDictEncoded(
+      ['x', 'y'],
+      Int32Array.of(0, 1, 0),
+      validity,
+    );
+    const visited: Array<[string, number]> = [];
+    col.scan((v, i) => visited.push([v, i]));
+    expect(visited).toEqual([
+      ['x', 0],
+      ['x', 2],
+    ]);
+  });
+
+  it('visits every slot when skipInvalid is false', () => {
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+    const col = stringColumnDictEncoded(
+      ['x', 'y'],
+      Int32Array.of(0, 1, 0),
+      validity,
+    );
+    const visited: Array<[string, number]> = [];
+    col.scan((v, i) => visited.push([v, i]), { skipInvalid: false });
+    expect(visited).toEqual([
+      ['x', 0],
+      ['y', 1], // visited despite being invalid
+      ['x', 2],
+    ]);
+  });
+});
+
+describe('StringColumn.scan (fallback)', () => {
+  it('iterates strings, skipping undefined slots', () => {
+    const col = stringColumnFallback(['a', undefined, 'b', undefined, 'c']);
+    const visited: Array<[string, number]> = [];
+    col.scan((v, i) => visited.push([v, i]));
+    expect(visited).toEqual([
+      ['a', 0],
+      ['b', 2],
+      ['c', 4],
+    ]);
+  });
+
+  it('respects explicit validity bitmap', () => {
+    const validity = validityFromBits(new Uint8Array([0b011]), 3);
+    const col = stringColumnFallback(['a', 'b', 'c'], validity);
+    const visited: string[] = [];
+    col.scan((v) => visited.push(v));
+    expect(visited).toEqual(['a', 'b']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* sliceByRange                                                               */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn.sliceByRange (dict-encoded)', () => {
+  it('indices are a subarray view sharing the source buffer', () => {
+    const indices = Int32Array.of(0, 1, 0, 2, 1);
+    const col = stringColumnDictEncoded(['a', 'b', 'c'], indices);
+    const slice = col.sliceByRange(1, 4);
+    expect(slice.length).toBe(3);
+    expect(slice.indices!.buffer).toBe(indices.buffer);
+    expect(Array.from(slice.indices!)).toEqual([1, 0, 2]);
+    // Dictionary identity shared by reference.
+    expect(slice.dictionary).toBe(col.dictionary);
+  });
+
+  it('preserves read semantics across slice', () => {
+    const col = stringColumnDictEncoded(
+      ['a', 'b', 'c'],
+      Int32Array.of(0, 1, 2, 0, 1),
+    );
+    const slice = col.sliceByRange(1, 4);
+    expect(slice.read(0)).toBe('b');
+    expect(slice.read(1)).toBe('c');
+    expect(slice.read(2)).toBe('a');
+  });
+
+  it('propagates validity', () => {
+    const validity = validityFromBits(new Uint8Array([0b10101]), 5);
+    const col = stringColumnDictEncoded(
+      ['x'],
+      Int32Array.of(0, 0, 0, 0, 0),
+      validity,
+    );
+    const slice = col.sliceByRange(1, 4);
+    expect(slice.length).toBe(3);
+    expect(slice.read(0)).toBeUndefined();
+    expect(slice.read(1)).toBe('x');
+    expect(slice.read(2)).toBeUndefined();
+  });
+
+  it('empty range returns a zero-length column', () => {
+    const col = stringColumnDictEncoded(['x'], Int32Array.of(0, 0, 0));
+    const slice = col.sliceByRange(2, 2);
+    expect(slice.length).toBe(0);
+  });
+});
+
+describe('StringColumn.sliceByRange (fallback)', () => {
+  it('produces a sliced array', () => {
+    const col = stringColumnFallback(['a', 'b', 'c', 'd', 'e']);
+    const slice = col.sliceByRange(1, 4);
+    expect(slice.length).toBe(3);
+    expect(slice.fallback).toEqual(['b', 'c', 'd']);
+  });
+
+  it('clamps slice bounds to column length', () => {
+    const col = stringColumnFallback(['a', 'b']);
+    const slice = col.sliceByRange(-5, 100);
+    expect(slice.length).toBe(2);
+    expect(slice.read(0)).toBe('a');
+    expect(slice.read(1)).toBe('b');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* sliceByIndices                                                             */
+/* -------------------------------------------------------------------------- */
+
+describe('StringColumn.sliceByIndices (dict-encoded)', () => {
+  it('gathers indices, retaining the dictionary by reference', () => {
+    const col = stringColumnDictEncoded(
+      ['a', 'b', 'c'],
+      Int32Array.of(0, 1, 2, 0, 1),
+    );
+    const slice = col.sliceByIndices(Int32Array.of(4, 0, 2));
+    expect(slice.length).toBe(3);
+    expect(slice.dictionary).toBe(col.dictionary);
+    expect(Array.from(slice.indices!)).toEqual([1, 0, 2]);
+    expect(slice.read(0)).toBe('b');
+    expect(slice.read(1)).toBe('a');
+    expect(slice.read(2)).toBe('c');
+  });
+
+  it('marks out-of-range source indices invalid', () => {
+    const col = stringColumnDictEncoded(['a'], Int32Array.of(0, 0));
+    const slice = col.sliceByIndices(Int32Array.of(0, 5, 1));
+    expect(slice.read(0)).toBe('a');
+    expect(slice.read(1)).toBeUndefined();
+    expect(slice.read(2)).toBe('a');
+  });
+});
+
+describe('StringColumn.sliceByIndices (fallback)', () => {
+  it('gathers strings into a new array', () => {
+    const col = stringColumnFallback(['a', 'b', 'c', 'd']);
+    const slice = col.sliceByIndices(Int32Array.of(3, 1, 0));
+    expect(slice.length).toBe(3);
+    expect(slice.fallback).toEqual(['d', 'b', 'a']);
+  });
+
+  it('marks out-of-range source indices undefined', () => {
+    const col = stringColumnFallback(['a', 'b']);
+    const slice = col.sliceByIndices(Int32Array.of(0, 5, 1));
+    expect(slice.read(0)).toBe('a');
+    expect(slice.read(1)).toBeUndefined();
+    expect(slice.read(2)).toBe('b');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* stringColumnFromArray — heuristic encoding choice                          */
+/* -------------------------------------------------------------------------- */
+
+describe('stringColumnFromArray', () => {
+  it('dict-encodes when distinct/length ratio is low', () => {
+    // 20 rows, 3 distinct values → ratio 0.15, well below default 0.5.
+    const source = Array.from({ length: 20 }, (_, i) => ['a', 'b', 'c'][i % 3]);
+    const col = stringColumnFromArray(source);
+    expect(col.isDictEncoded).toBe(true);
+    expect(col.dictionary).toEqual(['a', 'b', 'c']);
+    expect(col.length).toBe(20);
+  });
+
+  it('falls back when every row is distinct', () => {
+    const source = Array.from({ length: 20 }, (_, i) => `unique-${i}`);
+    const col = stringColumnFromArray(source);
+    expect(col.isDictEncoded).toBe(false);
+    expect(col.length).toBe(20);
+  });
+
+  it('falls back for short inputs even with low cardinality', () => {
+    // length < DICT_ENCODE_MIN_LENGTH (16) → fallback regardless of ratio.
+    const source = ['a', 'a', 'b', 'a'];
+    const col = stringColumnFromArray(source);
+    expect(col.isDictEncoded).toBe(false);
+    expect(col.length).toBe(4);
+  });
+
+  it('honors forceDict override', () => {
+    const source = ['a', 'b', 'c', 'd'];
+    const col = stringColumnFromArray(source, { forceDict: true });
+    expect(col.isDictEncoded).toBe(true);
+  });
+
+  it('honors forceFallback override', () => {
+    const source = Array.from({ length: 20 }, () => 'same');
+    const col = stringColumnFromArray(source, { forceFallback: true });
+    expect(col.isDictEncoded).toBe(false);
+  });
+
+  it('rejects setting both forceDict and forceFallback', () => {
+    expect(() =>
+      stringColumnFromArray(['a'], { forceDict: true, forceFallback: true }),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it('handles undefined / null entries via validity bitmap', () => {
+    const source = ['a', undefined, 'b', null, 'a'];
+    const col = stringColumnFromArray(source, { forceDict: true });
+    expect(col.isDictEncoded).toBe(true);
+    expect(col.validity).toBeDefined();
+    expect(col.validity!.definedCount).toBe(3);
+    expect(col.read(0)).toBe('a');
+    expect(col.read(1)).toBeUndefined();
+    expect(col.read(2)).toBe('b');
+    expect(col.read(3)).toBeUndefined();
+    expect(col.read(4)).toBe('a');
+  });
+
+  it('handles all-missing dict-encoded source via placeholder + validity', () => {
+    const source: ReadonlyArray<undefined> = [
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ];
+    const col = stringColumnFromArray(source, { forceDict: true });
+    expect(col.isDictEncoded).toBe(true);
+    expect(col.dictionary!.length).toBeGreaterThan(0);
+    expect(col.validity!.definedCount).toBe(0);
+    expect(col.read(0)).toBeUndefined();
+  });
+
+  it('empty source dict-encodes by default', () => {
+    const col = stringColumnFromArray([]);
+    expect(col.length).toBe(0);
+    expect(col.isDictEncoded).toBe(true);
+    expect(col.dictionary!.length).toBe(0);
+  });
+
+  it('empty source with forceFallback yields fallback mode', () => {
+    const col = stringColumnFromArray([], { forceFallback: true });
+    expect(col.length).toBe(0);
+    expect(col.isDictEncoded).toBe(false);
+  });
+
+  it('custom dictRatio threshold honored', () => {
+    // 4 distinct in 16 → ratio 0.25. Default would dict-encode.
+    const source = Array.from(
+      { length: 16 },
+      (_, i) => ['a', 'b', 'c', 'd'][i % 4],
+    );
+    const tight = stringColumnFromArray(source, { dictRatio: 0.1 });
+    expect(tight.isDictEncoded).toBe(false);
+
+    const loose = stringColumnFromArray(source, { dictRatio: 0.5 });
+    expect(loose.isDictEncoded).toBe(true);
+  });
+
+  it('custom minDictLength threshold honored', () => {
+    // length 3, distinct/length = 1/3, well below the 0.5 ratio.
+    // Default minDictLength (16) blocks dict encoding; lowering it allows.
+    const source = ['a', 'a', 'a'];
+    const aggressive = stringColumnFromArray(source, { minDictLength: 2 });
+    expect(aggressive.isDictEncoded).toBe(true);
+
+    const conservative = stringColumnFromArray(source, { minDictLength: 100 });
+    expect(conservative.isDictEncoded).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Heuristic constants                                                        */
+/* -------------------------------------------------------------------------- */
+
+describe('Heuristic constants', () => {
+  it('DICT_ENCODE_RATIO has a sane default', () => {
+    expect(DICT_ENCODE_RATIO).toBeGreaterThan(0);
+    expect(DICT_ENCODE_RATIO).toBeLessThan(1);
+  });
+
+  it('DICT_ENCODE_MIN_LENGTH is positive', () => {
+    expect(DICT_ENCODE_MIN_LENGTH).toBeGreaterThan(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Dictionary operations                                                      */
+/* -------------------------------------------------------------------------- */
+
+describe('buildDictionaryIndex', () => {
+  it('inverts a dictionary array', () => {
+    const dict = ['us-east', 'us-west', 'eu-west'];
+    const map = buildDictionaryIndex(dict);
+    expect(map.size).toBe(3);
+    expect(map.get('us-east')).toBe(0);
+    expect(map.get('us-west')).toBe(1);
+    expect(map.get('eu-west')).toBe(2);
+    expect(map.get('unknown')).toBeUndefined();
+  });
+
+  it('handles empty dictionaries', () => {
+    expect(buildDictionaryIndex([]).size).toBe(0);
+  });
+});
+
+describe('estimateDictionaryBytes', () => {
+  it('returns 0 for an empty dictionary', () => {
+    expect(estimateDictionaryBytes([])).toBe(0);
+  });
+
+  it('uses 2 bytes per code unit', () => {
+    expect(estimateDictionaryBytes(['hi', 'hey'])).toBe(2 * 2 + 3 * 2);
+  });
+
+  it('scales with string length', () => {
+    const dict = ['short', 'much-longer-string'];
+    expect(estimateDictionaryBytes(dict)).toBe(
+      'short'.length * 2 + 'much-longer-string'.length * 2,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Dictionary identity across slice/gather                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('Dictionary sharing across operations', () => {
+  it('sliceByRange shares dictionary reference', () => {
+    const col = stringColumnFromArray(
+      Array.from({ length: 20 }, (_, i) => ['a', 'b', 'c'][i % 3]),
+    );
+    const slice = col.sliceByRange(2, 10);
+    expect(slice.dictionary).toBe(col.dictionary);
+  });
+
+  it('sliceByIndices shares dictionary reference', () => {
+    const col = stringColumnFromArray(
+      Array.from({ length: 20 }, (_, i) => ['a', 'b'][i % 2]),
+    );
+    const slice = col.sliceByIndices(Int32Array.of(5, 10, 15));
+    expect(slice.dictionary).toBe(col.dictionary);
+  });
+
+  it('dictionary is retained even when slicing produces unused entries', () => {
+    // Pin the documented contract: sliced output keeps the full source
+    // dictionary even if some entries are no longer referenced.
+    const col = stringColumnDictEncoded(
+      ['a', 'b', 'c', 'd'],
+      Int32Array.of(0, 1, 2, 3),
+    );
+    const slice = col.sliceByIndices(Int32Array.of(0));
+    expect(slice.dictionary).toEqual(['a', 'b', 'c', 'd']);
+    expect(slice.dictionary!.length).toBe(4);
+  });
+});
