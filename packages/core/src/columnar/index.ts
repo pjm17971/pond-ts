@@ -53,6 +53,7 @@ export {
 } from './array-column.js';
 
 export {
+  type IntervalLabelKind,
   type KeyColumn,
   IntervalKeyColumn,
   TimeKeyColumn,
@@ -60,3 +61,14 @@ export {
   timeKeyColumnFromArray,
   timeRangeKeyColumnFromPairs,
 } from './key-column.js';
+
+export { type FromTrustedStoreOptions, ColumnarStore } from './store.js';
+
+export {
+  type AnyColumnKind,
+  type ArrayValue,
+  type ColumnDef,
+  type ColumnSchema,
+  type KeyKind,
+  type ScalarValue,
+} from './types.js';
