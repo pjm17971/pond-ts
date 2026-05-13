@@ -166,17 +166,20 @@ export class StringColumn {
   }
 
   /**
-   * Linear scan with callback. `skipInvalid` defaults to true. When
-   * `skipInvalid: false`, the scan considers every row but **still
-   * only invokes the callback for rows whose effective string value
-   * is defined** — the callback's `value` parameter is typed as
-   * `string`, so we never pass `undefined`. This matches the
-   * fallback-mode behavior and protects against the dict-encoded
-   * empty-placeholder path where an invalid row's index points
-   * outside the dictionary.
+   * Linear scan with callback. Matches the shared `ColumnBase` scan
+   * contract:
    *
-   * To distinguish "missing" from "skipped" when iterating, consult
-   * `column.validity` directly.
+   * - **`skipInvalid: true`** (default): callback fired only for
+   *   rows the validity bitmap marks as defined.
+   * - **`skipInvalid: false`**: callback fired for **every** row in
+   *   `[0, length)`, mirroring `Float64Column` and `BooleanColumn`.
+   *   Invalid rows whose effective value would otherwise be
+   *   `undefined` receive the empty-string sentinel `''`, the
+   *   string equivalent of the numeric columns' buffer-default
+   *   sentinel (`0` for `Float64Column`, `false` for
+   *   `BooleanColumn`). Callers who must distinguish a real `''`
+   *   from a sentinel `''` consult `column.validity` directly —
+   *   identical pattern to the numeric columns' `0` sentinel.
    */
   scan(fn: (value: string, i: number) => void, options?: ScanOptions): void {
     const skipInvalid = options?.skipInvalid ?? true;
@@ -186,16 +189,16 @@ export class StringColumn {
       const idxBuf = this.indices!;
       if (!v) {
         for (let i = 0; i < this.length; i += 1) {
-          const val = dict[idxBuf[i]!];
-          if (val !== undefined) fn(val, i);
+          fn(dict[idxBuf[i]!] ?? '', i);
         }
         return;
       }
       for (let i = 0; i < this.length; i += 1) {
         const valid = v.isDefined(i);
-        if (valid || !skipInvalid) {
-          const val = dict[idxBuf[i]!];
-          if (val !== undefined) fn(val, i);
+        if (valid) {
+          fn(dict[idxBuf[i]!]!, i);
+        } else if (!skipInvalid) {
+          fn(dict[idxBuf[i]!] ?? '', i);
         }
       }
       return;
@@ -203,18 +206,16 @@ export class StringColumn {
     const fb = this.fallback!;
     if (!v) {
       for (let i = 0; i < this.length; i += 1) {
-        const val = fb[i];
-        if (val !== undefined) {
-          fn(val, i);
-        }
+        fn(fb[i] ?? '', i);
       }
       return;
     }
     for (let i = 0; i < this.length; i += 1) {
       const valid = v.isDefined(i);
-      if (valid || !skipInvalid) {
-        const val = fb[i];
-        if (val !== undefined) fn(val, i);
+      if (valid) {
+        fn(fb[i]!, i);
+      } else if (!skipInvalid) {
+        fn(fb[i] ?? '', i);
       }
     }
   }
@@ -478,13 +479,25 @@ export function buildDictionaryIndex(
  * Translates a buffer of dictionary indices from one dictionary to
  * another. The returned `Int32Array` is `srcIndices.length` long,
  * with entry `i = targetDictionary` index of the string at
- * `srcIndices[i]`, or `-1` when the source string is absent from
- * the target dictionary.
+ * `srcIndices[i]`, or `-1` when:
+ *
+ * - `validity` is supplied and `!validity.isDefined(i)` (the source
+ *   row is invalid; its placeholder index has no semantic meaning).
+ * - `srcIndices[i]` is out of range for `srcDictionary`.
+ * - The source string is absent from `targetDictionary`.
  *
  * Use this when joining or filtering across two `StringColumn`s
  * with different dictionaries: remap one side's indices to the
  * other's vocabulary so integer-equality comparison becomes
  * meaningful again.
+ *
+ * **Validity safety.** `StringColumn` stores arbitrary placeholder
+ * indices for invalid rows (e.g., `0` for out-of-range gathers).
+ * Passing raw `column.indices` without validity will remap those
+ * placeholders to real target entries — a silent join-corruption
+ * footgun. Callers operating on columns with possibly-invalid rows
+ * **must** pass the column's `validity` (or use
+ * `remapColumnToDictionary` which does this automatically).
  *
  * Complexity: O(srcIndices.length + targetDictionary.length).
  */
@@ -492,10 +505,15 @@ export function remapIndicesToDictionary(
   srcIndices: Int32Array,
   srcDictionary: ReadonlyArray<string>,
   targetDictionary: ReadonlyArray<string>,
+  validity?: ValidityBitmap,
 ): Int32Array {
   const targetIndex = buildDictionaryIndex(targetDictionary);
   const out = new Int32Array(srcIndices.length);
   for (let i = 0; i < srcIndices.length; i += 1) {
+    if (validity !== undefined && !validity.isDefined(i)) {
+      out[i] = -1;
+      continue;
+    }
     const srcIdx = srcIndices[i]!;
     if (srcIdx < 0 || srcIdx >= srcDictionary.length) {
       out[i] = -1;
@@ -506,6 +524,32 @@ export function remapIndicesToDictionary(
     out[i] = mapped === undefined ? -1 : mapped;
   }
   return out;
+}
+
+/**
+ * Validity-aware wrapper around `remapIndicesToDictionary` for
+ * dict-encoded `StringColumn`s. Returns a per-row `Int32Array` of
+ * target dictionary indices, with `-1` for invalid rows, out-of-range
+ * placeholders, and absent strings.
+ *
+ * Throws if the column is not dict-encoded — fallback-mode columns
+ * have no integer index buffer to remap.
+ */
+export function remapColumnToDictionary(
+  col: StringColumn,
+  targetDictionary: ReadonlyArray<string>,
+): Int32Array {
+  if (!col.isDictEncoded) {
+    throw new Error(
+      'remapColumnToDictionary: column must be dict-encoded; got fallback mode',
+    );
+  }
+  return remapIndicesToDictionary(
+    col.indices!,
+    col.dictionary!,
+    targetDictionary,
+    col.validity,
+  );
 }
 
 /**

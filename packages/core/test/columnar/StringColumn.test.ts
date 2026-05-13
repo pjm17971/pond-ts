@@ -7,6 +7,7 @@ import {
   StringColumn,
   buildDictionaryIndex,
   estimateDictionaryBytes,
+  remapColumnToDictionary,
   remapIndicesToDictionary,
   stringColumnDictEncoded,
   stringColumnFallback,
@@ -648,35 +649,18 @@ describe('stringColumnFromArray heuristic boundaries', () => {
 /* Codex round-2 regression: scan never passes undefined to a `string` callback. */
 /* -------------------------------------------------------------------------- */
 
-describe('scan never passes undefined (string callback safety)', () => {
-  it('dict-encoded scan with skipInvalid:false on all-invalid empty dict does not invoke callback with undefined', () => {
-    // Reproduces the Codex high finding: sliceByIndices on an empty dict
-    // produces a length-K all-invalid column. scan(skipInvalid:false)
-    // previously dereferenced `dict[0]` returning `undefined` for these
-    // rows and invoked `fn(undefined!, i)`. After the fix, scan filters
-    // `val !== undefined` in both branches.
+describe('scan row-aligned every-slot contract (skipInvalid: false)', () => {
+  // Codex round-2 raised that `StringColumn.scan(skipInvalid: false)`
+  // must match the shared `ColumnBase` contract — the callback fires
+  // for every row in `[0, length)`. Invalid rows whose effective value
+  // would be `undefined` receive the empty-string sentinel `''`, the
+  // string-mode equivalent of the numeric columns' `0` / `false`
+  // buffer-default. To distinguish a real `''` from a sentinel `''`,
+  // callers consult `column.validity` directly — identical pattern
+  // to numeric columns' `0` sentinel.
+  it('empty-dict all-invalid column fires the callback length times, sentinel = ""', () => {
     const col = stringColumnFromArray([]);
     const slice = col.sliceByIndices(Int32Array.of(0, 1, 2));
-    const visited: Array<[string, number]> = [];
-    slice.scan(
-      (v, i) => {
-        // Hard runtime check: v must be a string.
-        expect(typeof v).toBe('string');
-        visited.push([v, i]);
-      },
-      { skipInvalid: false },
-    );
-    expect(visited).toEqual([]);
-  });
-
-  it('dict-encoded scan with skipInvalid:false visits invalid rows with the placeholder string when dictionary has it', () => {
-    // When the source dictionary has the placeholder index, scan with
-    // skipInvalid:false visits the invalid row but the value passed is
-    // a string (the placeholder dict[0]), not undefined. Caller can
-    // consult `column.validity` to distinguish missing-but-visited
-    // from genuinely-present.
-    const col = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
-    const slice = col.sliceByIndices(Int32Array.of(0, 5, 1));
     const visited: Array<[string, number]> = [];
     slice.scan(
       (v, i) => {
@@ -685,19 +669,49 @@ describe('scan never passes undefined (string callback safety)', () => {
       },
       { skipInvalid: false },
     );
-    // Index 1 was out-of-range in source; placeholder dereferences to
-    // dict[0] = 'a' (the framework allows arbitrary values at invalid
-    // cells per `read`'s short-circuit contract).
+    expect(visited).toEqual([
+      ['', 0],
+      ['', 1],
+      ['', 2],
+    ]);
+    // Validity is the source of truth for distinguishing sentinel from real ''.
+    expect(slice.validity!.definedCount).toBe(0);
+  });
+
+  it('mixed-validity dict-encoded scan: invalid rows use placeholder (a real dict entry)', () => {
+    const col = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
+    const slice = col.sliceByIndices(Int32Array.of(0, 5, 1));
+    const visited: Array<[string, number]> = [];
+    slice.scan(
+      (v, i) => {
+        expect(typeof v).toBe('string');
+        visited.push([v, i]);
+      },
+      { skipInvalid: false },
+    );
+    // Row 0: valid → 'a'. Row 1: invalid, placeholder dict[0] = 'a'.
+    // Row 2: valid → 'b'.
     expect(visited).toEqual([
       ['a', 0],
       ['a', 1],
       ['b', 2],
     ]);
-    // Validity bitmap still reflects the actual invariant.
     expect(slice.validity!.isDefined(1)).toBe(false);
   });
 
-  it('dict-encoded scan with skipInvalid:true on the same column skips the invalid row', () => {
+  it('fallback with explicit invalid validity: callback receives "" sentinel for the invalid row', () => {
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+    const col = stringColumnFallback(['a', undefined, 'b'], validity);
+    const visited: Array<[string, number]> = [];
+    col.scan((v, i) => visited.push([v, i]), { skipInvalid: false });
+    expect(visited).toEqual([
+      ['a', 0],
+      ['', 1], // sentinel
+      ['b', 2],
+    ]);
+  });
+
+  it('skipInvalid: true (default) still skips invalid rows', () => {
     const col = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
     const slice = col.sliceByIndices(Int32Array.of(0, 5, 1));
     const visited: Array<[string, number]> = [];
@@ -708,7 +722,17 @@ describe('scan never passes undefined (string callback safety)', () => {
     ]);
   });
 
-  it('dict-encoded scan with no validity bitmap is safe when dict has the index', () => {
+  it('row-aligned consumer: scan(skipInvalid:false) output is exactly column.length entries', () => {
+    // Pin the contract that row-aligned consumers depend on.
+    const col = stringColumnFromArray(
+      Array.from({ length: 25 }, (_, i) => (i % 5 === 0 ? undefined : `v${i}`)),
+    );
+    let count = 0;
+    col.scan(() => (count += 1), { skipInvalid: false });
+    expect(count).toBe(col.length);
+  });
+
+  it('dict-encoded scan with no validity bitmap visits every slot', () => {
     const col = stringColumnDictEncoded(['x', 'y'], Int32Array.of(0, 1));
     const visited: string[] = [];
     col.scan((v) => visited.push(v));
@@ -812,5 +836,91 @@ describe('remapIndicesToDictionary', () => {
       ['a', 'b'],
     );
     expect(remapped.length).toBe(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Codex round-2 regression: validity-aware remap closes the join-corruption  */
+/* gap where invalid placeholder indices remapped to real strings.            */
+/* -------------------------------------------------------------------------- */
+
+describe('remapIndicesToDictionary validity-aware mode', () => {
+  it('marks invalid rows as -1 when validity is supplied', () => {
+    // Source has indices [0, 0, 0] where index 1 is invalid.
+    // Without validity, all three would remap to dict[0] = 'a' → target[0].
+    // With validity, the invalid row gets -1.
+    const srcDict = ['a', 'b'];
+    const targetDict = ['a', 'b'];
+    const indices = Int32Array.of(0, 0, 0);
+    const validity = validityFromBits(new Uint8Array([0b101]), 3);
+
+    const naive = remapIndicesToDictionary(indices, srcDict, targetDict);
+    expect(Array.from(naive)).toEqual([0, 0, 0]); // bug pattern Codex flagged
+
+    const safe = remapIndicesToDictionary(
+      indices,
+      srcDict,
+      targetDict,
+      validity,
+    );
+    expect(Array.from(safe)).toEqual([0, -1, 0]);
+  });
+
+  it('canonical join-corruption regression: invalid placeholder 0 cannot match dictionary[0]', () => {
+    // Codex's specific scenario: a column with placeholder `0` for
+    // missing rows would silently join as `dictionary[0]` without
+    // validity. Pin that the validity-aware variant blocks this.
+    const srcDict = ['us-east', 'us-west'];
+    const targetDict = ['us-east', 'eu-west'];
+    const indices = Int32Array.of(0, 0); // first row real, second is placeholder
+    const validity = validityFromBits(new Uint8Array([0b01]), 2); // only row 0 is defined
+
+    const remapped = remapIndicesToDictionary(
+      indices,
+      srcDict,
+      targetDict,
+      validity,
+    );
+    // Row 0: real 'us-east' → target idx 0. Row 1: invalid → -1.
+    // Without validity, row 1 would also resolve to target idx 0 (a join hit
+    // on a value that was actually missing). The -1 here is the fix.
+    expect(Array.from(remapped)).toEqual([0, -1]);
+  });
+
+  it('omitting validity preserves the existing behavior (every row treated as valid)', () => {
+    const srcDict = ['a', 'b'];
+    const targetDict = ['a', 'b'];
+    const remapped = remapIndicesToDictionary(
+      Int32Array.of(0, 1),
+      srcDict,
+      targetDict,
+    );
+    expect(Array.from(remapped)).toEqual([0, 1]);
+  });
+});
+
+describe('remapColumnToDictionary', () => {
+  it('uses the column validity automatically', () => {
+    // Build a column with an invalid row via sliceByIndices off a small source.
+    const src = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
+    const col = src.sliceByIndices(Int32Array.of(0, 5, 1));
+    // Resulting column: dict=['a','b'], indices=[0,0,1], validity has bit 1 cleared.
+    const remapped = remapColumnToDictionary(col, ['b', 'a']);
+    // Row 0: valid 'a' → target idx 1. Row 1: invalid → -1.
+    // Row 2: valid 'b' → target idx 0.
+    expect(Array.from(remapped)).toEqual([1, -1, 0]);
+  });
+
+  it('throws for fallback-mode columns', () => {
+    const col = stringColumnFallback(['a', 'b', 'c']);
+    expect(() => remapColumnToDictionary(col, ['a', 'b'])).toThrow(
+      /must be dict-encoded/,
+    );
+  });
+
+  it('handles a column with no validity bitmap (every row defined)', () => {
+    const col = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1, 0));
+    const remapped = remapColumnToDictionary(col, ['x', 'a', 'b']);
+    expect(Array.from(remapped)).toEqual([1, 2, 1]);
   });
 });

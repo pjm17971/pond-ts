@@ -39,6 +39,7 @@ export {
   StringColumn,
   buildDictionaryIndex,
   estimateDictionaryBytes,
+  remapColumnToDictionary,
   remapIndicesToDictionary,
   stringColumnDictEncoded,
   stringColumnFallback,
