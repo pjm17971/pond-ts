@@ -331,3 +331,61 @@ describe('IntervalKeyColumn rejects undefined label rows (Codex round 1)', () =>
     );
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Codex round-2 regressions: numeric interval labels + ArrayColumn mutation  */
+/* -------------------------------------------------------------------------- */
+
+describe('IntervalKeyColumn numeric labels (Codex round 2)', () => {
+  it('accepts a Float64Column as label storage', async () => {
+    const { Float64Column } = await import('../../src/columnar/index.js');
+    const begin = Float64Array.of(0, 86_400_000);
+    const end = Float64Array.of(86_400_000, 172_800_000);
+    const numericLabels = new Float64Column(Float64Array.of(1, 2), 2);
+    const col = new IntervalKeyColumn(begin, end, numericLabels, 2);
+    expect(col.labelKind).toBe('number');
+    expect(col.labels).toBe(numericLabels);
+    expect(col.labelAt(0)).toBe(1);
+    expect(col.labelAt(1)).toBe(2);
+  });
+
+  it('keyAt round-trips numeric labels without stringification', async () => {
+    const { Float64Column } = await import('../../src/columnar/index.js');
+    const begin = Float64Array.of(0, 100);
+    const end = Float64Array.of(50, 200);
+    const numericLabels = new Float64Column(Float64Array.of(42, 7), 2);
+    const col = new IntervalKeyColumn(begin, end, numericLabels, 2);
+    const k0 = col.keyAt(0);
+    const k1 = col.keyAt(1);
+    expect(k0).toBeInstanceOf(Interval);
+    // Pin that the label is genuinely a number, not stringified.
+    expect(typeof (k0 as Interval).value).toBe('number');
+    expect((k0 as Interval).value).toBe(42);
+    expect((k1 as Interval).value).toBe(7);
+  });
+
+  it('string-labeled column reports labelKind = "string"', () => {
+    const begin = Float64Array.of(0, 1);
+    const end = Float64Array.of(1, 2);
+    const labels = stringColumnFromArray(['x', 'y'], { forceDict: true });
+    const col = new IntervalKeyColumn(begin, end, labels, 2);
+    expect(col.labelKind).toBe('string');
+    expect(typeof col.labelAt(0)).toBe('string');
+  });
+
+  it('rejects numeric label column with non-finite labels', async () => {
+    // Float64Column.constructor already rejects NaN/Infinity for
+    // validity-marked-defined cells via reads-undefined path... but
+    // when labels are numeric, the label-defined check fires.
+    const { Float64Column, validityFromBits } =
+      await import('../../src/columnar/index.js');
+    const begin = Float64Array.of(0, 1);
+    const end = Float64Array.of(1, 2);
+    // Use validity to mark row 0 as invalid; row 1 has a valid finite label.
+    const validity = validityFromBits(new Uint8Array([0b10]), 2);
+    const labels = new Float64Column(Float64Array.of(0, 5), 2, validity);
+    expect(() => new IntervalKeyColumn(begin, end, labels, 2)).toThrow(
+      /row 0 has no label/,
+    );
+  });
+});

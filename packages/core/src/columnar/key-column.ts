@@ -8,22 +8,17 @@
  * - **`TimeRangeKeyColumn`** (`kind: 'timeRange'`): `begin` /
  *   `end` `Float64Array`s representing half-open `[begin, end)` intervals.
  * - **`IntervalKeyColumn`** (`kind: 'interval'`): `begin` / `end`
- *   plus a `StringColumn` of interval labels (typically
- *   dict-encoded for cardinality wins on rolled-up tiles).
+ *   plus a label column. Labels follow the public `IntervalValue`
+ *   contract (`string | number`); the label column is
+ *   discriminated by `labelKind`:
+ *   - `labelKind: 'string'` → `labels: StringColumn` (typically
+ *     dict-encoded for cardinality wins on rolled-up tiles).
+ *   - `labelKind: 'number'` → `labels: Float64Column` (the
+ *     `Sequence` / numeric-tag pattern).
  *
- * **Numeric-label deferral.** `IntervalValue` is `string | number`
- * in the public types; the existing `Sequence` producer creates
- * intervals with numeric labels in some patterns. The 1c
- * substrate only supports **string-typed** labels (via the
- * `StringColumn` label field). When `ColumnarStore` intake
- * lands (sub-step 1d / step 2 of Phase 4.7), the boundary code
- * that converts row data into a key column must convert
- * numeric labels to a consistent canonical string form so
- * equality/comparison semantics round-trip. The narrower
- * substrate is appropriate for v1.0 — pondjs-style tile keys
- * are always string-shaped. The deferral is a known and
- * documented integration concern; numeric-only label storage
- * is a future-doors decision.
+ *   `keyAt(i)` materializes `Interval` instances with the
+ *   original-typed label, so `Interval.equals` /
+ *   `compareIntervalValues` semantics round-trip unchanged.
  *
  * Each variant exposes `keyAt(i)` which materializes a concrete
  * `Time` / `TimeRange` / `Interval` instance from the underlying
@@ -55,7 +50,8 @@
 import { Interval } from '../Interval.js';
 import { Time } from '../Time.js';
 import { TimeRange } from '../TimeRange.js';
-import type { EventKey } from '../temporal.js';
+import type { EventKey, IntervalValue } from '../temporal.js';
+import { Float64Column } from './column.js';
 import { StringColumn } from './string-column.js';
 import { validateColumnLength } from './validity.js';
 
@@ -254,24 +250,38 @@ export class TimeRangeKeyColumn implements KeyColumnBase<'timeRange'> {
 /* IntervalKeyColumn — begin + end + dict-encoded label column.               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Discriminated label column for `IntervalKeyColumn`. `string`
+ * labels go into a `StringColumn` (typically dict-encoded);
+ * `number` labels go into a `Float64Column`. The discriminator
+ * lets `keyAt` materialize `Interval` instances with the original
+ * `IntervalValue` type intact — no implicit `1` → `'1'`
+ * stringification, no `compareIntervalValues` semantic drift.
+ */
+export type IntervalLabelKind = 'string' | 'number';
+
 export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
   readonly kind = 'interval' as const;
   readonly length: number;
   readonly begin: Float64Array;
   readonly end: Float64Array;
   /**
-   * Interval labels per row. Typically dict-encoded (cardinality is
-   * usually small — e.g., `"1d-..."`, `"month-2025-01"`). Stored as
-   * a `StringColumn` rather than a raw string array to share the
-   * column infrastructure (slicing, validity, dictionary).
+   * Discriminator for the `labels` column. Lets consumers narrow on
+   * the typed label representation without an instanceof check.
    */
-  readonly values: StringColumn;
+  readonly labelKind: IntervalLabelKind;
+  /**
+   * Interval labels per row. The column type is discriminated by
+   * `labelKind`. Both representations share the column-infrastructure
+   * benefits (validity, slicing, dictionary for strings).
+   */
+  readonly labels: StringColumn | Float64Column;
   readonly #cache = new Map<number, Interval>();
 
   constructor(
     begin: Float64Array,
     end: Float64Array,
-    values: StringColumn,
+    labels: StringColumn | Float64Column,
     length: number,
   ) {
     validateColumnLength(length, 'IntervalKeyColumn');
@@ -285,9 +295,9 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
         `IntervalKeyColumn buffer underflow: length ${length} exceeds end.length ${end.length}`,
       );
     }
-    if (values.length !== length) {
+    if (labels.length !== length) {
       throw new RangeError(
-        `IntervalKeyColumn label column length ${values.length} does not match column length ${length}`,
+        `IntervalKeyColumn label column length ${labels.length} does not match column length ${length}`,
       );
     }
     assertFiniteTimestamps(begin, length, 'IntervalKeyColumn', 'begin');
@@ -305,16 +315,17 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
     // materialize a labeled interval. Reject eagerly rather than
     // deferring to materialization.
     for (let i = 0; i < length; i += 1) {
-      if (values.read(i) === undefined) {
+      if (labels.read(i) === undefined) {
         throw new RangeError(
-          `IntervalKeyColumn: row ${i} has no label (values column marks it as undefined); every interval row must carry a label`,
+          `IntervalKeyColumn: row ${i} has no label (labels column marks it as undefined); every interval row must carry a label`,
         );
       }
     }
     this.length = length;
     this.begin = begin;
     this.end = end;
-    this.values = values;
+    this.labels = labels;
+    this.labelKind = labels.kind === 'string' ? 'string' : 'number';
   }
 
   beginAt(i: number): number {
@@ -335,9 +346,14 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
     return this.end[i]!;
   }
 
-  /** Direct label read; may return `undefined` for invalid label rows. */
-  labelAt(i: number): string | undefined {
-    return this.values.read(i);
+  /**
+   * Direct label read; returns `string | number` per `IntervalValue`,
+   * preserving the original type. May return `undefined` only if a
+   * caller bypassed the constructor invariant by mutating the label
+   * column post-construction (a documented contract violation).
+   */
+  labelAt(i: number): IntervalValue | undefined {
+    return this.labels.read(i);
   }
 
   keyAt(i: number): Interval {
@@ -348,7 +364,7 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
     }
     let cached = this.#cache.get(i);
     if (cached === undefined) {
-      const label = this.values.read(i);
+      const label = this.labels.read(i);
       if (label === undefined) {
         throw new Error(
           `IntervalKeyColumn.keyAt: row ${i} has no interval label (validity bit is 0)`,

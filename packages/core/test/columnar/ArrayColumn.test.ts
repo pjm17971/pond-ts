@@ -319,3 +319,59 @@ describe('ArrayValue element-contract validation (Codex round 1)', () => {
     ).toThrow(/not a valid ArrayValue/);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Codex round-2 regressions: cell-ownership / immutability                    */
+/* -------------------------------------------------------------------------- */
+
+describe('ArrayColumn defensive cell ownership (Codex round 2)', () => {
+  it('mutating the source array after construction does not affect column reads', () => {
+    // Pin the defense: caller mutates a cell array after construction;
+    // column reads / scans are unchanged.
+    const source: number[] = [1, 2, 3];
+    const col = new ArrayColumn(1, { fallback: [source] });
+    expect(col.read(0)).toEqual([1, 2, 3]);
+
+    // Mutate the original source array — would invalidate the
+    // contract if the column stored the reference directly.
+    source.push(NaN);
+    source[0] = Infinity;
+
+    // Column data is independent.
+    expect(col.read(0)).toEqual([1, 2, 3]);
+  });
+
+  it('column-stored arrays are frozen', () => {
+    const col = new ArrayColumn(2, { fallback: [[1, 2], [3]] });
+    const a = col.read(0)!;
+    const b = col.read(1)!;
+    expect(Object.isFrozen(a)).toBe(true);
+    expect(Object.isFrozen(b)).toBe(true);
+    // Attempting to mutate the returned reference throws in strict mode.
+    expect(() => {
+      (a as number[]).push(99);
+    }).toThrow();
+  });
+
+  it('factory path also produces defensive cells', () => {
+    const source: number[] = [10, 20];
+    const col = arrayColumnFromArray([source, [30]]);
+    source.push(99);
+    expect(col.read(0)).toEqual([10, 20]);
+    expect(Object.isFrozen(col.read(0))).toBe(true);
+  });
+
+  it('sliced columns inherit frozen-cell ownership', () => {
+    const col = arrayColumnFromArray([[1], [2], [3]]);
+    const slice = col.sliceByRange(0, 2);
+    expect(Object.isFrozen(slice.read(0))).toBe(true);
+    expect(Object.isFrozen(slice.read(1))).toBe(true);
+  });
+
+  it('gathered columns inherit frozen-cell ownership', () => {
+    const col = arrayColumnFromArray([[1], [2], [3]]);
+    const slice = col.sliceByIndices(Int32Array.of(2, 0));
+    expect(Object.isFrozen(slice.read(0))).toBe(true);
+    expect(slice.read(0)).toEqual([3]);
+  });
+});

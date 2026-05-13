@@ -115,8 +115,34 @@ export class ArrayColumn {
         }
       }
     }
+    // Defensive copy + freeze each defined cell. `ReadonlyArray` is
+    // a TypeScript constraint only — without this, a caller could
+    // construct a valid column with `[[1]]`, then mutate the original
+    // cell to include `NaN` / an object / a `Symbol`, and the column
+    // would later read/scan a value that violates the invariant the
+    // constructor checked. Shallow copy is sufficient because every
+    // element is a primitive (`number | string | boolean`).
+    //
+    // Cost: O(length × avg-cell-length) extra allocation at
+    // construction. For typical reducer-output array columns (small
+    // length, small cells) this is negligible. For pathological
+    // bulk-array workloads, see the framework design's future-doors
+    // section on a trusted-construction skip.
+    const ownedFallback = new Array<ArrayValue | undefined>(length);
+    for (let i = 0; i < length; i += 1) {
+      const cell = options.fallback[i];
+      if (cell !== undefined && Array.isArray(cell)) {
+        // Copy and freeze. Elements are primitives so shallow freeze
+        // is sufficient.
+        ownedFallback[i] = Object.freeze(cell.slice() as ArrayValue);
+      } else {
+        // Validation already established this is OK only when validity
+        // marks the row invalid; leave the slot undefined.
+        ownedFallback[i] = undefined;
+      }
+    }
     this.length = length;
-    this.fallback = options.fallback;
+    this.fallback = ownedFallback;
     if (validity !== undefined) this.validity = validity;
   }
 
