@@ -17,6 +17,24 @@
  * hot paths, chart hover handlers, `eventAt`) reuse the same
  * `EventKey` reference.
  *
+ * **Buffer-immutability contract.** The `begin` / `end` typed arrays
+ * and the `values` `StringColumn` are treated as immutable after
+ * construction. Mutating them externally (e.g., writing into
+ * `column.begin[i]` directly) is a contract violation: the cache
+ * keyed by row index will not invalidate, so subsequent `keyAt(i)`
+ * calls return the stale `EventKey` instance. The framework's
+ * intake paths and copy-on-write slice operations honor this
+ * contract; consumers must too.
+ *
+ * **Cache growth.** The `Map<number, EventKey>` cache is
+ * unbounded; access patterns that touch every row materialize one
+ * `EventKey` per row. For typical operator workloads this is
+ * negligible, but high-row-count cold-start access (1M+ rows
+ * traversed once) accumulates the cache for the column's lifetime.
+ * TODO (step 2 / TimeSeries integration): consider a wrapping
+ * `ColumnarStore` layer that bounds the cache or wires it through
+ * a shared budget, if benches show this is a real cost.
+ *
  * Framework-internal; not exported from `packages/core/src/index.ts`.
  */
 
@@ -141,6 +159,18 @@ export class TimeRangeKeyColumn implements KeyColumnBase<'timeRange'> {
         `TimeRangeKeyColumn buffer underflow: length ${length} exceeds end.length ${end.length}`,
       );
     }
+    // Eager `begin[i] <= end[i]` validation, matching
+    // `timeRangeKeyColumnFromPairs`. Deferring this to `keyAt` time
+    // (when `new TimeRange(...)` would otherwise reject the inverted
+    // pair) leaves rows that may never be accessed silently malformed
+    // and surfaces the error far from the construction site.
+    for (let i = 0; i < length; i += 1) {
+      if (begin[i]! > end[i]!) {
+        throw new RangeError(
+          `TimeRangeKeyColumn: row ${i} has begin ${begin[i]} > end ${end[i]}`,
+        );
+      }
+    }
     this.length = length;
     this.begin = begin;
     this.end = end;
@@ -218,6 +248,15 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
       throw new RangeError(
         `IntervalKeyColumn label column length ${values.length} does not match column length ${length}`,
       );
+    }
+    // Eager `begin[i] <= end[i]` validation — same rationale as
+    // `TimeRangeKeyColumn`.
+    for (let i = 0; i < length; i += 1) {
+      if (begin[i]! > end[i]!) {
+        throw new RangeError(
+          `IntervalKeyColumn: row ${i} has begin ${begin[i]} > end ${end[i]}`,
+        );
+      }
     }
     this.length = length;
     this.begin = begin;

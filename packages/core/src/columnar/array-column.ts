@@ -39,10 +39,13 @@ export class ArrayColumn {
   readonly fallback: ReadonlyArray<ArrayValue | undefined>;
   readonly validity?: ValidityBitmap;
 
-  // Reserved for the future length-prefix optimization. Always
-  // `undefined` for 1c-constructed columns.
-  readonly offsets?: Int32Array;
-  readonly values?: never;
+  // `offsets` / nested `values` fields appear in the framework
+  // design as the length-prefix optimization slots for `ArrayColumn`.
+  // They are not exposed on the class today — direct construction
+  // and access happen through `fallback`. When the optimization
+  // earns its slot in a later phase, the additional fields will
+  // be added here and the storage-mode discrimination will mirror
+  // the dict-vs-fallback pattern used by `StringColumn`.
 
   constructor(
     length: number,

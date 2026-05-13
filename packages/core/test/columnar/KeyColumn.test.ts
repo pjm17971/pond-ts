@@ -109,8 +109,19 @@ describe('TimeRangeKeyColumn', () => {
     expect(col.keyAt(0)).toBe(col.keyAt(0));
   });
 
-  it('rejects begin > end pairs', () => {
+  it('factory rejects begin > end pairs', () => {
     expect(() => timeRangeKeyColumnFromPairs([[200, 100]])).toThrow(RangeError);
+  });
+
+  it('direct constructor also rejects inverted pairs eagerly', () => {
+    // Pre-fix: the constructor accepted inverted pairs and deferred
+    // the error to keyAt time. Now it matches the factory's eager
+    // validation, with the row index in the message.
+    const begin = Float64Array.of(0, 200);
+    const end = Float64Array.of(10, 100);
+    expect(() => new TimeRangeKeyColumn(begin, end, 2)).toThrow(
+      /row 1 has begin 200 > end 100/,
+    );
   });
 
   it('rejects buffer underflow on either side', () => {
@@ -168,6 +179,16 @@ describe('IntervalKeyColumn', () => {
     const labels = stringColumnDictEncoded(['x'], Int32Array.of(0));
     expect(() => new IntervalKeyColumn(begin, end, labels, 2)).toThrow(
       RangeError,
+    );
+  });
+
+  it('rejects inverted begin/end pairs eagerly at construction', () => {
+    // Same eager-validation contract as TimeRangeKeyColumn.
+    const begin = Float64Array.of(0, 5);
+    const end = Float64Array.of(1, 2);
+    const labels = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
+    expect(() => new IntervalKeyColumn(begin, end, labels, 2)).toThrow(
+      /row 1 has begin 5 > end 2/,
     );
   });
 
