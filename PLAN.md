@@ -3959,6 +3959,25 @@ See the RFC for the full argument.
    `ArrayColumn` concrete impls, validity bitmaps, chunked columns,
    range-aware primitives. Independently tested. Bundle-size pin:
    `<25 KB` gzipped delta to pond-ts core.
+
+   Sub-sequenced per
+   [`docs/briefs/columnar-framework-design.md`](docs/briefs/columnar-framework-design.md).
+   Per-sub-step status:
+   - **1a — Float64Column, BooleanColumn, ValidityBitmap.** ✅
+     Shipped (PR #132, merged 2026-05-13). 116 framework tests,
+     bundle delta < 5 KB gzipped. Length validation
+     (`MAX_COLUMN_LENGTH = 2**31 - 8`), packed validity bitmap with
+     one-shot freeze that copies bits into an owned buffer,
+     boundary tests on every public entry point. Two rounds of
+     Codex adversarial review per the PR comment trail.
+   - **1b — StringColumn (dict + fallback), DictionaryColumn ops.** Next.
+   - **1c — KeyColumn (time / timeRange / interval), EventKey cache.**
+   - **1d — ColumnarStore (read-only), eventAt, store-native exports.**
+   - **1e — ColumnBuilder + factories.**
+   - **1f — Index views (`withRowSelection`, `materialize`),
+     zero-copy schema ops.**
+   - **1g — ChunkedColumn, `concatSorted`.**
+   - **1h — `ColumnarRingBuffer`, `scatterByPartition`.**
 2. TimeSeries integration (~3 weeks) — private-field columnar store,
    lazy event materialization, API invariants pinned by tests.
 3. Numeric reducer adaptation (~2 weeks) — `sum` / `avg` / `count` /
