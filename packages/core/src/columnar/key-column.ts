@@ -11,6 +11,20 @@
  *   plus a `StringColumn` of interval labels (typically
  *   dict-encoded for cardinality wins on rolled-up tiles).
  *
+ * **Numeric-label deferral.** `IntervalValue` is `string | number`
+ * in the public types; the existing `Sequence` producer creates
+ * intervals with numeric labels in some patterns. The 1c
+ * substrate only supports **string-typed** labels (via the
+ * `StringColumn` label field). When `ColumnarStore` intake
+ * lands (sub-step 1d / step 2 of Phase 4.7), the boundary code
+ * that converts row data into a key column must convert
+ * numeric labels to a consistent canonical string form so
+ * equality/comparison semantics round-trip. The narrower
+ * substrate is appropriate for v1.0 — pondjs-style tile keys
+ * are always string-shaped. The deferral is a known and
+ * documented integration concern; numeric-only label storage
+ * is a future-doors decision.
+ *
  * Each variant exposes `keyAt(i)` which materializes a concrete
  * `Time` / `TimeRange` / `Interval` instance from the underlying
  * buffers, with a lazy per-row cache so repeated reads (operator
@@ -47,6 +61,30 @@ import { validateColumnLength } from './validity.js';
 
 /** The framework's key-column discriminated union. */
 export type KeyColumn = TimeKeyColumn | TimeRangeKeyColumn | IntervalKeyColumn;
+
+/**
+ * Shared eager validation that every active timestamp slot is a
+ * finite number. The `Time` / `TimeRange` / `Interval` concrete
+ * classes reject non-finite timestamps via `normalizeTimestamp`;
+ * the key-column primitives must reject them at construction time
+ * too — otherwise `NaN` bypasses the `begin <= end` check and
+ * `Infinity` feeds bogus values into ordering / range logic before
+ * the (deferred) `keyAt` materialization throws.
+ */
+function assertFiniteTimestamps(
+  buffer: Float64Array,
+  length: number,
+  label: string,
+  field: string,
+): void {
+  for (let i = 0; i < length; i += 1) {
+    if (!Number.isFinite(buffer[i]!)) {
+      throw new RangeError(
+        `${label}: ${field}[${i}] = ${buffer[i]} must be a finite number`,
+      );
+    }
+  }
+}
 
 /**
  * Shared interface implemented by every key-column class. Provides
@@ -102,6 +140,7 @@ export class TimeKeyColumn implements KeyColumnBase<'time'> {
         `TimeKeyColumn buffer underflow: length ${length} exceeds begin.length ${begin.length}`,
       );
     }
+    assertFiniteTimestamps(begin, length, 'TimeKeyColumn', 'begin');
     this.length = length;
     this.begin = begin;
     // For time keys, end is the same buffer — same timestamps.
@@ -159,6 +198,8 @@ export class TimeRangeKeyColumn implements KeyColumnBase<'timeRange'> {
         `TimeRangeKeyColumn buffer underflow: length ${length} exceeds end.length ${end.length}`,
       );
     }
+    assertFiniteTimestamps(begin, length, 'TimeRangeKeyColumn', 'begin');
+    assertFiniteTimestamps(end, length, 'TimeRangeKeyColumn', 'end');
     // Eager `begin[i] <= end[i]` validation, matching
     // `timeRangeKeyColumnFromPairs`. Deferring this to `keyAt` time
     // (when `new TimeRange(...)` would otherwise reject the inverted
@@ -249,12 +290,24 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
         `IntervalKeyColumn label column length ${values.length} does not match column length ${length}`,
       );
     }
+    assertFiniteTimestamps(begin, length, 'IntervalKeyColumn', 'begin');
+    assertFiniteTimestamps(end, length, 'IntervalKeyColumn', 'end');
     // Eager `begin[i] <= end[i]` validation — same rationale as
     // `TimeRangeKeyColumn`.
     for (let i = 0; i < length; i += 1) {
       if (begin[i]! > end[i]!) {
         throw new RangeError(
           `IntervalKeyColumn: row ${i} has begin ${begin[i]} > end ${end[i]}`,
+        );
+      }
+    }
+    // Every row must have a defined label — otherwise `keyAt(i)` can't
+    // materialize a labeled interval. Reject eagerly rather than
+    // deferring to materialization.
+    for (let i = 0; i < length; i += 1) {
+      if (values.read(i) === undefined) {
+        throw new RangeError(
+          `IntervalKeyColumn: row ${i} has no label (values column marks it as undefined); every interval row must carry a label`,
         );
       }
     }

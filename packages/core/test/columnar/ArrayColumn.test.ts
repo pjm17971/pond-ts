@@ -78,7 +78,7 @@ describe('ArrayColumn length validation', () => {
 describe('ArrayColumn no-validity invariant (inherited 1b boundary discipline)', () => {
   it('rejects fallback with undefined slot and no validity bitmap', () => {
     expect(() => new ArrayColumn(2, { fallback: [[1], undefined] })).toThrow(
-      /no validity bitmap was supplied/,
+      /not a valid ArrayValue/,
     );
   });
 
@@ -88,7 +88,7 @@ describe('ArrayColumn no-validity invariant (inherited 1b boundary discipline)',
         new ArrayColumn(2, {
           fallback: [[1], 42 as unknown as ReadonlyArray<number>],
         }),
-    ).toThrow(/no validity bitmap was supplied/);
+    ).toThrow(/not a valid ArrayValue/);
   });
 
   it('accepts fallback with every slot a real array (no validity needed)', () => {
@@ -218,5 +218,104 @@ describe('ArrayColumn.sliceByIndices', () => {
     expect(slice.read(0)).toEqual([1]);
     expect(slice.read(1)).toBeUndefined();
     expect(slice.read(2)).toEqual([2]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Codex round-1 regressions: ArrayValue element contract                     */
+/* -------------------------------------------------------------------------- */
+
+describe('ArrayValue element-contract validation (Codex round 1)', () => {
+  it('constructor rejects arrays containing NaN', () => {
+    expect(
+      () =>
+        new ArrayColumn(1, {
+          fallback: [[1, NaN, 3] as unknown as ReadonlyArray<number>],
+        }),
+    ).toThrow(/not a valid ArrayValue/);
+  });
+
+  it('constructor rejects arrays containing objects', () => {
+    expect(
+      () =>
+        new ArrayColumn(1, {
+          fallback: [[{ x: 1 }] as unknown as ReadonlyArray<number>],
+        }),
+    ).toThrow(/not a valid ArrayValue/);
+  });
+
+  it('constructor rejects nested arrays', () => {
+    expect(
+      () =>
+        new ArrayColumn(1, {
+          fallback: [[[1, 2]] as unknown as ReadonlyArray<number>],
+        }),
+    ).toThrow(/not a valid ArrayValue/);
+  });
+
+  it('constructor rejects arrays containing null', () => {
+    expect(
+      () =>
+        new ArrayColumn(1, {
+          fallback: [[null] as unknown as ReadonlyArray<number>],
+        }),
+    ).toThrow(/not a valid ArrayValue/);
+  });
+
+  it('constructor accepts mixed scalar arrays', () => {
+    const col = new ArrayColumn(2, {
+      fallback: [
+        [1, 'two', true],
+        [false, 'x', 42],
+      ],
+    });
+    expect(col.read(0)).toEqual([1, 'two', true]);
+    expect(col.read(1)).toEqual([false, 'x', 42]);
+  });
+
+  it('constructor accepts Infinity and -Infinity as element... wait, no — finite only', () => {
+    expect(
+      () =>
+        new ArrayColumn(1, {
+          fallback: [[Infinity] as unknown as ReadonlyArray<number>],
+        }),
+    ).toThrow(/not a valid ArrayValue/);
+  });
+
+  it('arrayColumnFromArray treats malformed arrays as invalid cells', () => {
+    // Codex's specific concern: factory must mirror validate.ts. A
+    // malformed array becomes an invalid cell rather than slipping
+    // through.
+    const col = arrayColumnFromArray([
+      [1, 2],
+      [NaN, 3] as unknown as ReadonlyArray<number>,
+      [4],
+    ]);
+    expect(col.validity).toBeDefined();
+    expect(col.validity!.definedCount).toBe(2);
+    expect(col.read(0)).toEqual([1, 2]);
+    expect(col.read(1)).toBeUndefined(); // malformed → invalid
+    expect(col.read(2)).toEqual([4]);
+  });
+
+  it('arrayColumnFromArray treats nested-array slots as invalid cells', () => {
+    const col = arrayColumnFromArray([
+      [1],
+      [[2, 3]] as unknown as ReadonlyArray<number>,
+      [4],
+    ]);
+    expect(col.validity).toBeDefined();
+    expect(col.read(1)).toBeUndefined();
+  });
+
+  it('validity-supplied path also enforces the element contract', () => {
+    const validity = validityFromBits(new Uint8Array([0b11]), 2);
+    expect(
+      () =>
+        new ArrayColumn(2, {
+          fallback: [[1], [NaN] as unknown as ReadonlyArray<number>],
+          validity,
+        }),
+    ).toThrow(/not a valid ArrayValue/);
   });
 });

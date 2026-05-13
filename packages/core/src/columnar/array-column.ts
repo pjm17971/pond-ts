@@ -28,6 +28,27 @@ import {
 } from './validity.js';
 
 /**
+ * Returns true when every element of `value` is a finite number, a
+ * string, or a boolean — the `ArrayValue` element contract that
+ * `validate.ts` enforces for `kind: 'array'` row intake. Used to
+ * reject malformed arrays at `ArrayColumn` construction so the
+ * "defined cell ⇒ contract-valid value" invariant holds across
+ * intake paths.
+ */
+function isArrayValue(value: unknown): value is ArrayValue {
+  if (!Array.isArray(value)) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const el = value[i];
+    if (typeof el === 'number') {
+      if (!Number.isFinite(el)) return false;
+    } else if (typeof el !== 'string' && typeof el !== 'boolean') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Array-kind value column. Currently single-mode (fallback). The
  * `offsets` / `values` length-prefix fields appear in the framework
  * design as future-optimization slots but are not populated by 1c
@@ -68,24 +89,28 @@ export class ArrayColumn {
     }
     if (validity !== undefined) {
       // If validity is supplied, every row it marks as defined must
-      // contain an array in the fallback. Otherwise reads would
-      // return `undefined` for a "defined" cell — silent drop in scan.
+      // carry an `ArrayValue`-shaped array in the fallback. Otherwise
+      // reads would return `undefined` for a "defined" cell — silent
+      // drop in scan. Element-wise validation matches the
+      // `validate.ts` rules: every element must be a finite number,
+      // string, or boolean.
       for (let i = 0; i < length; i += 1) {
-        if (validity.isDefined(i) && !Array.isArray(options.fallback[i])) {
+        if (validity.isDefined(i) && !isArrayValue(options.fallback[i])) {
           throw new RangeError(
-            `ArrayColumn: validity marks index ${i} as defined but fallback[${i}] is not an array`,
+            `ArrayColumn: validity marks index ${i} as defined but fallback[${i}] is not a valid ArrayValue (must be an array of finite number, string, or boolean elements)`,
           );
         }
       }
     } else {
-      // No-validity invariant: every cell must be a real array (or
-      // throw). Direct construction with `undefined` slots and no
-      // bitmap is the boundary-drift class of bug we closed for
-      // StringColumn (PR #133 round 4) — same enforcement here.
+      // No-validity invariant: every cell must be a contract-valid
+      // `ArrayValue`. Direct construction with `undefined` slots and
+      // no bitmap is the boundary-drift class of bug closed for
+      // `StringColumn` (PR #133 round 4); element-wise validation is
+      // the Codex round-1 finding on PR #134 closed here.
       for (let i = 0; i < length; i += 1) {
-        if (!Array.isArray(options.fallback[i])) {
+        if (!isArrayValue(options.fallback[i])) {
           throw new RangeError(
-            `ArrayColumn: fallback[${i}] is not an array but no validity bitmap was supplied; use arrayColumnFromArray() to derive validity automatically, or pass an explicit validity bitmap`,
+            `ArrayColumn: fallback[${i}] is not a valid ArrayValue (must be an array of finite number, string, or boolean elements). Use arrayColumnFromArray() to filter invalid slots into a validity bitmap, or pass an explicit validity bitmap.`,
           );
         }
       }
@@ -190,18 +215,23 @@ export function arrayColumnFromArray(
   if (length === 0) {
     return new ArrayColumn(0, { fallback: [] });
   }
-  // Normalize: non-array slots become `undefined` so the storage is
-  // tight, validity bitmap derives from "is this slot an array?".
+  // Normalize: non-array slots AND malformed arrays (those containing
+  // non-scalar / non-finite elements) become invalid cells. Matches
+  // the `validate.ts` array-element contract — a column built from
+  // arrays-with-junk surfaces the junk as missing rather than passing
+  // bad data through. Callers who want strict failure can construct
+  // via `new ArrayColumn(...)` directly (which throws on the same
+  // input).
   const fallback = new Array<ArrayValue | undefined>(length);
   for (let i = 0; i < length; i += 1) {
     const v = source[i];
-    fallback[i] = Array.isArray(v) ? (v as ArrayValue) : undefined;
+    fallback[i] = isArrayValue(v) ? (v as ArrayValue) : undefined;
   }
   const validity = validityFromPredicate(length, (i) =>
-    Array.isArray(source[i]),
+    isArrayValue(source[i]),
   );
   if (validity === undefined) {
-    // Every slot was a real array; fallback is already pure.
+    // Every slot was a real `ArrayValue`; fallback is already pure.
     return new ArrayColumn(length, {
       fallback: fallback as ReadonlyArray<ArrayValue>,
     });

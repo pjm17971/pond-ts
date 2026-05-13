@@ -192,15 +192,24 @@ describe('IntervalKeyColumn', () => {
     );
   });
 
-  it('keyAt on a row with invalid label throws (cannot materialize a labeled interval)', () => {
+  it('rejects rows whose label column marks them invalid (Codex round 1)', () => {
     const begin = Float64Array.of(0, 1);
     const end = Float64Array.of(1, 2);
-    // Use the public factory's `undefined`-aware path: derives validity
+    // Use the factory's `undefined`-aware path: derives validity
     // automatically marking row 0 as invalid.
     const labels = stringColumnFromArray([undefined, 'b'], { forceDict: true });
+    expect(() => new IntervalKeyColumn(begin, end, labels, 2)).toThrow(
+      /row 0 has no label/,
+    );
+  });
+
+  it('accepts every-row-defined label column', () => {
+    const begin = Float64Array.of(0, 1);
+    const end = Float64Array.of(1, 2);
+    const labels = stringColumnFromArray(['a', 'b'], { forceDict: true });
     const col = new IntervalKeyColumn(begin, end, labels, 2);
-    expect(() => col.keyAt(0)).toThrow(/no interval label/);
-    expect(col.keyAt(1)).toBeInstanceOf(Interval);
+    expect(col.labelAt(0)).toBe('a');
+    expect(col.keyAt(0)).toBeInstanceOf(Interval);
   });
 });
 
@@ -237,5 +246,88 @@ describe('Key cache identity across variants', () => {
     const k2Again = col.keyAt(2);
     expect(k0).toBe(k0Again);
     expect(k2).toBe(k2Again);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Codex round-1 regressions: finite-timestamp + label-defined-ness eager     */
+/* validation across all three KeyColumn variants.                            */
+/* -------------------------------------------------------------------------- */
+
+describe('Finite-timestamp validation (Codex round 1)', () => {
+  it('TimeKeyColumn rejects NaN', () => {
+    expect(() => new TimeKeyColumn(Float64Array.of(0, NaN, 2), 3)).toThrow(
+      /begin\[1\].*must be a finite number/,
+    );
+  });
+
+  it('TimeKeyColumn rejects Infinity', () => {
+    expect(() => new TimeKeyColumn(Float64Array.of(0, Infinity), 2)).toThrow(
+      /begin\[1\]/,
+    );
+    expect(() => new TimeKeyColumn(Float64Array.of(-Infinity, 0), 2)).toThrow(
+      /begin\[0\]/,
+    );
+  });
+
+  it('TimeKeyColumn factory rejects non-finite timestamps from arrays', () => {
+    expect(() => timeKeyColumnFromArray([1, NaN, 3])).toThrow(
+      /must be a finite number/,
+    );
+  });
+
+  it('TimeRangeKeyColumn rejects NaN in begin or end', () => {
+    expect(
+      () =>
+        new TimeRangeKeyColumn(
+          Float64Array.of(0, NaN),
+          Float64Array.of(1, 2),
+          2,
+        ),
+    ).toThrow(/begin\[1\]/);
+    expect(
+      () =>
+        new TimeRangeKeyColumn(
+          Float64Array.of(0, 1),
+          Float64Array.of(NaN, 2),
+          2,
+        ),
+    ).toThrow(/end\[0\]/);
+  });
+
+  it('IntervalKeyColumn rejects non-finite timestamps', () => {
+    const labels = stringColumnDictEncoded(['a', 'b'], Int32Array.of(0, 1));
+    expect(
+      () =>
+        new IntervalKeyColumn(
+          Float64Array.of(NaN, 1),
+          Float64Array.of(0.5, 2),
+          labels,
+          2,
+        ),
+    ).toThrow(/begin\[0\]/);
+  });
+});
+
+describe('IntervalKeyColumn rejects undefined label rows (Codex round 1)', () => {
+  it('rejects fallback-mode label column with undefined slot', () => {
+    const begin = Float64Array.of(0, 1, 2);
+    const end = Float64Array.of(1, 2, 3);
+    // Fallback mode with one undefined slot in the middle.
+    const labels = stringColumnFromArray(['a', undefined, 'c']);
+    expect(() => new IntervalKeyColumn(begin, end, labels, 3)).toThrow(
+      /row 1 has no label/,
+    );
+  });
+
+  it('rejects dict-mode label column with invalid validity bit', () => {
+    const begin = Float64Array.of(0, 1);
+    const end = Float64Array.of(1, 2);
+    const labels = stringColumnFromArray(['a', undefined], {
+      forceDict: true,
+    });
+    expect(() => new IntervalKeyColumn(begin, end, labels, 2)).toThrow(
+      /row 1 has no label/,
+    );
   });
 });
