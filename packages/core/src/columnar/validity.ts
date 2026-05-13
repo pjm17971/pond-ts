@@ -237,8 +237,14 @@ export class MutableValidityBitmap {
    * Freezes the mutable bitmap into a `ValidityBitmap`, returning
    * `undefined` when every cell is defined (the framework "no bitmap
    * needed" convention). **One-shot**: subsequent `set` / `clear` /
-   * `freeze` calls throw. The returned bitmap takes ownership of the
-   * underlying byte buffer.
+   * `freeze` calls throw.
+   *
+   * The frozen snapshot owns a **copy** of the underlying byte
+   * buffer — direct mutation of `bm.bits` after freeze (a runtime
+   * possibility despite the `readonly` TS modifier) cannot affect
+   * the returned bitmap. The cost is an O(length / 8) byte copy at
+   * freeze time, which is a once-per-builder operation and not a
+   * hot-path concern.
    */
   freeze(): ValidityBitmap | undefined {
     if (this.#consumed) {
@@ -248,7 +254,9 @@ export class MutableValidityBitmap {
     }
     this.#consumed = true;
     if (this.#definedCount === this.length) return undefined;
-    return new PackedValidityBitmap(this.bits, this.length);
+    // Copy bytes so the frozen bitmap does not alias the mutable buffer.
+    const ownedBits = new Uint8Array(this.bits);
+    return new PackedValidityBitmap(ownedBits, this.length);
   }
 }
 
@@ -265,6 +273,12 @@ export function validitySliceByRange(
   end: number,
   sourceLength: number,
 ): ValidityBitmap | undefined {
+  validateColumnLength(sourceLength, 'validitySliceByRange.sourceLength');
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    throw new RangeError(
+      `validitySliceByRange: start (${start}) and end (${end}) must be finite`,
+    );
+  }
   if (end < start) {
     throw new RangeError(
       `validitySliceByRange: end (${end}) precedes start (${start})`,
@@ -298,6 +312,11 @@ export function validityGatherByIndices(
   indices: Int32Array,
   sourceLength: number,
 ): ValidityBitmap | undefined {
+  validateColumnLength(sourceLength, 'validityGatherByIndices.sourceLength');
+  validateColumnLength(
+    indices.length,
+    'validityGatherByIndices.indices.length',
+  );
   const outLength = indices.length;
   if (outLength === 0) return undefined;
   if (!source) {

@@ -576,4 +576,95 @@ describe('MutableValidityBitmap freeze is one-shot', () => {
     expect(bm.consumed).toBe(true);
     expect(() => bm.set(0)).toThrow(/already been frozen/);
   });
+
+  it('frozen bitmap is a true snapshot — direct buffer mutation cannot affect it', () => {
+    // Pins the freeze() contract beyond the #consumed guard: even if a
+    // caller bypasses the API and writes directly into `bm.bits`, the
+    // returned ValidityBitmap reflects state at freeze time.
+    const bm = createValidityBitmap(8);
+    bm.set(0);
+    bm.set(2);
+    const frozen = bm.freeze();
+    expect(frozen).toBeDefined();
+    expect(frozen!.definedCount).toBe(2);
+    expect(frozen!.isDefined(0)).toBe(true);
+    expect(frozen!.isDefined(2)).toBe(true);
+    expect(frozen!.isDefined(7)).toBe(false);
+
+    // Bypass the API: mutate the underlying mutable buffer directly.
+    // (TS `readonly` is a type-system marker, not a runtime barrier;
+    // this is a malicious / mistaken-caller scenario.)
+    (bm.bits as Uint8Array)[0] = 0xff;
+
+    // The frozen snapshot must NOT change.
+    expect(frozen!.isDefined(0)).toBe(true);
+    expect(frozen!.isDefined(1)).toBe(false);
+    expect(frozen!.isDefined(2)).toBe(true);
+    expect(frozen!.isDefined(7)).toBe(false);
+    expect(frozen!.definedCount).toBe(2);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Exported helper boundaries — validation runs before any byte-count math.    */
+/* -------------------------------------------------------------------------- */
+
+describe('validitySliceByRange — boundary validation', () => {
+  it('rejects sourceLength above MAX_COLUMN_LENGTH', () => {
+    const src = validityFromBits(new Uint8Array([0xff]), 8);
+    expect(() =>
+      validitySliceByRange(src, 0, 1, MAX_COLUMN_LENGTH + 1),
+    ).toThrow(RangeError);
+    expect(() => validitySliceByRange(src, 0, 1, 2 ** 31)).toThrow(RangeError);
+  });
+
+  it('rejects non-integer sourceLength', () => {
+    const src = validityFromBits(new Uint8Array([0xff]), 8);
+    expect(() => validitySliceByRange(src, 0, 1, 1.5)).toThrow(RangeError);
+    expect(() => validitySliceByRange(src, 0, 1, NaN)).toThrow(RangeError);
+    expect(() => validitySliceByRange(src, 0, 1, Infinity)).toThrow(RangeError);
+  });
+
+  it('rejects NaN / Infinity start or end', () => {
+    const src = validityFromBits(new Uint8Array([0xff]), 8);
+    expect(() => validitySliceByRange(src, NaN, 4, 8)).toThrow(RangeError);
+    expect(() => validitySliceByRange(src, 0, NaN, 8)).toThrow(RangeError);
+    expect(() => validitySliceByRange(src, Infinity, 4, 8)).toThrow(RangeError);
+  });
+
+  it('rejects undefined source with oversized sourceLength', () => {
+    // Previously: with source=undefined the function returned undefined
+    // without validating sourceLength. This pins the guard runs first.
+    expect(() =>
+      validitySliceByRange(undefined, 0, 5, MAX_COLUMN_LENGTH + 1),
+    ).toThrow(RangeError);
+  });
+});
+
+describe('validityGatherByIndices — boundary validation', () => {
+  it('rejects sourceLength above MAX_COLUMN_LENGTH', () => {
+    const src = validityFromBits(new Uint8Array([0xff]), 8);
+    expect(() =>
+      validityGatherByIndices(src, Int32Array.of(0), MAX_COLUMN_LENGTH + 1),
+    ).toThrow(RangeError);
+    expect(() =>
+      validityGatherByIndices(src, Int32Array.of(0), 2 ** 31),
+    ).toThrow(RangeError);
+  });
+
+  it('rejects non-integer sourceLength', () => {
+    const src = validityFromBits(new Uint8Array([0xff]), 8);
+    expect(() => validityGatherByIndices(src, Int32Array.of(0), 1.5)).toThrow(
+      RangeError,
+    );
+    expect(() => validityGatherByIndices(src, Int32Array.of(0), NaN)).toThrow(
+      RangeError,
+    );
+  });
+
+  it('rejects undefined source with oversized sourceLength', () => {
+    expect(() =>
+      validityGatherByIndices(undefined, Int32Array.of(0), 2 ** 31),
+    ).toThrow(RangeError);
+  });
 });
