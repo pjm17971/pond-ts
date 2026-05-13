@@ -115,6 +115,25 @@ export class ColumnarStore<S extends SeriesSchema = SeriesSchema> {
     options?: FromTrustedStoreOptions,
   ): ColumnarStore<S> {
     const expectedLength = keys.length;
+    // Validate the key column's kind matches schema[0].
+    const firstDef = schema[0]!;
+    if (keys.kind !== firstDef.kind) {
+      throw new RangeError(
+        `ColumnarStore: key column kind '${keys.kind}' does not match schema[0].kind '${firstDef.kind}'`,
+      );
+    }
+    // Reject duplicate column names in the schema — the columns map
+    // lookup would silently last-write-wins otherwise.
+    const seenNames = new Set<string>();
+    for (let i = 0; i < schema.length; i += 1) {
+      const name = schema[i]!.name;
+      if (seenNames.has(name)) {
+        throw new RangeError(
+          `ColumnarStore: duplicate schema column name '${name}'`,
+        );
+      }
+      seenNames.add(name);
+    }
     // Validate that every schema value column is present with the
     // declared kind.
     for (let i = 1; i < schema.length; i += 1) {
@@ -136,18 +155,57 @@ export class ColumnarStore<S extends SeriesSchema = SeriesSchema> {
         );
       }
     }
-    // Validate the key column's kind matches schema[0].
-    const firstDef = schema[0]!;
-    if (keys.kind !== firstDef.kind) {
-      throw new RangeError(
-        `ColumnarStore: key column kind '${keys.kind}' does not match schema[0].kind '${firstDef.kind}'`,
-      );
+    // Reject extra columns not declared in the schema — silently
+    // accepting them is wasteful (they're never exposed) and hides
+    // caller bugs.
+    for (const [name] of columns) {
+      if (!seenNames.has(name) || name === firstDef.name) {
+        throw new RangeError(
+          `ColumnarStore: columns map contains '${name}' which is not declared in the schema`,
+        );
+      }
     }
-    const eventCache =
-      options?.eventCache !== undefined
-        ? options.eventCache
-        : new Map<number, ColumnarEvent>();
-    return new ColumnarStore<S>(schema, keys, columns, eventCache);
+    // **Defensively own the columns map.** `ReadonlyMap` is a TS
+    // marker only; the caller can mutate the map post-construction
+    // unless we copy. Mirror the PR #134 round-2 defensive-ownership
+    // pattern established by `ArrayColumn` cells. Cheap: O(schema
+    // length) copy at construction.
+    const ownedColumns = new Map<string, Column>(columns);
+    // **Validate + defensively own the eventCache.** A poisoned
+    // cache (e.g., events whose key timestamps disagree with the
+    // column's `keys.beginAt`) would silently corrupt the
+    // eventAt-keyAt consistency invariant. Validate every entry
+    // matches the column's key before adopting the cache, and copy
+    // into an owned map so the caller can't poison it later.
+    const ownedEventCache = new Map<number, ColumnarEvent>();
+    const supplied = options?.eventCache;
+    if (supplied !== undefined) {
+      for (const [rowIndex, cachedEvent] of supplied) {
+        if (
+          !Number.isInteger(rowIndex) ||
+          rowIndex < 0 ||
+          rowIndex >= expectedLength
+        ) {
+          throw new RangeError(
+            `ColumnarStore: eventCache entry has out-of-range row index ${rowIndex} (column length ${expectedLength})`,
+          );
+        }
+        // Pin the lower-level consistency contract: the cached
+        // event's key must match the column's key at this row.
+        if (cachedEvent.key().begin() !== keys.beginAt(rowIndex)) {
+          throw new RangeError(
+            `ColumnarStore: eventCache entry at row ${rowIndex} has key.begin() = ${cachedEvent.key().begin()} but column keys.beginAt(${rowIndex}) = ${keys.beginAt(rowIndex)} — refusing to adopt a cache whose entries disagree with the column data`,
+          );
+        }
+        if (cachedEvent.key().end() !== keys.endAt(rowIndex)) {
+          throw new RangeError(
+            `ColumnarStore: eventCache entry at row ${rowIndex} has key.end() = ${cachedEvent.key().end()} but column keys.endAt(${rowIndex}) = ${keys.endAt(rowIndex)}`,
+          );
+        }
+        ownedEventCache.set(rowIndex, cachedEvent);
+      }
+    }
+    return new ColumnarStore<S>(schema, keys, ownedColumns, ownedEventCache);
   }
 
   /** Direct buffer read; defers to the key column. */
@@ -166,9 +224,18 @@ export class ColumnarStore<S extends SeriesSchema = SeriesSchema> {
   /**
    * Returns the value at `(rowIndex, columnName)` directly from the
    * column. Bypasses the row-materialization cache; cheap repeated
-   * access for hot operator paths.
+   * access for hot operator paths. Out-of-range `rowIndex` throws
+   * `RangeError` (consistent with `eventAt`); unknown column name
+   * throws `RangeError`. For an invalid cell within range,
+   * returns `undefined` (matching the underlying `column.read`
+   * contract).
    */
   valueAt(rowIndex: number, columnName: string): unknown {
+    if (rowIndex < 0 || rowIndex >= this.length) {
+      throw new RangeError(
+        `ColumnarStore.valueAt out of range: ${rowIndex} not in [0, ${this.length})`,
+      );
+    }
     const col = this.columns.get(columnName);
     if (col === undefined) {
       throw new RangeError(
@@ -228,10 +295,12 @@ export class ColumnarStore<S extends SeriesSchema = SeriesSchema> {
   }
 
   /**
-   * Returns row-shaped tuples `[key, ...values]`. The key is the
-   * `begin` timestamp for `time` keys; for `timeRange` and
-   * `interval` keys the row format is the same `[begin, ...values]`
-   * (the full key is recoverable via `keyAt(i)`).
+   * Returns row-shaped tuples. Tuple shape depends on the key kind:
+   *
+   * - `time` keys: `[begin, ...values]`
+   * - `timeRange` keys: `[begin, end, ...values]`
+   * - `interval` keys: `[begin, end, ...values]` (the interval
+   *   label is recoverable via `keyAt(i)`)
    *
    * Each call rebuilds the array — `toRows() !== toRows()` — so
    * row-shape consumers that want stable references should cache
@@ -245,11 +314,15 @@ export class ColumnarStore<S extends SeriesSchema = SeriesSchema> {
     for (let i = 1; i < this.schema.length; i += 1) {
       colNames.push(this.schema[i]!.name);
     }
+    const includeEnd =
+      this.keys.kind === 'timeRange' || this.keys.kind === 'interval';
+    const keyArity = includeEnd ? 2 : 1;
     for (let i = 0; i < this.length; i += 1) {
-      const row: unknown[] = new Array(colNames.length + 1);
+      const row: unknown[] = new Array(colNames.length + keyArity);
       row[0] = this.keys.beginAt(i);
+      if (includeEnd) row[1] = this.keys.endAt(i);
       for (let c = 0; c < colNames.length; c += 1) {
-        row[c + 1] = this.columns.get(colNames[c]!)!.read(i);
+        row[c + keyArity] = this.columns.get(colNames[c]!)!.read(i);
       }
       rows[i] = row;
     }

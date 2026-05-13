@@ -156,14 +156,15 @@ describe('Public API invariants', () => {
     }
   });
 
-  it('Invariant 4 (partial): eventCache option preserves identity across construction', () => {
-    // The full concat-identity contract lands in TimeSeries integration
-    // (step 2). For 1d, pin the lower-level mechanism: a pre-built
-    // cache passed to fromTrustedStore is inherited by the new store.
+  it('Invariant 4 (mechanism only — concat-identity test lands in step 2): eventCache pre-population inherits a row-specific event reference', () => {
+    // The full TimeSeries.concat event-identity contract lands in
+    // TimeSeries integration (step 2). At this layer, pin only the
+    // lower-level mechanism: a pre-built cache whose entries match
+    // the column's key data is inherited by the new store, so
+    // `storeB.eventAt(1)` returns the same Event reference as the
+    // pre-built entry.
     const { schema, keys, columns, store: storeA } = makeBasicStore();
     const eventA = storeA.eventAt(1);
-    // Build a second store with the cache from the first; row 1's
-    // event reference is preserved.
     const sharedCache = new Map<
       number,
       Event<Time | TimeRange | Interval, Readonly<Record<string, unknown>>>
@@ -327,17 +328,18 @@ describe('Framework independence (cross-module assertion)', () => {
   // framework README.
   it('packages/core/src/columnar/*.ts does not import from TimeSeries / LiveSeries / operators', async () => {
     const { readFileSync, readdirSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
-    const dir = resolve(process.cwd(), 'packages/core/src/columnar');
-    let altDir = dir;
-    try {
-      readdirSync(dir);
-    } catch {
-      // When running from packages/core, the cwd-relative path differs.
-      altDir = resolve(process.cwd(), 'src/columnar');
-    }
-    const files = readdirSync(altDir).filter((f) => f.endsWith('.ts'));
-    const forbidden = [
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, resolve } = await import('node:path');
+    // Resolve relative to this test file's location — robust to cwd
+    // (the previous cwd-relative + try/catch fallback was brittle).
+    const here = dirname(fileURLToPath(import.meta.url));
+    const columnarDir = resolve(here, '../../src/columnar');
+    const files = readdirSync(columnarDir).filter((f) => f.endsWith('.ts'));
+    // Forbidden upstream modules. Each entry can be a file (`X` → caught
+    // by `from '../X.js'`) or a directory (`X/` → caught by both
+    // `from '../X.js'` and `from '../X/...`'`). The `from '../X'` bare
+    // form catches imports without `.js` (e.g., `from '../reducers';`).
+    const forbiddenFiles = [
       'TimeSeries',
       'LiveSeries',
       'PartitionedTimeSeries',
@@ -347,19 +349,41 @@ describe('Framework independence (cross-module assertion)', () => {
       'LiveFusedRolling',
       'LiveView',
       'LiveReduce',
-      'reducers/',
+      'LivePartitionedFusedRolling',
+      'LivePartitionedSyncRolling',
     ];
+    const forbiddenDirs = ['reducers'];
+
     for (const f of files) {
-      const content = readFileSync(resolve(altDir, f), 'utf8');
-      // Match `from '../X.js'` or `from './X.js'` style imports.
-      for (const banned of forbidden) {
+      const content = readFileSync(resolve(columnarDir, f), 'utf8');
+      for (const banned of forbiddenFiles) {
+        // Match `from '../X.js'` exactly — full file path with .js
+        // suffix. Avoids false-positives on prefix collisions like
+        // `from '../TimeSeriesBase.js'`.
         expect(
           content.includes(`from '../${banned}.js'`),
-          `${f} imports forbidden module: ${banned}`,
+          `${f} imports forbidden module: ../${banned}.js`,
+        ).toBe(false);
+        // Bare imports without .js (e.g., `from '../TimeSeries'`).
+        expect(
+          content.includes(`from '../${banned}';`),
+          `${f} imports forbidden module: ../${banned}`,
+        ).toBe(false);
+      }
+      for (const banned of forbiddenDirs) {
+        // Subdirectory imports: `from '../reducers/X.js'`,
+        // `from '../reducers/index.js'`, or bare `from '../reducers';`.
+        expect(
+          content.includes(`from '../${banned}/`),
+          `${f} imports forbidden subdirectory: ../${banned}/`,
         ).toBe(false);
         expect(
-          content.includes(`from '../${banned}`),
-          `${f} imports forbidden module: ${banned}`,
+          content.includes(`from '../${banned}.js'`),
+          `${f} imports forbidden module: ../${banned}.js`,
+        ).toBe(false);
+        expect(
+          content.includes(`from '../${banned}';`),
+          `${f} imports forbidden module: ../${banned}`,
         ).toBe(false);
       }
     }
@@ -388,5 +412,194 @@ describe('Framework independence (cross-module assertion)', () => {
     expect(store.length).toBe(3);
     expect(store.eventAt(1).data().temperature).toBe(21);
     expect(store.toRows()[2]).toEqual([2000, 22]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* L2-review regressions: defensive ownership, eventCache validation, etc.    */
+/* -------------------------------------------------------------------------- */
+
+describe('Defensive ownership of columns map (Codex round-2 inherited pattern)', () => {
+  it('mutating the source columns map after construction does not affect the store', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([1, 2, 3]);
+    const value = new Float64Column(Float64Array.of(10, 20, 30), 3);
+    const sourceMap = new Map([['value', value]]);
+    const store = ColumnarStore.fromTrustedStore(schema, keys, sourceMap);
+
+    // Attempt to mutate the source map.
+    sourceMap.delete('value');
+    sourceMap.set('rogue', new Float64Column(Float64Array.of(0, 0, 0), 3));
+
+    // Store is unaffected.
+    expect(store.valueAt(1, 'value')).toBe(20);
+    expect(store.columns.has('value')).toBe(true);
+    expect(store.columns.has('rogue')).toBe(false);
+  });
+});
+
+describe('eventCache validation (L2-flagged poisoning hole)', () => {
+  function makeSchemaAndKeys() {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([1, 2, 3]);
+    const value = new Float64Column(Float64Array.of(10, 20, 30), 3);
+    return { schema, keys, columns: new Map([['value', value]]) };
+  }
+
+  it('rejects cache entries whose key.begin disagrees with column key.begin', () => {
+    const { schema, keys, columns } = makeSchemaAndKeys();
+    const poisoned = new Map<number, ColumnarEvent>();
+    poisoned.set(1, new Event(new Time(99999), { value: 20 }) as ColumnarEvent);
+    expect(() =>
+      ColumnarStore.fromTrustedStore(schema, keys, columns, {
+        eventCache: poisoned,
+      }),
+    ).toThrow(/key\.begin\(\).*disagree/);
+  });
+
+  it('rejects cache entries with out-of-range row index', () => {
+    const { schema, keys, columns } = makeSchemaAndKeys();
+    const poisoned = new Map<number, ColumnarEvent>();
+    poisoned.set(99, new Event(new Time(1), { value: 10 }) as ColumnarEvent);
+    expect(() =>
+      ColumnarStore.fromTrustedStore(schema, keys, columns, {
+        eventCache: poisoned,
+      }),
+    ).toThrow(/out-of-range row index 99/);
+  });
+
+  it('accepts cache entries whose key matches the column key', () => {
+    const { schema, keys, columns } = makeSchemaAndKeys();
+    const goodCache = new Map<number, ColumnarEvent>();
+    const ev = new Event(new Time(2), { value: 20 }) as ColumnarEvent;
+    goodCache.set(1, ev);
+    const store = ColumnarStore.fromTrustedStore(schema, keys, columns, {
+      eventCache: goodCache,
+    });
+    expect(store.eventAt(1)).toBe(ev);
+  });
+
+  it('defensively owns the cache — mutating the source map after construction does not affect the store', () => {
+    const { schema, keys, columns } = makeSchemaAndKeys();
+    const ev = new Event(new Time(2), { value: 20 }) as ColumnarEvent;
+    const sourceCache = new Map<number, ColumnarEvent>();
+    sourceCache.set(1, ev);
+    const store = ColumnarStore.fromTrustedStore(schema, keys, columns, {
+      eventCache: sourceCache,
+    });
+    // Inject a poisoned event into the source map AFTER construction.
+    sourceCache.set(
+      0,
+      new Event(new Time(99999), { value: 10 }) as ColumnarEvent,
+    );
+    // Store ignores the poisoning — the cache was copied at construction.
+    const ev0 = store.eventAt(0);
+    expect(ev0.key().begin()).toBe(1); // matches the column, not the poison
+  });
+});
+
+describe('Schema validation edge cases (L2)', () => {
+  it('rejects duplicate schema column names', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'dup', kind: 'number' },
+      { name: 'dup', kind: 'string' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([1, 2]);
+    const value = new Float64Column(Float64Array.of(1, 2), 2);
+    expect(() =>
+      ColumnarStore.fromTrustedStore(schema, keys, new Map([['dup', value]])),
+    ).toThrow(/duplicate schema column name 'dup'/);
+  });
+
+  it('rejects extra columns not in the schema', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([1, 2]);
+    const value = new Float64Column(Float64Array.of(1, 2), 2);
+    const extra = new Float64Column(Float64Array.of(0, 0), 2);
+    const columns = new Map([
+      ['value', value],
+      ['rogue', extra],
+    ]);
+    expect(() => ColumnarStore.fromTrustedStore(schema, keys, columns)).toThrow(
+      /'rogue' which is not declared in the schema/,
+    );
+  });
+});
+
+describe('valueAt consistency (L2)', () => {
+  it('throws on out-of-range rowIndex (matching eventAt)', () => {
+    const { store } = makeBasicStore();
+    expect(() => store.valueAt(-1, 'value')).toThrow(/out of range/);
+    expect(() => store.valueAt(99, 'value')).toThrow(/out of range/);
+  });
+});
+
+describe('Edge cases (L2 coverage gaps)', () => {
+  it('zero-length store: toEvents() === toEvents() and length is 0', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([]);
+    const value = new Float64Column(new Float64Array(0), 0);
+    const store = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['value', value]]),
+    );
+    expect(store.length).toBe(0);
+    expect(store.toEvents()).toBe(store.toEvents());
+    expect(store.toEvents().length).toBe(0);
+  });
+
+  it('key-only schema: store works with empty columns map', () => {
+    const schema = [{ name: 'time', kind: 'time' }] as const;
+    const keys = timeKeyColumnFromArray([1, 2, 3]);
+    const store = ColumnarStore.fromTrustedStore(schema, keys, new Map());
+    expect(store.length).toBe(3);
+    const ev = store.eventAt(1);
+    expect(ev.key().begin()).toBe(2);
+    expect(Object.keys(ev.data())).toEqual([]);
+    expect(store.toRows()[1]).toEqual([2]);
+  });
+
+  it('toRows() rebuilds on each call (documented contract)', () => {
+    const { store } = makeBasicStore();
+    expect(store.toRows()).not.toBe(store.toRows());
+  });
+
+  it('toRows for timeRange-keyed store includes the end timestamp', () => {
+    const schema = [
+      { name: 'tr', kind: 'timeRange' },
+      { name: 'v', kind: 'number' },
+    ] as const;
+    const keys = timeRangeKeyColumnFromPairs([
+      [0, 10],
+      [10, 25],
+    ]);
+    const v = new Float64Column(Float64Array.of(100, 200), 2);
+    const store = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['v', v]]),
+    );
+    const rows = store.toRows();
+    expect(rows[0]).toEqual([0, 10, 100]);
+    expect(rows[1]).toEqual([10, 25, 200]);
+  });
+
+  it('toObjects() rebuilds on each call (documented contract)', () => {
+    const { store } = makeBasicStore();
+    expect(store.toObjects()).not.toBe(store.toObjects());
   });
 });
