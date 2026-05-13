@@ -32,3 +32,16 @@ export {
   booleanColumnFromArray,
   float64ColumnFromArray,
 } from './column.js';
+
+export {
+  DICT_ENCODE_MIN_LENGTH,
+  DICT_ENCODE_RATIO,
+  StringColumn,
+  buildDictionaryIndex,
+  estimateDictionaryBytes,
+  remapColumnToDictionary,
+  remapIndicesToDictionary,
+  stringColumnDictEncoded,
+  stringColumnFallback,
+  stringColumnFromArray,
+} from './string-column.js';

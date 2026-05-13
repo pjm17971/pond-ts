@@ -9,6 +9,7 @@
  * Framework-internal; not exported from `packages/core/src/index.ts`.
  */
 
+import type { StringColumn } from './string-column.js';
 import {
   type ValidityBitmap,
   bitmapByteCount,
@@ -82,11 +83,11 @@ interface ColumnBase<T, K extends ColumnKind> {
  *     if (col.kind === 'number') { col.values; // Float64Array
  *     }
  *
- * `'string'` and `'array'` cases are placeholders during step 1a —
- * they appear in the type so consumer code can switch exhaustively
- * once the concrete classes ship in later sub-steps.
+ * `'array'` is reserved for sub-step 1c — it appears in the
+ * `ColumnKind` type so consumer code can switch exhaustively once
+ * the concrete class ships.
  */
-export type Column = Float64Column | BooleanColumn;
+export type Column = Float64Column | BooleanColumn | StringColumn;
 
 /* -------------------------------------------------------------------------- */
 /* Float64Column — packed numeric column.                                     */
