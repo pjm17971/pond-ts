@@ -3970,8 +3970,20 @@ See the RFC for the full argument.
      one-shot freeze that copies bits into an owned buffer,
      boundary tests on every public entry point. Two rounds of
      Codex adversarial review per the PR comment trail.
-   - **1b — StringColumn (dict + fallback), DictionaryColumn ops.** Next.
-   - **1c — KeyColumn (time / timeRange / interval), EventKey cache.**
+   - **1b — StringColumn (dict + fallback), DictionaryColumn ops.** ✅
+     Shipped (PR #133, merged 2026-05-13). 210 framework tests
+     (+94 from 1b's StringColumn surface). Constructor enforces:
+     mutually exclusive dict/fallback modes; dictionary indices in
+     range for valid cells; fallback no-validity invariant (every
+     slot must be a string, else throw); explicit validity
+     consistency. `scan` uses `''` as the missing-value sentinel
+     for invalid rows in both modes (no divergence); validity-aware
+     cross-dictionary `remapColumnToDictionary` for join paths.
+     Four rounds of Codex adversarial review per the PR comment
+     trail, each finding real issues; the contract surface ended
+     up substantially more rigorous than the original draft.
+   - **1c — ArrayColumn + KeyColumn (time / timeRange / interval),
+     EventKey cache.** Next.
    - **1d — ColumnarStore (read-only), eventAt, store-native exports.**
    - **1e — ColumnBuilder + factories.**
    - **1f — Index views (`withRowSelection`, `materialize`),
