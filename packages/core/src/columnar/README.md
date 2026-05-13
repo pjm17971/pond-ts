@@ -14,8 +14,9 @@ import from it via relative paths.
 | `string-column.ts` | 1b       | `StringColumn` (dict-encoded + fallback), dictionary heuristic |
 | `array-column.ts`  | 1c       | `ArrayColumn` (fallback mode) + empty-array sentinel           |
 | `key-column.ts`    | 1c       | `TimeKeyColumn`, `TimeRangeKeyColumn`, `IntervalKeyColumn`     |
+| `store.ts`         | 1d       | `ColumnarStore<S>` — read-only typed store + event cache       |
 | `index.ts`         | (barrel) | Internal-only re-exports                                       |
-| _later sub-steps_  | 1d–1h    | `ColumnarStore`, builders, views, chunked columns, ring buffer |
+| _later sub-steps_  | 1e–1h    | Builders, views, chunked columns, ring buffer                  |
 
 See [`docs/briefs/columnar-framework-design.md`](../../../../docs/briefs/columnar-framework-design.md)
 for the full design, including module layout and primitive contracts.

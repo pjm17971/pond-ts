@@ -60,3 +60,10 @@ export {
   timeKeyColumnFromArray,
   timeRangeKeyColumnFromPairs,
 } from './key-column.js';
+
+export {
+  type ColumnarEvent,
+  type ColumnarRowData,
+  type FromTrustedStoreOptions,
+  ColumnarStore,
+} from './store.js';
