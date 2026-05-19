@@ -4,15 +4,15 @@ import {
   type CalendarOptions,
   type CalendarUnit,
   type TimeZoneOptions,
-} from '../calendar.js';
+} from './calendar.js';
 import type {
   IntervalInput,
   TemporalLike,
   TimeRangeInput,
   TimestampInput,
-} from '../temporal.js';
-import { compareEventKeys, normalizeTimestamp } from '../temporal.js';
-import type { EventKey } from '../temporal.js';
+} from './temporal.js';
+import { compareEventKeys, normalizeTimestamp } from './temporal.js';
+import type { EventKey } from './temporal.js';
 
 type TimeRangeObjectInput = { start: TimestampInput; end: TimestampInput };
 

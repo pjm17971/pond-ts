@@ -1,7 +1,7 @@
-import { parseTimestampString, type TimeZoneOptions } from '../calendar.js';
+import { parseTimestampString, type TimeZoneOptions } from './calendar.js';
 import { TimeRange } from './time-range.js';
-import type { EventKey, TemporalLike, TimestampInput } from '../temporal.js';
-import { compareEventKeys, normalizeTimestamp } from '../temporal.js';
+import type { EventKey, TemporalLike, TimestampInput } from './temporal.js';
+import { compareEventKeys, normalizeTimestamp } from './temporal.js';
 
 /** A point-in-time event key represented as a single millisecond timestamp. Example: `new Time(Date.now())`. */
 export class Time implements EventKey {

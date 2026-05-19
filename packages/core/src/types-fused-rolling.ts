@@ -5,7 +5,7 @@ import type {
   ScalarKind,
   SeriesSchema,
 } from './types.js';
-import type { DurationLiteral } from './utils/duration.js';
+import type { DurationLiteral } from './core/duration.js';
 
 /**
  * Types for the fused multi-window rolling primitive

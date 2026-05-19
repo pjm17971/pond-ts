@@ -1,6 +1,6 @@
 export { BoundedSequence } from './BoundedSequence.js';
-export { Event } from './Event.js';
-export { Interval } from './Interval.js';
+export { Event } from './core/event.js';
+export { Interval } from './core/interval.js';
 export { LiveAggregation } from './LiveAggregation.js';
 export type { LiveAggregationOptions } from './LiveAggregation.js';
 export {
@@ -19,12 +19,12 @@ export type { SampleStrategy, BatchSampleStrategy } from './sample.js';
 export { Trigger } from './triggers.js';
 export type { ClockTrigger, CountTrigger, EventTrigger } from './triggers.js';
 export { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
-export { Time } from './Time.js';
-export { TimeRange, toTimeRange } from './TimeRange.js';
+export { Time } from './core/time.js';
+export { TimeRange, toTimeRange } from './core/time-range.js';
 export { Sequence } from './Sequence.js';
 export { TimeSeries, type KeyLike } from './TimeSeries.js';
 export { top } from './reducers/index.js';
-export { ValidationError } from './errors.js';
+export { ValidationError } from './core/errors.js';
 export type {
   AlignSchema,
   ArrayColumnNameForSchema,
@@ -105,7 +105,7 @@ export type {
   CalendarOptions,
   CalendarUnit,
   TimeZoneOptions,
-} from './calendar.js';
+} from './core/calendar.js';
 export type {
   EventKey,
   IntervalInput,
@@ -113,8 +113,8 @@ export type {
   TemporalLike,
   TimeRangeInput,
   TimestampInput,
-} from './temporal.js';
-export type { DurationInput } from './utils/duration.js';
+} from './core/temporal.js';
+export type { DurationInput } from './core/duration.js';
 export type { SequenceSample } from './Sequence.js';
 export type {
   LiveSeriesOptions,

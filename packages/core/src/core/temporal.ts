@@ -11,14 +11,14 @@ export type TemporalLike =
   | TimeRangeInput
   | IntervalInput
   | { begin(): number; end(): number }
-  | { timeRange(): import('./TimeRange.js').TimeRange };
+  | { timeRange(): import('./time-range.js').TimeRange };
 
 export interface EventKey {
   readonly kind: 'time' | 'interval' | 'timeRange';
   type(): 'time' | 'interval' | 'timeRange';
   begin(): number;
   end(): number;
-  timeRange(): import('./TimeRange.js').TimeRange;
+  timeRange(): import('./time-range.js').TimeRange;
   duration(): number;
   equals(other: EventKey): boolean;
   compare(other: EventKey): number;
@@ -28,7 +28,7 @@ export interface EventKey {
   isAfter(other: TemporalLike): boolean;
   intersection(
     other: TemporalLike,
-  ): import('./TimeRange.js').TimeRange | undefined;
+  ): import('./time-range.js').TimeRange | undefined;
   trim(other: TemporalLike): EventKey | undefined;
 }
 

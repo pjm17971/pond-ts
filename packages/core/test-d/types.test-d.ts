@@ -1131,10 +1131,10 @@ void reduceSamplesHealthy;
 // the type system rejected it with "Type '\"samples\"' is not
 // assignable to type 'AggregateReducer'". Now narrows to an
 // array-output column kind via AggregateKindForColumn.
-const aggregateWithSamples = reduceSeries.aggregate(
-  Sequence.every('5s'),
-  { host: 'samples', cpu: 'samples' },
-);
+const aggregateWithSamples = reduceSeries.aggregate(Sequence.every('5s'), {
+  host: 'samples',
+  cpu: 'samples',
+});
 void aggregateWithSamples;
 
 // The narrow type is assignable to the wide one — code written against

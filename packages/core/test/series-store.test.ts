@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { Event } from '../src/Event.js';
-import { Interval } from '../src/Interval.js';
-import { Time } from '../src/Time.js';
-import { TimeRange } from '../src/TimeRange.js';
+import { Event } from '../src/core/event.js';
+import { Interval } from '../src/core/interval.js';
+import { Time } from '../src/core/time.js';
+import { TimeRange } from '../src/core/time-range.js';
 import {
   ColumnarStore,
   Float64Column,

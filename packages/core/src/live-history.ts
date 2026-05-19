@@ -10,7 +10,7 @@
  * PR #124's adversarial review).
  */
 import type { RetentionPolicy } from './LiveSeries.js';
-import { parseDuration } from './utils/duration.js';
+import { parseDuration } from './core/duration.js';
 
 export type HistoryOption = boolean | RetentionPolicy;
 

@@ -35,10 +35,10 @@
  * factory accepting a pre-built `ColumnarStore` + optional cache.
  */
 
-import { Event } from './Event.js';
-import { Interval } from './Interval.js';
-import { Time } from './Time.js';
-import { TimeRange } from './TimeRange.js';
+import { Event } from './core/event.js';
+import { Interval } from './core/interval.js';
+import { Time } from './core/time.js';
+import { TimeRange } from './core/time-range.js';
 import {
   type Column,
   type ColumnBuilder,
@@ -52,7 +52,7 @@ import {
   columnBuilderForKind,
   stringColumnFromArray,
 } from './columnar/index.js';
-import type { EventKey } from './temporal.js';
+import type { EventKey } from './core/temporal.js';
 import type { RowForSchema, SeriesSchema } from './types.js';
 import { validateAndNormalize } from './validate.js';
 

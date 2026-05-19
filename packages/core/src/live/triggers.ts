@@ -1,6 +1,6 @@
 import { Sequence } from '../Sequence.js';
-import type { DurationInput } from '../utils/duration.js';
-import type { TimestampInput } from '../temporal.js';
+import type { DurationInput } from '../core/duration.js';
+import type { TimestampInput } from '../core/temporal.js';
 
 /**
  * A `Trigger` describes when an accumulator should emit. Pond's live

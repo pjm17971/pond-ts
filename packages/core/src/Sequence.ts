@@ -8,13 +8,13 @@ import {
   plainDateToStart,
   resolveTimeZone,
   toPlainDateStart,
-} from './calendar.js';
-import { parseDuration } from './utils/duration.js';
-import type { DurationInput } from './utils/duration.js';
-import { Interval } from './Interval.js';
-import { toTimeRange } from './TimeRange.js';
-import type { TemporalLike, TimestampInput } from './temporal.js';
-import { normalizeTimestamp } from './temporal.js';
+} from './core/calendar.js';
+import { parseDuration } from './core/duration.js';
+import type { DurationInput } from './core/duration.js';
+import { Interval } from './core/interval.js';
+import { toTimeRange } from './core/time-range.js';
+import type { TemporalLike, TimestampInput } from './core/temporal.js';
+import { normalizeTimestamp } from './core/temporal.js';
 
 export type { DurationInput };
 export type SequenceSample = 'begin' | 'center' | 'end';

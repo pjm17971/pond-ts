@@ -1,9 +1,13 @@
-import { Interval } from './Interval.js';
-import { Event } from './Event.js';
-import { Time } from './Time.js';
-import { TimeRange } from './TimeRange.js';
-import type { EventKey, IntervalInput, TimeRangeInput } from './temporal.js';
-import { ValidationError } from './errors.js';
+import { Interval } from './core/interval.js';
+import { Event } from './core/event.js';
+import { Time } from './core/time.js';
+import { TimeRange } from './core/time-range.js';
+import type {
+  EventKey,
+  IntervalInput,
+  TimeRangeInput,
+} from './core/temporal.js';
+import { ValidationError } from './core/errors.js';
 import type {
   EventForSchema,
   EventKeyForSchema,

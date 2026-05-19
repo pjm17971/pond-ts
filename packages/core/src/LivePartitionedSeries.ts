@@ -30,7 +30,7 @@ import type {
   FusedMappingValid,
   FusedPartitionedRollingSchema,
 } from './types-fused-rolling.js';
-import type { DurationInput } from './utils/duration.js';
+import type { DurationInput } from './core/duration.js';
 import type {
   LiveRollingOptions,
   RollingWindow,

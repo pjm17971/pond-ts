@@ -1,5 +1,5 @@
-import { Event } from './Event.js';
-import { ValidationError } from './errors.js';
+import { Event } from './core/event.js';
+import { ValidationError } from './core/errors.js';
 import { LiveAggregation } from './LiveAggregation.js';
 import {
   LiveRollingAggregation,
@@ -46,8 +46,8 @@ export type LiveFillMapping<S extends SeriesSchema> = {
     | ScalarValue;
 };
 
-import { parseDuration } from './utils/duration.js';
-import type { DurationInput } from './utils/duration.js';
+import { parseDuration } from './core/duration.js';
+import type { DurationInput } from './core/duration.js';
 
 type EventListener<S extends SeriesSchema> = (event: EventForSchema<S>) => void;
 type EvictListener<S extends SeriesSchema> = (

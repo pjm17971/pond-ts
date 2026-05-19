@@ -2,8 +2,8 @@ import {
   normalizeAggregateColumns,
   type AggregateColumnSpec,
 } from './aggregate-columns.js';
-import { Event } from './Event.js';
-import { Time } from './Time.js';
+import { Event } from './core/event.js';
+import { Time } from './core/time.js';
 import { rollingStateFor, type RollingReducerState } from './reducers/index.js';
 import {
   bucketIndexFor,
@@ -11,7 +11,7 @@ import {
   type ClockTrigger,
 } from './triggers.js';
 import type { RollingWindow } from './LiveRollingAggregation.js';
-import { parseDuration } from './utils/duration.js';
+import { parseDuration } from './core/duration.js';
 import {
   applyHistoryRetention,
   resolveHistoryConfig,

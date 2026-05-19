@@ -2,8 +2,8 @@ import {
   normalizeAggregateColumns,
   type AggregateColumnSpec,
 } from './aggregate-columns.js';
-import { Event } from './Event.js';
-import { Time } from './Time.js';
+import { Event } from './core/event.js';
+import { Time } from './core/time.js';
 import { LiveAggregation } from './LiveAggregation.js';
 import {
   LiveView,
@@ -36,8 +36,8 @@ import type {
 } from './types.js';
 import type { AggregateOutputMapResultSchema } from './types-aggregate.js';
 
-import type { DurationInput } from './utils/duration.js';
-import { parseDuration } from './utils/duration.js';
+import type { DurationInput } from './core/duration.js';
+import { parseDuration } from './core/duration.js';
 import type { RetentionPolicy } from './LiveSeries.js';
 import { applyHistoryRetention, resolveHistoryConfig } from './live-history.js';
 

@@ -4,7 +4,7 @@ import {
   type CalendarOptions,
   type CalendarUnit,
   type TimeZoneOptions,
-} from '../calendar.js';
+} from './calendar.js';
 import { TimeRange } from './time-range.js';
 import type {
   EventKey,
@@ -12,12 +12,12 @@ import type {
   IntervalValue,
   TemporalLike,
   TimestampInput,
-} from '../temporal.js';
+} from './temporal.js';
 import {
   compareEventKeys,
   compareIntervalValues,
   normalizeTimestamp,
-} from '../temporal.js';
+} from './temporal.js';
 
 type IntervalObjectInput = {
   value: IntervalValue;

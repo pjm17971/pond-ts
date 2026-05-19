@@ -73,10 +73,10 @@ import {
   normalizeAggregateColumns,
 } from './aggregate-columns.js';
 import { BoundedSequence } from './BoundedSequence.js';
-import { parseTimestampString, type TimeZoneOptions } from './calendar.js';
-import { Interval } from './Interval.js';
-import { Time } from './Time.js';
-import { TimeRange } from './TimeRange.js';
+import { parseTimestampString, type TimeZoneOptions } from './core/calendar.js';
+import { Interval } from './core/interval.js';
+import { Time } from './core/time.js';
+import { TimeRange } from './core/time-range.js';
 import type {
   EventKey,
   IntervalInput,
@@ -84,15 +84,15 @@ import type {
   TemporalLike,
   TimeRangeInput,
   TimestampInput,
-} from './temporal.js';
-import { compareEventKeys } from './temporal.js';
-import { Event } from './Event.js';
+} from './core/temporal.js';
+import { compareEventKeys } from './core/temporal.js';
+import { Event } from './core/event.js';
 import { PartitionedTimeSeries } from './PartitionedTimeSeries.js';
 import type { BatchSampleStrategy } from './sample.js';
 import { Sequence } from './Sequence.js';
 import { validateAndNormalize } from './validate.js';
-import type { DurationInput } from './utils/duration.js';
-import { parseDuration } from './utils/duration.js';
+import type { DurationInput } from './core/duration.js';
+import { parseDuration } from './core/duration.js';
 import {
   resolveReducer,
   type AggregateBucketState,

@@ -2,15 +2,15 @@ import {
   normalizeAggregateColumns,
   type AggregateColumnSpec,
 } from './aggregate-columns.js';
-import { Event } from './Event.js';
-import { Time } from './Time.js';
+import { Event } from './core/event.js';
+import { Time } from './core/time.js';
 import { rollingStateFor, type RollingReducerState } from './reducers/index.js';
 import {
   bucketIndexFor,
   boundaryTimestampFor,
   type ClockTrigger,
 } from './triggers.js';
-import { parseDuration, type DurationLiteral } from './utils/duration.js';
+import { parseDuration, type DurationLiteral } from './core/duration.js';
 import {
   applyHistoryRetention,
   resolveHistoryConfig,

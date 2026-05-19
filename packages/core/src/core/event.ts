@@ -1,7 +1,7 @@
-import { Interval } from './Interval.js';
-import { Time } from './Time.js';
-import { TimeRange } from './TimeRange.js';
-import { serializeJsonKey, serializeJsonValue } from './json.js';
+import { Interval } from './interval.js';
+import { Time } from './time.js';
+import { TimeRange } from './time-range.js';
+import { serializeJsonKey, serializeJsonValue } from '../json.js';
 import type { EventKey, IntervalValue, TemporalLike } from './temporal.js';
 import type {
   FirstColKind,
@@ -10,7 +10,7 @@ import type {
   JsonRowFormat,
   RowForSchema,
   SeriesSchema,
-} from './types.js';
+} from '../types.js';
 
 type ScalarValue = number | string | boolean;
 type CollapseData<

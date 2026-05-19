@@ -1,8 +1,8 @@
 import { TimeSeries } from './TimeSeries.js';
 import { BoundedSequence } from './BoundedSequence.js';
 import { Sequence } from './Sequence.js';
-import type { DurationInput } from './utils/duration.js';
-import type { TemporalLike } from './temporal.js';
+import type { DurationInput } from './core/duration.js';
+import type { TemporalLike } from './core/temporal.js';
 import type { BatchSampleStrategy } from './sample.js';
 import type {
   AggregateMap,

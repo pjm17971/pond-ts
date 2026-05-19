@@ -2,8 +2,8 @@ import {
   normalizeAggregateColumns,
   type AggregateColumnSpec,
 } from './aggregate-columns.js';
-import { Event } from './Event.js';
-import { Interval } from './Interval.js';
+import { Event } from './core/event.js';
+import { Interval } from './core/interval.js';
 import {
   LiveView,
   makeDiffView,
@@ -37,8 +37,8 @@ import type {
 } from './types.js';
 import type { RollingOutputMapSchema } from './types-aggregate.js';
 
-import { parseDuration } from './utils/duration.js';
-import type { DurationInput } from './utils/duration.js';
+import { parseDuration } from './core/duration.js';
+import type { DurationInput } from './core/duration.js';
 
 type PendingBucket = {
   start: number;

@@ -3,11 +3,11 @@ import type {
   IntervalInput,
   TimeRangeInput,
   TimestampInput,
-} from './temporal.js';
-import type { Event } from './Event.js';
-import type { Interval } from './Interval.js';
-import type { Time } from './Time.js';
-import type { TimeRange } from './TimeRange.js';
+} from './core/temporal.js';
+import type { Event } from './core/event.js';
+import type { Interval } from './core/interval.js';
+import type { Time } from './core/time.js';
+import type { TimeRange } from './core/time-range.js';
 
 /** Marker symbol for sources that emit `'evict'` events. @internal */
 export const EMITS_EVICT: unique symbol = Symbol.for('pond-ts:emitsEvict');
