@@ -22,7 +22,7 @@ import {
   type EventForSchema,
   type LiveSource,
   type SeriesSchema,
-} from '../types.js';
+} from '../schema/index.js';
 import type { LiveRollingOptions } from './live-rolling-aggregation.js';
 
 // `queueMicrotask` is a host-provided global available in browsers

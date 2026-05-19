@@ -23,13 +23,13 @@ import {
   type RollingSchema,
   type RowForSchema,
   type SeriesSchema,
-} from '../types.js';
-import type { RollingOutputMapSchema } from '../types-aggregate.js';
+} from '../schema/index.js';
+import type { RollingOutputMapSchema } from '../schema/index.js';
 import type {
   FusedMapping,
   FusedMappingValid,
   FusedPartitionedRollingSchema,
-} from '../types-fused-rolling.js';
+} from '../schema/index.js';
 import type { DurationInput } from '../core/duration.js';
 import type {
   LiveRollingOptions,

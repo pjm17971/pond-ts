@@ -1,4 +1,4 @@
-import type { ColumnValue } from '../types.js';
+import type { ColumnValue } from '../schema/index.js';
 
 /**
  * Incremental state for a single column within one aggregation bucket.

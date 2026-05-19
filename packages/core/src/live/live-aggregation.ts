@@ -37,8 +37,8 @@ import type {
   SelectSchema,
   SeriesSchema,
   ValueColumnsForSchema,
-} from '../types.js';
-import type { RollingOutputMapSchema } from '../types-aggregate.js';
+} from '../schema/index.js';
+import type { RollingOutputMapSchema } from '../schema/index.js';
 
 import { parseDuration } from '../core/duration.js';
 import type { DurationInput } from '../core/duration.js';

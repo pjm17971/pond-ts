@@ -21,7 +21,7 @@ import type {
   SeriesSchema,
   TimeSeriesInput,
   TimeSeriesJsonInput,
-} from '../types.js';
+} from '../schema/index.js';
 
 /**
  * Detects the object-shape variant of a JSON row.

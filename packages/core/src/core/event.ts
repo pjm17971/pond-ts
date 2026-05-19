@@ -10,7 +10,7 @@ import type {
   JsonRowFormat,
   RowForSchema,
   SeriesSchema,
-} from '../types.js';
+} from '../schema/index.js';
 
 type ScalarValue = number | string | boolean;
 type CollapseData<

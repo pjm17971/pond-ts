@@ -53,7 +53,7 @@ import {
   stringColumnFromArray,
 } from '../columnar/index.js';
 import type { EventKey } from '../core/temporal.js';
-import type { RowForSchema, SeriesSchema } from '../types.js';
+import type { RowForSchema, SeriesSchema } from '../schema/index.js';
 import { validateAndNormalize } from '../batch/validate.js';
 
 /**

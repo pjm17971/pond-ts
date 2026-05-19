@@ -1,11 +1,26 @@
+import type { DurationLiteral } from '../core/duration.js';
 import type {
+  AggregateColumns,
   AggregateMap,
   AggregateOutputMap,
+} from './aggregate.js';
+import type {
   ColumnDef,
   ScalarKind,
   SeriesSchema,
-} from './types.js';
-import type { DurationLiteral } from './core/duration.js';
+  ValueColumnsForSchema,
+} from './series.js';
+
+export type RollingAlignment = 'trailing' | 'leading' | 'centered';
+
+export type RollingSchema<S extends SeriesSchema, Mapping> = readonly [
+  S[0],
+  ...AggregateColumns<ValueColumnsForSchema<S>, Mapping>,
+];
+
+// ---------------------------------------------------------------------------
+// Fused multi-window rolling — formerly in types-fused-rolling.ts
+// ---------------------------------------------------------------------------
 
 /**
  * Types for the fused multi-window rolling primitive
@@ -90,7 +105,7 @@ type InnerMapping<V> =
  * `AggregateMap` form (key is a source column name, value is a
  * reducer string or `CustomAggregateReducer`).
  *
- * Aligned with `OutputSpecKind` in `./types-aggregate.ts` —
+ * Aligned with `OutputSpecKind` in `./aggregate.ts` —
  * keep the two in sync if the reducer registry grows.
  */
 type FusedColumnKind<

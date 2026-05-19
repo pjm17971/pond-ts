@@ -15,7 +15,7 @@ import type {
   SeriesSchema,
   TimeSeriesInput,
   ValueForKind,
-} from '../types.js';
+} from '../schema/index.js';
 
 const FIRST_COLUMN_KINDS: ReadonlySet<FirstColKind> = new Set([
   'time',

@@ -39,11 +39,11 @@ import type {
   PrefixedJoinSchema,
   ReduceResult,
   RenameMap,
-} from '../types.js';
+} from '../schema/index.js';
 import type {
   AggregateOutputMapResultSchema,
   RollingOutputMapSchema,
-} from '../types-aggregate.js';
+} from '../schema/index.js';
 import type {
   RenameSchema,
   RollingAlignment,
@@ -67,7 +67,7 @@ import type {
   TimeRangeKeyedSchema,
   ValueColumn,
   ValueColumnsForSchema,
-} from '../types.js';
+} from '../schema/index.js';
 import {
   isAggregateOutputSpec,
   normalizeAggregateColumns,

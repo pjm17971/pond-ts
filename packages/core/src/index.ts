@@ -104,7 +104,7 @@ export type {
   ValueColumnsForSchema,
   ValueColumn,
   ValueForKind,
-} from './types.js';
+} from './schema/index.js';
 export type {
   CalendarOptions,
   CalendarUnit,
@@ -136,4 +136,4 @@ export type {
   FusedMappingValue,
   FusedRollingSchema,
   FusedPartitionedRollingSchema,
-} from './types-fused-rolling.js';
+} from './schema/index.js';

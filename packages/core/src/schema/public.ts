@@ -66,4 +66,4 @@ export type {
   TimeSeriesJsonInput,
   ValueColumn,
   ValueForKind,
-} from './types.js';
+} from './index.js';

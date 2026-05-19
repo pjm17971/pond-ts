@@ -17,8 +17,8 @@
       "import": "./dist/index.js"
     },
     "./types": {
-      "types": "./dist/types-public.d.ts",
-      "import": "./dist/types-public.js"
+      "types": "./dist/schema/public.d.ts",
+      "import": "./dist/schema/public.js"
     }
   },
   "engines": {

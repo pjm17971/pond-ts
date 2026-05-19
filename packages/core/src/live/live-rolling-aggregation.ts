@@ -36,8 +36,8 @@ import type {
   SelectSchema,
   SeriesSchema,
   ColumnValue,
-} from '../types.js';
-import type { AggregateOutputMapResultSchema } from '../types-aggregate.js';
+} from '../schema/index.js';
+import type { AggregateOutputMapResultSchema } from '../schema/index.js';
 
 import type { DurationInput } from '../core/duration.js';
 import { parseDuration } from '../core/duration.js';

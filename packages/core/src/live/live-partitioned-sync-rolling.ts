@@ -27,7 +27,7 @@ import type {
   EventForSchema,
   LiveSource,
   SeriesSchema,
-} from '../types.js';
+} from '../schema/index.js';
 
 type WindowEntry = {
   index: number;

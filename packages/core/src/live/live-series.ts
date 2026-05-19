@@ -53,11 +53,11 @@ import {
   type TimeSeriesJsonInput,
   type TimeSeriesJsonOutputArray,
   type TimeSeriesJsonOutputObject,
-} from '../types.js';
+} from '../schema/index.js';
 import type {
   AggregateOutputMapResultSchema,
   RollingOutputMapSchema,
-} from '../types-aggregate.js';
+} from '../schema/index.js';
 import { LiveFusedRolling } from './live-fused-rolling.js';
 import { LiveReduce } from './live-reduce.js';
 import type { SampleStrategy } from '../sequence/sample.js';
@@ -65,7 +65,7 @@ import type {
   FusedMapping,
   FusedMappingValid,
   FusedRollingSchema,
-} from '../types-fused-rolling.js';
+} from '../schema/index.js';
 
 import type { DurationInput } from '../core/duration.js';
 import { parseDuration } from '../core/duration.js';

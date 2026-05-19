@@ -6,7 +6,7 @@ import type {
   AggregateReducer,
   ScalarKind,
   SeriesSchema,
-} from '../types.js';
+} from '../schema/index.js';
 
 /**
  * Normalised column spec used by both batch and live aggregation paths.

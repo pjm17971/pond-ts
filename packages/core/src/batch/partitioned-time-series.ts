@@ -24,11 +24,11 @@ import type {
   SmoothAppendSchema,
   SmoothMethod,
   SmoothSchema,
-} from '../types.js';
+} from '../schema/index.js';
 import type {
   AggregateOutputMapResultSchema,
   RollingOutputMapSchema,
-} from '../types-aggregate.js';
+} from '../schema/index.js';
 
 type SequenceLike = Sequence | BoundedSequence;
 type AlignMethod = 'hold' | 'linear';

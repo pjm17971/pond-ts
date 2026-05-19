@@ -27,16 +27,16 @@ import {
   type SelectSchema,
   type SeriesSchema,
   type ValueColumnsForSchema,
-} from '../types.js';
+} from '../schema/index.js';
 import type {
   AggregateOutputMapResultSchema,
   RollingOutputMapSchema,
-} from '../types-aggregate.js';
+} from '../schema/index.js';
 import type {
   FusedMapping,
   FusedMappingValid,
   FusedRollingSchema,
-} from '../types-fused-rolling.js';
+} from '../schema/index.js';
 
 export type LiveFillStrategy = 'hold' | 'zero';
 

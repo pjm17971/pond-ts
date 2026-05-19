@@ -1,4 +1,4 @@
-import type { ColumnValue } from '../types.js';
+import type { ColumnValue } from '../schema/index.js';
 import type { ReducerDef } from './types.js';
 
 export const keep: ReducerDef = {

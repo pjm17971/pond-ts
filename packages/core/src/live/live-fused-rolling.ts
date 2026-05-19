@@ -23,11 +23,8 @@ import type {
   EventForSchema,
   LiveSource,
   SeriesSchema,
-} from '../types.js';
-import type {
-  FusedMapping,
-  FusedMappingValue,
-} from '../types-fused-rolling.js';
+} from '../schema/index.js';
+import type { FusedMapping, FusedMappingValue } from '../schema/index.js';
 import type { LiveRollingOptions } from './live-rolling-aggregation.js';
 
 /**

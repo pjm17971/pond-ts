@@ -2,7 +2,7 @@ import type {
   ColumnValue,
   SeriesSchema,
   ValueColumnsForSchema,
-} from './types.js';
+} from './series.js';
 
 /**
  * Lookup the declared column definition for a given column name in a
@@ -32,7 +32,8 @@ type ColumnByName<S extends SeriesSchema, Name extends string> = Extract<
  * more-delegated variants trip TS2394 on those overloads' compatibility
  * with their implementation signature. The narrow logic is intentionally
  * duplicated here; keep it in sync with `AggregateKindForColumn` in
- * `types.ts` if the set of numeric / array-producing reducers changes.
+ * `./aggregate.ts` if the set of numeric / array-producing reducers
+ * changes.
  *
  * Branches:
  *
