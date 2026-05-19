@@ -1,4 +1,4 @@
-import type { ColumnValue } from '../types.js';
+import type { ColumnValue } from '../schema/index.js';
 import type { RollingReducerState } from './types.js';
 
 type RollingWindowEntry<T> = { index: number; value: T };

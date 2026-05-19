@@ -16,7 +16,7 @@ import type {
   ScalarKind,
   SeriesSchema,
   ValueColumn,
-} from '../src/types-public.js';
+} from '../src/schema/public.js';
 
 // Schema definition with `satisfies` — the canonical use case.
 // Compile error if any column's kind isn't a real ScalarKind.

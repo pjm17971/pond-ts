@@ -1131,10 +1131,10 @@ void reduceSamplesHealthy;
 // the type system rejected it with "Type '\"samples\"' is not
 // assignable to type 'AggregateReducer'". Now narrows to an
 // array-output column kind via AggregateKindForColumn.
-const aggregateWithSamples = reduceSeries.aggregate(
-  Sequence.every('5s'),
-  { host: 'samples', cpu: 'samples' },
-);
+const aggregateWithSamples = reduceSeries.aggregate(Sequence.every('5s'), {
+  host: 'samples',
+  cpu: 'samples',
+});
 void aggregateWithSamples;
 
 // The narrow type is assignable to the wide one — code written against
@@ -1223,7 +1223,7 @@ void badBaselineColumn;
 // overloads added in v0.13.0 close this hole; these assertions pin it.
 
 import { LiveSeries, Trigger } from '../src/index.js';
-import type { LiveRollingOptions } from '../src/LiveRollingAggregation.js';
+import type { LiveRollingOptions } from '../src/live/live-rolling-aggregation.js';
 
 const liveCpuSchema = [
   { name: 'time', kind: 'time' },

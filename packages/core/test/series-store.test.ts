@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { Event } from '../src/Event.js';
-import { Interval } from '../src/Interval.js';
-import { Time } from '../src/Time.js';
-import { TimeRange } from '../src/TimeRange.js';
+import { Event } from '../src/core/event.js';
+import { Interval } from '../src/core/interval.js';
+import { Time } from '../src/core/time.js';
+import { TimeRange } from '../src/core/time-range.js';
 import {
   ColumnarStore,
   Float64Column,
@@ -13,7 +13,7 @@ import {
   timeKeyColumnFromArray,
   timeRangeKeyColumnFromPairs,
 } from '../src/columnar/index.js';
-import { SeriesStore, type SeriesEvent } from '../src/series-store.js';
+import { SeriesStore, type SeriesEvent } from '../src/live/series-store.js';
 
 /* -------------------------------------------------------------------------- */
 /* Construction                                                               */
@@ -788,7 +788,7 @@ describe('Framework independence (pure substrate contract)', () => {
   it('a SeriesStore built end-to-end through the framework works', async () => {
     const { ColumnarStore, Float64Column, timeKeyColumnFromArray } =
       await import('../src/columnar/index.js');
-    const { SeriesStore } = await import('../src/series-store.js');
+    const { SeriesStore } = await import('../src/live/series-store.js');
 
     const schema = [
       { name: 'time', kind: 'time' },

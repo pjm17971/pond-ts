@@ -1,4 +1,4 @@
-import type { ColumnValue, ScalarValue } from '../types.js';
+import type { ColumnValue, ScalarValue } from '../schema/index.js';
 import type { ReducerDef } from './types.js';
 
 function isScalar(v: ColumnValue | undefined): v is ScalarValue {

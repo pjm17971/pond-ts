@@ -13,7 +13,7 @@ import type {
   JsonRowForSchema,
   TimeSeriesJsonOutputArray,
   TimeSeriesJsonOutputObject,
-} from '../src/types.js';
+} from '../src/schema/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },

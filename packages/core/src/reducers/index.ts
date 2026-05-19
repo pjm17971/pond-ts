@@ -9,7 +9,7 @@ import type {
   ReducerDef,
   RollingReducerState,
 } from './types.js';
-import type { AggregateReducer, ColumnValue } from '../types.js';
+import type { AggregateReducer, ColumnValue } from '../schema/index.js';
 import { parsePercentile, percentileReducer } from './percentile.js';
 import { parseTopN, topReducer } from './top.js';
 
