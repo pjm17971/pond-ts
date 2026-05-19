@@ -1,7 +1,7 @@
 export { Event } from '../Event.js';
-export { Interval } from '../Interval.js';
-export { Time } from '../Time.js';
-export { TimeRange, toTimeRange } from '../TimeRange.js';
+export { Interval } from './interval.js';
+export { Time } from './time.js';
+export { TimeRange, toTimeRange } from './time-range.js';
 export type {
   EventKey,
   IntervalInput,
