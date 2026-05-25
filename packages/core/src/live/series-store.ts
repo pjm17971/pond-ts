@@ -46,7 +46,6 @@ import {
   ColumnarStore,
   Float64Column,
   IntervalKeyColumn,
-  StringColumnBuilder,
   TimeKeyColumn,
   TimeRangeKeyColumn,
   columnBuilderForKind,
