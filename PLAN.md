@@ -4224,6 +4224,46 @@ See the RFC for the full argument.
 
 2. TimeSeries integration (~3 weeks) — private-field columnar store,
    lazy event materialization, API invariants pinned by tests.
+   Sub-stepped per the integration pattern.
+   - **2a + 2b — Private `#store` field + lazy `events` getter +
+     point-accessor routing.** ✅ Shipped (PR #150, merged
+     2026-05-25). 78 TimeSeries tests (+8 columnar-integration
+     invariants); 1849 in `packages/core`. `TimeSeries`'s row-
+     oriented `events: ReadonlyArray<Event>` field replaced with a
+     private `#store: SeriesStore<S>` + lazy `get events()`. Every
+     point accessor (`at` / `first` / `last` / `find` / `some` /
+     `every` / `includesKey` / `bisect` / `atOrBefore` /
+     `atOrAfter` / `Symbol.iterator`) routes through
+     `#store.eventAt(i)` or `#store.keyAt(i)` directly — no full
+     event-array materialization on point lookups. `bisect` does
+     O(log N) `keyAt` probes with zero Event allocations.
+     Module-private `TRUSTED_STORE_SENTINEL` Symbol routes
+     trusted-store paths through the public constructor (ES
+     private-field installation requires a running constructor;
+     the previous `Object.create(prototype)` shape is no longer
+     viable). `series.events` is `Object.freeze`d after lazy
+     materialization to preserve immutability invariants. Five
+     review rounds total (L2 medium + Codex × 4): events freeze,
+     `fill('linear')` kind sensitivity, point-accessor refactor
+     pulled in from 2b, fill contract docs, mixed-kind interval
+     breaking change documented in CHANGELOG, `at(NaN)` integer
+     guard, cache-validation fast-path.
+     **Perf: +40% construction vs the pre-2a row-array baseline**
+     (15ms → 21ms at N=100k). The substrate has real construction
+     cost; the recovery path is sub-step 2c's column-native intake
+     (bypass per-row Event allocation in `validateAndNormalize`).
+     Benchmark script at `packages/core/scripts/perf-timeseries-
+     columnar.mjs`.
+   - **2c — Column-native intake** (deferred from 2a + 2b).
+     `validateAndNormalize` produces column buffers directly from
+     validated rows, bypassing per-row Event allocation. Events
+     lazy-materialize on first access via the existing cache
+     mechanism. Goal: at-least-neutral perf vs pre-2a baseline.
+     Also: column-native `toRows` / `toObjects` / `toJSON` paths.
+   - **2d — Invariant test + bench**. Pin the five public-API
+     invariants from the RFC at the TimeSeries layer. Run the
+     perf bench against multiple workload patterns (dashboard
+     build-once-use-many, one-shot transform, streaming append).
 3. Numeric reducer adaptation (~2 weeks) — `sum` / `avg` / `count` /
    `min` / `max` / `stdev` / `median` / percentile family.
 4. Derived transforms (~3 weeks) — `select` / `rename` / `filter` /
