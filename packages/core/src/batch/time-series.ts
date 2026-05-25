@@ -904,11 +904,12 @@ export class TimeSeries<S extends SeriesSchema> {
       this.#store = trustedStore;
     } else {
       this.schema = Object.freeze(input.schema.slice()) as S;
-      // `validateAndNormalize` produces the sorted, normalized event
-      // array; `SeriesStore.fromValidatedRows` re-runs the same path
-      // inside, building the columnar substrate + pre-populating
-      // the event cache so identity is preserved. We delegate to it
-      // rather than calling `validateAndNormalize` directly.
+      // `SeriesStore.fromValidatedRows` runs the column-native
+      // intake (`validateAndNormalizeColumnar`) — same validation
+      // rules as the pre-2a row-shape `validateAndNormalize` but
+      // writes directly into columnar buffers without allocating
+      // Event objects + frozen data dicts. Events lazy-materialize
+      // on first `eventAt(i)` access via the store's per-row cache.
       this.#store = SeriesStore.fromValidatedRows(
         this.schema,
         input.rows,

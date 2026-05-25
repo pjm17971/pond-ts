@@ -381,7 +381,11 @@ export function validateAndNormalizeColumnar<S extends SeriesSchema>(
       if (labelKind === undefined) {
         labelKind = typeof label === 'string' ? 'string' : 'number';
       } else if (typeof label !== labelKind) {
-        throw new ValidationError(
+        // `RangeError` (not `ValidationError`) for parity with the
+        // pre-2c throw site at `buildSeriesStoreFromEvents`. Some
+        // callers may catch by class name; matching the pre-existing
+        // error class avoids a downstream-caller break.
+        throw new RangeError(
           `row ${i} has interval label of type ${typeof label} but earlier rows had ${labelKind} labels — interval-keyed series must use one label type throughout`,
         );
       }
@@ -389,7 +393,10 @@ export function validateAndNormalizeColumnar<S extends SeriesSchema>(
     }
 
     // Value columns — direct per-kind buffer writes with inline
-    // validity tracking.
+    // validity tracking. The first-missing-cell handler is
+    // inlined per kind (rather than via a closure) to avoid
+    // allocating one closure per (row, column) on the hot path
+    // — for N=1M × 2 cols that's 2M short-lived closures.
     for (let c = 0; c < colCount; c += 1) {
       const def = schema[c + 1]!;
       const value = row[c + 1];
@@ -400,30 +407,32 @@ export function validateAndNormalizeColumnar<S extends SeriesSchema>(
         );
       }
       assertCellKind(def.kind, value, i, c + 1);
-      // First-missing-cell handler: lazily allocate validity
-      // bitmap and back-fill previously-defined bits.
-      const ensureValidity = (): Uint8Array => {
-        let bits = validityBits[c] ?? null;
-        if (bits === null) {
-          bits = new Uint8Array(bitmapByteCount(length));
-          // Back-fill: every prior row at this column was defined.
-          for (let j = 0; j < i; j += 1) {
-            bits[j >> 3]! |= 1 << (j & 7);
-          }
-          validityBits[c] = bits;
-        }
-        return bits;
-      };
       switch (colKinds[c]) {
         case 'number': {
           const buf = numberBufs[c]!;
           if (typeof value === 'number') {
             buf[i] = value;
             const bits = validityBits[c];
+            // Validity bitmap exists ⇒ this row's bit needs setting
+            // (the bitmap covers every defined cell). No bitmap yet
+            // ⇒ every prior row has been defined, no back-fill needed.
             if (bits !== null && bits !== undefined)
               bits[i >> 3]! |= 1 << (i & 7);
           } else {
-            ensureValidity();
+            // First missing cell at column `c` ⇒ allocate the
+            // validity bitmap (lazy) + back-fill bits for the
+            // previously-defined rows `[0, i)`. Subsequent missing
+            // cells skip the alloc + back-fill (bitmap already
+            // exists), leaving the bit cleared which is the
+            // missing-cell signal.
+            let bits = validityBits[c] ?? null;
+            if (bits === null) {
+              bits = new Uint8Array(bitmapByteCount(length));
+              for (let j = 0; j < i; j += 1) {
+                bits[j >> 3]! |= 1 << (j & 7);
+              }
+              validityBits[c] = bits;
+            }
           }
           break;
         }
@@ -435,7 +444,14 @@ export function validateAndNormalizeColumnar<S extends SeriesSchema>(
             if (bits !== null && bits !== undefined)
               bits[i >> 3]! |= 1 << (i & 7);
           } else {
-            ensureValidity();
+            let bits = validityBits[c] ?? null;
+            if (bits === null) {
+              bits = new Uint8Array(bitmapByteCount(length));
+              for (let j = 0; j < i; j += 1) {
+                bits[j >> 3]! |= 1 << (j & 7);
+              }
+              validityBits[c] = bits;
+            }
           }
           break;
         }
