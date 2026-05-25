@@ -1071,9 +1071,20 @@ export class TimeSeries<S extends SeriesSchema> {
     return toObjects(this.schema, this.events);
   }
 
-  /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
+  /**
+   * Example: `series.at(0)`. Returns the event at the supplied
+   * zero-based position, if present.
+   *
+   * Routes through the columnar store's per-row `eventAt` cache
+   * directly (O(1) materialization for the requested row) rather
+   * than indexing `this.events` (which would force a full lazy
+   * materialization of every row in the series on first call).
+   * The cache's identity invariant means `series.at(i) ===
+   * series.events[i]` holds whenever both are accessed.
+   */
   at(index: number): EventForSchema<S> | undefined {
-    return this.events[index];
+    if (index < 0 || index >= this.#store.length) return undefined;
+    return this.#store.eventAt(index) as unknown as EventForSchema<S>;
   }
 
   /** Example: `series.first()`. Returns the first event in the series, if present. */
@@ -1083,9 +1094,8 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.last()`. Returns the last event in the series, if present. */
   last(): EventForSchema<S> | undefined {
-    return this.events.length === 0
-      ? undefined
-      : this.events[this.events.length - 1];
+    const n = this.#store.length;
+    return n === 0 ? undefined : this.at(n - 1);
   }
 
   /** Example: `series.map(nextSchema, event => event)`. Maps each event into a new typed schema and returns a new series. */
@@ -3528,52 +3538,81 @@ export class TimeSeries<S extends SeriesSchema> {
     return TimeSeries.#fromTrustedEvents(this.name, this.schema, reservoir);
   }
 
-  /** Example: `series.find(event => event.get("value") > 0)`. Returns the first event that matches the predicate, if any. */
+  /**
+   * Example: `series.find(event => event.get("value") > 0)`.
+   * Returns the first event that matches the predicate, if any.
+   *
+   * Routes per-row through `#store.eventAt(i)` — stops at the
+   * first match without forcing materialization of the rest. The
+   * cache populates rows on demand, so a predicate that hits
+   * early in a 10M-row series only pays for the rows it touches.
+   */
   find(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): EventForSchema<S> | undefined {
-    return this.events.find((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (predicate(event, i)) return event;
+    }
+    return undefined;
   }
 
   /** Example: `series.some(event => event.get("healthy"))`. Returns `true` when at least one event matches the predicate. */
   some(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): boolean {
-    return this.events.some((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (predicate(event, i)) return true;
+    }
+    return false;
   }
 
   /** Example: `series.every(event => event.get("healthy"))`. Returns `true` when every event matches the predicate. */
   every(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): boolean {
-    return this.events.every((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (!predicate(event, i)) return false;
+    }
+    return true;
   }
 
   /** Example: `series.includesKey(new Time(Date.now()))`. Returns `true` when the series contains an event with an exactly matching key. */
   includesKey(key: KeyLike): boolean {
     const normalizedKey = toKey(key);
     const index = this.bisect(normalizedKey);
-    return (
-      index < this.events.length &&
-      this.events[index]!.key().equals(normalizedKey)
-    );
+    if (index >= this.#store.length) return false;
+    // `keyAt` is cheap — only resolves the key column buffer, not
+    // the full event materialization.
+    return this.#store.keyAt(index).equals(normalizedKey);
   }
 
-  /** Example: `series.bisect(new Time(Date.now()))`. Returns the insertion index for the supplied key in the ordered event sequence. */
+  /**
+   * Example: `series.bisect(new Time(Date.now()))`. Returns the
+   * insertion index for the supplied key in the ordered event
+   * sequence.
+   *
+   * Walks the columnar key buffer via `#store.keyAt(i)` rather
+   * than materializing events for the binary-search probes.
+   * O(log N) keys touched; no Event allocations.
+   */
   bisect(key: KeyLike): number {
     const normalizedKey = toKey(key);
     let low = 0;
-    let high = this.events.length;
-
+    let high = this.#store.length;
     while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      if (this.events[mid]!.key().compare(normalizedKey) < 0) {
+      const mid = (low + high) >>> 1;
+      if (this.#store.keyAt(mid).compare(normalizedKey) < 0) {
         low = mid + 1;
       } else {
         high = mid;
       }
     }
-
     return low;
   }
 
@@ -3581,20 +3620,16 @@ export class TimeSeries<S extends SeriesSchema> {
   atOrBefore(key: KeyLike): EventForSchema<S> | undefined {
     const normalizedKey = toKey(key);
     const index = this.bisect(normalizedKey);
-
-    if (
-      index < this.events.length &&
-      this.events[index]!.key().equals(normalizedKey)
-    ) {
-      return this.events[index];
+    const n = this.#store.length;
+    if (index < n && this.#store.keyAt(index).equals(normalizedKey)) {
+      return this.at(index);
     }
-
-    return index === 0 ? undefined : this.events[index - 1];
+    return index === 0 ? undefined : this.at(index - 1);
   }
 
   /** Example: `series.atOrAfter(new Time(Date.now()))`. Returns the event with the exact key or the nearest later event, if any. */
   atOrAfter(key: KeyLike): EventForSchema<S> | undefined {
-    return this.events[this.bisect(key)];
+    return this.at(this.bisect(key));
   }
 
   /** Example: `series.timeRange()`. Returns the overall temporal extent of the series, if the series is not empty. */
@@ -4112,16 +4147,26 @@ export class TimeSeries<S extends SeriesSchema> {
     return this.#store.length;
   }
 
-  /** Example: `for (const event of series) { ... }`. Iterates events in order. */
+  /**
+   * Example: `for (const event of series) { ... }`. Iterates events in order.
+   *
+   * Pulls one event at a time via `#store.eventAt(i)` rather than
+   * materializing the full events array up front. A `break` or
+   * early-exit inside the loop only pays for the rows it touched.
+   * The store's per-row cache means re-iteration (or a subsequent
+   * `series.events` call) reuses the same Event references.
+   */
   [Symbol.iterator](): Iterator<EventForSchema<S>> {
     let index = 0;
-    const events = this.events;
+    const store = this.#store;
     return {
       next(): IteratorResult<EventForSchema<S>> {
-        if (index < events.length) {
-          return { value: events[index++]!, done: false };
+        if (index < store.length) {
+          const event = store.eventAt(index) as unknown as EventForSchema<S>;
+          index += 1;
+          return { value: event, done: false };
         }
-        return { value: undefined as any, done: true };
+        return { value: undefined as unknown as EventForSchema<S>, done: true };
       },
     };
   }

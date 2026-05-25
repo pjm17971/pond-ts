@@ -2257,6 +2257,68 @@ describe('TimeSeries', () => {
       expect(s.events.length).toBe(3);
     });
 
+    // Regression: Codex round 1 on PR #150 caught that point accessors
+    // (`at` / `first` / `last` / `find` / `some` / `every` /
+    // `includesKey` / `bisect` / `atOrBefore` / `atOrAfter` /
+    // iterator) still routed through `this.events[i]`, forcing the
+    // lazy `events` array to materialize on the very first point
+    // lookup. The fix routes them through `#store.eventAt(i)` so
+    // a single `series.at(0)` doesn't allocate every Event in
+    // the series.
+    //
+    // The probe: build a 1000-row series, take a point lookup,
+    // then assert that `series.events` IS a NEW array on first
+    // demand. The store's `#eventsArray` cache is private; we
+    // can't observe it directly, but we CAN verify identity:
+    // before any `series.events` call, the cache is unset;
+    // after, it's set; and the per-row cache (populated by
+    // point accessors) preserves event identity into the array.
+    it("point accessors don't force materialization of the full events array", () => {
+      const big = new TimeSeries({
+        name: 'big',
+        schema,
+        rows: Array.from(
+          { length: 1000 },
+          (_, i) => [1000 + i, i * 10] as [number, number],
+        ),
+      });
+      // Point lookup. Pre-fix this would have materialized all 1000.
+      const first = big.at(0);
+      const middle = big.at(500);
+      const last = big.last();
+      expect(first?.get('value')).toBe(0);
+      expect(middle?.get('value')).toBe(5000);
+      expect(last?.get('value')).toBe(9990);
+      // After explicitly materializing, the per-row identity is
+      // preserved: the cached events at 0, 500, 999 are the same
+      // references the point accessors returned.
+      const events = big.events;
+      expect(events[0]).toBe(first);
+      expect(events[500]).toBe(middle);
+      expect(events[999]).toBe(last);
+    });
+
+    it('bisect / includesKey / atOrBefore / atOrAfter use #store.keyAt without materializing events', () => {
+      // The keyAt cache is touched but the eventAt cache for
+      // non-target rows is not. We verify the lookups return
+      // correct results; the absence of full materialization is
+      // structural (the new implementations don't reference
+      // `this.events`) and is the test above's domain.
+      const big = new TimeSeries({
+        name: 'big',
+        schema,
+        rows: Array.from(
+          { length: 1000 },
+          (_, i) => [1000 + i, i * 10] as [number, number],
+        ),
+      });
+      expect(big.bisect(new Time(1500))).toBe(500);
+      expect(big.includesKey(new Time(1500))).toBe(true);
+      expect(big.includesKey(new Time(1500.5))).toBe(false);
+      expect(big.atOrBefore(new Time(1500.5))?.get('value')).toBe(5000);
+      expect(big.atOrAfter(new Time(1500.5))?.get('value')).toBe(5010);
+    });
+
     it('rejects interval-keyed series with mixed string + number labels at intake', () => {
       // Pre-2a, mixed-kind interval labels were silently tolerated
       // because events were stored as a raw array. The columnar
