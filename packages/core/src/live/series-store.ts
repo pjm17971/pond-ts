@@ -243,6 +243,14 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
    * and cached — `toEvents() === toEvents()` holds across calls.
    * The array reuses the per-row `eventAt` cache, so
    * `eventAt(i) === toEvents()[i]` for every valid `i`.
+   *
+   * **Runtime-frozen.** The returned array is `Object.freeze`d so
+   * the memoized cache can't be corrupted by a caller that bypasses
+   * the `ReadonlyArray` type (e.g. `(series.events as Event[]).push(...)`).
+   * Without the freeze, mutation would poison every subsequent
+   * `toEvents()` / `series.events` read with the same array
+   * reference, defeating the identity contract. Closed PR #150's
+   * Layer-2 high-priority finding on TimeSeries integration.
    */
   toEvents(): ReadonlyArray<SeriesEvent> {
     if (this.#eventsArray !== undefined) return this.#eventsArray;
@@ -250,6 +258,7 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
     for (let i = 0; i < this.length; i += 1) {
       events[i] = this.eventAt(i);
     }
+    Object.freeze(events);
     this.#eventsArray = events;
     return events;
   }

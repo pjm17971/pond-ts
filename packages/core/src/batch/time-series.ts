@@ -2543,6 +2543,15 @@ export class TimeSeries<S extends SeriesSchema> {
             break;
           }
           case 'linear': {
+            // `'linear'` interpolates numerically. Only meaningful
+            // for `kind: 'number'` columns — applying it to a
+            // string / boolean / array column would produce
+            // `NaN` (string + arithmetic) or `false` (boolean
+            // arithmetic), then the columnar substrate would
+            // reject the kind-mismatched event at intake. Kind-
+            // sensitive like `'zero'` above: numeric columns
+            // interpolate; non-numeric columns stay undefined.
+            if (colKinds.get(name) !== 'number') break;
             const before = col[start - 1] as number;
             const after = col[end] as number;
             const t0 = times[start - 1]!;
