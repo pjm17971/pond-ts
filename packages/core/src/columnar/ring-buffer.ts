@@ -357,6 +357,18 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
   /* Internal                                                                  */
   /* ------------------------------------------------------------------------ */
 
+  /**
+   * Validates that the incoming batch's schema matches the ring's
+   * structurally (same length, same `name` / `kind` per position).
+   * Short-circuits on reference equality — the common case when
+   * a producer constructs every batch with the same schema literal.
+   * For `interval` rings, also validates that the batch's
+   * `labelKind` matches the ring's; otherwise the per-row label
+   * write would route into a wrong-typed slot.
+   *
+   * Internal to `appendBatch`. Throws `RangeError` on any
+   * mismatch.
+   */
   #validateBatchSchema(batch: ColumnarStore<S>): void {
     if (batch.schema === this.schema) {
       // Same schema reference — structurally guaranteed equal.
@@ -392,6 +404,24 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
     }
   }
 
+  /**
+   * Per-row write loop: copies key fields and every value column
+   * from the batch into the ring at the correct physical
+   * positions, using circular indexing
+   * (`(head + length + j) % capacity`). Assumes
+   * `#validateBatchSchema` has run, capacity is sufficient
+   * (`#grow` was called if needed), and any necessary eviction
+   * has already advanced `#head` / `#length`.
+   *
+   * **Key kinds:**
+   * - `time` — writes `begin` only.
+   * - `timeRange` — writes `begin` + `end`.
+   * - `interval` — writes `begin` + `end` + `labels` (per
+   *   `labelKind`, either a string slot or a Float64 slot).
+   *
+   * Value-column writes delegate to `writeValueColumnRows` for
+   * per-kind branching.
+   */
   #writeBatch(
     batch: ColumnarStore<S>,
     batchStart: number,
@@ -433,6 +463,31 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
     }
   }
 
+  /**
+   * Grows the ring's physical capacity to at least `required`,
+   * capped at `retention`. Computes the target by doubling
+   * (`max(currentCap * 2, required)`) and clamping, then unrolls
+   * the current circular buffer into fresh linear buffers at the
+   * new capacity. Head resets to 0; length is unchanged.
+   *
+   * No-op when the current capacity already covers `required`,
+   * or when the ring is already at retention (the eviction path
+   * is responsible for keeping `length <= retention` so growth
+   * is unnecessary at that point).
+   *
+   * **Failure-atomic.** All replacement key + value buffers are
+   * built into local variables first; only after every allocation
+   * has succeeded do we commit by swapping the ring's fields in
+   * one block. If any intermediate allocation throws under memory
+   * pressure, the ring is left exactly as it was — no half-grown
+   * state where keys point at a linear buffer while value columns
+   * still describe the old circular layout. Closed Codex round 2's
+   * medium finding on PR #149.
+   *
+   * Cost: O(length) per grow, amortized O(1) over many appends
+   * (the doubling schedule means each row is copied at most
+   * O(log retention) times across the ring's lifetime).
+   */
   #grow(required: number): void {
     let newCapacity = this.#capacity;
     while (newCapacity < required) {
@@ -447,23 +502,45 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
     }
     newCapacity = Math.min(newCapacity, this.retention);
     if (newCapacity === this.#capacity) return;
-    // Unroll the circular buffer into a fresh linear buffer at
-    // the new capacity. Head resets to 0; length stays the same.
-    this.#regrowKeys(newCapacity);
-    for (const [, ring] of this.#values) {
-      regrowValueRing(
-        ring,
-        newCapacity,
-        this.#head,
-        this.#length,
-        this.#capacity,
+    // Build all replacements into local variables. Any throw here
+    // (e.g. typed-array allocation OOM) leaves the ring untouched.
+    const newKeys = this.#buildRegrownKeys(newCapacity);
+    const newValues = new Map<string, MutableValueRing>();
+    for (const [name, ring] of this.#values) {
+      newValues.set(
+        name,
+        buildRegrownValueRing(
+          ring,
+          newCapacity,
+          this.#head,
+          this.#length,
+          this.#capacity,
+        ),
       );
     }
+    // Atomic commit. From here on every assignment is O(1) and
+    // can't throw.
+    this.#keys = newKeys;
+    this.#values = newValues;
     this.#head = 0;
     this.#capacity = newCapacity;
   }
 
-  #regrowKeys(newCapacity: number): void {
+  /**
+   * Returns a fresh `MutableKeyRing` sized to `newCapacity` with
+   * every live row copied from the current circular buffer in
+   * logical order. **Does not mutate `this.#keys`** — the caller
+   * (`#grow`) holds the new ring in a local and commits it as
+   * part of the atomic swap.
+   *
+   * Per key kind:
+   * - `time` — copy `begin` only.
+   * - `timeRange` — copy `begin` + `end`.
+   * - `interval` — copy `begin` + `end` + `labels` (per
+   *   `labelKind`, either into a new string array or a fresh
+   *   `Float64Array`).
+   */
+  #buildRegrownKeys(newCapacity: number): MutableKeyRing {
     const length = this.#length;
     const capacity = this.#capacity;
     const head = this.#head;
@@ -472,8 +549,9 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
       for (let i = 0; i < length; i += 1) {
         newBegin[i] = this.#keys.begin[(head + i) % capacity]!;
       }
-      this.#keys = { kind: 'time', begin: newBegin };
-    } else if (this.#keys.kind === 'timeRange') {
+      return { kind: 'time', begin: newBegin };
+    }
+    if (this.#keys.kind === 'timeRange') {
       const newBegin = new Float64Array(newCapacity);
       const newEnd = new Float64Array(newCapacity);
       for (let i = 0; i < length; i += 1) {
@@ -481,40 +559,50 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
         newBegin[i] = this.#keys.begin[p]!;
         newEnd[i] = this.#keys.end[p]!;
       }
-      this.#keys = { kind: 'timeRange', begin: newBegin, end: newEnd };
-    } else {
-      const newBegin = new Float64Array(newCapacity);
-      const newEnd = new Float64Array(newCapacity);
-      let newLabels: Array<string | undefined> | Float64Array;
-      if (this.#keys.labelKind === 'string') {
-        newLabels = new Array<string | undefined>(newCapacity);
-        const srcLabels = this.#keys.labels as Array<string | undefined>;
-        for (let i = 0; i < length; i += 1) {
-          const p = (head + i) % capacity;
-          newBegin[i] = this.#keys.begin[p]!;
-          newEnd[i] = this.#keys.end[p]!;
-          newLabels[i] = srcLabels[p];
-        }
-      } else {
-        newLabels = new Float64Array(newCapacity);
-        const srcLabels = this.#keys.labels as Float64Array;
-        for (let i = 0; i < length; i += 1) {
-          const p = (head + i) % capacity;
-          newBegin[i] = this.#keys.begin[p]!;
-          newEnd[i] = this.#keys.end[p]!;
-          (newLabels as Float64Array)[i] = srcLabels[p]!;
-        }
-      }
-      this.#keys = {
-        kind: 'interval',
-        labelKind: this.#keys.labelKind,
-        begin: newBegin,
-        end: newEnd,
-        labels: newLabels,
-      };
+      return { kind: 'timeRange', begin: newBegin, end: newEnd };
     }
+    const newBegin = new Float64Array(newCapacity);
+    const newEnd = new Float64Array(newCapacity);
+    let newLabels: Array<string | undefined> | Float64Array;
+    if (this.#keys.labelKind === 'string') {
+      newLabels = new Array<string | undefined>(newCapacity);
+      const srcLabels = this.#keys.labels as Array<string | undefined>;
+      for (let i = 0; i < length; i += 1) {
+        const p = (head + i) % capacity;
+        newBegin[i] = this.#keys.begin[p]!;
+        newEnd[i] = this.#keys.end[p]!;
+        newLabels[i] = srcLabels[p];
+      }
+    } else {
+      newLabels = new Float64Array(newCapacity);
+      const srcLabels = this.#keys.labels as Float64Array;
+      for (let i = 0; i < length; i += 1) {
+        const p = (head + i) % capacity;
+        newBegin[i] = this.#keys.begin[p]!;
+        newEnd[i] = this.#keys.end[p]!;
+        (newLabels as Float64Array)[i] = srcLabels[p]!;
+      }
+    }
+    return {
+      kind: 'interval',
+      labelKind: this.#keys.labelKind,
+      begin: newBegin,
+      end: newEnd,
+      labels: newLabels,
+    };
   }
 
+  /**
+   * Builds an immutable `KeyColumn` for the ring's snapshot.
+   * Walks the live circular window in logical order into fresh
+   * typed buffers (and a fresh gathered label array for interval
+   * string labels, fed through `stringColumnFromArray` so the
+   * dict-vs-fallback heuristic runs once on the snapshot window).
+   *
+   * Decoupled from the ring: the returned `KeyColumn` owns its
+   * buffers — subsequent mutations of `this.#keys` don't affect
+   * the snapshot.
+   */
   #snapshotKeys(length: number): KeyColumn {
     const capacity = this.#capacity;
     const head = this.#head;
@@ -601,6 +689,19 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
 /* Helpers — kind-specific init / grow / write / snapshot.                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Builds the mutable storage for the key column at the ring's
+ * current capacity. Per key kind:
+ *
+ * - `time` — just a `begin` `Float64Array`. `end === begin`
+ *   semantically; the snapshot's `TimeKeyColumn` re-aliases them.
+ * - `timeRange` — `begin` + `end` `Float64Array`s.
+ * - `interval` — `begin` + `end` + a labels buffer that's either
+ *   `(string | undefined)[]` or `Float64Array` per
+ *   `intervalLabelKind`. The constructor's `keyKind === 'interval'`
+ *   branch validates that `intervalLabelKind` is set; this helper
+ *   trusts it (non-null assertion below).
+ */
 function initKeyRing(
   kind: KeyKind,
   capacity: number,
@@ -630,6 +731,26 @@ function initKeyRing(
   };
 }
 
+/**
+ * Builds the mutable storage for one value column at the ring's
+ * current capacity. Each kind gets the typed-array shape that
+ * matches its plain-column counterpart:
+ *
+ * - `number` — `Float64Array` for values, `Uint8Array` of
+ *   `ceil(capacity / 8)` bytes for validity bits.
+ * - `boolean` — bit-packed `Uint8Array` for both values and
+ *   validity (1 bit per cell each).
+ * - `string` — plain `(string | undefined)[]`. Snapshot rebuilds
+ *   dict-vs-fallback encoding via `stringColumnFromArray`.
+ * - `array` — plain `(ArrayValue | undefined)[]`. Cells are
+ *   defensively frozen at append time.
+ *
+ * Validity is allocated unconditionally for number/boolean even
+ * if every cell will be defined — the per-cell write path needs
+ * a buffer to flip bits against, and lazily allocating would
+ * complicate the eviction/growth bookkeeping for marginal
+ * memory savings.
+ */
 function initValueRing(kind: ColumnKind, capacity: number): MutableValueRing {
   if (kind === 'number') {
     return {
@@ -657,13 +778,29 @@ function initValueRing(kind: ColumnKind, capacity: number): MutableValueRing {
   };
 }
 
-function regrowValueRing(
+/**
+ * Returns a fresh `MutableValueRing` sized to `newCapacity` with
+ * every live row copied from the source ring's circular buffer
+ * in logical order. **Does not mutate `ring`** — the caller
+ * (`#grow`) holds the new ring in a local and commits it as
+ * part of the atomic swap, so a mid-loop throw under memory
+ * pressure can't leave the original ring half-grown.
+ *
+ * Per kind:
+ * - `number` — fresh `Float64Array` + new validity `Uint8Array`,
+ *   bits copied physical-to-logical.
+ * - `boolean` — same shape with bit-packed `values` too.
+ * - `string` / `array` — fresh `Array` of the slot type, cells
+ *   copied by reference (already defensively frozen at original
+ *   write time for arrays; strings are immutable).
+ */
+function buildRegrownValueRing(
   ring: MutableValueRing,
   newCapacity: number,
   head: number,
   length: number,
   oldCapacity: number,
-): void {
+): MutableValueRing {
   if (ring.kind === 'number') {
     const newValues = new Float64Array(newCapacity);
     const newValidity = new Uint8Array(bitmapByteCount(newCapacity));
@@ -674,9 +811,7 @@ function regrowValueRing(
         newValidity[i >> 3]! |= 1 << (i & 7);
       }
     }
-    ring.values = newValues;
-    ring.validity = newValidity;
-    return;
+    return { kind: 'number', values: newValues, validity: newValidity };
   }
   if (ring.kind === 'boolean') {
     const newValues = new Uint8Array(bitmapByteCount(newCapacity));
@@ -690,27 +825,35 @@ function regrowValueRing(
         newValidity[i >> 3]! |= 1 << (i & 7);
       }
     }
-    ring.values = newValues;
-    ring.validity = newValidity;
-    return;
+    return { kind: 'boolean', values: newValues, validity: newValidity };
   }
-  // string / array
   if (ring.kind === 'string') {
     const newValues = new Array<string | undefined>(newCapacity);
     for (let i = 0; i < length; i += 1) {
       newValues[i] = ring.values[(head + i) % oldCapacity];
     }
-    ring.values = newValues;
-    return;
+    return { kind: 'string', values: newValues };
   }
   // array
   const newValues = new Array<ArrayValue | undefined>(newCapacity);
   for (let i = 0; i < length; i += 1) {
     newValues[i] = ring.values[(head + i) % oldCapacity];
   }
-  ring.values = newValues;
+  return { kind: 'array', values: newValues };
 }
 
+/**
+ * Per-row write loop for one value column. Reads rows `[batchStart,
+ * batchStart + toAppend)` from `source` and writes them into the
+ * ring's circular storage at physical positions `(head +
+ * ringLengthBefore + j) % capacity`. Each cell goes through
+ * `writeValueCell`, which encodes the per-kind validity update.
+ *
+ * `source.read(srcRow)` returns `undefined` for invalid cells; the
+ * per-kind branch in `writeValueCell` translates that into the
+ * ring's defined-state discriminator (validity-bit-clear for
+ * number/boolean; `undefined` slot for string/array).
+ */
 function writeValueColumnRows(
   ring: MutableValueRing,
   source: Column,
@@ -728,6 +871,25 @@ function writeValueColumnRows(
   }
 }
 
+/**
+ * Writes one cell at physical position `physical`. Per kind:
+ *
+ * - `number` — store the float (or 0 for invalid) and toggle the
+ *   validity bit.
+ * - `boolean` — store the boolean bit (or 0) and the validity
+ *   bit (or 0).
+ * - `string` — store the string or `undefined`. The slot's
+ *   truthiness IS the defined discriminator (no separate
+ *   validity bitmap).
+ * - `array` — defensively `slice()` + `Object.freeze` the array
+ *   cell, matching `ArrayColumn`'s constructor invariant so the
+ *   ring can't be corrupted by a caller mutating its source
+ *   array after append.
+ *
+ * Idempotent and clobber-safe: callers don't need to track
+ * whether `physical` was previously defined — the writes set or
+ * clear bits / values based purely on `value`'s type.
+ */
 function writeValueCell(
   ring: MutableValueRing,
   physical: number,
@@ -768,6 +930,27 @@ function writeValueCell(
     : undefined;
 }
 
+/**
+ * Builds an immutable `Column` snapshot of one value-column ring.
+ * Allocates fresh typed-array buffers sized to `length` and walks
+ * the ring's circular storage in logical order
+ * (`(head + i) % capacity`). For each kind:
+ *
+ * - `number` — copies values into a `Float64Array` and gathers
+ *   validity bits into a fresh bitmap; drops the bitmap if every
+ *   cell is defined (matching the framework convention).
+ * - `boolean` — same shape using bit-packed values + validity.
+ * - `string` — gathers into `(string | undefined)[]` and runs
+ *   `stringColumnFromArray` so the snapshot's encoding (dict vs
+ *   fallback) is chosen freshly on the snapshot window — no
+ *   stale per-batch dictionaries bleed through.
+ * - `array` — gathers into `(ArrayValue | undefined)[]` and
+ *   derives validity from `undefined` slots; drops the bitmap if
+ *   every cell is defined.
+ *
+ * The returned column owns its buffers — subsequent ring
+ * mutations don't affect it.
+ */
 function snapshotValueColumn(
   ring: MutableValueRing,
   length: number,

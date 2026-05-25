@@ -77,14 +77,26 @@ describe('scatterByPartition (string partition column)', () => {
     }
   });
 
-  it('rows with undefined partition value are excluded from all buckets', () => {
+  it('throws on undefined partition values by default (loud failure)', () => {
     const source = makeStore(
       [1000, 2000, 3000, 4000],
       ['a', null, 'a', undefined],
       [10, 20, 30, 40],
       [true, false, true, false],
     );
-    const buckets = scatterByPartition(source, 'host');
+    expect(() => scatterByPartition(source, 'host')).toThrow(
+      /undefined value in partition column 'host'/,
+    );
+  });
+
+  it('drops rows with undefined partition value when onUndefined is "drop"', () => {
+    const source = makeStore(
+      [1000, 2000, 3000, 4000],
+      ['a', null, 'a', undefined],
+      [10, 20, 30, 40],
+      [true, false, true, false],
+    );
+    const buckets = scatterByPartition(source, 'host', { onUndefined: 'drop' });
     expect(buckets.size).toBe(1);
     const a = buckets.get('a')!;
     expect(a.length).toBe(2);
@@ -156,7 +168,7 @@ describe('scatterByPartition (numeric partition column)', () => {
     );
   });
 
-  it('excludes rows with undefined numeric partition values', () => {
+  it('drops rows with undefined numeric partition values when onUndefined is "drop"', () => {
     const valCol = float64ColumnFromArray([1, null, 1, undefined]);
     const source = ColumnarStore.fromTrustedStore(
       SCHEMA,
@@ -167,7 +179,9 @@ describe('scatterByPartition (numeric partition column)', () => {
         ['flag', booleanColumnFromArray([true, false, true, false])],
       ]),
     );
-    const buckets = scatterByPartition(source, 'value');
+    const buckets = scatterByPartition(source, 'value', {
+      onUndefined: 'drop',
+    });
     expect(buckets.size).toBe(1);
     expect(buckets.get(1)!.length).toBe(2);
   });

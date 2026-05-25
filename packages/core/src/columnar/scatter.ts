@@ -15,12 +15,17 @@
  * disambiguation, and partitioning by array-valued cells isn't
  * a useful pattern in practice.
  *
- * **Invalid cells dropped.** Rows whose partition cell is
- * `undefined` (validity-bit-clear) are excluded from every
- * output partition — they belong to no bucket. The output
- * `Map<ScalarValue, ...>` therefore never contains
- * `undefined` as a key, but its sub-stores' aggregate length
- * can be less than the input's `length`.
+ * **Invalid cells: caller chooses.** Rows whose partition cell
+ * is `undefined` (validity-bit-clear) can't be routed to any
+ * bucket — they have no partition key. Default behavior is to
+ * **throw** on the first encountered undefined cell so the
+ * producer/schema-drift bug is loud rather than silent. Pass
+ * `{ onUndefined: 'drop' }` in options for the lax behavior
+ * (rows excluded from every bucket; aggregate output length can
+ * be less than the input's). Closed Codex round 2's medium
+ * finding on PR #149 — the previous silent-drop default would
+ * make rows vanish from `LivePartitionedSeries` routing with no
+ * error or recovery hook.
  *
  * **NaN partition values are bucketed under `NaN`.** Numeric
  * columns can contain `NaN` cells via trusted-construction paths
@@ -28,12 +33,10 @@
  * constructor accepts it). JS `Map` uses `SameValueZero`
  * equality, which treats `NaN === NaN`, so NaN is a stable Map
  * key. We **bucket** NaN rows under the `NaN` key rather than
- * dropping them — silently discarding defined cells would be
- * observability-poor for the `LivePartitionedSeries` routing
- * use case, where a producer mis-emitting `NaN` partition values
- * needs to be visible to its consumer. Callers who want stricter
- * semantics can pre-filter or check `Number.isNaN(key)` on the
- * result keys.
+ * dropping them — same reasoning as the undefined-throws default:
+ * silently discarding defined cells is observability-poor for
+ * routing. Callers who want stricter NaN semantics can check
+ * `Number.isNaN(key)` on the result keys.
  *
  * **Order preservation within a partition.** Each output sub-store
  * preserves the relative order of rows from the input — the
@@ -54,6 +57,23 @@ import { ColumnarStore } from './store.js';
 import { withRowSelection } from './view.js';
 
 /**
+ * Behavior for rows whose partition cell is `undefined`.
+ *
+ * - `'throw'` (default) — reject the call with a `RangeError`
+ *   that names the offending row index. Catches producer/
+ *   schema-drift bugs at the framework boundary.
+ * - `'drop'` — silently exclude those rows from every bucket.
+ *   Caller is responsible for noticing if `Σ buckets.length <
+ *   source.length` matters.
+ */
+export type OnUndefinedPartition = 'throw' | 'drop';
+
+export interface ScatterByPartitionOptions {
+  /** See `OnUndefinedPartition`. Defaults to `'throw'`. */
+  onUndefined?: OnUndefinedPartition;
+}
+
+/**
  * Partitions a store by `partitionColumn`. The partition column
  * must be a value column (i.e., `partitionColumn !== schema[0].name`)
  * of kind `'number'` / `'boolean'` / `'string'`. Empty input
@@ -62,7 +82,9 @@ import { withRowSelection } from './view.js';
 export function scatterByPartition<S extends ColumnSchema>(
   source: ColumnarStore<S>,
   partitionColumn: string,
+  options?: ScatterByPartitionOptions,
 ): Map<ScalarValue, ColumnarStore<S>> {
+  const onUndefined: OnUndefinedPartition = options?.onUndefined ?? 'throw';
   const keyName = source.schema[0]!.name;
   if (partitionColumn === keyName) {
     throw new RangeError(
@@ -94,7 +116,15 @@ export function scatterByPartition<S extends ColumnSchema>(
   const partitionCol = source.columns.get(partitionColumn)!;
   for (let i = 0; i < source.length; i += 1) {
     const value = partitionCol.read(i);
-    if (value === undefined) continue;
+    if (value === undefined) {
+      if (onUndefined === 'throw') {
+        throw new RangeError(
+          `scatterByPartition: row ${i} has an undefined value in partition column '${partitionColumn}'; pass { onUndefined: 'drop' } to exclude such rows silently`,
+        );
+      }
+      // 'drop' — exclude from every bucket.
+      continue;
+    }
     // NaN is a stable Map key under SameValueZero — bucket rather
     // than drop. See module header.
     // We've narrowed by kind to scalar (number / boolean / string);

@@ -52,7 +52,11 @@ export {
   ColumnarRingBuffer,
 } from './ring-buffer.js';
 
-export { scatterByPartition } from './scatter.js';
+export {
+  type OnUndefinedPartition,
+  type ScatterByPartitionOptions,
+  scatterByPartition,
+} from './scatter.js';
 
 export {
   DICT_ENCODE_MIN_LENGTH,
