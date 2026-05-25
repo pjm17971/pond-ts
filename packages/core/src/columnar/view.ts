@@ -42,12 +42,24 @@ import type { AnyColumnKind, ColumnDef, ColumnSchema } from './types.js';
  * keys and every value column are gathered through
  * `sliceByIndices`. Schema is preserved.
  *
- * **Out-of-range index discipline.** The constructor downstream
- * validates the gathered key column (finite timestamps,
- * defined interval labels, etc.). Out-of-range source indices
- * will surface as constructor `RangeError`s rather than silent
- * placeholder rows. Callers should produce `indices` from filter
- * / range-query primitives that emit only valid source rows.
+ * **Out-of-range index discipline — kind-asymmetric.**
+ *
+ * - `time` / `timeRange` keys: out-of-range source indices
+ *   produce a row with `begin = end = 0` (a finite timestamp).
+ *   The benign behavior matches the underlying typed-array
+ *   gather; the corresponding value column reports the row as
+ *   missing via its validity bitmap, but the key column does
+ *   not throw.
+ * - `interval` keys: out-of-range source indices produce a row
+ *   whose label is undefined (from the labels column's gather
+ *   marking the slot invalid). The downstream constructor's
+ *   "every row must have a defined label" check then **throws
+ *   `RangeError`** at construction — a stricter invariant than
+ *   the Time/TimeRange paths.
+ *
+ * Callers should produce `indices` from filter / range-query
+ * primitives that emit only valid source rows; relying on
+ * out-of-range behavior for any key kind is undefined territory.
  *
  * Cost: O(K) gather per column where K is `indices.length`.
  */
@@ -238,7 +250,12 @@ export function withColumnAppended<S extends ColumnSchema>(
 /**
  * Returns a new store containing only the named value columns
  * (in the supplied order). The key column is always preserved
- * regardless of `names`. Buffers are shared.
+ * regardless of `names`. Buffers are shared by reference.
+ *
+ * Empty `names` is **allowed** and produces a key-only store
+ * (schema length 1, columns map empty). That's the natural
+ * "drop every value column" projection and matches the framework
+ * design's "select" primitive shape.
  */
 export function withColumnsSelected<S extends ColumnSchema>(
   source: ColumnarStore<S>,

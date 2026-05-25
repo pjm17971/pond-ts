@@ -430,22 +430,65 @@ describe('Composed view + schema ops', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('withRowSelection — invalid index discipline', () => {
-  it('out-of-range source index produces a row whose key fails the constructor finite check', () => {
-    // The slice fills out-of-range slots with 0; that's fine for
-    // Time keys (0 is a finite timestamp) — the test pins the
-    // realistic case where filter / range-query primitives produce
-    // valid indices only. Pathological out-of-range indices either
-    // succeed (with garbage data) or fail at construction depending
-    // on the key kind.
+  it('Time keys: out-of-range index fills row with finite 0 (benign — callers must produce valid indices)', () => {
+    // Time keys accept 0 as a finite timestamp. The gathered "row"
+    // has begin=0; value column marks the cell invalid via the
+    // sliceByIndices validity machinery. Documented expectation:
+    // callers must produce valid indices. The test confirms no
+    // crash + that the data path correctly reports the cell as
+    // missing.
     const source = makeBasicStore();
-    // Time keys accept finite 0; the gathered "row" has begin=0.
-    // Documented expectation: callers must produce valid indices.
-    // The test just confirms there's no crash for this benign case.
     const view = withRowSelection(source, Int32Array.of(0, 99));
     expect(view.length).toBe(2);
-    expect(view.beginAt(1)).toBe(0); // out-of-range filled with 0
-    // The corresponding value-column gather marks row 1 invalid
-    // via validityGatherByIndices in the sliceByIndices machinery.
+    expect(view.beginAt(1)).toBe(0);
     expect(view.valueAt(1, 'value')).toBeUndefined();
+  });
+
+  it('Interval keys (string labels): out-of-range index throws at construction via label-defined check (L2 round-1 finding)', () => {
+    // For interval-keyed stores, IntervalKeyColumn.sliceByIndices
+    // gathers labels via the underlying StringColumn's gather, which
+    // marks out-of-range slots invalid. The downstream constructor's
+    // "every row must have a defined label" check then throws —
+    // a stricter invariant than Time keys, where 0 is finite and
+    // benign. This test pins that asymmetry.
+    const schema = [
+      { name: 'bucket', kind: 'interval' },
+      { name: 'count', kind: 'number' },
+    ] as const;
+    const begin = Float64Array.of(0, 86_400_000);
+    const end = Float64Array.of(86_400_000, 172_800_000);
+    const labels = stringColumnFromArray(['day-1', 'day-2'], {
+      forceDict: true,
+    });
+    const keys = new IntervalKeyColumn(begin, end, labels, 2);
+    const counts = new Float64Column(Float64Array.of(42, 99), 2);
+    const source = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['count', counts]]),
+    );
+    expect(() => withRowSelection(source, Int32Array.of(0, 99))).toThrow(
+      /row 1 has no label/,
+    );
+  });
+
+  it('Interval keys (numeric labels): out-of-range index throws at construction via label-defined check', () => {
+    const schema = [
+      { name: 'bucket', kind: 'interval' },
+      { name: 'count', kind: 'number' },
+    ] as const;
+    const begin = Float64Array.of(0, 100);
+    const end = Float64Array.of(50, 200);
+    const labels = new Float64Column(Float64Array.of(42, 7), 2);
+    const keys = new IntervalKeyColumn(begin, end, labels, 2);
+    const counts = new Float64Column(Float64Array.of(1, 2), 2);
+    const source = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['count', counts]]),
+    );
+    expect(() => withRowSelection(source, Int32Array.of(0, 99))).toThrow(
+      /row 1 has no label/,
+    );
   });
 });
