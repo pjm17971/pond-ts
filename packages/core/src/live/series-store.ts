@@ -53,7 +53,10 @@ import {
 } from '../columnar/index.js';
 import type { EventKey } from '../core/temporal.js';
 import type { RowForSchema, SeriesSchema } from '../schema/index.js';
-import { validateAndNormalize } from '../batch/validate.js';
+import {
+  validateAndNormalize,
+  validateAndNormalizeColumnar,
+} from '../batch/validate.js';
 
 /**
  * Row-data shape — a record keyed by column name. Tightens to
@@ -120,32 +123,42 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
   /**
    * Row-intake factory. Accepts a schema + row-shaped data,
    * validates every row via the existing `validate.ts` rules,
-   * builds the underlying `ColumnarStore`, and wraps it as a
-   * `SeriesStore`. Event identity is preserved: the validated
-   * events are pre-populated into the cache, so subsequent
-   * `eventAt(i)` calls return the validation-time references.
+   * builds the underlying `ColumnarStore` directly via the
+   * column-native validator, and wraps it as a `SeriesStore`.
    *
-   * Sub-step 1e scope; complements `fromTrustedStore` for the
+   * **Sub-step 2c — column-native intake.** Pre-2c, this path
+   * went through `validateAndNormalize` (which allocates N
+   * `Event` instances + N frozen data dicts) and then
+   * `buildSeriesStoreFromEvents` (which walks events into a
+   * column builder per cell). Post-2c it goes through
+   * `validateAndNormalizeColumnar`, which writes directly into
+   * pre-sized column buffers in a single per-row pass. Events
+   * lazy-materialize on first `eventAt(i)` call via the existing
+   * per-row cache. Recovers the construction-cost regression
+   * 2a + 2b documented vs the pre-2a row-array baseline; see
+   * `scripts/perf-timeseries-columnar.mjs`.
+   *
+   * Sub-step 1e scope (original intake); 2c brought it onto the
+   * column-native path. Complements `fromTrustedStore` for the
    * primary row-API intake path.
    */
   static fromValidatedRows<S extends SeriesSchema>(
     schema: S,
     rows: ReadonlyArray<RowForSchema<S>>,
   ): SeriesStore<S> {
-    // Reuse the existing row validator. Returns sorted, normalized
-    // events with each row's key + frozen data already built.
-    const events = validateAndNormalize<S>({
+    const { keys, columns } = validateAndNormalizeColumnar<S>({
       name: 'columnar-intake',
       schema,
       rows,
     });
-    // EventForSchema<S> is structurally compatible with SeriesEvent
-    // (both are Event<Time|TimeRange|Interval, ...>) but TS narrows
-    // the key generic to S[0]'s specific kind. The cast widens it
-    // back to the union the SeriesStore layer uses.
-    return buildSeriesStoreFromEvents(
-      schema,
-      events as unknown as ReadonlyArray<SeriesEvent>,
+    const store = ColumnarStore.fromTrustedStore(schema, keys, columns);
+    // Cache starts empty — events lazy-materialize on first
+    // `eventAt(i)` call. The per-row event cache invariant
+    // (`eventAt(i) === eventAt(i)`) is preserved by the cache
+    // mechanism itself.
+    return SeriesStore._fromValidatedStoreAndCacheModulePrivate(
+      store,
+      new Map<number, SeriesEvent>(),
     );
   }
 
