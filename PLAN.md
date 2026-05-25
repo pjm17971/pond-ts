@@ -4254,12 +4254,34 @@ See the RFC for the full argument.
      (bypass per-row Event allocation in `validateAndNormalize`).
      Benchmark script at `packages/core/scripts/perf-timeseries-
      columnar.mjs`.
-   - **2c — Column-native intake** (deferred from 2a + 2b).
-     `validateAndNormalize` produces column buffers directly from
-     validated rows, bypassing per-row Event allocation. Events
-     lazy-materialize on first access via the existing cache
-     mechanism. Goal: at-least-neutral perf vs pre-2a baseline.
-     Also: column-native `toRows` / `toObjects` / `toJSON` paths.
+   - **2c — Column-native intake.** ✅ Shipped (PR #151, merged
+     2026-05-25). New `validateAndNormalizeColumnar` in
+     `validate.ts` walks rows once and writes directly into
+     per-column typed-array buffers + per-row key buffers,
+     skipping the N Event allocations + N frozen data dicts that
+     `validateAndNormalize` paid for the row-shape pipeline.
+     `SeriesStore.fromValidatedRows` routes through the new
+     path with an empty event cache; events lazy-materialize on
+     first `eventAt(i)` access. Lazy validity bitmap allocation
+     (first-missing-cell triggers alloc + back-fill of previously-
+     defined bits). Inlined the bitmap allocate-+-backfill in the
+     hot loop (L2 perf nit) so per-row × per-column iterations
+     don't allocate closures. **Perf vs main (3.6× faster
+     construction, 3× faster point-access):**
+     - build N=100k: 14.9ms → 4.19ms (-72%)
+     - build N=1M: 167ms → 46ms (-72%)
+     - build + 100 at(i) N=100k: 14.1ms → ~4.9ms (-65%)
+     - build + bisect N=100k: 14.5ms → ~4.8ms (-67%)
+     - **trade-off**: `series.events` full-materialize is now
+       slower (lazy materialization shifts cost from build to
+       first-events-access). The columnar substrate's whole
+       point is "don't materialize rows you don't need." Users
+       opting into row materialization pay there.
+     The existing `validateAndNormalize` stays as-is for
+     `TimeSeries.fromEvents` and other Event-array consumers.
+     Column-native `toRows` / `toObjects` / `toJSON` paths
+     deferred to a later sub-step (the lazy events path is
+     already fast enough for the common cases).
    - **2d — Invariant test + bench**. Pin the five public-API
      invariants from the RFC at the TimeSeries layer. Run the
      perf bench against multiple workload patterns (dashboard
