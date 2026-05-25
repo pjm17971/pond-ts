@@ -7,8 +7,22 @@ import type {
   IntervalInput,
   TimeRangeInput,
 } from '../core/temporal.js';
+import {
+  type Column,
+  type KeyColumn,
+  BooleanColumn,
+  Float64Column,
+  IntervalKeyColumn,
+  TimeKeyColumn,
+  TimeRangeKeyColumn,
+  arrayColumnFromArray,
+  bitmapByteCount,
+  stringColumnFromArray,
+  validityFromBits,
+} from '../columnar/index.js';
 import { ValidationError } from '../core/errors.js';
 import type {
+  ArrayValue,
   EventForSchema,
   EventKeyForSchema,
   FirstColKind,
@@ -240,4 +254,274 @@ export function validateAndNormalize<S extends SeriesSchema>(
   }
 
   return Object.freeze(normalized.slice()) as EventForSchema<S>[];
+}
+
+/**
+ * Column-native intake — walks rows once, writes directly into
+ * per-column typed-array buffers + per-row key buffers, returns
+ * the inputs to `ColumnarStore.fromTrustedStore` (key column +
+ * value column map). **Skips Event allocation entirely**: the
+ * existing `validateAndNormalize` builds N `Event` instances + N
+ * frozen data dicts en route to producing the events array; this
+ * path bypasses both because the columnar substrate doesn't need
+ * row-shaped objects.
+ *
+ * **Same validation rules** as `validateAndNormalize`:
+ * - First-column-kind allowlist (`time` / `timeRange` / `interval`)
+ * - Value-column kind allowlist (`number` / `boolean` / `string` /
+ *   `array`)
+ * - Per-row length check
+ * - Per-cell kind assertion (defined cells must match the
+ *   declared kind; finite numbers / typed strings / well-formed
+ *   intervals / shape-validated arrays)
+ * - Required-field check (defaults to `required: true`)
+ * - Sort order: rows must be in non-decreasing key order by
+ *   `(begin, end)` (interval label is NOT part of the sort key,
+ *   matching the existing `compareKeys`)
+ * - Interval label-kind consistency: every row's interval label
+ *   must share the kind (string vs number) of the first row's
+ *   label
+ *
+ * **Optimization for sub-step 2c.** On a 100k-row schema with two
+ * value columns, the existing `validateAndNormalize` + the column
+ * builder loop in `buildSeriesStoreFromEvents` totaled ~20 ms vs
+ * the pre-2a row-array baseline's ~14 ms. The bulk of the
+ * remaining cost was Event + data-dict allocation. This function
+ * removes both. Events lazy-materialize on first
+ * `SeriesStore.eventAt(i)` call via the existing per-row cache
+ * mechanism — preserving the identity invariant `eventAt(i) ===
+ * eventAt(i)` for the store's lifetime.
+ */
+export function validateAndNormalizeColumnar<S extends SeriesSchema>(
+  input: TimeSeriesInput<S>,
+): { keys: KeyColumn; columns: Map<string, Column> } {
+  const { schema, rows } = input;
+  if (!schema.length) {
+    throw new ValidationError('schema must have at least one column');
+  }
+  const keyKind = schema[0]!.kind as FirstColKind;
+  if (!FIRST_COLUMN_KINDS.has(keyKind)) {
+    throw new ValidationError(
+      'first column must be one of: time, interval, timeRange',
+    );
+  }
+  for (let col = 1; col < schema.length; col += 1) {
+    const kind = schema[col]!.kind;
+    if (
+      kind !== 'number' &&
+      kind !== 'string' &&
+      kind !== 'boolean' &&
+      kind !== 'array'
+    ) {
+      throw new ValidationError(
+        `column ${col} has unsupported value kind '${kind}'`,
+      );
+    }
+  }
+
+  const length = rows.length;
+
+  // Key buffers. `Time` keys share `end === begin` (same reference).
+  const beginBuf = new Float64Array(length);
+  const endBuf = keyKind === 'time' ? beginBuf : new Float64Array(length);
+  const labelArr: Array<string | number> | undefined =
+    keyKind === 'interval' ? new Array<string | number>(length) : undefined;
+  let labelKind: 'string' | 'number' | undefined;
+
+  // Per-value-column buffers. Allocated up-front sized to N to
+  // avoid the growth-and-copy steps the generic ColumnBuilder
+  // would otherwise pay.
+  const colCount = schema.length - 1;
+  const colNames = new Array<string>(colCount);
+  const colKinds = new Array<'number' | 'boolean' | 'string' | 'array'>(
+    colCount,
+  );
+  const numberBufs = new Array<Float64Array | null>(colCount);
+  const booleanBufs = new Array<Uint8Array | null>(colCount);
+  const stringBufs = new Array<Array<string | undefined> | null>(colCount);
+  const arrayBufs = new Array<Array<ArrayValue | undefined> | null>(colCount);
+  // Lazy validity bitmaps per number/boolean column. Allocated on
+  // first missing cell; null until then (the "all defined ⇒ no
+  // bitmap" framework convention).
+  const validityBits = new Array<Uint8Array | null>(colCount);
+  for (let c = 0; c < colCount; c += 1) {
+    const def = schema[c + 1]!;
+    const kind = def.kind as 'number' | 'boolean' | 'string' | 'array';
+    colNames[c] = def.name;
+    colKinds[c] = kind;
+    numberBufs[c] = kind === 'number' ? new Float64Array(length) : null;
+    booleanBufs[c] =
+      kind === 'boolean' ? new Uint8Array(bitmapByteCount(length)) : null;
+    stringBufs[c] =
+      kind === 'string' ? new Array<string | undefined>(length) : null;
+    arrayBufs[c] =
+      kind === 'array' ? new Array<ArrayValue | undefined>(length) : null;
+    validityBits[c] = null;
+  }
+
+  for (let i = 0; i < length; i += 1) {
+    const row = rows[i] as ReadonlyArray<unknown>;
+    if (row.length !== schema.length) {
+      throw new ValidationError(
+        `row ${i} expected ${schema.length} values, got ${row.length}`,
+      );
+    }
+    // Key normalization. `normalizeKey` still allocates a
+    // `Time` / `TimeRange` / `Interval` instance — we discard it
+    // after extracting numeric begin/end/label. The class
+    // allocation is small (3-4 fields each) and lets us reuse
+    // the existing kind-specific input validation rather than
+    // duplicating it here. The big-ticket savings (Event + data
+    // dict allocations) come from the value-column path below.
+    const key = normalizeKey(keyKind, row[0], i, 0);
+    beginBuf[i] = key.begin();
+    if (endBuf !== beginBuf) endBuf[i] = key.end();
+    if (labelArr !== undefined) {
+      const label = (key as Interval).value;
+      if (labelKind === undefined) {
+        labelKind = typeof label === 'string' ? 'string' : 'number';
+      } else if (typeof label !== labelKind) {
+        throw new ValidationError(
+          `row ${i} has interval label of type ${typeof label} but earlier rows had ${labelKind} labels — interval-keyed series must use one label type throughout`,
+        );
+      }
+      labelArr[i] = label;
+    }
+
+    // Value columns — direct per-kind buffer writes with inline
+    // validity tracking.
+    for (let c = 0; c < colCount; c += 1) {
+      const def = schema[c + 1]!;
+      const value = row[c + 1];
+      const required = def.required !== false;
+      if (value === undefined && required) {
+        throw new ValidationError(
+          `row ${i} col ${c + 1} (${def.name}) is required`,
+        );
+      }
+      assertCellKind(def.kind, value, i, c + 1);
+      // First-missing-cell handler: lazily allocate validity
+      // bitmap and back-fill previously-defined bits.
+      const ensureValidity = (): Uint8Array => {
+        let bits = validityBits[c] ?? null;
+        if (bits === null) {
+          bits = new Uint8Array(bitmapByteCount(length));
+          // Back-fill: every prior row at this column was defined.
+          for (let j = 0; j < i; j += 1) {
+            bits[j >> 3]! |= 1 << (j & 7);
+          }
+          validityBits[c] = bits;
+        }
+        return bits;
+      };
+      switch (colKinds[c]) {
+        case 'number': {
+          const buf = numberBufs[c]!;
+          if (typeof value === 'number') {
+            buf[i] = value;
+            const bits = validityBits[c];
+            if (bits !== null && bits !== undefined)
+              bits[i >> 3]! |= 1 << (i & 7);
+          } else {
+            ensureValidity();
+          }
+          break;
+        }
+        case 'boolean': {
+          const buf = booleanBufs[c]!;
+          if (typeof value === 'boolean') {
+            if (value) buf[i >> 3]! |= 1 << (i & 7);
+            const bits = validityBits[c];
+            if (bits !== null && bits !== undefined)
+              bits[i >> 3]! |= 1 << (i & 7);
+          } else {
+            ensureValidity();
+          }
+          break;
+        }
+        case 'string': {
+          const buf = stringBufs[c]!;
+          buf[i] = typeof value === 'string' ? value : undefined;
+          break;
+        }
+        case 'array': {
+          const buf = arrayBufs[c]!;
+          // Defensive shallow freeze, matching `validateAndNormalize`'s
+          // post-validation freeze step. Element-wise contract was
+          // checked by `assertCellKind` above.
+          buf[i] = Array.isArray(value)
+            ? (Object.freeze(value.slice()) as ArrayValue)
+            : undefined;
+          break;
+        }
+      }
+    }
+  }
+
+  // Sort order check: rows must be non-decreasing by (begin, end).
+  // Lexicographic compare on Float64Array, no key-object
+  // allocations during the walk.
+  for (let i = 1; i < length; i += 1) {
+    const prevBegin = beginBuf[i - 1]!;
+    const curBegin = beginBuf[i]!;
+    if (prevBegin > curBegin) {
+      throw new ValidationError(`row ${i} is out of order`);
+    }
+    if (prevBegin === curBegin && endBuf !== beginBuf) {
+      if (endBuf[i - 1]! > endBuf[i]!) {
+        throw new ValidationError(`row ${i} is out of order`);
+      }
+    }
+  }
+
+  // Build the key column.
+  let keys: KeyColumn;
+  if (keyKind === 'time') {
+    keys = new TimeKeyColumn(beginBuf, length);
+  } else if (keyKind === 'timeRange') {
+    keys = new TimeRangeKeyColumn(beginBuf, endBuf, length);
+  } else {
+    // interval
+    let labelCol;
+    if (labelKind === 'number') {
+      const buf = new Float64Array(length);
+      for (let i = 0; i < length; i += 1) buf[i] = labelArr![i] as number;
+      labelCol = new Float64Column(buf, length);
+    } else {
+      labelCol = stringColumnFromArray(
+        labelArr === undefined ? [] : (labelArr as ReadonlyArray<string>),
+        { forceDict: true },
+      );
+    }
+    keys = new IntervalKeyColumn(beginBuf, endBuf, labelCol, length);
+  }
+
+  // Build value columns.
+  const columns = new Map<string, Column>();
+  for (let c = 0; c < colCount; c += 1) {
+    const name = colNames[c]!;
+    const kind = colKinds[c];
+    const bits = validityBits[c] ?? null;
+    const validity = bits === null ? undefined : validityFromBits(bits, length);
+    let column: Column;
+    switch (kind) {
+      case 'number':
+        column = new Float64Column(numberBufs[c]!, length, validity);
+        break;
+      case 'boolean':
+        column = new BooleanColumn(booleanBufs[c]!, length, validity);
+        break;
+      case 'string':
+        column = stringColumnFromArray(stringBufs[c]!);
+        break;
+      case 'array':
+        column = arrayColumnFromArray(
+          arrayBufs[c]! as Parameters<typeof arrayColumnFromArray>[0],
+        );
+        break;
+    }
+    columns.set(name, column!);
+  }
+
+  return { keys, columns };
 }
