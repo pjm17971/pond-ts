@@ -11,6 +11,51 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **Interval-keyed series must use one label type throughout**
+  ([#150](https://github.com/pjm17971/pond-ts/pull/150)). Pre-2a,
+  TimeSeries silently tolerated mixed-kind interval labels —
+  rows with `value: 'row-1'` (string) and `value: 2` (number) could
+  coexist in a single series because events were stored as a raw
+  array with no per-column type alignment. The columnar substrate
+  introduced at Phase 4.7 enforces one label kind per column via
+  `IntervalKeyColumn`, so mixed-kind labels now throw at series
+  construction with a row-pointed error message.
+  - **Affected:** Any series built via `new TimeSeries(...)`,
+    `TimeSeries.fromJSON(...)`, `TimeSeries.fromEvents(...)`, or
+    any transform that produces interval-keyed events, where the
+    `value` field of `IntervalInput` rows or `Interval` keys
+    mixes `string` and `number` types.
+  - **Migration:** Choose one label kind for the whole series.
+    Numeric labels can be stringified at intake (`String(label)`)
+    if the downstream consumer accepts string equality; string
+    labels parseable as integers can be converted to numbers at
+    intake. The error message names the first offending row so
+    the offending data is easy to find.
+  - **Rationale:** Aligns the row-API contract with the columnar
+    substrate's per-column kind discipline (matching Polars /
+    Arrow / Parquet). The previous behavior produced type-broken
+    events that worked only because TimeSeries didn't enforce
+    per-column alignment; downstream columnar operators (the
+    upcoming reducer adaptation in steps 3+) require it.
+  - **Affected types:** `IntervalValue` remains `string | number`
+    per the `Interval` class contract. The runtime restriction
+    is at the **series** level (all intervals within one series
+    must share a kind), not the per-interval level. Type-level
+    narrowing of `IntervalKeyedSchema<S>` over label kind is a
+    follow-up deferred to a later sub-step.
+
+### Added
+
+- **Columnar substrate (Phase 4.7 step 1, framework layer).** All
+  eight sub-steps (1a–1h) shipped to main as PRs #132 / #133 /
+  #134 / #135 / #136 / #147 / #148 / #149. See `PLAN.md` and
+  [`packages/core/src/columnar/README.md`](packages/core/src/columnar/README.md)
+  for the full inventory. Framework-internal — no public API
+  surface yet; the substrate becomes user-visible behind the
+  existing `TimeSeries` API at Phase 4.7 step 2.
+
 ## [0.17.1] — 2026-05-11
 
 Bug fix: `live.partitionBy()` now default-inherits `ordering`,
