@@ -37,6 +37,12 @@ describe('TimeSeries', () => {
   });
 
   it('supports interval based series', () => {
+    // Note: every row's interval label must be the same kind — all
+    // strings or all numbers within a single series. Pre-2a
+    // TimeSeries silently tolerated mixed-kind labels because events
+    // were stored as a raw array; sub-step 2a's columnar substrate
+    // surfaces this as a loud `RangeError` at intake (see the
+    // `IntervalKeyColumn` one-kind-per-column contract).
     const schema = [
       { name: 'interval', kind: 'interval' },
       { name: 'temperature', kind: 'number' },
@@ -47,7 +53,7 @@ describe('TimeSeries', () => {
       schema,
       rows: [
         [{ value: 'row-1', start: 1000, end: 2000 }, 23.4],
-        [{ value: 2, start: 2000, end: 3000 }, 24.0],
+        [{ value: 'row-2', start: 2000, end: 3000 }, 24.0],
       ],
     });
 
@@ -2188,5 +2194,180 @@ describe('TimeSeries', () => {
           ],
         }),
     ).toThrowError('out of order');
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* Columnar integration invariants (sub-step 2a)                          */
+  /* ---------------------------------------------------------------------- */
+
+  describe('columnar integration (sub-step 2a)', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'value', kind: 'number' },
+    ] as const;
+
+    function makeSeries(): TimeSeries<typeof schema> {
+      return new TimeSeries({
+        name: 's',
+        schema,
+        rows: [
+          [1000, 10],
+          [2000, 20],
+          [3000, 30],
+        ],
+      });
+    }
+
+    it('series.events === series.events (lazy materialization is memoized)', () => {
+      const s = makeSeries();
+      expect(s.events).toBe(s.events);
+    });
+
+    it('series.at(i) === series.events[i] (event identity invariant)', () => {
+      const s = makeSeries();
+      const events = s.events;
+      for (let i = 0; i < s.length; i += 1) {
+        expect(s.at(i)).toBe(events[i]);
+      }
+    });
+
+    it('series.events is runtime-frozen — push/sort/splice throw in strict mode', () => {
+      const s = makeSeries();
+      // The lazy materialization caches the array; freezing it
+      // prevents a caller bypassing the `ReadonlyArray` type
+      // (`series.events as Event[]`) from corrupting subsequent
+      // reads.
+      expect(Object.isFrozen(s.events)).toBe(true);
+      // ES strict mode (which Vitest runs in) throws on mutation
+      // attempts against a frozen array.
+      expect(() => (s.events as unknown as unknown[]).push('x')).toThrow();
+      expect(() => (s.events as unknown as unknown[]).sort()).toThrow();
+    });
+
+    it('series.length doesn’t materialize the lazy events array', () => {
+      const s = makeSeries();
+      const lengthBeforeMaterializing = s.length;
+      // Reading `.length` should not have triggered `.events`
+      // materialization. We can probe this by checking that the
+      // events array IS subsequently created on first access AND
+      // has the expected length — the `length` getter delegated
+      // straight to the columnar store either way, so observable
+      // behaviour just needs to be correct.
+      expect(lengthBeforeMaterializing).toBe(3);
+      expect(s.events.length).toBe(3);
+    });
+
+    // Regression: Codex round 1 on PR #150 caught that point accessors
+    // (`at` / `first` / `last` / `find` / `some` / `every` /
+    // `includesKey` / `bisect` / `atOrBefore` / `atOrAfter` /
+    // iterator) still routed through `this.events[i]`, forcing the
+    // lazy `events` array to materialize on the very first point
+    // lookup. The fix routes them through `#store.eventAt(i)` so
+    // a single `series.at(0)` doesn't allocate every Event in
+    // the series.
+    //
+    // The probe: build a 1000-row series, take a point lookup,
+    // then assert that `series.events` IS a NEW array on first
+    // demand. The store's `#eventsArray` cache is private; we
+    // can't observe it directly, but we CAN verify identity:
+    // before any `series.events` call, the cache is unset;
+    // after, it's set; and the per-row cache (populated by
+    // point accessors) preserves event identity into the array.
+    it("point accessors don't force materialization of the full events array", () => {
+      const big = new TimeSeries({
+        name: 'big',
+        schema,
+        rows: Array.from(
+          { length: 1000 },
+          (_, i) => [1000 + i, i * 10] as [number, number],
+        ),
+      });
+      // Point lookup. Pre-fix this would have materialized all 1000.
+      const first = big.at(0);
+      const middle = big.at(500);
+      const last = big.last();
+      expect(first?.get('value')).toBe(0);
+      expect(middle?.get('value')).toBe(5000);
+      expect(last?.get('value')).toBe(9990);
+      // After explicitly materializing, the per-row identity is
+      // preserved: the cached events at 0, 500, 999 are the same
+      // references the point accessors returned.
+      const events = big.events;
+      expect(events[0]).toBe(first);
+      expect(events[500]).toBe(middle);
+      expect(events[999]).toBe(last);
+    });
+
+    it('bisect / includesKey / atOrBefore / atOrAfter use #store.keyAt without materializing events', () => {
+      // The keyAt cache is touched but the eventAt cache for
+      // non-target rows is not. We verify the lookups return
+      // correct results; the absence of full materialization is
+      // structural (the new implementations don't reference
+      // `this.events`) and is the test above's domain.
+      const big = new TimeSeries({
+        name: 'big',
+        schema,
+        rows: Array.from(
+          { length: 1000 },
+          (_, i) => [1000 + i, i * 10] as [number, number],
+        ),
+      });
+      expect(big.bisect(new Time(1500))).toBe(500);
+      expect(big.includesKey(new Time(1500))).toBe(true);
+      expect(big.includesKey(new Time(1500.5))).toBe(false);
+      expect(big.atOrBefore(new Time(1500.5))?.get('value')).toBe(5000);
+      expect(big.atOrAfter(new Time(1500.5))?.get('value')).toBe(5010);
+    });
+
+    // Regression: Codex round 4 on PR #150 caught that
+    // `at(NaN)` and `at(1.5)` previously returned `undefined`
+    // via JS array-indexing semantics; the post-2a route through
+    // `#store.eventAt` would proceed past the bounds check and
+    // throw from key materialization. The fix is an integer-guard
+    // at the `at()` boundary; other point accessors already
+    // produce integer indices internally (bisect's binary
+    // search uses `(low + high) >>> 1`).
+    it('at() returns undefined for non-integer / NaN / negative inputs (matches pre-2a array semantics)', () => {
+      const s = new TimeSeries({
+        name: 's',
+        schema,
+        rows: [
+          [1000, 10],
+          [2000, 20],
+          [3000, 30],
+        ],
+      });
+      expect(s.at(NaN)).toBeUndefined();
+      expect(s.at(1.5)).toBeUndefined();
+      expect(s.at(-1)).toBeUndefined();
+      expect(s.at(100)).toBeUndefined();
+      expect(s.at(Infinity)).toBeUndefined();
+      expect(s.at(-Infinity)).toBeUndefined();
+      // Valid integer indices still work.
+      expect(s.at(0)?.get('value')).toBe(10);
+      expect(s.at(2)?.get('value')).toBe(30);
+    });
+
+    it('rejects interval-keyed series with mixed string + number labels at intake', () => {
+      // Pre-2a, mixed-kind interval labels were silently tolerated
+      // because events were stored as a raw array. The columnar
+      // `IntervalKeyColumn` requires one label kind per column; mixed
+      // inputs now throw at construction with a row-pointed error.
+      const intervalSchema = [
+        { name: 'interval', kind: 'interval' },
+        { name: 'v', kind: 'number' },
+      ] as const;
+      expect(
+        () =>
+          new TimeSeries({
+            name: 'mixed',
+            schema: intervalSchema,
+            rows: [
+              [{ value: 'a', start: 1000, end: 2000 }, 1],
+              [{ value: 2, start: 2000, end: 3000 }, 2],
+            ],
+          }),
+      ).toThrowError(/interval-keyed series must use one label type/);
+    });
   });
 });

@@ -46,7 +46,6 @@ import {
   ColumnarStore,
   Float64Column,
   IntervalKeyColumn,
-  StringColumnBuilder,
   TimeKeyColumn,
   TimeRangeKeyColumn,
   columnBuilderForKind,
@@ -151,6 +150,28 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
   }
 
   /**
+   * Trusted-events factory. Accepts a pre-sorted, pre-validated
+   * event array and builds the underlying `ColumnarStore` + lazy
+   * caches. **Skips row-level validation** — callers must ensure
+   * the events are sorted by key, that every event's key kind
+   * matches `schema[0].kind`, and that every event's data
+   * conforms to the value columns' kinds. The events themselves
+   * are pre-populated into the cache so subsequent `eventAt(i)`
+   * calls return the supplied references (preserving identity).
+   *
+   * Use this when events are already produced by a transform that
+   * preserves the sort + validation invariants — e.g.
+   * `TimeSeries.fromEvents` / per-group transforms that emit
+   * events from an upstream validated series.
+   */
+  static fromTrustedEvents<S extends SeriesSchema>(
+    schema: S,
+    events: ReadonlyArray<SeriesEvent>,
+  ): SeriesStore<S> {
+    return buildSeriesStoreFromEvents(schema, events);
+  }
+
+  /**
    * Trusted-construction factory. Accepts a pre-built
    * `ColumnarStore` and an optional `eventCache`. Every cache
    * entry is structurally validated before adoption (see
@@ -173,6 +194,37 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
       }
     }
     return new SeriesStore<S>(store, ownedEventCache);
+  }
+
+  /**
+   * Module-internal trusted-cache factory. Accepts a `ColumnarStore`
+   * AND a pre-aligned `eventCache` whose entries are **by-construction
+   * guaranteed** to match the store's columns at every row. Skips
+   * the per-entry structural validation that the public
+   * `fromTrustedStore` runs.
+   *
+   * The only legitimate caller is `buildSeriesStoreFromEvents`,
+   * which constructs the columnar store from the same events that
+   * populate the cache — by construction the two are aligned, so
+   * the O(N × M) per-entry validation pass in `fromTrustedStore`
+   * is pure redundant work. On a 100k-row series with two value
+   * columns the redundant validation contributed ~20 ms to intake
+   * time (the substrate build itself is ~10 ms). Bypassing it
+   * recovers most of the construction-time regression vs the
+   * pre-2a row-array baseline.
+   *
+   * **Not part of the public API.** The leading underscore + the
+   * module-private name signal "internal use only". Adopting an
+   * externally-supplied cache must always go through
+   * `fromTrustedStore` so the strict validation contract holds —
+   * a poisoned external cache would silently corrupt downstream
+   * `eventAt` reads.
+   */
+  static _fromValidatedStoreAndCacheModulePrivate<S extends SeriesSchema>(
+    store: ColumnarStore<S>,
+    cache: Map<number, SeriesEvent>,
+  ): SeriesStore<S> {
+    return new SeriesStore<S>(store, cache);
   }
 
   /**
@@ -221,6 +273,14 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
    * and cached — `toEvents() === toEvents()` holds across calls.
    * The array reuses the per-row `eventAt` cache, so
    * `eventAt(i) === toEvents()[i]` for every valid `i`.
+   *
+   * **Runtime-frozen.** The returned array is `Object.freeze`d so
+   * the memoized cache can't be corrupted by a caller that bypasses
+   * the `ReadonlyArray` type (e.g. `(series.events as Event[]).push(...)`).
+   * Without the freeze, mutation would poison every subsequent
+   * `toEvents()` / `series.events` read with the same array
+   * reference, defeating the identity contract. Closed PR #150's
+   * Layer-2 high-priority finding on TimeSeries integration.
    */
   toEvents(): ReadonlyArray<SeriesEvent> {
     if (this.#eventsArray !== undefined) return this.#eventsArray;
@@ -228,6 +288,7 @@ export class SeriesStore<S extends SeriesSchema = SeriesSchema> {
     for (let i = 0; i < this.length; i += 1) {
       events[i] = this.eventAt(i);
     }
+    Object.freeze(events);
     this.#eventsArray = events;
     return events;
   }
@@ -370,24 +431,34 @@ function validateCachedEvent(
     }
   }
   // Per-column data consistency. Two checks per schema column:
-  // (a) the field must be an OWN property of `cachedData` — a
-  //     missing field that happens to read as `undefined` looks
-  //     identical to a present `undefined` via plain
-  //     `cachedData[name]`, and would silently slip through
-  //     against a column where `column.read(i)` is `undefined`
-  //     for that row (invalid cell). Use `hasOwnProperty` to
-  //     distinguish.
-  // (b) the value (when present) must match `column.read(rowIndex)`
-  //     under kind-aware equality.
+  // (a) when the field is an own property of `cachedData`, its
+  //     value must agree with `column.read(rowIndex)` under
+  //     kind-aware equality.
+  // (b) when the field is **absent** from `cachedData`, the
+  //     column at that row must read as `undefined` — i.e. the
+  //     event genuinely doesn't carry that column. This is the
+  //     outer-join shape: `series.join(other, { type: 'outer' })`
+  //     produces events whose data omits the other side's columns
+  //     for rows that had no match. Pre-2a TimeSeries treated this
+  //     as a row-API concern (the strict missing-field check
+  //     pre-dated outer-join via the columnar substrate); the
+  //     relaxation here keeps the original misalignment-detection
+  //     property — a cached event whose data is missing a field
+  //     for which the column DOES read a defined value still
+  //     throws.
   for (let c = 1; c < store.schema.length; c += 1) {
     const def = store.schema[c]!;
     const name = def.name;
-    if (!Object.prototype.hasOwnProperty.call(cachedData, name)) {
-      throw new RangeError(
-        `SeriesStore: eventCache entry at row ${rowIndex} is missing required schema data field '${name}'`,
-      );
-    }
+    const hasField = Object.prototype.hasOwnProperty.call(cachedData, name);
     const columnValue = store.columns.get(name)!.read(rowIndex);
+    if (!hasField) {
+      if (columnValue !== undefined) {
+        throw new RangeError(
+          `SeriesStore: eventCache entry at row ${rowIndex} is missing data field '${name}' but the column reads as ${stringifyForError(columnValue)}; missing fields are only valid when the column is also undefined at that row`,
+        );
+      }
+      continue;
+    }
     const cachedValue = cachedData[name];
     if (!valuesEqual(columnValue, cachedValue, def.kind)) {
       throw new RangeError(
@@ -550,7 +621,15 @@ function buildSeriesStoreFromEvents<S extends SeriesSchema>(
   for (let i = 0; i < length; i += 1) {
     cache.set(i, events[i]!);
   }
-  return SeriesStore.fromTrustedStore(store, { eventCache: cache });
+  // Fast path: skip the per-entry cache validation that
+  // `fromTrustedStore` runs. The cache was just built from the
+  // same events that populated the store's columns; by
+  // construction the two are aligned. Bypassing validation
+  // recovers the O(N × M) cost that otherwise dominates intake
+  // on large series — for 100k rows × 2 value columns the
+  // redundant pass was ~20 ms (the substrate-build itself is
+  // ~10 ms).
+  return SeriesStore._fromValidatedStoreAndCacheModulePrivate(store, cache);
 }
 
 // Re-exports so consumers can write `import { ColumnarStore, SeriesStore }

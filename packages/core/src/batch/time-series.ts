@@ -93,6 +93,7 @@ import { Event } from '../core/event.js';
 import { PartitionedTimeSeries } from './partitioned-time-series.js';
 import type { BatchSampleStrategy } from '../sequence/sample.js';
 import { Sequence } from '../sequence/sequence.js';
+import { SeriesStore } from '../live/series-store.js';
 import { validateAndNormalize } from './validate.js';
 import type { DurationInput } from '../core/duration.js';
 import { parseDuration } from '../core/duration.js';
@@ -673,10 +674,42 @@ function prepareSeriesForJoin<T extends SeriesTuple>(
  * series.align(Sequence.every("1m")); // uses the series range over an epoch-anchored minute grid
  * ```
  */
+/**
+ * Module-private sentinel used to route already-built `SeriesStore`
+ * instances through the public constructor without re-validating.
+ * The Symbol is unforgeable — external callers can't construct a
+ * `TimeSeries` with a `_trustedStore` because they can't reach the
+ * Symbol's identity. This replaces the `Object.create(prototype)`
+ * pattern that used to bypass the constructor (incompatible with ES
+ * private fields, which are installed only when a constructor
+ * actually runs).
+ */
+const TRUSTED_STORE_SENTINEL: unique symbol = Symbol(
+  'TimeSeries.trustedStoreSentinel',
+);
+
+/**
+ * Internal extension of `TimeSeriesInput` carrying a pre-built
+ * `SeriesStore`. Recognized by the constructor via the sentinel
+ * Symbol; recognized only inside this module.
+ */
+type TrustedStoreInput<S extends SeriesSchema> = {
+  readonly name: string;
+  readonly schema: S;
+  readonly [TRUSTED_STORE_SENTINEL]: SeriesStore<S>;
+};
+
 export class TimeSeries<S extends SeriesSchema> {
   readonly name: string;
   readonly schema: S;
-  readonly events: ReadonlyArray<EventForSchema<S>>;
+  /**
+   * The columnar-backed row-API store. Holds the validated key
+   * column, value columns, and the lazy `Map<rowIndex, Event>` cache
+   * that keeps `event` identity stable across `at(i)` / `events[i]`
+   * / iteration. Replaces the previous `readonly events: Event[]`
+   * field (sub-step 2a of the columnar TimeSeries integration).
+   */
+  readonly #store: SeriesStore<S>;
 
   /**
    * Example: `TimeSeries.joinMany([cpu.align(seq), memory.align(seq), errors.align(seq)])`.
@@ -860,8 +893,27 @@ export class TimeSeries<S extends SeriesSchema> {
   /** Example: `new TimeSeries({ name, schema, rows })`. Creates an immutable time series from a schema and row-oriented input data. */
   constructor(input: TimeSeriesInput<S>) {
     this.name = input.name;
-    this.schema = Object.freeze(input.schema.slice()) as S;
-    this.events = validateAndNormalize(input);
+    // Trusted-store fast path. Only this module's
+    // `#fromTrustedEvents` static can produce inputs carrying the
+    // sentinel Symbol; external callers always land in the
+    // validating branch below.
+    const trustedInput = input as unknown as Partial<TrustedStoreInput<S>>;
+    const trustedStore = trustedInput[TRUSTED_STORE_SENTINEL];
+    if (trustedStore !== undefined) {
+      this.schema = input.schema;
+      this.#store = trustedStore;
+    } else {
+      this.schema = Object.freeze(input.schema.slice()) as S;
+      // `validateAndNormalize` produces the sorted, normalized event
+      // array; `SeriesStore.fromValidatedRows` re-runs the same path
+      // inside, building the columnar substrate + pre-populating
+      // the event cache so identity is preserved. We delegate to it
+      // rather than calling `validateAndNormalize` directly.
+      this.#store = SeriesStore.fromValidatedRows(
+        this.schema,
+        input.rows,
+      ) as SeriesStore<S>;
+    }
     Object.freeze(this);
   }
 
@@ -944,29 +996,57 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
-   * Builds a series from event data that has already been validated and ordered by the caller.
+   * Builds a series from event data that has already been validated
+   * and ordered by the caller. Routes through the regular constructor
+   * via the `TRUSTED_STORE_SENTINEL` sentinel — necessary because ES
+   * private fields (the `#store` slot) can only be installed by a
+   * running constructor; the previous `Object.create(prototype)` shape
+   * is no longer viable.
    *
-   * This is intentionally private and only used by transforms that preserve the existing event
-   * order and normalized key invariants.
+   * Intentionally private. Callers are transforms that preserve the
+   * existing event order and normalized key invariants.
    */
   static #fromTrustedEvents<NextSchema extends SeriesSchema>(
     name: string,
     schema: NextSchema,
     events: ReadonlyArray<EventForSchema<NextSchema>>,
   ): TimeSeries<NextSchema> {
-    const series = Object.create(TimeSeries.prototype) as {
-      name: string;
-      schema: NextSchema;
-      events: ReadonlyArray<EventForSchema<NextSchema>>;
+    const frozenSchema = Object.freeze(schema.slice()) as NextSchema;
+    const store = SeriesStore.fromTrustedEvents(
+      frozenSchema,
+      events as unknown as ReadonlyArray<
+        Parameters<typeof SeriesStore.fromTrustedEvents>[1][number]
+      >,
+    ) as SeriesStore<NextSchema>;
+    const trustedInput: TrustedStoreInput<NextSchema> = {
+      name,
+      schema: frozenSchema,
+      [TRUSTED_STORE_SENTINEL]: store,
     };
+    return new TimeSeries<NextSchema>(
+      trustedInput as unknown as TimeSeriesInput<NextSchema>,
+    );
+  }
 
-    series.name = name;
-    series.schema = Object.freeze(schema.slice()) as NextSchema;
-    series.events = Object.freeze(events.slice()) as ReadonlyArray<
-      EventForSchema<NextSchema>
+  /**
+   * Example: `series.events`. Returns the full event array.
+   *
+   * Lazy under the hood: the array is built once by walking the
+   * columnar store's per-row event cache and is memoized inside the
+   * store so `series.events === series.events` holds (preserving
+   * the identity invariant prior code relied on). Same per-row
+   * identity as `series.at(i)` — `series.at(i) === series.events[i]`
+   * for every valid `i`.
+   *
+   * Replaces the previous `readonly events` field (sub-step 2a). The
+   * cast widens `SeriesEvent` (the store's event type) to
+   * `EventForSchema<S>` (TimeSeries's narrower per-schema type);
+   * structurally identical — both are `Event<EventKey, Schema>`.
+   */
+  get events(): ReadonlyArray<EventForSchema<S>> {
+    return this.#store.toEvents() as unknown as ReadonlyArray<
+      EventForSchema<S>
     >;
-
-    return Object.freeze(series) as TimeSeries<NextSchema>;
   }
 
   /** Example: `series.firstColumnKind`. Returns the first-column kind from the series schema. */
@@ -991,9 +1071,29 @@ export class TimeSeries<S extends SeriesSchema> {
     return toObjects(this.schema, this.events);
   }
 
-  /** Example: `series.at(0)`. Returns the event at the supplied zero-based position, if present. */
+  /**
+   * Example: `series.at(0)`. Returns the event at the supplied
+   * zero-based position, if present.
+   *
+   * Routes through the columnar store's per-row `eventAt` cache
+   * directly (O(1) materialization for the requested row) rather
+   * than indexing `this.events` (which would force a full lazy
+   * materialization of every row in the series on first call).
+   * The cache's identity invariant means `series.at(i) ===
+   * series.events[i]` holds whenever both are accessed.
+   */
   at(index: number): EventForSchema<S> | undefined {
-    return this.events[index];
+    // Match pre-2a array-indexing semantics: non-integer or NaN
+    // inputs return undefined rather than throwing downstream from
+    // `#store.eventAt`. `this.events[NaN]` returned undefined per
+    // JS array semantics (key coercion + miss); the direct route
+    // to `#store.eventAt(NaN)` would proceed past the bounds check
+    // and attempt key materialization at the invalid row. Closed
+    // Codex round 4's medium finding on PR #150.
+    if (!Number.isInteger(index) || index < 0 || index >= this.#store.length) {
+      return undefined;
+    }
+    return this.#store.eventAt(index) as unknown as EventForSchema<S>;
   }
 
   /** Example: `series.first()`. Returns the first event in the series, if present. */
@@ -1003,9 +1103,8 @@ export class TimeSeries<S extends SeriesSchema> {
 
   /** Example: `series.last()`. Returns the last event in the series, if present. */
   last(): EventForSchema<S> | undefined {
-    return this.events.length === 0
-      ? undefined
-      : this.events[this.events.length - 1];
+    const n = this.#store.length;
+    return n === 0 ? undefined : this.at(n - 1);
   }
 
   /** Example: `series.map(nextSchema, event => event)`. Maps each event into a new typed schema and returns a new series. */
@@ -2306,6 +2405,24 @@ export class TimeSeries<S extends SeriesSchema> {
    * internal or leading gap (trailing has no next value). `"zero"`
    * and literal fills work on any gap that fits the size caps.
    *
+   * **Kind-sensitive strategies.** `"zero"` and `"linear"` are
+   * numeric-only — they're only meaningful for `kind: 'number'`
+   * columns. When applied via the bare-string form
+   * (`fill('zero')` / `fill('linear')`) on a mixed-kind schema,
+   * non-numeric columns silently skip — their gaps stay unfilled
+   * because the strategy has no kind-appropriate value to place
+   * there. The user's natural intent for `fill('zero')` on a
+   * `{ metric: number, host: string }` series is "fill numeric
+   * gaps with 0", not "fill every gap with the literal number 0
+   * regardless of column kind". To fill non-numeric gaps too,
+   * use the object form with a per-column kind-appropriate
+   * strategy, e.g. `fill({ value: 'zero', host: 'hold' })` or
+   * `fill({ host: 'unknown' })` (literal). `"hold"` / `"bfill"`
+   * are kind-agnostic (they copy whatever value is at the
+   * neighbor); `"literal"` carries whatever value the user
+   * supplies, so a kind-mismatched literal surfaces as a
+   * columnar-substrate error at intake.
+   *
    * **Multi-entity series:** fill walks one chronological event
    * sequence — `host-A`'s missing cell would `linear`-interpolate or
    * `hold`-carry against `host-B`'s neighboring value. On a series
@@ -2322,6 +2439,16 @@ export class TimeSeries<S extends SeriesSchema> {
     }
 
     const colNames = this.schema.slice(1).map((c) => c.name);
+    // Per-column kind lookup, used by the kind-sensitive fill cases
+    // (e.g. `'zero'` only applies to numeric columns — filling a
+    // string column with the number `0` would emit a kind-mismatched
+    // cell that the columnar substrate rejects at `SeriesStore`
+    // construction). Pre-columnar behavior silently produced
+    // type-broken events; the columnar layer surfaces that.
+    const colKinds = new Map<string, string>();
+    for (let i = 1; i < this.schema.length; i += 1) {
+      colKinds.set(this.schema[i]!.name, this.schema[i]!.kind);
+    }
     const specs: Map<string, ResolvedFillSpec> = new Map();
 
     if (typeof strategy === 'string') {
@@ -2343,6 +2470,22 @@ export class TimeSeries<S extends SeriesSchema> {
         }
       }
     }
+
+    // **Kind-sensitive strategy contract (documented in JSDoc):**
+    // `'zero'` and `'linear'` are numeric-only operations — they're
+    // meaningful only for `kind: 'number'` columns. When applied
+    // via a bare-string strategy (`fill('zero')`) on a mixed-kind
+    // schema, non-numeric columns are silently left as-is rather
+    // than throwing or producing kind-broken cells. Users who want
+    // to fill non-numeric gaps too can use the object form
+    // (`fill({ value: 'zero', host: 'hold' })`) to pick a
+    // kind-appropriate strategy per column. The silent-skip
+    // matches users' natural intent — `fill('zero')` on a
+    // {metric: number, host: string} series means "fill numeric
+    // gaps with 0", not "fill every gap with the number 0
+    // regardless of column kind". Codex round 2 finding on PR
+    // #150 surfaced the question; reasoning above documents the
+    // chosen semantics.
 
     const limit = options?.limit;
     const maxGapMs =
@@ -2440,6 +2583,11 @@ export class TimeSeries<S extends SeriesSchema> {
             break;
           }
           case 'zero': {
+            // `'zero'` is numeric-only — see the kind-sensitive
+            // strategy contract documented at the top of the
+            // method. Non-numeric columns silently skip; their
+            // gaps stay unfilled.
+            if (colKinds.get(name) !== 'number') break;
             for (let j = start; j < end; j++) col[j] = 0;
             break;
           }
@@ -2448,6 +2596,11 @@ export class TimeSeries<S extends SeriesSchema> {
             break;
           }
           case 'linear': {
+            // `'linear'` is numeric-only — see the kind-sensitive
+            // strategy contract documented at the top of the
+            // method. Non-numeric columns silently skip; their
+            // gaps stay unfilled.
+            if (colKinds.get(name) !== 'number') break;
             const before = col[start - 1] as number;
             const after = col[end] as number;
             const t0 = times[start - 1]!;
@@ -3424,52 +3577,81 @@ export class TimeSeries<S extends SeriesSchema> {
     return TimeSeries.#fromTrustedEvents(this.name, this.schema, reservoir);
   }
 
-  /** Example: `series.find(event => event.get("value") > 0)`. Returns the first event that matches the predicate, if any. */
+  /**
+   * Example: `series.find(event => event.get("value") > 0)`.
+   * Returns the first event that matches the predicate, if any.
+   *
+   * Routes per-row through `#store.eventAt(i)` — stops at the
+   * first match without forcing materialization of the rest. The
+   * cache populates rows on demand, so a predicate that hits
+   * early in a 10M-row series only pays for the rows it touches.
+   */
   find(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): EventForSchema<S> | undefined {
-    return this.events.find((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (predicate(event, i)) return event;
+    }
+    return undefined;
   }
 
   /** Example: `series.some(event => event.get("healthy"))`. Returns `true` when at least one event matches the predicate. */
   some(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): boolean {
-    return this.events.some((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (predicate(event, i)) return true;
+    }
+    return false;
   }
 
   /** Example: `series.every(event => event.get("healthy"))`. Returns `true` when every event matches the predicate. */
   every(
     predicate: (event: EventForSchema<S>, index: number) => boolean,
   ): boolean {
-    return this.events.every((event, index) => predicate(event, index));
+    const n = this.#store.length;
+    for (let i = 0; i < n; i += 1) {
+      const event = this.#store.eventAt(i) as unknown as EventForSchema<S>;
+      if (!predicate(event, i)) return false;
+    }
+    return true;
   }
 
   /** Example: `series.includesKey(new Time(Date.now()))`. Returns `true` when the series contains an event with an exactly matching key. */
   includesKey(key: KeyLike): boolean {
     const normalizedKey = toKey(key);
     const index = this.bisect(normalizedKey);
-    return (
-      index < this.events.length &&
-      this.events[index]!.key().equals(normalizedKey)
-    );
+    if (index >= this.#store.length) return false;
+    // `keyAt` is cheap — only resolves the key column buffer, not
+    // the full event materialization.
+    return this.#store.keyAt(index).equals(normalizedKey);
   }
 
-  /** Example: `series.bisect(new Time(Date.now()))`. Returns the insertion index for the supplied key in the ordered event sequence. */
+  /**
+   * Example: `series.bisect(new Time(Date.now()))`. Returns the
+   * insertion index for the supplied key in the ordered event
+   * sequence.
+   *
+   * Walks the columnar key buffer via `#store.keyAt(i)` rather
+   * than materializing events for the binary-search probes.
+   * O(log N) keys touched; no Event allocations.
+   */
   bisect(key: KeyLike): number {
     const normalizedKey = toKey(key);
     let low = 0;
-    let high = this.events.length;
-
+    let high = this.#store.length;
     while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      if (this.events[mid]!.key().compare(normalizedKey) < 0) {
+      const mid = (low + high) >>> 1;
+      if (this.#store.keyAt(mid).compare(normalizedKey) < 0) {
         low = mid + 1;
       } else {
         high = mid;
       }
     }
-
     return low;
   }
 
@@ -3477,20 +3659,16 @@ export class TimeSeries<S extends SeriesSchema> {
   atOrBefore(key: KeyLike): EventForSchema<S> | undefined {
     const normalizedKey = toKey(key);
     const index = this.bisect(normalizedKey);
-
-    if (
-      index < this.events.length &&
-      this.events[index]!.key().equals(normalizedKey)
-    ) {
-      return this.events[index];
+    const n = this.#store.length;
+    if (index < n && this.#store.keyAt(index).equals(normalizedKey)) {
+      return this.at(index);
     }
-
-    return index === 0 ? undefined : this.events[index - 1];
+    return index === 0 ? undefined : this.at(index - 1);
   }
 
   /** Example: `series.atOrAfter(new Time(Date.now()))`. Returns the event with the exact key or the nearest later event, if any. */
   atOrAfter(key: KeyLike): EventForSchema<S> | undefined {
-    return this.events[this.bisect(key)];
+    return this.at(this.bisect(key));
   }
 
   /** Example: `series.timeRange()`. Returns the overall temporal extent of the series, if the series is not empty. */
@@ -3999,21 +4177,35 @@ export class TimeSeries<S extends SeriesSchema> {
     });
   }
 
-  /** Example: `series.length`. Returns the number of events in the series. */
+  /**
+   * Example: `series.length`. Returns the number of events in the
+   * series. Delegates to the columnar store (avoids materializing
+   * the lazy `events` array just to read its length).
+   */
   get length(): number {
-    return this.events.length;
+    return this.#store.length;
   }
 
-  /** Example: `for (const event of series) { ... }`. Iterates events in order. */
+  /**
+   * Example: `for (const event of series) { ... }`. Iterates events in order.
+   *
+   * Pulls one event at a time via `#store.eventAt(i)` rather than
+   * materializing the full events array up front. A `break` or
+   * early-exit inside the loop only pays for the rows it touched.
+   * The store's per-row cache means re-iteration (or a subsequent
+   * `series.events` call) reuses the same Event references.
+   */
   [Symbol.iterator](): Iterator<EventForSchema<S>> {
     let index = 0;
-    const events = this.events;
+    const store = this.#store;
     return {
       next(): IteratorResult<EventForSchema<S>> {
-        if (index < events.length) {
-          return { value: events[index++]!, done: false };
+        if (index < store.length) {
+          const event = store.eventAt(index) as unknown as EventForSchema<S>;
+          index += 1;
+          return { value: event, done: false };
         }
-        return { value: undefined as any, done: true };
+        return { value: undefined as unknown as EventForSchema<S>, done: true };
       },
     };
   }
