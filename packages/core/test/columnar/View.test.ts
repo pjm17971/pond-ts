@@ -429,28 +429,29 @@ describe('Composed view + schema ops', () => {
 /* Negative paths — out-of-range / invalid indices                             */
 /* -------------------------------------------------------------------------- */
 
-describe('withRowSelection — invalid index discipline', () => {
-  it('Time keys: out-of-range index fills row with finite 0 (benign — callers must produce valid indices)', () => {
-    // Time keys accept 0 as a finite timestamp. The gathered "row"
-    // has begin=0; value column marks the cell invalid via the
-    // sliceByIndices validity machinery. Documented expectation:
-    // callers must produce valid indices. The test confirms no
-    // crash + that the data path correctly reports the cell as
-    // missing.
+describe('withRowSelection — invalid index discipline (eager validation)', () => {
+  // Codex round-1 finding: out-of-range indices were silently
+  // 0-filled into Time/TimeRange buffers, producing phantom epoch
+  // rows. A later `withColumnsSelected([])` would erase value-column
+  // validity that might have surfaced the bug, allowing the
+  // corruption to slip through. Fix: validate every index in
+  // [0, source.length) before any slicing.
+
+  it('Time keys: out-of-range index throws RangeError eagerly', () => {
     const source = makeBasicStore();
-    const view = withRowSelection(source, Int32Array.of(0, 99));
-    expect(view.length).toBe(2);
-    expect(view.beginAt(1)).toBe(0);
-    expect(view.valueAt(1, 'value')).toBeUndefined();
+    expect(() => withRowSelection(source, Int32Array.of(0, 99))).toThrow(
+      /indices\[1\] = 99 is out of range for source length 5/,
+    );
   });
 
-  it('Interval keys (string labels): out-of-range index throws at construction via label-defined check (L2 round-1 finding)', () => {
-    // For interval-keyed stores, IntervalKeyColumn.sliceByIndices
-    // gathers labels via the underlying StringColumn's gather, which
-    // marks out-of-range slots invalid. The downstream constructor's
-    // "every row must have a defined label" check then throws —
-    // a stricter invariant than Time keys, where 0 is finite and
-    // benign. This test pins that asymmetry.
+  it('Time keys: negative index throws RangeError eagerly', () => {
+    const source = makeBasicStore();
+    expect(() => withRowSelection(source, Int32Array.of(-1, 0))).toThrow(
+      /indices\[0\] = -1 is out of range/,
+    );
+  });
+
+  it('Interval keys: out-of-range index throws eagerly (same path as Time keys)', () => {
     const schema = [
       { name: 'bucket', kind: 'interval' },
       { name: 'count', kind: 'number' },
@@ -468,27 +469,77 @@ describe('withRowSelection — invalid index discipline', () => {
       new Map([['count', counts]]),
     );
     expect(() => withRowSelection(source, Int32Array.of(0, 99))).toThrow(
-      /row 1 has no label/,
+      /indices\[1\] = 99 is out of range/,
     );
   });
 
-  it('Interval keys (numeric labels): out-of-range index throws at construction via label-defined check', () => {
+  it('key-only store (after withColumnsSelected([])) still throws on out-of-range index', () => {
+    // This is the specific corruption path Codex named: a key-only
+    // store has no value-column validity that could surface a bad
+    // index, so silent 0-fill would have been catastrophic. The
+    // eager validation catches it at the view level.
+    const source = makeBasicStore();
+    const keyOnly = withColumnsSelected(source, []);
+    expect(() => withRowSelection(keyOnly, Int32Array.of(0, 99))).toThrow(
+      /indices\[1\] = 99 is out of range/,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Unsafe column names (Codex round-1 finding)                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('Schema-producing ops reject unsafe column names', () => {
+  // The row-API adapter's `data[name] = value` (in
+  // SeriesStore.eventAt's buildRowData) sets the prototype slot
+  // rather than creating an own property when `name` matches
+  // `__proto__`, `prototype`, or `constructor`. That breaks the
+  // eventCache's exact-schema-field-set validation. Reject these
+  // names at the framework boundary.
+
+  it('withColumnsRenamed rejects __proto__ as a target name', () => {
+    const source = makeBasicStore();
+    expect(() => withColumnsRenamed(source, { value: '__proto__' })).toThrow(
+      /'__proto__'.*reserved/,
+    );
+  });
+
+  it('withColumnsRenamed rejects prototype as a target name', () => {
+    const source = makeBasicStore();
+    expect(() => withColumnsRenamed(source, { value: 'prototype' })).toThrow(
+      /'prototype'.*reserved/,
+    );
+  });
+
+  it('withColumnsRenamed rejects constructor as a target name', () => {
+    const source = makeBasicStore();
+    expect(() => withColumnsRenamed(source, { value: 'constructor' })).toThrow(
+      /'constructor'.*reserved/,
+    );
+  });
+
+  it('withColumnAppended rejects __proto__ as a new name', () => {
+    const source = makeBasicStore();
+    const col = new Float64Column(Float64Array.of(1, 2, 3, 4, 5), 5);
+    expect(() => withColumnAppended(source, '__proto__', col)).toThrow(
+      /'__proto__'.*reserved/,
+    );
+  });
+
+  it('ColumnarStore.fromTrustedStore rejects __proto__ in the source schema (centralized check)', () => {
     const schema = [
-      { name: 'bucket', kind: 'interval' },
-      { name: 'count', kind: 'number' },
+      { name: 'time', kind: 'time' },
+      { name: '__proto__', kind: 'number' },
     ] as const;
-    const begin = Float64Array.of(0, 100);
-    const end = Float64Array.of(50, 200);
-    const labels = new Float64Column(Float64Array.of(42, 7), 2);
-    const keys = new IntervalKeyColumn(begin, end, labels, 2);
-    const counts = new Float64Column(Float64Array.of(1, 2), 2);
-    const source = ColumnarStore.fromTrustedStore(
-      schema,
-      keys,
-      new Map([['count', counts]]),
-    );
-    expect(() => withRowSelection(source, Int32Array.of(0, 99))).toThrow(
-      /row 1 has no label/,
-    );
+    const keys = timeKeyColumnFromArray([1, 2]);
+    const value = new Float64Column(Float64Array.of(1, 2), 2);
+    expect(() =>
+      ColumnarStore.fromTrustedStore(
+        schema,
+        keys,
+        new Map([['__proto__', value]]),
+      ),
+    ).toThrow(/'__proto__'.*reserved/);
   });
 });

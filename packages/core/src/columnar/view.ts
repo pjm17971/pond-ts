@@ -42,31 +42,36 @@ import type { AnyColumnKind, ColumnDef, ColumnSchema } from './types.js';
  * keys and every value column are gathered through
  * `sliceByIndices`. Schema is preserved.
  *
- * **Out-of-range index discipline — kind-asymmetric.**
+ * **Index validation.** Every entry in `indices` must be in the
+ * half-open range `[0, source.length)`. Out-of-range indices
+ * throw `RangeError` at the call site, before any slicing
+ * happens. This is a uniform safety floor across all key kinds
+ * — Time keys would otherwise silently produce `Time(0)` epoch
+ * rows for bad indices, and a downstream `withColumnsSelected([])`
+ * would erase the value-column validity that might have flagged
+ * the bug.
  *
- * - `time` / `timeRange` keys: out-of-range source indices
- *   produce a row with `begin = end = 0` (a finite timestamp).
- *   The benign behavior matches the underlying typed-array
- *   gather; the corresponding value column reports the row as
- *   missing via its validity bitmap, but the key column does
- *   not throw.
- * - `interval` keys: out-of-range source indices produce a row
- *   whose label is undefined (from the labels column's gather
- *   marking the slot invalid). The downstream constructor's
- *   "every row must have a defined label" check then **throws
- *   `RangeError`** at construction — a stricter invariant than
- *   the Time/TimeRange paths.
- *
- * Callers should produce `indices` from filter / range-query
- * primitives that emit only valid source rows; relying on
- * out-of-range behavior for any key kind is undefined territory.
- *
- * Cost: O(K) gather per column where K is `indices.length`.
+ * Cost: O(K) validate + O(K) gather per column where K is
+ * `indices.length`.
  */
 export function withRowSelection<S extends ColumnSchema>(
   source: ColumnarStore<S>,
   indices: Int32Array,
 ): ColumnarStore<S> {
+  // Eager index bounds check. Catches out-of-range indices before
+  // they manufacture phantom epoch rows (Time keys silently fill
+  // with 0 via `sliceByIndices`; the constructor would then accept
+  // them as finite timestamps). Closes the silent-data-corruption
+  // path under `withColumnsSelected([])` where no value-column
+  // validity could surface the bad index.
+  for (let i = 0; i < indices.length; i += 1) {
+    const idx = indices[i]!;
+    if (idx < 0 || idx >= source.length) {
+      throw new RangeError(
+        `withRowSelection: indices[${i}] = ${idx} is out of range for source length ${source.length}`,
+      );
+    }
+  }
   const newKeys = sliceKeyColumnByIndices(source.keys, indices);
   const newColumns = new Map<string, Column>();
   for (let c = 1; c < source.schema.length; c += 1) {
