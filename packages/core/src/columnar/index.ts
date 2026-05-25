@@ -48,6 +48,13 @@ export {
 export { concatSorted } from './concat.js';
 
 export {
+  type ColumnarRingBufferOptions,
+  ColumnarRingBuffer,
+} from './ring-buffer.js';
+
+export { scatterByPartition } from './scatter.js';
+
+export {
   DICT_ENCODE_MIN_LENGTH,
   DICT_ENCODE_RATIO,
   StringColumn,
