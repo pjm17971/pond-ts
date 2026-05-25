@@ -122,10 +122,22 @@ export function withColumnsRenamed<S extends ColumnSchema>(
   }
   // Validate every source column in `renames` actually exists and
   // every target name is unique within the new schema.
+  //
+  // **Own-property lookups.** `renames[name]` via bracket access
+  // walks `Object.prototype`, so a source column named `toString`
+  // / `hasOwnProperty` / `valueOf` / etc. with an empty
+  // `renames: {}` would pick up the inherited function as the
+  // "rename target" and silently corrupt the schema. Every lookup
+  // routes through `hasOwnProperty.call` to bypass the prototype
+  // chain.
+  const has = (k: string): boolean =>
+    Object.prototype.hasOwnProperty.call(renames, k);
+  const lookupRename = (name: string): string =>
+    has(name) ? renames[name]! : name;
   const seenTargets = new Set<string>([keyName]);
   for (let i = 1; i < source.schema.length; i += 1) {
     const name = source.schema[i]!.name;
-    const renamed = renames[name] !== undefined ? renames[name]! : name;
+    const renamed = lookupRename(name);
     if (seenTargets.has(renamed)) {
       throw new RangeError(
         `withColumnsRenamed: target column name '${renamed}' collides with an existing column`,
@@ -156,8 +168,7 @@ export function withColumnsRenamed<S extends ColumnSchema>(
       newSchema.push(def);
       continue;
     }
-    const renamed =
-      renames[def.name] !== undefined ? renames[def.name]! : def.name;
+    const renamed = lookupRename(def.name);
     newSchema.push({ name: renamed, kind: def.kind });
     newColumns.set(renamed, source.columns.get(def.name)!);
   }

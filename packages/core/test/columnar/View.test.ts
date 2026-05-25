@@ -543,3 +543,63 @@ describe('Schema-producing ops reject unsafe column names', () => {
     ).toThrow(/'__proto__'.*reserved/);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* withColumnsRenamed inherited-property lookups (Codex round-2 finding)       */
+/* -------------------------------------------------------------------------- */
+
+describe('withColumnsRenamed handles Object.prototype-name source columns safely', () => {
+  // Bug pre-fix: `renames[name]` via bracket access walks
+  // Object.prototype, so a source column named 'toString' with an
+  // empty rename map {} returned Object.prototype.toString as the
+  // "rename target." Fixed with hasOwnProperty.call. These tests
+  // pin the safe behavior for the canonical inherited-name cases.
+
+  function makeStoreWithName(colName: string) {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: colName, kind: 'number' },
+    ] as const;
+    const keys = timeKeyColumnFromArray([1, 2, 3]);
+    const value = new Float64Column(Float64Array.of(10, 20, 30), 3);
+    return ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([[colName, value]]),
+    );
+  }
+
+  it("no-op rename {} on a 'toString'-named column preserves the schema and data", () => {
+    const source = makeStoreWithName('toString');
+    const renamed = withColumnsRenamed(source, {});
+    expect(renamed.schema[1]!.name).toBe('toString');
+    expect(renamed.valueAt(0, 'toString')).toBe(10);
+    expect(renamed.valueAt(2, 'toString')).toBe(30);
+  });
+
+  it("no-op rename on 'hasOwnProperty'-named column", () => {
+    const source = makeStoreWithName('hasOwnProperty');
+    const renamed = withColumnsRenamed(source, {});
+    expect(renamed.schema[1]!.name).toBe('hasOwnProperty');
+    expect(renamed.valueAt(1, 'hasOwnProperty')).toBe(20);
+  });
+
+  it("no-op rename on 'valueOf'-named column", () => {
+    const source = makeStoreWithName('valueOf');
+    const renamed = withColumnsRenamed(source, {});
+    expect(renamed.schema[1]!.name).toBe('valueOf');
+  });
+
+  it("no-op rename on 'isPrototypeOf'-named column", () => {
+    const source = makeStoreWithName('isPrototypeOf');
+    const renamed = withColumnsRenamed(source, {});
+    expect(renamed.schema[1]!.name).toBe('isPrototypeOf');
+  });
+
+  it('explicit rename of an inherited-name column still works', () => {
+    const source = makeStoreWithName('toString');
+    const renamed = withColumnsRenamed(source, { toString: 'stringified' });
+    expect(renamed.schema[1]!.name).toBe('stringified');
+    expect(renamed.valueAt(0, 'stringified')).toBe(10);
+  });
+});
