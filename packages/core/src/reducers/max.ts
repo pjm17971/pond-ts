@@ -9,6 +9,10 @@ export const max: ReducerDef = {
       : numeric.reduce((a, b) => (a >= b ? a : b));
   },
   reduceColumn(col) {
+    // **NaN parity with row API.** Mirror the row-API expression
+    //   numeric.reduce((a, b) => a >= b ? a : b)
+    // exactly. See `min.ts` for the full rationale. Closed Codex
+    // review finding on PR #153.
     const values = col.values;
     const validity = col.validity;
     let hi: number | undefined;
@@ -17,7 +21,7 @@ export const max: ReducerDef = {
       hi = values[0]!;
       for (let i = 1; i < col.length; i += 1) {
         const v = values[i]!;
-        if (v > hi) hi = v;
+        hi = hi >= v ? hi : v;
       }
       return hi;
     }
@@ -25,7 +29,7 @@ export const max: ReducerDef = {
     for (let i = 0; i < col.length; i += 1) {
       if ((bits[i >> 3]! & (1 << (i & 7))) === 0) continue;
       const v = values[i]!;
-      if (hi === undefined || v > hi) hi = v;
+      hi = hi === undefined ? v : hi >= v ? hi : v;
     }
     return hi;
   },
