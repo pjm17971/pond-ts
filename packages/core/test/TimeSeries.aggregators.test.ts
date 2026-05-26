@@ -100,6 +100,37 @@ describe('stdev', () => {
   it('returns undefined for empty series', () => {
     expect(makeEmpty().reduce('value', 'stdev')).toBeUndefined();
   });
+
+  // Regression: L2 review on PR #153 (step 3 reducer fast-path)
+  // caught that the column path's one-pass `sq/n − mean²` formula
+  // suffers catastrophic cancellation on near-equal large-magnitude
+  // values — diverging from the row-API two-pass formula. Both
+  // paths now use two-pass; this test pins the algorithmic recovery
+  // for values where one-pass would have returned 0 (or NaN without
+  // a clamp) vs the correct ~1.118 from two-pass.
+  it('stdev is numerically stable on near-equal large-magnitude values', () => {
+    const s = new TimeSeries({
+      name: 'large',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'value', kind: 'number' },
+      ] as const,
+      rows: [
+        [0, 1e10],
+        [1000, 1e10 + 1],
+        [2000, 1e10 + 2],
+        [3000, 1e10 + 3],
+      ],
+    });
+    // Inputs are exactly representable in float64 (well under 2^53).
+    // True population stdev of {0, 1, 2, 3} = sqrt(5/4) ≈ 1.118; the
+    // 1e10 shift is mathematically a no-op (stdev is shift-invariant)
+    // but `sq/n - mean*mean` cancels catastrophically — at 1e10 the
+    // formula yields exactly 0. The two-pass `Σ(v - mean)²/n` recovers
+    // the exact answer.
+    const result = s.reduce('value', 'stdev') as number;
+    expect(result).toBeCloseTo(Math.sqrt(5 / 4), 10);
+  });
 });
 
 // ── percentile ──────────────────────────────────────────────
