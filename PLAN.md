@@ -138,6 +138,7 @@ the chart adapter can't consume the substrate cleanly, the
 back-half of the columnar roadmap is mis-targeted.
 
 The pond-ts side already shipped:
+
 - **Spike PR #152** — `series.column(name)` + `series.keyColumn()`
   experimental accessors. Measured **~9× faster per-frame walk**
   via typed arrays vs the row-API path at N=1M.
@@ -4179,35 +4180,35 @@ See the RFC for the full argument.
    - **1g — Chunked value columns + `concatSorted` + `materialize`
      compaction.** ✅ Shipped (PR #148, merged 2026-05-25). 62
      framework tests after Codex round-1 fixes (42 `ChunkedColumn`
-     + 20 `Concat`); framework total ~433 tests.
-     Four chunked value-column variants
-     (`ChunkedFloat64Column`, `ChunkedBooleanColumn`,
-     `ChunkedStringColumn`, `ChunkedArrayColumn`) — each holds a
-     `ReadonlyArray<Plain>` of chunks + `chunkOffsets: Int32Array`
-     (prefix sum), eagerly computes an aggregate validity bitmap
-     (preserving the "no bitmap ⇒ all defined" convention), and
-     implements the shared `Column` interface
-     (`read`/`scan`/`sliceByRange`/`sliceByIndices`). The `Column`
-     union widens to include them; a new `storage: 'packed' |
-     'chunked'` secondary discriminator lets hot-path callers
-     (reducers) narrow on `kind === 'number' && storage ===
-     'packed'` to dereference `Float64Column.values` etc.
-     `sliceByRange` stays chunked across multi-chunk ranges
-     (zero-copy on chunk boundaries) and collapses to plain
-     within a single chunk; `sliceByIndices` always
-     materializes (gather destroys chunk locality).
-     `concatSorted(stores)` N-way concat over temporally-disjoint
-     stores: validates schema structural equality, key disjointness
-     (strict `<` for Time, half-open `<=` for TimeRange/Interval),
-     materializes the key column (`begin`/`end`/labels — labels
-     rebuilt via `stringColumnFromArray` so the dict-vs-fallback
-     heuristic runs on the whole), and flattens nested chunked
-     inputs so chunks always stay one level deep. `materialize`
-     now does real work: walks each value column, compacts any
-     chunked variants to their plain counterparts via dedicated
-     `materializeChunked*` helpers, and returns the input
-     unchanged when every column is already packed (identity
-     fast-path).
+     - 20 `Concat`); framework total ~433 tests.
+       Four chunked value-column variants
+       (`ChunkedFloat64Column`, `ChunkedBooleanColumn`,
+       `ChunkedStringColumn`, `ChunkedArrayColumn`) — each holds a
+       `ReadonlyArray<Plain>` of chunks + `chunkOffsets: Int32Array`
+       (prefix sum), eagerly computes an aggregate validity bitmap
+       (preserving the "no bitmap ⇒ all defined" convention), and
+       implements the shared `Column` interface
+       (`read`/`scan`/`sliceByRange`/`sliceByIndices`). The `Column`
+       union widens to include them; a new `storage: 'packed' |
+'chunked'` secondary discriminator lets hot-path callers
+       (reducers) narrow on `kind === 'number' && storage ===
+'packed'` to dereference `Float64Column.values` etc.
+       `sliceByRange` stays chunked across multi-chunk ranges
+       (zero-copy on chunk boundaries) and collapses to plain
+       within a single chunk; `sliceByIndices` always
+       materializes (gather destroys chunk locality).
+       `concatSorted(stores)` N-way concat over temporally-disjoint
+       stores: validates schema structural equality, key disjointness
+       (strict `<` for Time, half-open `<=` for TimeRange/Interval),
+       materializes the key column (`begin`/`end`/labels — labels
+       rebuilt via `stringColumnFromArray` so the dict-vs-fallback
+       heuristic runs on the whole), and flattens nested chunked
+       inputs so chunks always stay one level deep. `materialize`
+       now does real work: walks each value column, compacts any
+       chunked variants to their plain counterparts via dedicated
+       `materializeChunked*` helpers, and returns the input
+       unchanged when every column is already packed (identity
+       fast-path).
    - **1h — `ColumnarRingBuffer` + `scatterByPartition`.** ✅
      Shipped (PR pending, branch `feat/columnar-step-1h`). 49 new
      framework tests (35 `ColumnarRingBuffer` + 14 `Scatter`);
@@ -4225,7 +4226,7 @@ See the RFC for the full argument.
      indexing. Lazy growth (default true) starts at
      `min(retention, 64)` and doubles to `retention`; eager mode
      pre-allocates. Eviction advances `head` once `length ===
-     retention`. Batches larger than `retention` keep only the
+retention`. Batches larger than `retention` keep only the
      trailing `retention` rows. `evictPrefix(n)` and `snapshot()`
      decouple the immutable view from ongoing append/evict — the
      snapshot owns fresh typed buffers and dict-rebuilds the
@@ -4287,7 +4288,7 @@ See the RFC for the full argument.
      cost; the recovery path is sub-step 2c's column-native intake
      (bypass per-row Event allocation in `validateAndNormalize`).
      Benchmark script at `packages/core/scripts/perf-timeseries-
-     columnar.mjs`.
+columnar.mjs`.
    - **2c — Column-native intake.** ✅ Shipped (PR #151, merged
      2026-05-25). New `validateAndNormalizeColumnar` in
      `validate.ts` walks rows once and writes directly into
@@ -4311,17 +4312,64 @@ See the RFC for the full argument.
        first-events-access). The columnar substrate's whole
        point is "don't materialize rows you don't need." Users
        opting into row materialization pay there.
-     The existing `validateAndNormalize` stays as-is for
-     `TimeSeries.fromEvents` and other Event-array consumers.
-     Column-native `toRows` / `toObjects` / `toJSON` paths
-     deferred to a later sub-step (the lazy events path is
-     already fast enough for the common cases).
+       The existing `validateAndNormalize` stays as-is for
+       `TimeSeries.fromEvents` and other Event-array consumers.
+       Column-native `toRows` / `toObjects` / `toJSON` paths
+       deferred to a later sub-step (the lazy events path is
+       already fast enough for the common cases).
    - **2d — Invariant test + bench**. Pin the five public-API
      invariants from the RFC at the TimeSeries layer. Run the
      perf bench against multiple workload patterns (dashboard
      build-once-use-many, one-shot transform, streaming append).
 3. Numeric reducer adaptation (~2 weeks) — `sum` / `avg` / `count` /
    `min` / `max` / `stdev` / `median` / percentile family.
+   - **3 Phase A — `series.reduce()` column fast path.** ✅ Shipped
+     (PR #153, merged 2026-05-26). Optional
+     `ReducerDef.reduceColumn(col: Float64Column)` for the 8
+     built-in numeric reducers; `tryReduceColumnFastPath` dispatches
+     when the target column is packed `Float64Column` and the
+     reducer defines `reduceColumn`. Inline validity-bitmap walk
+     pattern (`(bits[i >> 3]! & (1 << (i & 7))) !== 0`) avoids
+     per-cell function calls. **Perf vs main (N=1M):**
+     - sum: 33.9 ms → 0.57 ms (**59×**)
+     - count: 28.8 ms → ~0 ms (∞ via O(1) `validity.definedCount`)
+     - min: 33.7 ms → 0.46 ms (**73×**)
+     - max: 33.5 ms → 0.57 ms (**59×**)
+     - avg: 33.9 ms → 0.57 ms (**59×**)
+     - stdev: 40.2 ms → 1.16 ms (**35×**) — two-pass formula for
+       numerical stability (catastrophic cancellation in one-pass
+       at large magnitudes; row-API also uses two-pass)
+     - median / p95: 185 ms → 54 ms (**3.4×**) —
+       `Float64Array.sort` intrinsic compare dominates over
+       `Array.sort` with comparator
+       L2 + Codex reviews caught two correctness divergences in the
+       parity claim: stdev one-pass cancellation (closed via
+       two-pass) and NaN-laundered min/max + sort-order divergence
+       (closed via bug-for-bug row-API mirroring; single-pass
+       `Number.isNaN` detector preserves `Float64Array.sort` for the
+       no-NaN common case). 8 new regression tests pin row/column
+       parity across all reducers on NaN-bearing inputs.
+   - **3 Phase B — `series.aggregate()` per-bucket fast path.**
+     Deferred. Each bucket gets a row-index slice; reducers
+     process `col.sliceByRange(start, end)` or a
+     `reduceColumnRange(col, start, end)`. Friction item #6 from
+     [M1 chart-extraction](experiments/pond-ts-charts/) flagged
+     `reduceColumnRange` as the more directly useful next step
+     than Phase C — chart's per-frame Y-extent compute over the
+     visible subarray is exactly the shape this serves.
+   - **3 Phase C — `series.rolling()` fast path.** Deferred.
+     Sliding windows need add/remove semantics; monotonic-deque
+     - running-stats patterns don't map cleanly to a single
+       `reduceColumn` call. Probably a per-reducer `rollingColumn`
+       state factory.
+   - **Followup — principled NaN + Welford semantics.** Codex
+     flagged a shared row + column stdev overflow on `[1e308,
+1e308]` (sum overflows before mean). Both paths share this
+     numerical-stability gap. Folded into a broader design-doc
+     follow-up that also decides whether NaN should be filtered
+     universally across reducers (currently both paths exhibit
+     surprising NaN-laundered behavior; bug-for-bug parity is
+     the closed state).
 4. Derived transforms (~3 weeks) — `select` / `rename` / `filter` /
    `slice` / `head` / `tail` / `diff` / `rate` / `pctChange` /
    `cumulative` / `shift` columnar paths.
