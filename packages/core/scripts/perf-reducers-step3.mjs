@@ -6,7 +6,12 @@
 // To compare against the pre-step-3 row-API path: check out main,
 // rebuild, re-run.
 //
-// Hypothesis: ~5-10× speedup. The pre-step-3 path materializes
+// Measured (post-step-3, N=1M): 32-72× speedup on simple
+// aggregates (sum / count / min / max / avg / stdev), 3.4× on
+// sort-dominated (median / p95). Stdev is 32× rather than the
+// 60+× of the others because the column path walks twice (two-pass
+// formula) to match the row-API's numerical stability — closed L2
+// review finding on PR #153. The pre-step-3 path materializes
 // `series.events` (N Event allocations) then filters into defined +
 // numeric arrays (2N more allocations), then walks. The post-step-3
 // path walks `col.values: Float64Array` directly — no allocations
