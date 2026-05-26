@@ -8,6 +8,27 @@ export const max: ReducerDef = {
       ? undefined
       : numeric.reduce((a, b) => (a >= b ? a : b));
   },
+  reduceColumn(col) {
+    const values = col.values;
+    const validity = col.validity;
+    let hi: number | undefined;
+    if (validity === undefined) {
+      if (col.length === 0) return undefined;
+      hi = values[0]!;
+      for (let i = 1; i < col.length; i += 1) {
+        const v = values[i]!;
+        if (v > hi) hi = v;
+      }
+      return hi;
+    }
+    const bits = validity.bits;
+    for (let i = 0; i < col.length; i += 1) {
+      if ((bits[i >> 3]! & (1 << (i & 7))) === 0) continue;
+      const v = values[i]!;
+      if (hi === undefined || v > hi) hi = v;
+    }
+    return hi;
+  },
   bucketState() {
     let hi: number | undefined;
     return {
