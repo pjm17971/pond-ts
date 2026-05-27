@@ -4463,29 +4463,43 @@ columnar.mjs`.
      index-domain. RFC's V3 amendment log records the rename with
      historical context.
    - **8d — `KeyColumn` `.at(i)` + `.slice(s, e)` + narrowed
-     `keyColumn()`.** ✅ Shipped 2026-05-27. Mirrors Column's shape
-     on the key axis: `.at(i)` returns the raw row shape (`number`
-     for `TimeKeyColumn`, `{ begin, end }` for `TimeRangeKeyColumn`,
-     `{ begin, end, label }` for `IntervalKeyColumn`) per the
-     substrate columnar idiom; `.slice(s, e)` is a zero-copy
-     index-range view (typed-array `subarray` under the hood; for
-     `IntervalKeyColumn` the labels column is sliced in lockstep).
-     Substrate gained `sliceByRange(start, end)` on all three key-
-     column variants. `TimeSeries.keyColumn()` return type now
+     `keyColumn()`.** ✅ Shipped (PR #159, merged 2026-05-27).
+     Mirrors Column's shape on the key axis: `.at(i)` returns the
+     raw row shape (`number` for `TimeKeyColumn`, `{ begin, end }`
+     for `TimeRangeKeyColumn`, `{ begin, end, label }` for
+     `IntervalKeyColumn`) per the substrate columnar idiom;
+     `.slice(s, e)` is a zero-copy index-range view (typed-array
+     `subarray` under the hood; for `IntervalKeyColumn` the labels
+     column is sliced in lockstep). Substrate gained
+     `sliceByRange(start, end)` + `fromValidatedSubarray` trusted-
+     construction factory on all three key-column variants — the
+     latter is the key perf primitive that keeps slice O(1) rather
+     than O(N) (skips the per-row finiteness scan that the public
+     constructor runs, since a subarray of a validated buffer is
+     itself validated). `TimeSeries.keyColumn()` return type now
      narrows to `KeyColumnForSchema<S>` per RFC §7.5 — consumers
      no longer need `instanceof` / discriminator checks just to
-     reach kind-specific fields like `.labels`. Closes the
-     chart-experiment's NF4 (hover/tooltip flow wants
+     reach kind-specific fields like `.labels`. The
+     `KeyColumnForSchema` type is implemented via a distributive
+     `KeyColumnForKind<K>` helper so broad schemas (e.g.
+     `TimeSeries<SeriesSchema>`) get the full key-column union
+     rather than collapsing to `never`. Closes the chart-
+     experiment's NF4 finding (hover/tooltip wants
      `keyColumn().at(i)`) and unblocks M5 heatmap. KeyColumn does
-     NOT get scalar reductions in v1 — TimeKeyColumn min/max are
+     NOT get scalar reductions in v1 — `TimeKeyColumn` min/max are
      trivial (`begin[0]` / `begin[length - 1]`); range-key max-end
-     requires a scan and is RFC-deferred per §4 close-cases. 24
-     new runtime tests + type-test narrowing per variant. Wide
-     `ColumnarKeyColumn` return on `keyColumn()` retired — the
-     impl signature still returns the substrate union internally,
-     but the public contract is the narrowed type. New public
-     type re-exports: `KeyColumnForSchema`, `TimeRangeKeyAt`,
-     `IntervalKeyAt`.
+     requires a scan and is RFC-deferred per §4 close-cases. Tests:
+     34 new runtime + type-test narrowing per variant. New public
+     type re-exports: `KeyColumnForKind`, `KeyColumnForSchema`,
+     `TimeRangeKeyAt`, `IntervalKeyAt`. Review chain: L2 medium →
+     5 substantive fixes (slice-input NaN/Infinity, JSDoc cleanup,
+     non-public `keyAt` reference, stale comment, frozen-by-
+     convention misleading wording) → Codex needs-attention → 3
+     substantive fixes (at-input NaN/fractional/Infinity gate,
+     `KeyColumnForSchema` distributivity collapsing to `never` for
+     broad schemas, trusted-slice factory closing the O(N)
+     validation hidden behind the "zero-copy" claim). The full
+     audit trail is on PR #159's two L2 + two Codex comments.
    - **8e — M1 chart adopts the new API.** ✅ Shipped 2026-05-27 in
      pond-ts-charts-experiment commit
      [`e89eca1`](https://github.com/pjm17971/pond-ts-charts-experiment/commit/e89eca1).
