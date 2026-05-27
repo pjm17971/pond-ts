@@ -152,11 +152,14 @@ export type KeyColumnForSchema<S extends SeriesSchema> =
         : never;
 
 /**
- * Shape returned by `TimeRangeKeyColumn.at(i)` — a frozen-by-
- * convention POJO with both endpoints. POJO (not a class
- * instance) keeps the column-API in the substrate idiom of raw
- * values; the row-API path (`series.keyAt(i)`) returns the
- * `TimeRange` class for consumers that want methods on the key.
+ * Shape returned by `TimeRangeKeyColumn.at(i)` — a POJO with both
+ * endpoints. POJO (not a class instance) keeps the column-API in
+ * the substrate idiom of raw values; consumers that want the
+ * `TimeRange` wrapper can reach it via the row-API path
+ * (`series.events[i].key`). The `readonly` modifiers are compile-
+ * time only — the returned object is not `Object.freeze`'d at
+ * runtime. Treat as read-only by convention (same discipline as
+ * the substrate's typed-array `.values` / `.begin` / `.end`).
  */
 export type TimeRangeKeyAt = {
   readonly begin: number;
@@ -167,7 +170,8 @@ export type TimeRangeKeyAt = {
  * Shape returned by `IntervalKeyColumn.at(i)` — the begin / end
  * timestamps plus the row's label (discriminated by `labelKind` on
  * the column). Numeric labels are finite; string labels come from
- * the dictionary-encoded label column.
+ * the dictionary-encoded label column. Same read-only-by-convention
+ * note as `TimeRangeKeyAt` — `readonly` is compile-time only.
  */
 export type IntervalKeyAt = {
   readonly begin: number;
@@ -352,9 +356,9 @@ declare module './columnar/key-column.js' {
      * `begin === end`, so this is the only timestamp at row `i`.
      *
      * The columnar idiom: returns the raw value, not a `Time`
-     * class instance. The row-API path `series.keyAt(i)` returns
-     * the `Time` wrapper for consumers that want methods on the
-     * key — pick the layer that matches the use case.
+     * class instance. Consumers that want the `Time` wrapper (with
+     * methods like `.toISOString()`) can reach for it via the
+     * row-API path (`series.events[i].key`).
      */
     at(i: number): number | undefined;
 
@@ -1094,11 +1098,11 @@ IntervalKeyColumn.prototype.at = function (
   i: number,
 ): IntervalKeyAt | undefined {
   if (i < 0 || i >= this.length) return undefined;
-  // Per the IntervalKeyColumn constructor invariant, every row has
-  // a defined label, so `labels.read(i)` won't be undefined for a
-  // valid `i`. The `?? 0` is unreachable in practice but pins the
-  // type — `read(i)` is `string | number | undefined` on the
-  // labels column.
+  // The IntervalKeyColumn constructor invariant guarantees every
+  // row has a defined label, so for a valid `i` `labels.read(i)`
+  // is never undefined. The defensive `undefined` branch is
+  // unreachable in practice but keeps the type honest —
+  // `labels.read(i)` is typed `string | number | undefined`.
   const label = this.labels.read(i);
   if (label === undefined) return undefined;
   return { begin: this.begin[i]!, end: this.end[i]!, label };

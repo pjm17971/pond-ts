@@ -128,18 +128,25 @@ export class TimeKeyColumn implements KeyColumnBase<'time'> {
    * Zero-copy index-range view: returns a `TimeKeyColumn` over
    * `begin.subarray(start, end)`. Same trusted-buffer-immutability
    * contract as the source — the underlying `Float64Array` is
-   * shared. `start` clamps to `[0, length]`; `end` clamps to
-   * `[start, length]`. Empty range produces a `length: 0` column.
+   * shared. `start` clamps to `[0, +∞)` via `Math.max(0, start)`;
+   * `end` clamps to `(-∞, length]` via `Math.min(this.length, end)`.
+   * If the clamped range is empty (`hi <= lo`), returns a zero-
+   * length column with a fresh empty buffer.
    *
-   * Mirrors `Float64Column.sliceByRange` in shape and semantics so
-   * `series.column('x').slice(s, e)` and
-   * `series.keyColumn().slice(s, e)` compose with the same
-   * boundary handling.
+   * Mirrors `Float64Column.sliceByRange`'s clamping shape exactly
+   * — including the behavior on `NaN` / `Infinity` / non-integer
+   * inputs: `NaN` propagates through `Math.max` / `Math.min` and
+   * surfaces via the `validateColumnLength(NaN)` check in the
+   * constructor; non-integer `start - end` deltas land in
+   * `validateColumnLength` for the same throw.
    */
   sliceByRange(start: number, end: number): TimeKeyColumn {
-    const s = Math.max(0, Math.min(start | 0, this.length));
-    const e = Math.max(s, Math.min(end | 0, this.length));
-    return new TimeKeyColumn(this.begin.subarray(s, e), e - s);
+    const lo = Math.max(0, start);
+    const hi = Math.min(this.length, end);
+    if (hi <= lo) {
+      return new TimeKeyColumn(new Float64Array(0), 0);
+    }
+    return new TimeKeyColumn(this.begin.subarray(lo, hi), hi - lo);
   }
 
   /**
@@ -232,12 +239,19 @@ export class TimeRangeKeyColumn implements KeyColumnBase<'timeRange'> {
    * See RFC §4 close-cases for why range-key max-end is deferred.
    */
   sliceByRange(start: number, end: number): TimeRangeKeyColumn {
-    const s = Math.max(0, Math.min(start | 0, this.length));
-    const e = Math.max(s, Math.min(end | 0, this.length));
+    const lo = Math.max(0, start);
+    const hi = Math.min(this.length, end);
+    if (hi <= lo) {
+      return new TimeRangeKeyColumn(
+        new Float64Array(0),
+        new Float64Array(0),
+        0,
+      );
+    }
     return new TimeRangeKeyColumn(
-      this.begin.subarray(s, e),
-      this.end.subarray(s, e),
-      e - s,
+      this.begin.subarray(lo, hi),
+      this.end.subarray(lo, hi),
+      hi - lo,
     );
   }
 
@@ -400,14 +414,31 @@ export class IntervalKeyColumn implements KeyColumnBase<'interval'> {
    * `end[length - 1]`).
    */
   sliceByRange(start: number, end: number): IntervalKeyColumn {
-    const s = Math.max(0, Math.min(start | 0, this.length));
-    const e = Math.max(s, Math.min(end | 0, this.length));
-    const slicedLabels = this.labels.sliceByRange(s, e);
+    const lo = Math.max(0, start);
+    const hi = Math.min(this.length, end);
+    if (hi <= lo) {
+      // Empty: defer to `labels.sliceByRange(0, 0)` so the empty
+      // labels column matches the kind discriminator of the source
+      // (String or Float64); the constructor's `labels.length ===
+      // length` check then passes trivially.
+      const emptyLabels = this.labels.sliceByRange(0, 0) as
+        | StringColumn
+        | Float64Column;
+      return new IntervalKeyColumn(
+        new Float64Array(0),
+        new Float64Array(0),
+        emptyLabels,
+        0,
+      );
+    }
+    const slicedLabels = this.labels.sliceByRange(lo, hi) as
+      | StringColumn
+      | Float64Column;
     return new IntervalKeyColumn(
-      this.begin.subarray(s, e),
-      this.end.subarray(s, e),
-      slicedLabels as StringColumn | Float64Column,
-      e - s,
+      this.begin.subarray(lo, hi),
+      this.end.subarray(lo, hi),
+      slicedLabels,
+      hi - lo,
     );
   }
 

@@ -103,6 +103,37 @@ describe('TimeKeyColumn.slice', () => {
     expect(full.at(0)).toBe(100);
     expect(full.at(2)).toBe(300);
   });
+
+  it('throws on NaN inputs (matches Float64Column.sliceByRange)', () => {
+    // NaN propagates through Math.max / Math.min and lands in
+    // validateColumnLength which rejects non-integer lengths. The
+    // behavior matches Float64Column.sliceByRange exactly so both
+    // axes throw on bad input rather than silently producing a
+    // misleading empty column.
+    const col = timeKeyColumnFromArray([1, 2, 3]);
+    expect(() => col.slice(NaN, 2)).toThrow();
+    expect(() => col.slice(0, NaN)).toThrow();
+    expect(() => col.slice(NaN, NaN)).toThrow();
+  });
+
+  it('handles +Infinity end by clamping to length', () => {
+    const col = timeKeyColumnFromArray([1, 2, 3]);
+    const slice = col.slice(0, Infinity);
+    expect(slice.length).toBe(3);
+  });
+
+  it('handles -Infinity start by clamping to 0', () => {
+    const col = timeKeyColumnFromArray([1, 2, 3]);
+    const slice = col.slice(-Infinity, 2);
+    expect(slice.length).toBe(2);
+  });
+
+  it('throws on non-integer fractional start/end deltas', () => {
+    // 1.3 - 0.7 = 0.6 → non-integer length → throws via
+    // validateColumnLength. Matches Float64Column.sliceByRange.
+    const col = timeKeyColumnFromArray([1, 2, 3]);
+    expect(() => col.slice(0.7, 1.3)).toThrow();
+  });
 });
 
 /* -------------------------------------------------------------------------- */
