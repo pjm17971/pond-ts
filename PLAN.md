@@ -4431,11 +4431,11 @@ columnar.mjs`.
      Review chain: L2 medium → 3 substantive fixes (chunked
      type-safety hole, missing negative tests, JSDoc/code
      mismatch) → Codex pass approve, no material findings.
-   - **8c — `slice` + `binnedByIndex` together (single PR).** Zero-
+   - **8c — `slice` + `bin` together (single PR).** Zero-
      copy view + binned-reducer family. They ship together because
-     they're "useless apart" — `binnedByIndex` without `slice`
+     they're "useless apart" — `bin` without `slice`
      would need a four-arg `(start, end, W, reducer)` signature;
-     `slice` without `binnedByIndex` loses the chart's headline
+     `slice` without `bin` loses the chart's headline
      win. The `'minMax'` variant returns `{ lo: Float64Array(W);
 hi: Float64Array(W) }` per the chart-experiment reviewer's
      stride-1 cache-pattern finding. Pending.
@@ -4458,7 +4458,7 @@ hi: Float64Array(W) }` per the chart-experiment reviewer's
      actual consumer use case earns it — not on spec. Docs lead
      with the generic Column shape and surface per-kind reductions
      as additive. Pending; awaits experiment friction.
-   - **8g — (Deferred) `series.binnedByTime(name, W, range,
+   - **8g — (Deferred) `series.binByTime(name, W, range,
      reducer)` on TimeSeries.** Time-aware variant for irregular-
      sample charts. Composable today as
      `series.within(t0, t1).aggregate(every((t1-t0)/W), { col:

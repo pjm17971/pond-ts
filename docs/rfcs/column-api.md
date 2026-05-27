@@ -144,7 +144,7 @@ predicates** (`.hasMissing()`, `.nullCount()`), **position-indexed
 access** (`.first()`, `.last()`, `.firstDefined()`, `.lastDefined()`,
 `.at(i)`, `.values`, `.validity`, `.length`), **index-based slicing**
 (`.slice(s, e)`), and **index-based binning**
-(`.binnedByIndex(W, reducer)`). Per-kind narrowing restricts each
+(`.bin(W, reducer)`). Per-kind narrowing restricts each
 method set: `Float64Column` gets the numeric reductions;
 `StringColumn` gets `.uniqueCount()` and access methods but not
 `.min()` / `.max()`; `BooleanColumn` gets `.all()` / `.any()` / `.none()`.
@@ -180,7 +180,7 @@ table.
 | `first`, `last`, `firstDefined`, `lastDefined`                                                                                     | `Column`                   | Position-indexed; time-agnostic                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `at(i)`, `values`, `validity`, `length`                                                                                            | `Column`                   | Position-indexed access                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `slice(start, end)`                                                                                                                | `Column`                   | Index-based; produces a Column view. `.length` on the view is O(1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `binnedByIndex(W, reducer)`                                                                                                        | `Column`                   | Equal-width **index** bins, scalar reducer per bin. The name spells out the index-domain semantics — see §5 close-cases for when it does and doesn't match per-pixel binning                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `bin(W, reducer)`                                                                                                                  | `Column`                   | Equal-width **index** bins, scalar reducer per bin. Column is detached from time (§5), so `bin` is necessarily index-domain. See §4 close-cases for when index-binning does and doesn't match per-pixel binning                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **`fill(...)`** (all modes — `'forward'`, `'backward'`, `'linear'`, `'zero'`, `{ constant: N }`, with optional time-aware `limit`) | `TimeSeries`               | Fill stays on TimeSeries _entirely_. Even adjacency-based fills (`'forward'` / `'backward'`) carry implicit time-context in real use — gap limits like "don't carry across a 1-hour gap" need the key column to express. Putting fill on Column would smuggle time semantics into a time-detached object                                                                                                                                                                                                                                                                                                               |
 | `aggregate(every('5s'))`                                                                                                           | `TimeSeries`               | Bucket boundaries are time-shaped                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `rolling('5s')`                                                                                                                    | `TimeSeries`               | Window width is time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -209,25 +209,28 @@ The line should be drawn precisely. Close-call cases worth pinning:
 - **`slice` vs `within`.** `col.slice(startIdx, endIdx)` is
   index-based and lives on Column; `series.within(t0, t1)` is
   time-based and lives on TimeSeries. The bridge is `series.bisect(t)`.
-- **`binnedByIndex` vs `aggregate`.** `col.binnedByIndex(W, reducer)`
+- **`bin` vs `aggregate`.** `col.bin(W, reducer)`
   is index-bucket reduction (equal-width, W index bins);
   `series.aggregate(every('5s'), ...)` is time-bucket reduction
   (boundaries derived from time). The chart's per-pixel downsampler
-  uses `binnedByIndex` when sampling is uniform; analytics pipelines
+  uses `bin` when sampling is uniform; analytics pipelines
   computing "5-minute averages" use `aggregate`. For non-uniformly-
   sampled chart data the chart needs time-aware binning, which
   lives on TimeSeries — see the close-case below.
-- **`binnedByIndex` (index-domain) vs `series.binnedByTime`
-  (time-domain).** `col.binnedByIndex(W, reducer)` divides the
+- **`bin` (index-domain) vs `series.binByTime`
+  (time-domain).** `col.bin(W, reducer)` divides the
   column's index range into W equal-count bins. That's correct when
   adjacent samples are uniformly time-spaced; if the data is bursty
   / gappy / irregular, index bins won't align with pixel/time spans.
   The time-aware variant — proposed as
-  `series.binnedByTime(name, W, range, reducer)` — lives on
+  `series.binByTime(name, W, range, reducer)` — lives on
   TimeSeries because it needs the key column to pick bin boundaries.
   The chart picks one or the other based on whether the data is
-  known to be uniformly sampled. The two method names spell out
-  which domain they bin in, so the call site is unambiguous.
+  known to be uniformly sampled. `Column.bin` is necessarily
+  index-domain (§5's time-detached guardrail); the time-domain
+  variant lives on TimeSeries and spells the domain out in its name
+  (`binByTime`). Together they make the choice explicit at the call
+  site.
 
 ### 5. The "detached from time axis" guardrail
 
@@ -287,7 +290,7 @@ const endIdx = series.bisect(viewport.end);
 
 // Step 2: Column-space from here (no time involved)
 const col = series.column('value').slice(startIdx, endIdx);
-const extents = col.binnedByIndex(pixelWidth, 'minMax');
+const extents = col.bin(pixelWidth, 'minMax');
 // extents.lo: Float64Array(W)  — per-pixel min
 // extents.hi: Float64Array(W)  — per-pixel max
 ```
@@ -447,10 +450,7 @@ export class Float64Column /* extends ColumnBase<number, 'number'> */ {
   slice(start: number, end: number): Float64Column;
 
   // Binned reduction (index-bucketed; see §B.2)
-  binnedByIndex<R extends BuiltinReducer>(
-    bins: number,
-    reducer: R,
-  ): BinnedOutput<R>;
+  bin<R extends BuiltinReducer>(bins: number, reducer: R): BinnedOutput<R>;
 
   // Typed-array escape hatch
   readonly values: Float64Array;
@@ -723,7 +723,7 @@ function drawFrame() {
     // Per-pixel min/max downsampling — single column-method call.
     // Returns two channels; canvas inner-loop reads `lo[px]` then
     // `hi[px]` (stride-1 access on each channel).
-    const { lo, hi } = visible.binnedByIndex(cssWidth, 'minMax');
+    const { lo, hi } = visible.bin(cssWidth, 'minMax');
     // ... draw vertical lines from lo[px] to hi[px] per pixel
   } else {
     // No downsampling needed; draw raw values
@@ -733,13 +733,13 @@ function drawFrame() {
 }
 ```
 
-`visible.binnedByIndex(cssWidth, 'minMax')` is the column-centric
+`visible.bin(cssWidth, 'minMax')` is the column-centric
 expression of M1 friction item #6 (`reduceColumnRange(col, start, end)`).
 The shape is cleaner than the friction note proposed — the consumer
 doesn't think in terms of "column ranges" as a primitive; they think
 "give me min and max per pixel" as a single call.
 
-**Uniform-sampling precondition.** `col.binnedByIndex(W, ...)` does
+**Uniform-sampling precondition.** `col.bin(W, ...)` does
 equal-width index binning. If the data's adjacent samples are
 uniformly time-spaced (M1 chart's 1-per-second data, a 60Hz sensor,
 etc.), pixel-aligned bins fall out naturally. If sample timing is
@@ -747,7 +747,7 @@ irregular (telemetry that emits-on-change, financial tick data,
 sparse alarms), index bins don't align with pixel/time spans and
 the rendered min/max strip will lie about which pixel-time each
 extreme actually came from. For non-uniform data the chart uses
-`series.binnedByTime(name, W, range, reducer)` — a TimeSeries
+`series.binByTime(name, W, range, reducer)` — a TimeSeries
 method that picks bin boundaries by time, not by index. See §11
 for sequencing — the time-aware variant lands separately because
 it lives on a different object.
@@ -774,8 +774,8 @@ review:
 'forward', limit: ... })` and make the time-aware decision
   explicit at the TimeSeries layer. See §4 close-case for the
   full argument.
-- **`col.binnedByTime(W, t0, t1, reducer)`** — time-based binning;
-  needs the key column. Use `series.binnedByTime(name, W, range, reducer)`.
+- **`col.binByTime(W, t0, t1, reducer)`** — time-based binning;
+  needs the key column. Use `series.binByTime(name, W, range, reducer)`.
 - **`col.isMonotonicIncreasing()` and other monotonicity-aware
   reducers** — passes the syntactic test (no key column needed) but
   fails the semantic test: the result is only meaningful when the
@@ -906,16 +906,16 @@ Suggested sequencing once this RFC adopts:
    `ReducerDef.reduceColumn` machinery shipped in PR #153 — no new
    perf work, just method-level access. Ships with the type-level
    acceptance tests (§7.4) under `tsc --noEmit` CI enforcement.
-3. **Slice + `binnedByIndex` together (single PR).**
+3. **Slice + `bin` together (single PR).**
    `Float64Column.slice(start, end)` (zero-copy view via the
    existing `sliceByRange` substrate primitive) and
-   `Float64Column.binnedByIndex<R>(W, reducer)` (implementation is
+   `Float64Column.bin<R>(W, reducer)` (implementation is
    a loop over `reducer.reduceColumnRange`; the `'minMax'` variant
    is the fused single-pass min+max returning `{ lo, hi }`). They
-   ship together because they're "useless apart" — `binnedByIndex`
+   ship together because they're "useless apart" — `bin`
    without `slice` would need a four-arg
    `(start, end, W, reducer)` signature; `slice` without
-   `binnedByIndex` loses the chart's headline win.
+   `bin` loses the chart's headline win.
 4. **`KeyColumn` `.at(i)` + `.slice(s, e)`.** Mirrors Column's
    shape on the key axis. KeyColumn does NOT get scalar reductions.
    Unblocks M5 (heatmap) and tooltip / crosshair flows.
@@ -932,7 +932,7 @@ Suggested sequencing once this RFC adopts:
    `Float64Column` adds" / "what `BooleanColumn` adds" so the
    asymmetry reads as additive rather than "strings are
    second-class."
-7. **(Deferred) `series.binnedByTime(name, W, range, reducer)` on
+7. **(Deferred) `series.binByTime(name, W, range, reducer)` on
    TimeSeries** — the time-aware variant for irregular-sample
    charts. Lives on TimeSeries because it needs the key column;
    lands when an experiment milestone hits irregular data and
@@ -965,8 +965,8 @@ reducer)` shape.
 - ~~_`'extent'` reducer output kind._~~ — Resolved by the V2 rename
   to `'minMax'`. The output shape is
   `{ lo: Float64Array(W); hi: Float64Array(W) }` for the
-  `binnedByIndex` variant and `[number, number]` for the scalar
-  variant. Special-cased in `binnedByIndex`'s implementation;
+  `bin` variant and `[number, number]` for the scalar
+  variant. Special-cased in `bin`'s implementation;
   doesn't introduce a new reducer-output kind.
 - ~~_`series.column('x')` caching / identity stability._~~ —
   Decided: cached, identity-stable for the parent series' lifetime.
@@ -1004,12 +1004,12 @@ reducer)` shape.
   spans multiple chunks; returns a packed view if the slice falls
   within one chunk. Defer to the chunked-column-aware methods
   implementation; not blocking on the spec.
-- **`series.binnedByTime` shape.** Sequenced for after M1 + chart
+- **`series.binByTime` shape.** Sequenced for after M1 + chart
   update loop reveal where irregular-sampling friction actually
-  lives. Likely shape: `series.binnedByTime(name: ValueColumnName<S>,
+  lives. Likely shape: `series.binByTime(name: ValueColumnName<S>,
 bins: number, range: { begin: TimeLike; end: TimeLike }, reducer:
 ReducerName | ReducerFn): BinnedResult`. Lives on TimeSeries (needs
-  the key column). Open: should `binnedByTime` accept precomputed
+  the key column). Open: should `binByTime` accept precomputed
   per-pixel index ranges as a fast-path? (chart already has
   `bisect()` results, doesn't need TimeSeries to re-compute them).
 
@@ -1272,7 +1272,7 @@ section is gone — its content was inlined into §1–§13 directly.
 **What changed in the body:**
 
 - **§3 (proposal):** rewritten to reflect final API names — `minMax`,
-  generalized `binnedByIndex<R>`. Fill is _not_ on Column at all
+  generalized `bin<R>`. Fill is _not_ on Column at all
   (closed in piece C); all fill modes — including adjacency-based
   ones — stay on TimeSeries where time-aware limits can be
   expressed.
@@ -1280,7 +1280,7 @@ section is gone — its content was inlined into §1–§13 directly.
   (`any` / `all` / `none`, `hasMissing` / `nullCount`, `first` /
   `last` / `firstDefined` / `lastDefined`, `minMax`,
   `uniqueCount`). Marked "illustrative, not exhaustive." Close-call
-  cases extended with `binned` vs `series.binnedByTime`.
+  cases extended with `binned` vs `series.binByTime`.
 - **§5 (guardrail):** added the second clause — "AND is the result
   meaningful without time context" — with monotonicity-aware
   reducers as the worked counter-example.
@@ -1293,7 +1293,7 @@ section is gone — its content was inlined into §1–§13 directly.
   verified-compilable TypeScript design.
 - **§8 (chart use case):** updated worked example with final names;
   added the uniform-sampling precondition for `binned` and the
-  pointer to `series.binnedByTime` for irregular data.
+  pointer to `series.binByTime` for irregular data.
 - **§9 (anti-patterns):** extended with V2 additions (`col.toArray()`,
   `col.toJSON()`, `col.equals()`, `col.toString()`) and the
   monotonicity case from §5.
@@ -1304,13 +1304,13 @@ section is gone — its content was inlined into §1–§13 directly.
 - **§11 (sequencing):** collapsed steps 3 + 4 into one PR ("slice +
   binned together — they're useless apart"); added explicit
   `KeyColumn.at`/`.slice` step; added the M1 chart adoption loop;
-  added the deferred `series.binnedByTime` step.
+  added the deferred `series.binByTime` step.
 - **§12 (open questions):** audited — Q1, Q2, Q3, the `'extent'`
   output question, and the column-identity caching question
   closed (decided in the body above). Q6/Q8 contradiction in V2
   resolved: cached, identity-stable. New open questions added for
   the `.values` validity trap, Column lifetime, `.slice()` on
-  chunked columns, and `series.binnedByTime` shape.
+  chunked columns, and `series.binByTime` shape.
 - **§13 (the line to hold):** updated to the two-clause test.
 
 **What stayed unchanged:**
@@ -1330,14 +1330,26 @@ section is gone — its content was inlined into §1–§13 directly.
 
 **Piece B — `binned` → `binnedByIndex` rename (landed):**
 
-The body now consistently calls the method `binnedByIndex`. The
-name spells out the index-domain semantics so the call site reads
-unambiguously against the time-aware
-`series.binnedByTime(name, W, range, reducer)` companion. Closes
-Codex's finding #2 in name; the underlying semantic fix (chart
-adapters must choose index-domain vs time-domain binning based on
-sampling regularity) is documented in §4's close-case and §8's
-uniform-sampling precondition.
+V3 originally renamed the method to `binnedByIndex`, with the
+companion proposed as `series.binnedByTime(name, W, range, reducer)`.
+The reasoning was that the explicit suffix spelled out the
+index-domain semantics so the call site read unambiguously against
+the time-aware variant. Closes Codex's finding #2 in name; the
+underlying semantic fix (chart adapters must choose index-domain vs
+time-domain binning based on sampling regularity) is documented in
+§4's close-case and §8's uniform-sampling precondition.
+
+**Subsequent simplification (during step 8c implementation):** The
+explicit `byIndex` suffix felt overlong and slightly off (past
+tense for a method that takes arguments). Renamed
+`binnedByIndex` → `bin` and the deferred TimeSeries companion
+`binnedByTime` → `binByTime`. The disambiguation now comes from
+the operation's location: Column is detached from the time axis by
+§5's guardrail, so `col.bin` is necessarily index-domain; the
+TimeSeries-side variant spells the domain out in its name. This
+was a pure rename — no semantics changed. The body of the RFC
+above reflects the new names; this amendment-log entry preserves
+the V3 audit trail.
 
 **Piece C — remove `col.fill` (landed):**
 
