@@ -471,6 +471,48 @@ describe('Float64Column.bin — options.out (pre-allocated output)', () => {
     expect(Array.from(lo)).toEqual(Array.from(a.lo));
     expect(Array.from(hi)).toEqual(Array.from(a.hi));
   });
+
+  it('rejects aliased lo/hi buffers for minMax (silent-aliasing footgun)', () => {
+    // If lo and hi point to the same Float64Array, the loop's
+    // `lo[b] = extent[0]; hi[b] = extent[1]` would alias and
+    // silently produce [max, max, ...] in the shared slot.
+    // The check throws so callers get a clear error instead.
+    const col = f64([1, 2, 3, 4]);
+    const shared = new Float64Array(2);
+    expect(() =>
+      col.bin(2, 'minMax', { out: { lo: shared, hi: shared } }),
+    ).toThrow(/distinct buffers/);
+  });
+
+  it('works at bins = 1 with out', () => {
+    // Smallest bin count — single slot covers the whole column.
+    const col = f64([1, 2, 3, 4, 5]);
+    const out = new Float64Array(1);
+    col.bin(1, 'sum', { out });
+    expect(out[0]).toBe(15);
+
+    const lo = new Float64Array(1);
+    const hi = new Float64Array(1);
+    col.bin(1, 'minMax', { out: { lo, hi } });
+    expect(lo[0]).toBe(1);
+    expect(hi[0]).toBe(5);
+  });
+
+  it("works with percentile-via-'p${q}' string + out", () => {
+    // Percentile reducers route through resolveReducer's
+    // parsePercentile; verify they accept the out option too.
+    const col = f64([10, 20, 30, 40, 50, 60, 70, 80]);
+    const out = new Float64Array(2);
+    const result = col.bin(2, 'p95', { out });
+    expect(result).toBe(out);
+    // Bin 0: [10,20,30,40] → p95 ≈ 38.5
+    // Bin 1: [50,60,70,80] → p95 ≈ 78.5
+    // Just verify the slots got real numbers (not NaN, not stale).
+    expect(out[0]).toBeGreaterThan(30);
+    expect(out[0]).toBeLessThan(45);
+    expect(out[1]).toBeGreaterThan(70);
+    expect(out[1]).toBeLessThan(85);
+  });
 });
 
 describe('ChunkedFloat64Column.bin — options.out (delegates through materialize)', () => {

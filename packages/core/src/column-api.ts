@@ -257,6 +257,16 @@ declare module './columnar/column.js' {
      * `out` itself (same reference). Lengths must match `bins`
      * exactly — mismatch throws `RangeError`.
      *
+     * Constraints on `out` for `'minMax'`: `lo` and `hi` must be
+     * **distinct** `Float64Array`s. Passing the same reference for
+     * both throws `TypeError` (the loop's `lo[b]=` / `hi[b]=`
+     * writes would otherwise alias and silently produce
+     * `[max, max, ...]` output).
+     *
+     * Resizable / shared array buffers: `bin` captures length at
+     * call time. Mid-call resize / detach is undefined behavior;
+     * keep the buffer stable for the duration of the call.
+     *
      * The motivating use case is a chart adapter's per-frame
      * pixel-bin loop. Without `out`, each frame allocates two
      * `Float64Array(W)` for `'minMax'` (or one for scalar
@@ -644,6 +654,15 @@ Float64Column.prototype.bin = function <R extends BinReducerName>(
       if (provided.lo.length !== bins || provided.hi.length !== bins) {
         throw new RangeError(
           `Float64Column.bin: options.out.lo / options.out.hi length must equal bins (${bins}); got lo.length=${provided.lo.length}, hi.length=${provided.hi.length}`,
+        );
+      }
+      if (provided.lo === provided.hi) {
+        // Aliased buffers — `lo[b] = extent[0]; hi[b] = extent[1]`
+        // would silently produce `[max]` over the same slots because
+        // `hi`'s write follows `lo`'s. Throw rather than producing
+        // wrong output. Closes L2 finding on PR #161.
+        throw new TypeError(
+          `Float64Column.bin: options.out.lo and options.out.hi must be distinct buffers; got the same reference`,
         );
       }
       lo = provided.lo;
