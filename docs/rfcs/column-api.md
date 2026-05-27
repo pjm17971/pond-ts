@@ -227,30 +227,345 @@ number` for a number-in-number-out shape) are still valid
 optimizations and fit cleanly with this RFC: `bisectBegin` is a
 TimeSeries-shaped number bridge, not a Column-shaped one.
 
-### 7. Type-narrowing benefit
+### 7. Type system design
 
-`series.column('value')` returns `Float64Column` narrowed by the
-schema (the existing `Column<EventForSchema<S>>` machinery already
-handles this for the spike accessors). Each kind-narrowed column
-exposes only the methods that make sense for its kind:
+The promise of `series.column('value').min()` returning `number | undefined`
+while `series.column('host').min()` is a compile error needs actual
+TypeScript machinery to back it. The pre-V3 draft asserted this without
+designing it; the design follows.
+
+#### 7.1 The chain of type-level lookups
+
+Three type-level transforms compose:
+
+1. **Schema → value-column-name union.** Constrain the `name` parameter
+   so it must be a value column declared in the schema (and not a key
+   column or a typo).
+2. **(Schema, Name) → kind.** Look up the declared kind for the named
+   column.
+3. **Kind → public column type.** Map `'number' | 'boolean' | 'string'
+| 'array'` to the corresponding public column class with its
+   kind-appropriate method set.
+
+Two of the three already exist in `packages/core/src/schema/series.ts`:
 
 ```ts
-// Float64Column: reductions, ranges, typed access
-series.column('value').min();
-series.column('value').values; // Float64Array
-series.column('value').percentile(95);
+// Already exists — extracts the value-column tuple from a schema
+export type ValueColumnsForSchema<S extends SeriesSchema> = S extends readonly [
+  FirstColumn,
+  ...infer Rest extends readonly ValueColumn[],
+]
+  ? Rest
+  : never;
 
-// StringColumn: kind-appropriate methods only
-series.column('host').uniqueCount();
-series.column('host').values; // ReadonlyArray<string> or Uint32Array dict indices
-// series.column('host').min()  ← compile error
+// Already exists — resolves the kind of a named value column
+export type ValueColumnKindForName<
+  S extends SeriesSchema,
+  V extends string,
+> = Extract<ValueColumnsForSchema<S>[number], { name: V }>['kind'];
 ```
 
-Compared to today's `series.reduce('host', 'min')` — which compiles
-fine (the reducer name is just a string) and fails at runtime when
-the row-API path tries to take `min` of strings — this is a
-significant correctness improvement. The type system enforces
-kind-appropriate operations at the call site.
+Two new types complete the chain:
+
+```ts
+// New — the union of all value-column names in the schema
+export type ValueColumnNameForSchema<S extends SeriesSchema> =
+  ValueColumnsForSchema<S>[number]['name'];
+
+// New — kind → public column class
+export type PublicColumnForKind<K extends ScalarKind> = K extends 'number'
+  ? Float64Column
+  : K extends 'boolean'
+    ? BooleanColumn
+    : K extends 'string'
+      ? StringColumn
+      : K extends 'array'
+        ? ArrayColumn
+        : never;
+```
+
+Both go into `schema/series.ts` next to the existing helpers.
+
+#### 7.2 The narrowed `column(name)` signature
+
+`TimeSeries<S>.column` becomes a generic method:
+
+```ts
+column<N extends ValueColumnNameForSchema<S>>(
+  name: N,
+): PublicColumnForKind<ValueColumnKindForName<S, N>>;
+```
+
+Two consequences:
+
+- **The `| undefined` in the return type goes away.** The compiler
+  knows `name` is a schema-valid value column, so `column(name)` is
+  guaranteed to return one. (Runtime can still throw if the substrate
+  is in an unexpected state, but that's a programming-error path, not
+  a normal-control-flow `undefined`.)
+- **`series.column('not_in_schema')` is a compile error**, not a
+  runtime `undefined`. Misspellings caught at the call site.
+
+The chart's M1 access pattern collapses accordingly:
+
+```ts
+// Before (per the original draft of §1 friction item):
+const valueCol = series.column('value');
+if (!valueCol || valueCol.kind !== 'number' || valueCol.storage !== 'packed') {
+  throw new Error(
+    `expected packed Float64; got ${valueCol?.kind}/${valueCol?.storage}`,
+  );
+}
+const ys: Float64Array = valueCol.values;
+
+// After:
+const ys: Float64Array = series.column('value').values;
+```
+
+The three guards collapse into a single `.values` read. The schema is
+the contract; the call site trusts it.
+
+(Storage discrimination — `packed` vs `chunked` — is handled by the
+public column class internally: `.values` returns the typed array if
+packed, throws if chunked, and `.materialize().values` is the explicit
+path for the chunked case. See open question Q1 in §12.)
+
+#### 7.3 Per-kind public column interfaces
+
+The public column types are the existing internal classes in
+`packages/core/src/columnar/column.ts`, augmented with the public
+method set. Substrate IS public API — there's no wrapper layer.
+
+```ts
+// Float64Column — value-vector reductions + ranges + typed access.
+// The richest method set.
+export class Float64Column /* extends ColumnBase<number, 'number'> */ {
+  // Scalar reductions
+  min(): number | undefined;
+  max(): number | undefined;
+  sum(): number;
+  mean(): number | undefined;
+  stdev(): number | undefined;
+  median(): number | undefined;
+  percentile(q: number): number | undefined;
+  count(): number; // count of defined cells (see §B.7)
+  minMax(): [number, number] | undefined;
+
+  // Value-vector predicates
+  hasMissing(): boolean;
+  nullCount(): number;
+
+  // Position-indexed
+  first(): number | undefined;
+  last(): number | undefined;
+  firstDefined(): number | undefined;
+  lastDefined(): number | undefined;
+  at(i: number): number | undefined;
+
+  // Range
+  slice(start: number, end: number): Float64Column;
+
+  // Binned reduction (index-bucketed; see §B.2)
+  binnedByIndex<R extends BuiltinReducer>(
+    bins: number,
+    reducer: R,
+  ): BinnedOutput<R>;
+
+  // Typed-array escape hatch
+  readonly values: Float64Array;
+  readonly validity: ValidityBitmap | undefined;
+  readonly length: number;
+  readonly kind: 'number';
+  readonly storage: 'packed' | 'chunked';
+
+  // Storage handling
+  materialize(): Float64Column; // returns self if packed
+}
+
+// StringColumn — kind-appropriate subset. No `min`/`max`/`sum`.
+export class StringColumn {
+  uniqueCount(): number;
+  hasMissing(): boolean;
+  nullCount(): number;
+  first(): string | undefined;
+  last(): string | undefined;
+  firstDefined(): string | undefined;
+  lastDefined(): string | undefined;
+  at(i: number): string | undefined;
+  slice(start: number, end: number): StringColumn;
+
+  readonly values: ReadonlyArray<string> | Uint32Array; // dict indices for dict-encoded
+  readonly validity: ValidityBitmap | undefined;
+  readonly length: number;
+  readonly kind: 'string';
+  readonly storage: 'packed' | 'chunked';
+  readonly encoding: 'dict' | 'fallback';
+
+  materialize(): StringColumn;
+}
+
+// BooleanColumn — `all`/`any`/`none` over the truthy/falsy distribution.
+export class BooleanColumn {
+  all(): boolean;
+  any(): boolean;
+  none(): boolean;
+  count(): number; // count of defined cells
+  hasMissing(): boolean;
+  nullCount(): number;
+  first(): boolean | undefined;
+  last(): boolean | undefined;
+  at(i: number): boolean | undefined;
+  slice(start: number, end: number): BooleanColumn;
+
+  readonly values: Uint8Array; // bit-packed
+  readonly validity: ValidityBitmap | undefined;
+  readonly length: number;
+  readonly kind: 'boolean';
+  readonly storage: 'packed' | 'chunked';
+
+  materialize(): BooleanColumn;
+}
+
+// ArrayColumn — minimal surface for v1; per-element predicates land
+// when the use cases earn them (§11 step 5).
+export class ArrayColumn {
+  hasMissing(): boolean;
+  nullCount(): number;
+  first(): ReadonlyArray<ScalarValue> | undefined;
+  last(): ReadonlyArray<ScalarValue> | undefined;
+  at(i: number): ReadonlyArray<ScalarValue> | undefined;
+  slice(start: number, end: number): ArrayColumn;
+
+  readonly values: ReadonlyArray<ReadonlyArray<ScalarValue>>;
+  readonly validity: ValidityBitmap | undefined;
+  readonly length: number;
+  readonly kind: 'array';
+  readonly storage: 'packed' | 'chunked';
+
+  materialize(): ArrayColumn;
+}
+```
+
+The reducer methods (`min`, `max`, `mean`, etc.) are thin wrappers
+around the existing `ReducerDef.reduceColumn` machinery shipped in
+PR #153 — no new perf work, just method-level access.
+
+#### 7.4 Type-level acceptance tests
+
+The narrowing claim only holds if it actually compiles the way the
+RFC promises. The implementation PR ships a `.test-d.ts` file with
+the following acceptance tests; CI's `tsc --noEmit` enforces them.
+
+```ts
+// packages/core/test/column-api-types.test-d.ts
+import { expectType } from 'tsd'; // or manual `const _: T = expr`
+import { TimeSeries, Float64Column, StringColumn, BooleanColumn } from '../src';
+
+const schema = [
+  { name: 'time', kind: 'time' },
+  { name: 'value', kind: 'number' },
+  { name: 'host', kind: 'string' },
+  { name: 'active', kind: 'boolean' },
+] as const;
+
+const s = new TimeSeries({ name: 's', schema, rows: [] });
+
+// ── Positive: schema-valid name → kind-narrowed column ──────────
+
+expectType<Float64Column>(s.column('value'));
+expectType<StringColumn>(s.column('host'));
+expectType<BooleanColumn>(s.column('active'));
+
+// ── Positive: kind-appropriate reducers compile + return narrowed types ─
+
+expectType<number | undefined>(s.column('value').min());
+expectType<number | undefined>(s.column('value').percentile(95));
+expectType<[number, number] | undefined>(s.column('value').minMax());
+expectType<Float64Array>(s.column('value').values);
+
+expectType<number>(s.column('host').uniqueCount());
+expectType<string | undefined>(s.column('host').at(0));
+
+expectType<boolean>(s.column('active').all());
+expectType<boolean>(s.column('active').any());
+
+// ── Positive: composition stays narrowed ─────────────────────────
+
+expectType<Float64Column>(s.column('value').slice(0, 100));
+expectType<number | undefined>(s.column('value').slice(0, 100).min());
+
+// ── Negative: name not in schema ─────────────────────────────────
+
+// @ts-expect-error — 'cpu' is not a value column in this schema
+s.column('cpu');
+
+// @ts-expect-error — typo on a real column name
+s.column('valuue');
+
+// ── Negative: key columns aren't reachable via column() ──────────
+
+// @ts-expect-error — 'time' is the key column; use keyColumn() instead
+s.column('time');
+
+// ── Negative: kind-inappropriate reducers don't compile ──────────
+
+// @ts-expect-error — StringColumn has no min()
+s.column('host').min();
+
+// @ts-expect-error — Float64Column has no uniqueCount()
+s.column('value').uniqueCount();
+
+// @ts-expect-error — BooleanColumn has no percentile()
+s.column('active').percentile(50);
+
+// @ts-expect-error — StringColumn.values isn't a Float64Array
+const _: Float64Array = s.column('host').values;
+```
+
+These tests are the contract the RFC promises. If any of them break,
+the schema-narrowing claim is broken.
+
+#### 7.5 The KeyColumn parallel
+
+The same shape applies to `keyColumn()`:
+
+```ts
+export type KeyColumnForSchema<S extends SeriesSchema> =
+  S[0]['kind'] extends 'time'      ? TimeKeyColumn :
+  S[0]['kind'] extends 'interval'  ? IntervalKeyColumn :
+  S[0]['kind'] extends 'timeRange' ? TimeRangeKeyColumn :
+  never;
+
+keyColumn(): KeyColumnForSchema<S>;
+```
+
+`KeyColumn` variants don't get the scalar reductions (`min`/`max` are
+trivially `begin[0]` / `end[length-1]` given the sortedness invariant),
+but they do get `.at(i)`, `.slice(s, e)`, and the typed-array
+accessors (`.begin`, `.end`, `.labels` per variant). See §B.5 of the
+V2 amendment.
+
+#### 7.6 Compared to today's row-API path
+
+The same operation through `series.reduce(col, reducer)` is **less**
+type-safe by design:
+
+```ts
+// Today's row-API path — compiles, fails at runtime
+const x: ColumnValue | undefined = s.reduce('host', 'min');
+// At runtime: numeric.length === 0 (no string is a number), so returns undefined.
+// User sees `undefined` and wonders why; type system didn't help.
+
+// Tomorrow's column-centric path — compile error
+// @ts-expect-error — StringColumn has no min()
+const y = s.column('host').min();
+// Caught at the call site, with a precise error message.
+```
+
+This is a deliberate divergence: the column-centric idiom is
+strictly safer. JSDoc on `series.reduce(col, reducer)` will point
+single-column callers toward `series.column(name).reducer()` as the
+recommended idiom (§10).
 
 ### 8. The chart use case worked out
 
