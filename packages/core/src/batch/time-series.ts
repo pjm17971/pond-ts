@@ -66,6 +66,8 @@ import type {
   TimeSeriesInput,
   TimeRangeKeyedSchema,
   ValueColumn,
+  ValueColumnKindForName,
+  ValueColumnNameForSchema,
   ValueColumnsForSchema,
 } from '../schema/index.js';
 import {
@@ -97,6 +99,7 @@ import {
   type Column as ColumnarColumn,
   type KeyColumn as ColumnarKeyColumn,
 } from '../columnar/index.js';
+import type { PublicColumnForKind } from '../column-api.js';
 import { SeriesStore } from '../live/series-store.js';
 import { validateAndNormalize } from './validate.js';
 import type { DurationInput } from '../core/duration.js';
@@ -1128,11 +1131,24 @@ export class TimeSeries<S extends SeriesSchema> {
    * subarray views shared with other consumers). The framework
    * doesn't defensively clone on read.
    *
-   * Step-8 chart-extraction alignment will commit a stable shape
-   * — that step may rename / restructure based on what consumer
-   * agents actually need. Until then, treat this surface as
-   * experimental.
+   * **Phase 4.7 step 8b (2026-05-27): schema-narrowed signature.**
+   * `name` is constrained to a schema-valid value column at compile
+   * time — typos and key-column names fail to compile rather than
+   * returning `undefined` at runtime. The return type narrows by
+   * kind: `series.column('value')` (where `value` is `kind: 'number'`)
+   * returns `Float64Column | ChunkedFloat64Column`, with all the
+   * scalar-reduction methods mounted by `src/column-api.ts`
+   * (`.min()`, `.max()`, `.mean()`, etc.). `series.column('host')`
+   * (`kind: 'string'`) returns `StringColumn | ChunkedStringColumn`,
+   * without the numeric methods. Both packed and chunked variants
+   * carry the full method surface — chunked delegates reductions
+   * to `materialize().method()` for v1; see
+   * `docs/rfcs/column-api.md` §7.2 for the design and §7.4 for the
+   * type-level acceptance tests.
    */
+  column<Name extends ValueColumnNameForSchema<S>>(
+    name: Name,
+  ): PublicColumnForKind<ValueColumnKindForName<S, Name>>;
   column(name: string): ColumnarColumn | undefined {
     return this.#store.store.columns.get(name);
   }
