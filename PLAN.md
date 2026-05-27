@@ -4408,14 +4408,29 @@ columnar.mjs`.
      every re-exported symbol against the literal-narrowing
      contract. L2 high confidence, no Codex round needed (pure
      re-export, no runtime behavior change).
-   - **8b — `Float64Column` scalar reductions.** `min`, `max`,
-     `sum`, `mean`, `stdev`, `median`, `percentile(q)`, `count`,
-     `minMax`, `hasMissing`, `nullCount`, `first`, `last`,
-     `firstDefined`, `lastDefined`. Plus `scan(fn, options?)` for
-     validity-aware iteration. Dispatches through PR #153's
-     internal `reduceColumn` fast path — no new perf work.
-     Ships with `.test-d.ts` type-level acceptance tests per RFC
-     §7.4 under `tsc --noEmit` CI enforcement. Pending.
+   - **8b — `Float64Column` scalar reductions + schema-narrowed
+     `column()`.** ✅ Shipped (PR #155, merged 2026-05-27). Public
+     method surface on all four packed column classes AND their
+     chunked variants (`min` / `max` / `sum` / `mean` / `stdev` /
+     `median` / `percentile(q)` / `count` / `minMax` / `hasMissing`
+     / `nullCount` / `first` / `last` / `firstDefined` /
+     `lastDefined` / `at` / `slice` on Float64Column;
+     kind-appropriate subsets on Boolean / String / Array per RFC
+     §7.3). Mounted via declaration-merging + prototype attachment
+     in `packages/core/src/column-api.ts`, which lives outside
+     `columnar/` so the substrate stays pure (substrate-purity
+     test still passes). Reducer-backed methods delegate to PR
+     #153's `reducer.reduceColumn` fast paths; chunked methods
+     delegate to `materialize().method()` for v1 (~2× cost vs
+     packed-native; future PR can add chunked-native impls).
+     Schema-narrowed `TimeSeries.column<Name>(name: Name)`
+     overload from RFC §7.2 — public wide overload dropped, so
+     typos / key-column names / out-of-schema strings fail to
+     compile rather than silently returning undefined. Tests:
+     45 new runtime + comprehensive `.test-d.ts` per RFC §7.4.
+     Review chain: L2 medium → 3 substantive fixes (chunked
+     type-safety hole, missing negative tests, JSDoc/code
+     mismatch) → Codex pass approve, no material findings.
    - **8c — `slice` + `binnedByIndex` together (single PR).** Zero-
      copy view + binned-reducer family. They ship together because
      they're "useless apart" — `binnedByIndex` without `slice`
