@@ -8,16 +8,30 @@ for what is being built. Phases adopted into PLAN are commitments;
 the rest of this document is forward-looking. See [CLAUDE.md → Strategic
 RFCs](../../CLAUDE.md) for the layering.
 
-**Relationship to other RFCs:** This RFC **supplements**
-[`columnar-core.md`](columnar-core.md), which committed to "public API
-remains event-shaped; columnar storage is an internal representation."
-That commitment is preserved for multi-column / time-aware operations.
-This RFC proposes a deliberate, small, well-bounded _additional_ public
-surface — a `Column` object returned by `series.column('x')` — that
-serves single-column / time-agnostic operations on the substrate's
-typed-array layer. The chart-extraction experiment surfaced friction
-that justifies the addition; the discipline below is what prevents it
-from sprawling into a parallel API.
+**Relationship to other RFCs:** This RFC is a **deliberate, small,
+scoped walkback** of [`columnar-core.md`](columnar-core.md)'s
+commitment that "the public API remains event-shaped; columnar
+storage is an internal representation." The walkback is scoped to
+_single-column, time-agnostic_ operations — a public `Column`
+object returned by `series.column('x')` that exposes scalar
+reductions, ranges, and typed-array access. Multi-column composition
+and time-aware operations stay event-shaped per the original
+commitment.
+
+The walkback is justified by the chart-extraction experiment's M1
+friction evidence: the typed-array escape hatch the spike opened
+(PR #152) wants to be the canonical single-column public surface,
+with explicit guardrails to prevent it from sprawling into a
+parallel TimeSeries-shaped API. The discipline in §5 ("Column is
+detached from time") is what holds the scope.
+
+Calling this a "supplement" would be disingenuous — once `Column`
+is a documented public type with methods, it _is_ a parallel public
+API, just a deliberately small one. The honest framing matters
+because it shapes how future RFCs read it: walkbacks set precedent
+for further walkbacks; supplements don't. The next person who wants
+to add a method to `Column` is doing so against an acknowledged
+walkback, and that's the right cost basis.
 
 **Evidence base:**
 
@@ -39,7 +53,10 @@ from sprawling into a parallel API.
 | Review notes — chart-experiment perspective              | pond-ts charts experiment perspective agent (Claude), 2026-05-26 |
 | Review notes — independent library perspective           | independent pond-ts library agent (Claude), 2026-05-26           |
 | V2 amendment (response to reviews)                       | pond-ts library agent (Claude) + pjm17971, 2026-05-26            |
-| Codex adversarial pass                                   | _pending_                                                        |
+| Codex adversarial pass on V2                             | Codex, 2026-05-26                                                |
+| §7 type system rewrite (piece A)                         | pond-ts library agent (Claude) + pjm17971, 2026-05-26            |
+| V3 amendment (single-spec restructure, pieces D + E)     | pond-ts library agent (Claude) + pjm17971, 2026-05-27            |
+| Codex adversarial pass on V3                             | _pending_                                                        |
 
 **Audience:** future pond-ts contributors deciding what should live on
 the public `Column` surface vs. what should stay on `TimeSeries`;
@@ -122,55 +139,85 @@ turning into a column-shaped clone of TimeSeries.
 `BooleanColumn`, `StringColumn`, `ArrayColumn`, depending on the
 schema's declared `kind`). The Column object exposes **scalar
 reductions** (`.min()`, `.max()`, `.sum()`, `.mean()`, `.stdev()`,
-`.median()`, `.percentile(q)`, `.count()`), **index-based slicing**
-(`.slice(s, e)`), **index-based binning** (`.binned(W, reducer)`),
-**element access** (`.at(i)`, `.values`, `.validity`, `.length`),
-and **adjacency-based fills** that don't need time spacing
-(`.fillForward()`, `.fillBackward()`, `.fillZero()`,
-`.fillConstant(c)`). It does **not** expose any operation that
-references the time axis, takes a `KeyLike` argument, or produces a
-modified TimeSeries. Those stay on `TimeSeries`.
+`.median()`, `.percentile(q)`, `.count()`, `.minMax()`), **value-vector
+predicates** (`.hasMissing()`, `.nullCount()`), **position-indexed
+access** (`.first()`, `.last()`, `.firstDefined()`, `.lastDefined()`,
+`.at(i)`, `.values`, `.validity`, `.length`), **index-based slicing**
+(`.slice(s, e)`), **index-based binning** (`.binned(W, reducer)`), and
+**adjacency-based fills** that don't need time spacing (`.fill('forward'
+| 'backward' | 'zero' | { constant: N })`). Per-kind narrowing
+restricts each method set: `Float64Column` gets the numeric reductions;
+`StringColumn` gets `.uniqueCount()` and access methods but not
+`.min()`/`.max()`; `BooleanColumn` gets `.all()` / `.any()` / `.none()`.
+
+Column does **not** expose any operation that references the time
+axis, takes a `KeyLike` argument, or produces a modified TimeSeries.
+Those stay on `TimeSeries`.
 
 ### 4. The Column / TimeSeries division of labor
 
-The test for "does this operation belong on Column?" is one line:
-**can you implement it knowing nothing about the key column?** If yes,
-Column. If no, TimeSeries.
+The test for "does this operation belong on Column?" is two clauses:
+**can you implement it knowing nothing about the key column, AND is
+the result meaningful without time context?** If both yes, Column.
+If either no, TimeSeries. (The second clause is the addition that
+catches operations like `isMonotonicIncreasing` — see §5.)
 
-| Operation                   | Belongs on   | Why                                                                                                                                         |
-| --------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `min`, `max`, `sum`, `avg`  | `Column`     | Pure value-vector reductions                                                                                                                |
-| `stdev`, `median`, `pN`     | `Column`     | Same — operate only on the value vector + validity                                                                                          |
-| `count`                     | `Column`     | Defined-cell count via validity bitmap; no key needed                                                                                       |
-| `slice(start, end)`         | `Column`     | Index-based; produces a Column view                                                                                                         |
-| `binned(W, reducer)`        | `Column`     | Equal-width index bins, scalar reducer per bin; chart's per-pixel hot path                                                                  |
-| `at(i)`, `values`           | `Column`     | Position-indexed read                                                                                                                       |
-| `fillForward`, `fillZero`   | `Column`     | Adjacency- or constant-based — no time gap involved                                                                                         |
-| **`fillLinear`**            | `TimeSeries` | Interpolation rate depends on time gaps; needs key column                                                                                   |
-| `aggregate(every('5s'))`    | `TimeSeries` | Bucket boundaries are time-shaped                                                                                                           |
-| `rolling('5s')`             | `TimeSeries` | Window width is time                                                                                                                        |
-| `align(every('1s'))`        | `TimeSeries` | Explicitly aligns values to a time grid                                                                                                     |
-| `within(t0, t1)`            | `TimeSeries` | Time-based windowing — needs key column to translate `t` → index                                                                            |
-| `bisect(t)`                 | `TimeSeries` | The bridge from time-space to index-space; this **is** the place where you cross from TimeSeries-land to Column-land for the chart use case |
-| `join`, `concat`, `groupBy` | `TimeSeries` | Multi-series / multi-column ops                                                                                                             |
+The table below is **illustrative, not exhaustive**; the test in §5
+is the discipline. Adding new operations applies the test, not the
+table.
 
-The line should be drawn precisely. Three close-call cases:
+| Operation                                                    | Belongs on                 | Why                                                                                                                                                                        |
+| ------------------------------------------------------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `min`, `max`, `sum`, `mean`                                  | `Column`                   | Pure value-vector reductions                                                                                                                                               |
+| `stdev`, `median`, `percentile(q)`                           | `Column`                   | Same — operate only on the value vector + validity                                                                                                                         |
+| `minMax`                                                     | `Column`                   | Single-pass `[min, max]` — fused for chart Y-extent (§B.1 / §B.2)                                                                                                          |
+| `count`                                                      | `Column`                   | Defined-cell count via validity bitmap; no key needed. Diverges from `series.length` when validity has gaps — see §B.7                                                     |
+| `any`, `all`, `none`                                         | `Column` (`BooleanColumn`) | Boolean predicates over validity-defined cells                                                                                                                             |
+| `uniqueCount`                                                | `Column` (`StringColumn`)  | Distinct-value cardinality; no time needed                                                                                                                                 |
+| `hasMissing`, `nullCount`                                    | `Column`                   | Validity-bitmap-only queries                                                                                                                                               |
+| `first`, `last`, `firstDefined`, `lastDefined`               | `Column`                   | Position-indexed; time-agnostic                                                                                                                                            |
+| `at(i)`, `values`, `validity`, `length`                      | `Column`                   | Position-indexed access                                                                                                                                                    |
+| `slice(start, end)`                                          | `Column`                   | Index-based; produces a Column view. `.length` on the view is O(1)                                                                                                         |
+| `binned(W, reducer)`                                         | `Column`                   | Equal-width index bins, scalar reducer per bin. For uniformly-sampled data only — see §5 close-cases                                                                       |
+| `fill('forward' \| 'backward' \| 'zero' \| { constant: N })` | `Column`                   | Adjacency- or constant-based — no time gap involved                                                                                                                        |
+| **`fill('linear')`**                                         | `TimeSeries`               | Interpolation rate depends on time gaps; needs key column                                                                                                                  |
+| `aggregate(every('5s'))`                                     | `TimeSeries`               | Bucket boundaries are time-shaped                                                                                                                                          |
+| `rolling('5s')`                                              | `TimeSeries`               | Window width is time                                                                                                                                                       |
+| `align(every('1s'))`                                         | `TimeSeries`               | Explicitly aligns values to a time grid                                                                                                                                    |
+| `within(t0, t1)`                                             | `TimeSeries`               | Time-based windowing — needs key column to translate `t` → index                                                                                                           |
+| `bisect(t)`                                                  | `TimeSeries`               | The bridge from time-space to index-space; this **is** the place where you cross from TimeSeries-land to Column-land for the chart use case                                |
+| `join`, `concat`, `groupBy`                                  | `TimeSeries`               | Multi-series / multi-column ops                                                                                                                                            |
+| `keyColumn().at(i)`, `keyColumn().slice(s, e)`               | `KeyColumn`                | Position-indexed access on the time/interval/timeRange axis. KeyColumn does NOT get reductions — `min`/`max` are trivially `begin[0]` / `end[length - 1]` given sortedness |
+
+The line should be drawn precisely. Close-call cases worth pinning:
 
 - **`fill('linear')` vs `fill('forward')`.** Linear interpolation
   needs the time deltas between defined cells to compute the slope;
-  forward fill just propagates the last defined value. So linear is
-  TimeSeries, forward is Column. Today both live on TimeSeries
-  uniformly; the column-centric split would put forward / backward /
-  zero / constant on Column and keep linear on TimeSeries. That
-  _exposes_ the dependency in the API shape, where today it's hidden.
+  forward fill just propagates the last defined value across the
+  adjacent index. So linear is TimeSeries, forward is Column. This
+  _exposes_ the dependency in the API shape, where today both live
+  on `series.fill(...)` uniformly and the time-dependence is
+  hidden in the implementation.
 - **`slice` vs `within`.** `col.slice(startIdx, endIdx)` is
   index-based and lives on Column; `series.within(t0, t1)` is
   time-based and lives on TimeSeries. The bridge is `series.bisect(t)`.
 - **`binned` vs `aggregate`.** `col.binned(W, reducer)` is
   index-bucket reduction (equal-width, W bins); `series.aggregate(every('5s'), ...)`
   is time-bucket reduction (boundaries derived from time). The
-  chart's per-pixel downsampler uses `binned`; an analytics pipeline
-  computing "5-minute averages" uses `aggregate`.
+  chart's per-pixel downsampler uses `binned` when sampling is
+  uniform; analytics pipelines computing "5-minute averages" use
+  `aggregate`. For non-uniformly-sampled chart data the chart needs
+  time-aware binning, which lives on TimeSeries — see §11 sequencing
+  and the close-case below.
+- **`binned` (index-domain) vs `series.binnedByTime` (time-domain).**
+  `col.binned(W, reducer)` divides the column's index range into W
+  equal-count bins. That's correct when adjacent samples are
+  uniformly time-spaced; if the data is bursty / gappy / irregular,
+  index bins won't align with pixel/time spans. The time-aware
+  variant — proposed as `series.binnedByTime(name, W, range, reducer)`
+  — lives on TimeSeries because it needs the key column to pick
+  bin boundaries. The chart picks one or the other based on whether
+  the data is known to be uniformly sampled.
 
 ### 5. The "detached from time axis" guardrail
 
@@ -188,12 +235,29 @@ This is a deliberate constraint, not an oversight. It enforces:
 - Columns are cheap to extract — no key-column copy / reference
   management.
 
-The discipline that protects this: **no method on Column takes a
-`KeyLike` or anything time-shaped as an argument.** That's the
-single-line guardrail. If a future contributor proposes
-`col.range(t0, t1)` or `col.aggregate(every('5s'), ...)`, the answer
-is "that's a TimeSeries method; use `series.within(t0, t1).column('x')`
-or `series.aggregate(...)`."
+The discipline that protects this is two-clause:
+
+> **Can you implement it knowing nothing about the key column,
+> AND is the result meaningful without time context?**
+
+The first clause is structural: no method on Column takes a `KeyLike`
+or anything time-shaped as an argument. The second clause catches a
+class the first misses — **monotonicity-aware reducers** like
+`isMonotonicIncreasing`, `maxRun`, `streakLength`. These can be
+implemented from the value vector alone (no key column), but the
+result is only meaningful because the caller assumes the column is
+time-ordered. Without that assumption, "monotone in value order" is
+just a fact about the array's contents — not a fact about the data.
+
+If a future contributor proposes:
+
+- `col.range(t0, t1)` → fails clause 1 (takes a KeyLike). Use
+  `series.within(t0, t1).column('x')`.
+- `col.aggregate(every('5s'), ...)` → fails clause 1. Use
+  `series.aggregate(...)`.
+- `col.isMonotonicIncreasing()` → passes clause 1, fails clause 2.
+  Lives on `TimeSeries` as `series.isMonotonicIncreasing('x')` because
+  the time-ordering assumption is what makes the result meaningful.
 
 This matches Arrow's `Array` vs `RecordBatch` design exactly:
 `arrow.Array` (single column) has no notion of an associated index;
@@ -213,7 +277,9 @@ const endIdx = series.bisect(viewport.end);
 
 // Step 2: Column-space from here (no time involved)
 const col = series.column('value').slice(startIdx, endIdx);
-const extents = col.binned(pixelWidth, 'extent'); // Float64Array(2W)
+const extents = col.binned(pixelWidth, 'minMax');
+// extents.lo: Float64Array(W)  — per-pixel min
+// extents.hi: Float64Array(W)  — per-pixel max
 ```
 
 `series.bisect()` is the canonical bridge from time-space to
@@ -542,8 +608,7 @@ keyColumn(): KeyColumnForSchema<S>;
 `KeyColumn` variants don't get the scalar reductions (`min`/`max` are
 trivially `begin[0]` / `end[length-1]` given the sortedness invariant),
 but they do get `.at(i)`, `.slice(s, e)`, and the typed-array
-accessors (`.begin`, `.end`, `.labels` per variant). See §B.5 of the
-V2 amendment.
+accessors (`.begin`, `.end`, `.labels` per variant).
 
 #### 7.6 Compared to today's row-API path
 
@@ -593,12 +658,10 @@ const ys = valueCol.values; // Float64Array; no guards needed
 ```
 
 The kind/storage dispatch becomes a type-system concern, not a
-runtime guard. (Storage discrimination — `packed` vs `chunked` — is
-covered by the existing materialize-or-direct-access dispatch inside
-Column; consumers don't have to think about it. If a chunked column
-appears, methods either materialize internally or expose a `.values`
-that returns the chunk array — TBD which is right; see open
-questions.)
+runtime guard. Storage discrimination (`packed` vs `chunked`) is
+handled inside the public Column class: `.values` returns the typed
+array directly when packed and throws when chunked; consumers who
+expect a chunked column call `.materialize().values` explicitly.
 
 Per-frame draw becomes:
 
@@ -612,10 +675,11 @@ function drawFrame() {
   const visible = series.column('value').slice(startIdx, endIdx);
 
   if (visible.length > cssWidth) {
-    // Per-pixel min/max downsampling — single column-method call
-    const extents = visible.binned(cssWidth, 'extent');
-    // extents[2*px] = lo for pixel px; extents[2*px+1] = hi
-    // ... draw vertical lines per pixel
+    // Per-pixel min/max downsampling — single column-method call.
+    // Returns two channels; canvas inner-loop reads `lo[px]` then
+    // `hi[px]` (stride-1 access on each channel).
+    const { lo, hi } = visible.binned(cssWidth, 'minMax');
+    // ... draw vertical lines from lo[px] to hi[px] per pixel
   } else {
     // No downsampling needed; draw raw values
     const ys = visible.values;
@@ -624,16 +688,31 @@ function drawFrame() {
 }
 ```
 
-`visible.binned(cssWidth, 'extent')` is the column-centric expression
+`visible.binned(cssWidth, 'minMax')` is the column-centric expression
 of M1 friction item #6 (`reduceColumnRange(col, start, end)`). The
 shape is cleaner than the friction note proposed — the consumer
 doesn't think in terms of "column ranges" as a primitive; they think
 "give me min and max per pixel" as a single call.
 
+**Uniform-sampling precondition.** `col.binned(W, ...)` does
+equal-width index binning. If the data's adjacent samples are
+uniformly time-spaced (M1 chart's 1-per-second data, a 60Hz sensor,
+etc.), pixel-aligned bins fall out naturally. If sample timing is
+irregular (telemetry that emits-on-change, financial tick data,
+sparse alarms), index bins don't align with pixel/time spans and
+the rendered min/max strip will lie about which pixel-time each
+extreme actually came from. For non-uniform data the chart uses
+`series.binnedByTime(name, W, range, reducer)` — a TimeSeries
+method that picks bin boundaries by time, not by index. See §11
+for sequencing — the time-aware variant lands separately because
+it lives on a different object.
+
 ### 9. Anti-patterns (what NOT to do)
 
 These shapes would betray the design discipline. Reject them in
 review:
+
+**Time-aware operations smuggled onto Column:**
 
 - **`col.aggregate(every('5s'), ...)`** — bucket boundaries are
   time; needs the key column. Use `series.aggregate(...)`.
@@ -643,15 +722,45 @@ review:
   `series.within(t0, t1).column('x')`.
 - **`col.fill('linear')`** — interpolation slope is time-based. Use
   `series.fill({ x: 'linear' })`.
+- **`col.binnedByTime(W, t0, t1, reducer)`** — time-based binning;
+  needs the key column. Use `series.binnedByTime(name, W, range, reducer)`.
+- **`col.isMonotonicIncreasing()` and other monotonicity-aware
+  reducers** — passes the syntactic test (no key column needed) but
+  fails the semantic test: the result is only meaningful when the
+  caller knows the column is time-ordered. Lives on TimeSeries.
+
+**Round-trips and mutation:**
+
 - **`col.toSeries()`** — round-tripping back to TimeSeries reopens
   the "what about the key column?" question and creates a parallel
   reconstruction path. If you need a TimeSeries-shaped result, do
-  the operation on TimeSeries.
+  the operation on TimeSeries. (When you genuinely need to ship a
+  downsampled column out as a new series — e.g. for an M3-style
+  overlay — build a fresh TimeSeries from `(slicedKeys.begin, col.values)`
+  via the existing `new TimeSeries({...})` path; explicit, no hidden
+  key-column reconstruction.)
 - **Column mutation methods** (`col.set(i, v)`, `col.push(v)`).
   Column is read-only. Mutations go through TimeSeries (which has
   the schema and can validate). For "I want to modify one column and
-  get a new series" semantics, see `series.mutate(...)` if/when
-  added, or the existing transform methods on TimeSeries.
+  get a new series" semantics, use the existing transform methods on
+  TimeSeries.
+
+**Presentation / serialization on Column:**
+
+- **`col.toArray(): number[]`** — `col.values` (the typed array) is
+  the canonical surface. If a consumer specifically wants a plain
+  `number[]` they write `Array.from(col.values)` at the call site.
+  Pond doesn't ship the helper because typed arrays are the
+  correct currency.
+- **`col.toJSON()`** returning plain-array JSON — same rationale.
+  Presentation / serialization belongs in adapters, not the substrate.
+- **`col.toString()` / formatted output** — presentation. Adapters'
+  job.
+- **`col.equals(other)`** — deep equality across columns is a
+  TimeSeries concern because schemas matter for comparison. (And
+  if you really need it on a column, `col.length === other.length
+&& col.values.every((v, i) => v === other.values[i])` is one line
+  at the call site, and you've made the equality semantics explicit.)
 
 The unifying anti-pattern is **anything that would make Column feel
 like "TimeSeries minus key column"**, because then every TimeSeries
@@ -663,17 +772,38 @@ is a strict subset: read-only, time-agnostic, scalar-producing.
 Existing call sites keep working unchanged. `series.reduce('value',
 'min')` is still supported; under the hood it dispatches through the
 same column fast path (PR #153) that `series.column('value').min()`
-would use. The two paths return the same result.
+would use. The two paths return the same result on well-typed inputs.
 
 Docs adopt the column-centric idiom as recommended going forward:
 
 ```ts
-// Old idiom (still works)
+// Old idiom (still works, but type-loose)
 const min = series.reduce('value', 'min');
 
 // Recommended idiom
 const min = series.column('value').min();
 ```
+
+**Deliberate type-system divergence (be honest about it).** The two
+paths agree on well-typed inputs but diverge on ill-typed ones:
+
+```ts
+// Old path — compiles, runtime-fails by returning undefined silently
+const x: ColumnValue | undefined = series.reduce('host', 'min');
+
+// New path — won't compile (StringColumn has no min())
+// @ts-expect-error
+const y = series.column('host').min();
+```
+
+This is an _improvement_. The row-API path's permissive typing
+(`'min'` is just a string; nothing checks that the column is
+numeric) is a known soft spot that lets ill-typed calls slip
+through to runtime; the column-centric idiom catches them at the
+call site. JSDoc on `series.reduce(col, reducer)` will note the
+preferred column-centric path for single-column work — pointing
+users toward the stricter idiom for new code without deprecating
+the existing one.
 
 The recommendation kicks in for single-column scalar reductions, the
 chart-extraction access pattern, and statistical summaries. The
@@ -713,69 +843,121 @@ This RFC connects to several in-flight and proposed work items:
 
 Suggested sequencing once this RFC adopts:
 
-1. Land the public `Column` / `KeyColumn` type re-exports
-   (M1 friction #4) — small, prerequisite.
-2. Add scalar reduction methods to `Float64Column` (`min`, `max`,
-   `sum`, `mean`, `stdev`, `median`, `percentile`, `count`).
-   Implementation dispatches through the existing internal
-   `ReducerDef.reduceColumn` path; no new perf work.
-3. Add `Float64Column.slice(start, end)` returning a Column view
-   over the underlying buffer. Zero-copy.
-4. Add `Float64Column.binned(W, reducer)` returning `Float64Array`.
-   Implementation is a loop over `reducer.reduceColumnRange`; the
-   `'extent'` variant is a fused single-pass min+max.
-5. Repeat (2) for `BooleanColumn` (`all`, `any`, `count`) and
-   `StringColumn` (`uniqueCount`, top-N) as the use cases earn
-   them — not on spec.
-6. Update docs to recommend the column-centric idiom for single-column
-   work.
+1. **Public type re-exports.** Land `Column` / `Float64Column` /
+   `BooleanColumn` / `StringColumn` / `ArrayColumn` / `KeyColumn`
+   variants from the `pond-ts` top-level barrel (M1 friction #4).
+   Prerequisite for everything else; small.
+2. **`Float64Column` scalar reductions.** `min`, `max`, `sum`,
+   `mean`, `stdev`, `median`, `percentile(q)`, `count`, `minMax`,
+   `hasMissing`, `nullCount`, `first`, `last`, `firstDefined`,
+   `lastDefined`. Implementation dispatches through the internal
+   `ReducerDef.reduceColumn` machinery shipped in PR #153 — no new
+   perf work, just method-level access. Ships with the type-level
+   acceptance tests (§7.4) under `tsc --noEmit` CI enforcement.
+3. **Slice + binned together (single PR).** `Float64Column.slice(start, end)`
+   (zero-copy view via the existing `sliceByRange` substrate
+   primitive) and `Float64Column.binned<R>(W, reducer)`
+   (implementation is a loop over `reducer.reduceColumnRange`; the
+   `'minMax'` variant is the fused single-pass min+max returning
+   `{ lo, hi }`). They ship together because they're "useless apart"
+   — `binned` without `slice` would need a four-arg
+   `(start, end, W, reducer)` signature; `slice` without `binned`
+   loses the chart's headline win.
+4. **`KeyColumn` `.at(i)` + `.slice(s, e)`.** Mirrors Column's
+   shape on the key axis. KeyColumn does NOT get scalar reductions.
+   Unblocks M5 (heatmap) and tooltip / crosshair flows.
+5. **M1 chart adopts the new API.** The chart-extraction experiment
+   updates its M1 implementation to use the column-centric idiom;
+   the friction report from that update loop feeds any V4 amendment
+   to this RFC.
+6. **`BooleanColumn` / `StringColumn` reductions, on demand.**
+   `all` / `any` / `none` on `BooleanColumn`; `uniqueCount` on
+   `StringColumn`. Each method lands when an actual consumer use
+   case earns it — not on spec. Docs lead with the **generic
+   `Column` shape** (length, at, slice, validity, values, kind,
+   storage, materialize) and surface per-kind reductions as "what
+   `Float64Column` adds" / "what `BooleanColumn` adds" so the
+   asymmetry reads as additive rather than "strings are
+   second-class."
+7. **(Deferred) `series.binnedByTime(name, W, range, reducer)` on
+   TimeSeries** — the time-aware variant for irregular-sample
+   charts. Lives on TimeSeries because it needs the key column;
+   lands when an experiment milestone hits irregular data and
+   surfaces the friction.
+8. **Update docs across the site** to recommend the column-centric
+   idiom for single-column work. JSDoc on `series.reduce(col, reducer)`
+   points single-column callers at the column-centric path.
 
-Each step lands as its own PR with the standard two-pass review.
+Each step lands as its own PR with the standard two-pass review
+(L2 + Codex).
 
 ### 12. Open questions
 
-- **Storage-discriminator handling.** Today `series.column('x')` may
-  return a `ChunkedFloat64Column` if the series was built via
-  `concatSorted`. Should Column methods auto-materialize chunks, or
-  should `.values` throw on chunked storage and force the caller to
-  call `.materialize()` first? Auto-materialize is friendlier but
-  hides an O(N) cost behind a property access. Throwing is honest
-  but pushes the dispatch back to the caller (the M1 friction item
-  #1 we're trying to eliminate). Probably: provide `.values` that
-  returns the typed array if packed, throws if chunked; provide
-  `.materialize().values` as the explicit "I'll pay for it" path;
-  provide `.iterate()` (or similar) for streaming access that works
-  uniformly across both. Worth a dedicated decision before #2 above.
-- **`Float64Column.subarray(start, end)`** as a name. Better than
-  `slice`? `slice` is the data-frame idiom (Polars, Pandas); but
-  TypedArray's `subarray` is exactly what we want semantically
-  (view, not copy). Or both, with `slice` as the documented name
-  and `subarray` as an alias?
-- **`binned` reducer string vs callback.**
-  `col.binned(W, 'extent')` — string-typed reducer name. Same
-  string-discoverability issue as today's `series.reduce(col,
-reducer)`. Should `binned` take a callback (`(slice) => [number,
-number]`)? Or a `BinnedReducerDef`? Or just a hand-typed string
-  union of `'min' | 'max' | 'mean' | 'extent' | ...`? Lean toward
-  string union for autocompletion; rich callback for power users
-  via a separate overload.
-- **`'extent'` reducer.** Defined as "min and max in one pass,
-  returns `[lo, hi]`." Doesn't fit `kind: 'number'` output (it's
-  array-shaped). New reducer-output kind, or chart-only utility?
-  If the latter, `col.binned(W, 'extent')` returns `Float64Array(2W)`
-  by special-casing it in the `binned` implementation. Worth a
-  decision before #4.
-- **`StringColumn` / `BooleanColumn` surface scope.** This RFC's
-  thrust is mostly motivated by `Float64Column`. The same shape
-  generalizes — but BooleanColumn doesn't have `min` (or does:
-  `false`); StringColumn has `top` / `unique` but not `mean`. Per-kind
-  method sets need to be drawn carefully. Probably scope to the
-  driving use case (chart needs Float64; defer Boolean/String/Array
-  expansion to when a real consumer earns each method).
-- **Per-pixel binning semantics for chunked columns.** If
-  `binned(W, 'extent')` is called on a chunked column, does it
-  materialize first? Stream chunk-by-chunk? Probably the same
-  decision as the `.values`-on-chunked question above.
+**Closed (decided in the spec body above, not open):**
+
+- ~~_Q1: Storage-discriminator handling._~~ — Decided in §8 / §B.1:
+  `.values` returns the typed array directly when packed and throws
+  when chunked; `.materialize().values` is the explicit "I'll pay
+  for it" path; `.scan()` (per pond's existing `scan(invalidValue?)`
+  idiom) is the kind-uniform streaming access that works across
+  both.
+- ~~_Q2: `slice` vs `subarray` naming._~~ — Decided: `slice` (matches
+  Polars / Pandas data-frame idiom; TypedArray's `subarray` is
+  too-similar to the typed-array primitive and confuses the API
+  surface).
+- ~~_Q3: Reducer string vs callback._~~ — Decided: string union for
+  built-ins (autocompletion via TypeScript literal narrowing),
+  callback overload for custom reducers. Matches `series.reduce(col,
+reducer)` shape.
+- ~~_`'extent'` reducer output kind._~~ — Resolved by the V2 rename
+  to `'minMax'`. The output shape is `{ lo: Float64Array(W); hi:
+Float64Array(W) }` for the binned variant and `[number, number]`
+  for the scalar variant. Special-cased in `binned`'s
+  implementation; doesn't introduce a new reducer-output kind.
+- ~~_`series.column('x')` caching / identity stability._~~ —
+  Decided: cached, identity-stable for the parent series' lifetime.
+  `series.column('x') === series.column('x')` holds. A
+  lazily-constructed wrapper memoized on first access. Safe because
+  Column is immutable. (This closes the previous Q6/Q8
+  contradiction in V2: V2 had Q6 claiming "don't assume identity-
+  stable" and Q8 deciding "cached and memoized"; the answer is Q8
+  — chart's per-frame draw closure depends on cheap re-invocation,
+  and the immutability makes caching safe. Implementation reuses
+  the existing `#store` field on TimeSeries.)
+
+**Open (need decisions before or during implementation):**
+
+- **`.values` validity trap.** `col.values` returns the dense
+  underlying buffer; cells outside `col.validity` are unspecified
+  (currently `0` for `Float64Column`, but not contractual). The §8
+  worked example reads `.values` directly without a validity check
+  — fine for the M1 use case (the chart is OK with whatever the
+  buffer says at invalid cells; downsampling and rendering aren't
+  validity-sensitive), but a real gotcha for statistical consumers.
+  The RFC pins the contract: **`col.values` is the dense buffer;
+  validity-aware code must consult `col.validity`.** `col.scan()`
+  is the safe default for validity-aware iteration. Open question:
+  rename `.values` to `.rawValues` to make the trap louder? Lean
+  no — `.values` is the ergonomic name everyone expects.
+- **Column lifetime semantics.** `Column` is a view over the
+  parent series' typed buffers. The `Float64Array` survives via
+  its `ArrayBuffer` reference even if the parent series goes out
+  of scope (V8 GC honors live `ArrayBuffer` references). The
+  contract should be pinned: "Column is safe to hold across
+  parent-series GC."
+- **`.slice()` on a chunked column.** Same shape as Q1 but
+  reaches deeper. Probably: returns a chunked view if the slice
+  spans multiple chunks; returns a packed view if the slice falls
+  within one chunk. Defer to the chunked-column-aware methods
+  implementation; not blocking on the spec.
+- **`series.binnedByTime` shape.** Sequenced for after M1 + chart
+  update loop reveal where irregular-sampling friction actually
+  lives. Likely shape: `series.binnedByTime(name: ValueColumnName<S>,
+bins: number, range: { begin: TimeLike; end: TimeLike }, reducer:
+ReducerName | ReducerFn): BinnedResult`. Lives on TimeSeries (needs
+  the key column). Open: should `binnedByTime` accept precomputed
+  per-pixel index ranges as a fast-path? (chart already has
+  `bisect()` results, doesn't need TimeSeries to re-compute them).
 
 ### 13. The line to hold
 
@@ -790,9 +972,10 @@ internalize:
 > Column). Don't add anything to Column that would betray that line.
 
 That's the one-paragraph version. If a contributor proposes a Column
-method, the test is: "does this need to know what timestamp index
-`i` is at, or what other columns exist?" If yes → TimeSeries. If no
-→ Column.
+method, the two-clause test is: **(1) does this need to know what
+timestamp index `i` is at, or what other columns exist? (2) is the
+result meaningful without time context?** If yes to (1) or no to (2)
+→ TimeSeries. Only "no, and yes" → Column.
 
 This is what keeps the API from sprawling into a Polars-shape
 parallel surface. Pond's value proposition is the **time-aware**
@@ -1022,237 +1205,94 @@ the `Column.toArray()` and validity-trap anti-patterns, and reframe
 the relationship to `columnar-core.md` as an explicit (small)
 walkback rather than a pure supplement.
 
-## V2 amendment: response to reviews (pond-ts library agent + pjm17971, 2026-05-26)
+## V3 amendment: single-spec restructure (pond-ts library agent + pjm17971, 2026-05-27)
 
-Both reviews landed substantive findings. This amendment integrates
-them. The original draft above is preserved intact except for one
-factual fix applied in-place (`between` → `within` throughout, per
-the library review's point #1). All design changes below layer on
-top of the original; they don't rewrite it.
+After Codex's adversarial pass on the V2-amended draft flagged that
+the amendment-on-top-of-original pattern left contradictory text in
+the spec (original §4 said `extent`, V2 said `minMax`; original §1
+said "supplements `columnar-core.md`," V2 reframed as walkback;
+Q6 ↔ Q8 contradicted on column identity), this V3 amendment
+restructures the RFC into a single coherent body. The V2 amendment
+section is gone — its content was inlined into §1–§13 directly.
 
-### A. Factual fix applied in-place
+**What changed in the body:**
 
-- `series.between(t0, t1)` → `series.within(t0, t1)`. The actual
-  TimeSeries method is `within(begin, end) | within(range)` at
-  `packages/core/src/batch/time-series.ts:3936`. The original draft's
-  prose used a method that doesn't exist; sections 4, 6, 8, 9, 13 are
-  corrected. (Library review #1.)
+- **§3 (proposal):** rewritten to reflect final API names — `minMax`,
+  generalized `binned<R>`, no `col.fill` rich variants (just the
+  discriminated `fill(method)` for v1; see open question above for
+  whether even that survives Codex's "fill violates the read-only
+  thesis" finding, addressed in piece C).
+- **§4 (division of labor):** table expanded with V2 additions
+  (`any` / `all` / `none`, `hasMissing` / `nullCount`, `first` /
+  `last` / `firstDefined` / `lastDefined`, `minMax`,
+  `uniqueCount`). Marked "illustrative, not exhaustive." Close-call
+  cases extended with `binned` vs `series.binnedByTime`.
+- **§5 (guardrail):** added the second clause — "AND is the result
+  meaningful without time context" — with monotonicity-aware
+  reducers as the worked counter-example.
+- **§6 (the bridge):** updated example to use `minMax` and the
+  two-channel `{ lo, hi }` output layout from the V2 chart-review
+  fix.
+- **§7 (type system):** previously rewritten in piece A to lay out
+  the actual conditional types, per-kind interfaces, and type-level
+  acceptance tests. The schema-narrowing claim is now backed by a
+  verified-compilable TypeScript design.
+- **§8 (chart use case):** updated worked example with final names;
+  added the uniform-sampling precondition for `binned` and the
+  pointer to `series.binnedByTime` for irregular data.
+- **§9 (anti-patterns):** extended with V2 additions (`col.toArray()`,
+  `col.toJSON()`, `col.equals()`, `col.toString()`) and the
+  monotonicity case from §5.
+- **§10 (migration):** added the honesty hedge about deliberate
+  type-system divergence between row-API and column-API paths
+  (column path catches what row path elides — an _improvement_, not
+  a parity break).
+- **§11 (sequencing):** collapsed steps 3 + 4 into one PR ("slice +
+  binned together — they're useless apart"); added explicit
+  `KeyColumn.at`/`.slice` step; added the M1 chart adoption loop;
+  added the deferred `series.binnedByTime` step.
+- **§12 (open questions):** audited — Q1, Q2, Q3, the `'extent'`
+  output question, and the column-identity caching question
+  closed (decided in the body above). Q6/Q8 contradiction in V2
+  resolved: cached, identity-stable. New open questions added for
+  the `.values` validity trap, Column lifetime, `.slice()` on
+  chunked columns, and `series.binnedByTime` shape.
+- **§13 (the line to hold):** updated to the two-clause test.
 
-### B. Substantive design changes
+**What stayed unchanged:**
 
-1. **`extent` reducer renamed to `minMax`.** The library reviewer
-   caught that `extent` already has a temporal meaning in pond
-   (`event.timeRange()` returns the event extent; `series.intersection`
-   speaks of series extent). Reusing `extent` for a value-range
-   reducer would collide. The fused single-pass min+max reducer is
-   now `minMax`. Promoted from "use `binned(1, 'extent')`" to a
-   first-class scalar method per the chart reviewer's point #2:
-   `Float64Column.minMax(): [number, number]`. (Library review #8;
-   chart review #1, #4.)
+- The thesis. The Column / TimeSeries division is the same idea;
+  the V3 work was about making the spec internally consistent and
+  the type-system claim backed.
+- Both review-notes sections. They're the audit trail of what
+  reviewers said, preserved verbatim.
+- The walkback framing in section 1 (original "supplements
+  columnar-core.md" prose). The V2 amendment's "this is a small
+  scoped walkback, not pure supplement" reframe should land
+  in-place in the relationship-to-other-RFCs metadata at the top
+  of the document. A V4 amendment can address that header-metadata
+  edit if Codex's next pass flags it; this V3 focused on the body.
 
-2. **`binned(W, 'minMax')` output is two-channel, not interleaved.**
-   The chart reviewer caught a real cache-pattern issue: an
-   interleaved `Float64Array(2W)` forces stride-2 access in the
-   per-pixel draw loop. The output is now
-   `{ lo: Float64Array(W); hi: Float64Array(W) }` — stride-1 access
-   on each channel, matches how canvas drawing actually consumes the
-   data, and lets the outer Y-extent be cheaply computed as
-   `Math.min(...lo) / Math.max(...hi)`. (Chart review #4.)
+**What V3 does NOT do (still deferred to pieces B and C):**
 
-3. **`binned` return type generalized.** Was implicitly
-   `Float64Array`. Now `binned<R>(W, reducer): ReducerOutput<R>` so
-   LTTB and other multi-point per-bucket reducers fit later without
-   reshaping the signature. Built-in returns: `min/max/mean/median/...`
-   → `Float64Array(W)`; `minMax` → `{ lo, hi }`; future LTTB →
-   `{ keys: Float64Array; values: Float64Array }` with W output
-   points. (Chart review #4.)
+- **B: `binned` → `binnedByIndex` rename.** The body still calls
+  the method `binned`. Codex's finding #2 (index bins are not pixel
+  bins for irregular data) is partially addressed by §4's close-case
+  note and §8's uniform-sampling precondition, but the rename
+  itself is piece B.
+- **C: Remove `col.fill` entirely.** The body still shows
+  `col.fill(method)` per V2. Codex's finding #3 (fill violates the
+  read-only thesis; forward-fill depends on time-gap semantics)
+  recommends removing fill from Column for v1. Piece C handles
+  the deletion.
 
-4. **`slice` + `binned` ship in one PR.** Original sequencing had
-   them as steps 3 and 4. They're useless apart — without `slice`,
-   `binned` would need a four-arg `(start, end, W, reducer)`
-   signature. Now jointly step 3. (Chart review #3.)
+Both pieces are mechanical edits to the post-V3 body and don't
+require additional design.
 
-5. **KeyColumn surface explicit.** `KeyColumn` gets `.at(i)` and
-   `.slice(s, e)` (zero-copy view, mirroring Column). It does NOT
-   get scalar reductions — `min` / `max` over a sorted key column
-   are trivially `keys.begin[0]` / `keys.end[length - 1]` and
-   shouldn't be wrapped in a method that suggests an O(N) walk.
-   Future M5 (heatmap) and tooltip flows will use `keys.at(i)` to
-   resolve the hovered cell's timestamp. (Chart review #1.)
+**Adoption gate (unchanged from V2's framing):**
 
-6. **Division of labor table extended.** Added to the Column side:
-   `any` / `all` / `none` (boolean predicates over validity-defined
-   cells, primarily `BooleanColumn`), `hasMissing` / `nullCount`
-   (validity-bitmap-only), `first` / `last` / `firstDefined` /
-   `lastDefined` (position-indexed). The table is now declared
-   "illustrative, not exhaustive" — the discipline is the test in
-   section 5, not the specific list. (Library review #2.)
-
-7. **`count` semantics pinned, kept as `count`.** `col.count()`
-   returns defined-cell count, not event count. This diverges from
-   `series.length` (event count) when validity bitmap has gaps.
-   Considered renaming to `definedCount` / `validCount` for
-   disambiguation, but `count` matches data-frame idiom (Polars /
-   Pandas / numpy all use `count` for non-null count on a column)
-   and the divergence is documentable rather than rename-around-able.
-   JSDoc on `count` will lead with "count of defined cells, not
-   events," and the docs site recipe will pin a short example.
-   (Library review #3.)
-
-8. **"Detached from time" guardrail tightened (section 5).** The
-   one-line test gains a second clause:
-
-   > _Can you implement it knowing nothing about the key column,
-   > **AND is the result meaningful without time context?**_
-
-   Without the second clause, monotonicity-aware reducers
-   (`isMonotonicIncreasing`, `maxRun`) would pass syntactically but
-   produce results that are only meaningful because the caller
-   assumes time-alignment. The amended guardrail catches the
-   semantic case. (Library review #4.)
-
-9. **Anti-patterns extended (section 9).** Added:
-   - `col.toArray(): number[]` — `col.values` is the canonical
-     surface; if `number[]` is needed, write `Array.from(col.values)`
-     at the call site. Pond doesn't ship the helper.
-   - `col.toJSON()` returning plain-array JSON — same rationale;
-     presentation/serialization belongs in adapters.
-   - `col.equals(other)` — deep equality is a TimeSeries concern
-     because schemas matter.
-   - `col.toString()` / formatted output — presentation belongs in
-     adapters, not the substrate.
-
-   And one workaround that's NOT an anti-pattern (chart reviewer's
-   point on `col.toSeries()`): building a new `TimeSeries` from
-   `(slicedKeys.begin, col.values)` is the explicit path when M3
-   wants a downsampled series. (Library review #5; chart review #2.)
-
-10. **Migration story honesty pass (section 10).** Amended to
-    acknowledge the deliberate type-system divergence:
-    `series.reduce('host', 'min')` compiles and fails at runtime;
-    `series.column('host').min()` won't compile. The two paths agree
-    only on well-typed inputs. JSDoc on `series.reduce(col, reducer)`
-    will note the preferred column-centric path for single-column
-    work. This is an _improvement_ — the row-API path's permissive
-    typing is a known soft spot, and the column-centric idiom fixes
-    it at the call site for new code. (Library review #6.)
-
-11. **Documentation discipline for kind asymmetry (section 11).**
-    The docs page leads with the **generic `Column` shape** (read,
-    scan, slice, validity, values, length, kind, storage), then
-    surfaces per-kind reductions in a "what `Float64Column` adds"
-    sub-section. Same for `StringColumn` / `BooleanColumn` when
-    their methods earn the surface. This frames the Float64 richness
-    as additive, not "strings are second-class." (Library review #7.)
-
-12. **Naming decisions resolved:**
-    - `slice` (not `subarray`). Resolves open question Q2.
-    - `extent` → `minMax`. Per #1 above.
-    - `percentile(q)` takes `q ∈ [0, 100]`. Matches numpy / pondjs /
-      the existing row-API string reducer convention (`'p95'`, `'p99'`,
-      etc., where the suffix is `[0, 100]`). Pandas's `[0, 1]` rejected
-      for cross-API consistency. (Library review #8.)
-    - `fillForward` / `fillBackward` / `fillZero` / `fillConstant`
-      → `col.fill(method)` single method with a discriminated argument:
-      `'forward' | 'backward' | 'zero' | { constant: number }`.
-      Matches `series.fill({ x: 'forward' })` shape. Reduces surface
-      area. (Library review #8.)
-    - `binned` retained over `downsampleTo`. Binned is the more
-      general term (multi-point reducers, statistical binning, not
-      only chart downsampling); downsampling is one application.
-      (Library review #8.)
-
-13. **Open questions audit (section 12 amended):**
-    - **Q1 (storage-discriminator handling)**: closed. `.values`
-      throws on chunked; `.materialize().values` is the explicit
-      path; `.iterate()` (or `.scan()` per pond's existing
-      `scan(invalidValue?)` idiom) is the kind-uniform streaming
-      access. Pinned in section 7.
-    - **Q3 (binned reducer string vs callback)**: closed. String
-      union for built-ins (autocompletion); callback overload for
-      custom reducers; matches `series.reduce(col, reducer)` shape.
-    - **New Q5: `.values` validity trap.** `col.values` returns the
-      dense buffer; cells outside `col.validity` are unspecified
-      (currently `0` for `Float64Column`, but not contractual). The
-      worked example in section 7 needs a validity-aware variant:
-      either show `col.iterate()` as the safe default, or show the
-      `col.validity` bits-check beside `.values`. Open question:
-      should `.values` be renamed `.rawValues` to make the trap
-      louder? Lean no — `.values` is the ergonomic name everyone
-      expects, and validity is a real but separable concern.
-    - **New Q6: lifetime semantics.** `Column` is a view over the
-      parent series' typed buffers. The `Float64Array` survives via
-      its `ArrayBuffer` reference even if the parent series goes out
-      of scope (V8 GC honors live `ArrayBuffer` references). The
-      contract should be pinned: "Column is safe to hold across
-      parent-series GC; do not assume `series.column('x') === series.column('x')`
-      across calls without explicit memoization."
-    - **New Q7: `.slice()` on chunked column.** Same shape as Q1.
-      Probably: returns a chunked view if the slice spans multiple
-      chunks; returns a packed view if the slice falls within one
-      chunk. Defer to the chunked-column-aware methods implementation.
-    - **New Q8: `series.column('x')` caching.** Chart reviewer's
-      point: the per-frame draw closure calls `series.column('value')`
-      inline; if that allocates per call, the chart needs to hoist.
-      Decision: `series.column('x')` is **free to call** — returns
-      a cached Column instance lazily constructed on first access,
-      memoized for the series' lifetime. The Column itself is
-      immutable so caching is safe.
-
-14. **Arrow analogy nuance (section 5).** Amended to note the
-    relevant chunking difference: Arrow's `Array` is `ChunkedArray<T>`
-    at the type level; pond's `Column` discriminated union flattens
-    `packed` vs `chunked` storage under one type. Pond's `.values`
-    exposing the packed buffer directly is a deliberate departure
-    from Arrow's "always iterate via visitor" pattern — it accepts
-    the chunked-storage cliff (`.values` throws) in exchange for
-    zero-cost packed access in the common case. (Library review #10.)
-
-15. **Walkback framing honesty (section 1).** Reframed: this RFC is
-    a **deliberate, small, scoped walkback** of `columnar-core.md`'s
-    "public API remains event-shaped" commitment. The walkback is
-    justified by the chart-extraction friction evidence (M1 cold
-    validation, with 6 library-actionable items). It is scoped to
-    _single-column, time-agnostic_ operations — anything multi-column
-    or time-aware stays event-shaped per the original commitment. The
-    "supplement" framing in the original draft was understated;
-    calling it a walkback in section 1 saves future arguments.
-    (Library review #11.)
-
-### C. Adoption gate
-
-After this V2 amendment, the RFC is positioned for a Codex
-adversarial pass. The library reviewer ended at **medium confidence**
-("the type-system shape of per-kind narrowing — section 7 — is the
-kind of detail where this review is below the depth needed"). That
-recommendation maps cleanly onto the standard Codex-after-medium-L2
-protocol from `CLAUDE.md`. Adoption into PLAN.md gates on the Codex
-pass landing without category-1 (correctness) or category-2 (design)
-findings that would force another amendment round.
-
-### D. What lands once adopted
-
-Per the amended section 11:
-
-1. Public `Column<K>` and `KeyColumn` type re-exports from
-   `pond-ts` top-level barrel (M1 friction #4 prerequisite).
-2. Float64Column scalar reductions: `min`, `max`, `sum`, `mean`,
-   `stdev`, `median`, `percentile(q)`, `count`, `minMax`. Plus
-   value-vector predicates: `hasMissing`, `nullCount`. Plus
-   position-indexed: `first`, `last`, `firstDefined`, `lastDefined`,
-   `at(i)`, `values`, `length`, `validity`. (Dispatches through PR #153's
-   internal `reduceColumn` fast path.)
-3. **`Float64Column.slice(start, end)`** + **`Float64Column.binned<R>(W, reducer)`**
-   as one PR (zero-copy view + binned reducer family).
-4. `KeyColumn.at(i)` + `KeyColumn.slice(s, e)`. KeyColumn does not
-   get scalar reductions.
-5. `Float64Column.fill(method)` — single method with discriminated
-   argument.
-6. Update M1 chart to use the new API (the "alongside update loop"
-   per the original sequencing). Friction note captures any residual
-   awkwardness for V3 amendment / future RFC.
-7. BooleanColumn / StringColumn / ArrayColumn reductions: case-by-case
-   as use cases earn them. Docs framed as "what each kind adds" to the
-   generic Column shape.
-
-Each step lands as its own PR with the standard two-pass review.
+After pieces B and C land, a fresh Codex adversarial pass should
+review the consolidated spec. If it lands without category-1 or
+category-2 findings, the RFC is ready for adoption into PLAN.md
+and the first-pass implementation can begin. The type-level
+acceptance tests in §7.4 are the implementation-side contract.
