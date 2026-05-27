@@ -229,6 +229,76 @@ describe('Float64Column public methods', () => {
       expect(c.lastDefined()).toBeUndefined();
     });
   });
+
+  describe('toFloat64Array — storage-agnostic gather', () => {
+    it('packed: returns the underlying .values reference (no allocation)', () => {
+      const c = f64([1, 2, 3, 4, 5]);
+      const out = c.toFloat64Array();
+      // Identity: same Float64Array reference as .values. Caller
+      // shares the column's trusted-buffer read-only contract.
+      expect(out).toBe(c.values);
+      expect(out).toBeInstanceOf(Float64Array);
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('packed empty column returns an empty Float64Array', () => {
+      const c = f64([]);
+      const out = c.toFloat64Array();
+      expect(out).toBeInstanceOf(Float64Array);
+      expect(out.length).toBe(0);
+    });
+
+    it('packed with validity: returns raw values including undefined-marked slots', () => {
+      // The undefined-marked positions still carry whatever value
+      // the source put there — toFloat64Array doesn't replace
+      // them with NaN. Validity-aware iteration is a separate
+      // concern via .validity / .scan.
+      const c = f64([10, 999, 20, 999, 30], [true, false, true, false, true]);
+      const out = c.toFloat64Array();
+      expect(Array.from(out)).toEqual([10, 999, 20, 999, 30]);
+    });
+
+    it('packed slice: returns the subarray view (still shares buffer)', () => {
+      const c = f64([1, 2, 3, 4, 5]);
+      const slice = c.slice(1, 4);
+      const out = slice.toFloat64Array();
+      expect(Array.from(out)).toEqual([2, 3, 4]);
+      // Subarray view → shares the parent buffer.
+      expect(out.buffer).toBe(c.values.buffer);
+    });
+
+    it('chunked: gathers all chunks into a fresh Float64Array', async () => {
+      // Import lazily so the test file can stay symmetric with the
+      // other per-kind blocks above.
+      const { ChunkedFloat64Column } =
+        await import('../src/columnar/chunked-column.js');
+      const chunked = new ChunkedFloat64Column([
+        new Float64Column(Float64Array.from([1, 2, 3]), 3),
+        new Float64Column(Float64Array.from([4, 5]), 2),
+        new Float64Column(Float64Array.from([6, 7, 8, 9]), 4),
+      ]);
+      const out = chunked.toFloat64Array();
+      expect(out).toBeInstanceOf(Float64Array);
+      expect(out.length).toBe(9);
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    });
+
+    it('chunked: each call allocates fresh (chunked has no aliasable buffer)', async () => {
+      const { ChunkedFloat64Column } =
+        await import('../src/columnar/chunked-column.js');
+      const chunked = new ChunkedFloat64Column([
+        new Float64Column(Float64Array.from([1, 2]), 2),
+        new Float64Column(Float64Array.from([3, 4]), 2),
+      ]);
+      const a = chunked.toFloat64Array();
+      const b = chunked.toFloat64Array();
+      expect(Array.from(a)).toEqual([1, 2, 3, 4]);
+      expect(Array.from(b)).toEqual([1, 2, 3, 4]);
+      // Two distinct allocations — chunked has no single buffer
+      // to alias, so successive calls must each materialize.
+      expect(a).not.toBe(b);
+    });
+  });
 });
 
 // ─── BooleanColumn ──────────────────────────────────────────────

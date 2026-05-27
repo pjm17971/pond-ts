@@ -245,6 +245,49 @@ declare module './columnar/column.js' {
     lastDefined(): number | undefined;
 
     /**
+     * Storage-agnostic typed-array gather. Returns the column's
+     * values as a `Float64Array` whose length equals `this.length`,
+     * identity-on-packed and gather-on-chunked:
+     *
+     * - **Packed** (`Float64Column`): returns `this.values` —
+     *   same reference, no allocation. The returned buffer
+     *   shares the underlying storage with the column; same
+     *   trusted-buffer read-only contract as `.values`.
+     * - **Chunked** (`ChunkedFloat64Column`): allocates a fresh
+     *   `Float64Array(this.length)` and gathers the chunks into
+     *   it via `materializeChunkedFloat64`. One linear pass.
+     *
+     * Motivating use case (chart-experiment M2 friction note
+     * F1 / NF3 / MF4): chart adapters that want raw typed-array
+     * access for inline canvas draw without caring about
+     * storage. Replaces the awkward
+     *
+     * ```ts
+     * if (col.storage !== 'packed') throw ...;
+     * const values = col.values;
+     * ```
+     *
+     * with
+     *
+     * ```ts
+     * const values = col.toFloat64Array();
+     * ```
+     *
+     * Validity is not encoded — `toFloat64Array` returns the
+     * raw value buffer including any undefined-marked slots.
+     * Callers that need gap-aware iteration check
+     * `col.hasMissing()` / `col.validity` separately, or use
+     * `col.scan(fn)` for the storage-agnostic skip-undefined
+     * walk.
+     *
+     * Symmetric methods on other kinds (`BooleanColumn` →
+     * `Uint8Array`, etc.) can land as friction-driven additions;
+     * the chart's hot path is numeric, so v1 ships only the
+     * `Float64Column` version.
+     */
+    toFloat64Array(): Float64Array;
+
+    /**
      * Index-bucketed reduction. See `docs/rfcs/column-api.md` §7.3
      * and §8 worked example.
      *
@@ -339,6 +382,15 @@ declare module './columnar/chunked-column.js' {
     last(): number | undefined;
     firstDefined(): number | undefined;
     lastDefined(): number | undefined;
+    /**
+     * Gather all chunks into a fresh `Float64Array(this.length)`.
+     * Mirrors `Float64Column.toFloat64Array`'s shape — always
+     * returns a `Float64Array` whose length equals `this.length`.
+     * For chunked columns the result is always a fresh
+     * allocation (chunked storage has no single contiguous
+     * buffer to alias).
+     */
+    toFloat64Array(): Float64Array;
     bin<R extends BinReducerName>(bins: number, reducer: R): BinOutput<R>;
   }
 
@@ -552,6 +604,13 @@ Float64Column.prototype.lastDefined = function (): number | undefined {
     if (v.isDefined(i)) return this.values[i];
   }
   return undefined;
+};
+
+Float64Column.prototype.toFloat64Array = function (): Float64Array {
+  // Identity on packed — `this.values` IS the Float64Array.
+  // Same buffer, no allocation. Read-only by convention (same as
+  // .values).
+  return this.values;
 };
 
 /**
@@ -1020,6 +1079,11 @@ ChunkedFloat64Column.prototype.firstDefined = function (): number | undefined {
 };
 ChunkedFloat64Column.prototype.lastDefined = function (): number | undefined {
   return materializeChunkedFloat64(this).lastDefined();
+};
+ChunkedFloat64Column.prototype.toFloat64Array = function (): Float64Array {
+  // Chunked storage has no single contiguous buffer; materialize
+  // gathers chunks into a fresh `Float64Array(this.length)`.
+  return materializeChunkedFloat64(this).values;
 };
 ChunkedFloat64Column.prototype.bin = function <R extends BinReducerName>(
   bins: number,
