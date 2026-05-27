@@ -4391,11 +4391,23 @@ columnar.mjs`.
    Codex pass on V3 → V3.1 fixes (KeyColumn range-key invariant,
    per-kind method consistency, walkback log cleanup). Adopted as
    the binding spec; sub-step status:
-   - **8a — Public type re-exports.** Land `Column` /
-     `Float64Column` / `BooleanColumn` / `StringColumn` /
-     `ArrayColumn` / `KeyColumn` variants from the `pond-ts`
-     top-level barrel (M1 friction #4). Prerequisite for everything
-     else; small. Pending.
+   - **8a — Public type re-exports.** ✅ Shipped (PR #154,
+     merged 2026-05-27). Re-exported the curated public Column
+     surface from `pond-ts`'s top-level barrel: per-kind classes
+     (Float64Column / BooleanColumn / StringColumn / ArrayColumn),
+     chunked variants, key-column variants (TimeKeyColumn /
+     TimeRangeKeyColumn / IntervalKeyColumn), union /
+     discriminator types (Column, KeyColumn, ColumnKind,
+     ColumnStorage, ScanOptions, IntervalLabelKind,
+     ValidityBitmap). Substrate-internal items (builders,
+     validity helpers, ColumnarStore, view transforms,
+     concatSorted, scatterByPartition, ColumnarRingBuffer,
+     factory functions, sentinels) deliberately held back. Closes
+     M1 friction item #4. Type test
+     `packages/core/test-d/column-api-reexports.test-d.ts` pins
+     every re-exported symbol against the literal-narrowing
+     contract. L2 high confidence, no Codex round needed (pure
+     re-export, no runtime behavior change).
    - **8b — `Float64Column` scalar reductions.** `min`, `max`,
      `sum`, `mean`, `stdev`, `median`, `percentile(q)`, `count`,
      `minMax`, `hasMissing`, `nullCount`, `first`, `last`,
