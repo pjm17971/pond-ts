@@ -82,7 +82,7 @@ export type PublicColumnForKind<
         : never;
 
 /**
- * Reducer-name string accepted by `Float64Column.binnedByIndex(W,
+ * Reducer-name string accepted by `Float64Column.bin(W,
  * reducer)`. Built-in scalar reducers (`'min'`, `'max'`, `'sum'`,
  * `'mean'`, `'stdev'`, `'median'`, `'count'`) produce one number per
  * bin. The percentile family is reached via the `'p${q}'`
@@ -91,7 +91,7 @@ export type PublicColumnForKind<
  * it returns a two-channel `{ lo, hi }` rather than a single
  * `Float64Array`.
  */
-export type BinnedByIndexReducerName =
+export type BinReducerName =
   | 'min'
   | 'max'
   | 'sum'
@@ -103,7 +103,7 @@ export type BinnedByIndexReducerName =
   | 'minMax';
 
 /**
- * Output type for `Float64Column.binnedByIndex(W, reducer)`. Narrows
+ * Output type for `Float64Column.bin(W, reducer)`. Narrows
  * on the reducer name so consumers don't need a runtime cast:
  *
  * - Scalar reducers (min/max/sum/mean/stdev/median/count/p${q})
@@ -119,8 +119,9 @@ export type BinnedByIndexReducerName =
  * would land as their own output shape (e.g. `{ keys, values }`
  * with W output points). The shape per reducer is the contract.
  */
-export type BinnedByIndexOutput<R extends BinnedByIndexReducerName> =
-  R extends 'minMax' ? { lo: Float64Array; hi: Float64Array } : Float64Array;
+export type BinOutput<R extends BinReducerName> = R extends 'minMax'
+  ? { lo: Float64Array; hi: Float64Array }
+  : Float64Array;
 
 // ─── Type-level augmentations ────────────────────────────────────
 //
@@ -169,10 +170,7 @@ declare module './columnar/column.js' {
 
     // Index-bucketed reduction. See `docs/rfcs/column-api.md` §7.3
     // and §8 worked example.
-    binnedByIndex<R extends BinnedByIndexReducerName>(
-      bins: number,
-      reducer: R,
-    ): BinnedByIndexOutput<R>;
+    bin<R extends BinReducerName>(bins: number, reducer: R): BinOutput<R>;
   }
 
   interface BooleanColumn {
@@ -252,10 +250,7 @@ declare module './columnar/chunked-column.js' {
     last(): number | undefined;
     firstDefined(): number | undefined;
     lastDefined(): number | undefined;
-    binnedByIndex<R extends BinnedByIndexReducerName>(
-      bins: number,
-      reducer: R,
-    ): BinnedByIndexOutput<R>;
+    bin<R extends BinReducerName>(bins: number, reducer: R): BinOutput<R>;
   }
 
   interface ChunkedBooleanColumn {
@@ -433,7 +428,7 @@ Float64Column.prototype.lastDefined = function (): number | undefined {
  *
  * ```ts
  * const visible = series.column('value').slice(startIdx, endIdx);
- * const { lo, hi } = visible.binnedByIndex(cssWidth, 'minMax');
+ * const { lo, hi } = visible.bin(cssWidth, 'minMax');
  * for (let px = 0; px < cssWidth; px += 1) {
  *   ctx.moveTo(px, scaleY(hi[px]!));
  *   ctx.lineTo(px, scaleY(lo[px]!));
@@ -451,17 +446,18 @@ Float64Column.prototype.lastDefined = function (): number | undefined {
  * **index** bins match equal-width **pixel** bins only when adjacent
  * samples are uniformly time-spaced. For bursty / irregular data
  * the chart needs time-aware binning (deferred to step 8g
- * `series.binnedByTime`); `binnedByIndex` then becomes "correct
+ * `series.binnedByTime`); `bin` then becomes "correct
  * for uniform input, lying for non-uniform" and is the wrong
  * tool. The method name spells out the index-domain semantics so
  * the call site can't confuse the two.
  */
-Float64Column.prototype.binnedByIndex = function <
-  R extends BinnedByIndexReducerName,
->(bins: number, reducer: R): BinnedByIndexOutput<R> {
+Float64Column.prototype.bin = function <R extends BinReducerName>(
+  bins: number,
+  reducer: R,
+): BinOutput<R> {
   if (!Number.isInteger(bins) || bins <= 0) {
     throw new RangeError(
-      `Float64Column.binnedByIndex: bins must be a positive integer, got ${bins}`,
+      `Float64Column.bin: bins must be a positive integer, got ${bins}`,
     );
   }
   const n = this.length;
@@ -493,7 +489,7 @@ Float64Column.prototype.binnedByIndex = function <
         hi[b] = extent[1];
       }
     }
-    return { lo, hi } as BinnedByIndexOutput<R>;
+    return { lo, hi } as BinOutput<R>;
   }
 
   // ─── Scalar reducers ──────────────────────────────────────────
@@ -509,13 +505,11 @@ Float64Column.prototype.binnedByIndex = function <
   try {
     reducerDef = resolveReducer(internalName);
   } catch {
-    throw new TypeError(
-      `Float64Column.binnedByIndex: unknown reducer '${reducer}'`,
-    );
+    throw new TypeError(`Float64Column.bin: unknown reducer '${reducer}'`);
   }
   if (reducerDef.reduceColumn === undefined) {
     throw new TypeError(
-      `Float64Column.binnedByIndex: reducer '${reducer}' has no reduceColumn fast path`,
+      `Float64Column.bin: reducer '${reducer}' has no reduceColumn fast path`,
     );
   }
 
@@ -532,7 +526,7 @@ Float64Column.prototype.binnedByIndex = function <
     const result = reducerDef.reduceColumn(this.sliceByRange(start, end));
     out[b] = typeof result === 'number' ? result : NaN;
   }
-  return out as BinnedByIndexOutput<R>;
+  return out as BinOutput<R>;
 };
 
 // ─── BooleanColumn runtime implementations ───────────────────────
@@ -836,14 +830,15 @@ ChunkedFloat64Column.prototype.firstDefined = function (): number | undefined {
 ChunkedFloat64Column.prototype.lastDefined = function (): number | undefined {
   return materializeChunkedFloat64(this).lastDefined();
 };
-ChunkedFloat64Column.prototype.binnedByIndex = function <
-  R extends BinnedByIndexReducerName,
->(bins: number, reducer: R): BinnedByIndexOutput<R> {
+ChunkedFloat64Column.prototype.bin = function <R extends BinReducerName>(
+  bins: number,
+  reducer: R,
+): BinOutput<R> {
   // v1: materialize then delegate. Future PR can walk chunks per
   // bin without the materialize copy when bin boundaries align with
   // chunk boundaries (the common case after concatSorted of two
   // equal-sized chunks at a chart-friendly bin count).
-  return materializeChunkedFloat64(this).binnedByIndex(bins, reducer);
+  return materializeChunkedFloat64(this).bin(bins, reducer);
 };
 
 // ─── ChunkedBooleanColumn runtime implementations ────────────────
