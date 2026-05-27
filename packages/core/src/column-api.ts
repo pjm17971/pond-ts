@@ -671,21 +671,81 @@ Float64Column.prototype.bin = function <R extends BinReducerName>(
       lo = new Float64Array(bins);
       hi = new Float64Array(bins);
     }
-    for (let b = 0; b < bins; b += 1) {
-      const start = Math.floor((b * n) / bins);
-      const end = Math.floor(((b + 1) * n) / bins);
-      if (end <= start) {
-        lo[b] = NaN;
-        hi[b] = NaN;
-        continue;
+
+    // Inlined per-bin walk over `this.values[start..end)` rather
+    // than `this.sliceByRange(start, end).minMax()` per bin. The
+    // sliced version allocated a Float64Column + Float64Array
+    // subarray view + optionally a validity-bitmap slice on every
+    // bin, then dispatched into the minMax method. Inlining
+    // hoists the validity branch (it's the same for every bin)
+    // and removes the per-bin construction overhead.
+    //
+    // Measured wins (`scripts/perf-bin.mjs`, median of 30 × 3
+    // runs): ~23% on fine-bins (N=100k, W=1024) where per-bin
+    // overhead is the biggest fraction of work; ~9% on chart-
+    // typical (N=1M, W=1024); within noise (~5%) on N=10M where
+    // the inner buffer walk dominates and the per-bin construction
+    // is a small relative cost. The chart-experiment M2.1
+    // friction note motivated this; the actual win is smaller than
+    // its initial framing suggested but real where it counts most
+    // (fine zoom levels where the chart writes the most bins per
+    // unit of input data).
+    //
+    // The inner-loop math is byte-identical to
+    // `Float64Column.prototype.minMax` (same NaN parity, same
+    // empty handling) — just over a (start, end) slice of the
+    // underlying buffer.
+    const values = this.values;
+    const validity = this.validity;
+    if (validity === undefined) {
+      for (let b = 0; b < bins; b += 1) {
+        const start = Math.floor((b * n) / bins);
+        const end = Math.floor(((b + 1) * n) / bins);
+        if (end <= start) {
+          lo[b] = NaN;
+          hi[b] = NaN;
+          continue;
+        }
+        let loVal = values[start]!;
+        let hiVal = loVal;
+        for (let i = start + 1; i < end; i += 1) {
+          const x = values[i]!;
+          loVal = loVal <= x ? loVal : x;
+          hiVal = hiVal >= x ? hiVal : x;
+        }
+        lo[b] = loVal;
+        hi[b] = hiVal;
       }
-      const extent = this.sliceByRange(start, end).minMax();
-      if (extent === undefined) {
-        lo[b] = NaN;
-        hi[b] = NaN;
-      } else {
-        lo[b] = extent[0];
-        hi[b] = extent[1];
+    } else {
+      // Validity path — use isDefined directly on the original
+      // bitmap with the original index. Avoids the per-bin
+      // validity-bitmap slice that sliceByRange would have done.
+      for (let b = 0; b < bins; b += 1) {
+        const start = Math.floor((b * n) / bins);
+        const end = Math.floor(((b + 1) * n) / bins);
+        if (end <= start) {
+          lo[b] = NaN;
+          hi[b] = NaN;
+          continue;
+        }
+        let i = start;
+        while (i < end && !validity.isDefined(i)) i += 1;
+        if (i >= end) {
+          // All cells in this bin are undefined.
+          lo[b] = NaN;
+          hi[b] = NaN;
+          continue;
+        }
+        let loVal = values[i]!;
+        let hiVal = loVal;
+        for (i += 1; i < end; i += 1) {
+          if (!validity.isDefined(i)) continue;
+          const x = values[i]!;
+          loVal = loVal <= x ? loVal : x;
+          hiVal = hiVal >= x ? hiVal : x;
+        }
+        lo[b] = loVal;
+        hi[b] = hiVal;
       }
     }
     return { lo, hi } as BinOutput<R>;
