@@ -238,7 +238,7 @@ describe('Float64Column public methods', () => {
       // shares the column's trusted-buffer read-only contract.
       // This is the load-bearing contract for adapters that
       // compare reference equality.
-      expect(out).toBe(c.values);
+      expect(out).toBe(c._values);
       expect(out).toBeInstanceOf(Float64Array);
       expect(Array.from(out)).toEqual([1, 2, 3, 4, 5]);
     });
@@ -249,7 +249,7 @@ describe('Float64Column public methods', () => {
       expect(out).toBeInstanceOf(Float64Array);
       expect(out.length).toBe(0);
       // Identity holds for the empty case too.
-      expect(out).toBe(c.values);
+      expect(out).toBe(c._values);
     });
 
     it('packed with oversized buffer: bounded subarray (NOT raw values)', () => {
@@ -270,7 +270,7 @@ describe('Float64Column public methods', () => {
       expect(out.buffer).toBe(buf.buffer);
       // NOT identity with .values in this case (subarray is a fresh
       // TypedArray view object).
-      expect(out).not.toBe(c.values);
+      expect(out).not.toBe(c._values);
     });
 
     it('packed with validity: returns raw values including undefined-marked slots', () => {
@@ -283,7 +283,7 @@ describe('Float64Column public methods', () => {
       expect(Array.from(out)).toEqual([10, 999, 20, 999, 30]);
     });
 
-    it('packed slice: identity holds against slice.values (NOT the source)', () => {
+    it('packed slice: identity holds against slice._values (NOT the source)', () => {
       // Stronger contract than buffer-identity. The slice has its
       // own subarray view; toFloat64Array on the slice returns
       // THAT view, not the source's .values. Buffer is shared
@@ -292,10 +292,10 @@ describe('Float64Column public methods', () => {
       const c = f64([1, 2, 3, 4, 5]);
       const slice = c.slice(1, 4);
       const out = slice.toFloat64Array();
-      expect(out).toBe(slice.values);
-      expect(out).not.toBe(c.values);
+      expect(out).toBe(slice._values);
+      expect(out).not.toBe(c._values);
       // Buffer-identity still holds (subarray shares backing).
-      expect(out.buffer).toBe(c.values.buffer);
+      expect(out.buffer).toBe(c._values.buffer);
       expect(Array.from(out)).toEqual([2, 3, 4]);
     });
 

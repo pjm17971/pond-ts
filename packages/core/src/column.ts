@@ -273,7 +273,7 @@ declare module './columnar/column.js' {
      *
      * ```ts
      * if (col.storage !== 'packed') throw ...;
-     * const values = col.values;
+     * const values = col._values;
      * ```
      *
      * with
@@ -552,7 +552,7 @@ Float64Column.prototype.count = function (): number {
  */
 Float64Column.prototype.minMax = function (): [number, number] | undefined {
   const v = this.validity;
-  const values = this.values;
+  const values = this._values;
   const n = this.length;
   if (n === 0) return undefined;
   let i = 0;
@@ -601,20 +601,20 @@ Float64Column.prototype.last = function (): number | undefined {
 
 Float64Column.prototype.firstDefined = function (): number | undefined {
   const v = this.validity;
-  if (!v) return this.length > 0 ? this.values[0] : undefined;
+  if (!v) return this.length > 0 ? this._values[0] : undefined;
   if (v.definedCount === 0) return undefined;
   for (let i = 0; i < this.length; i += 1) {
-    if (v.isDefined(i)) return this.values[i];
+    if (v.isDefined(i)) return this._values[i];
   }
   return undefined;
 };
 
 Float64Column.prototype.lastDefined = function (): number | undefined {
   const v = this.validity;
-  if (!v) return this.length > 0 ? this.values[this.length - 1] : undefined;
+  if (!v) return this.length > 0 ? this._values[this.length - 1] : undefined;
   if (v.definedCount === 0) return undefined;
   for (let i = this.length - 1; i >= 0; i -= 1) {
-    if (v.isDefined(i)) return this.values[i];
+    if (v.isDefined(i)) return this._values[i];
   }
   return undefined;
 };
@@ -624,17 +624,17 @@ Float64Column.prototype.toFloat64Array = function (): Float64Array {
   // this.length". Float64Column's constructor accepts oversized
   // buffers (length < values.length is permitted; see the
   // ColumnarRingBuffer / capacity-grown allocation patterns).
-  // Returning `this.values` directly would leak the tail
+  // Returning `this._values` directly would leak the tail
   // capacity to callers, exposing slots that read / scan /
   // reducers never expose. Closes Codex finding on PR #165.
   //
-  // Exact-sized buffer (the typical case): return `this.values`
+  // Exact-sized buffer (the typical case): return `this._values`
   // for identity / zero allocation. Oversized buffer: return a
   // subarray view bounded to `this.length` — still a view
   // (no buffer copy), but a fresh TypedArray view object.
-  return this.values.length === this.length
-    ? this.values
-    : this.values.subarray(0, this.length);
+  return this._values.length === this.length
+    ? this._values
+    : this._values.subarray(0, this.length);
 };
 
 /**
@@ -692,7 +692,7 @@ Float64Column.prototype.bin = function <R extends BinReducerName>(
     const lo = new Float64Array(bins);
     const hi = new Float64Array(bins);
 
-    // Inlined per-bin walk over `this.values[start..end)` rather
+    // Inlined per-bin walk over `this._values[start..end)` rather
     // than `this.sliceByRange(start, end).minMax()` per bin. The
     // sliced version allocated a Float64Column + Float64Array
     // subarray view + optionally a validity-bitmap slice on every
@@ -710,7 +710,7 @@ Float64Column.prototype.bin = function <R extends BinReducerName>(
     // `Float64Column.prototype.minMax` (same NaN parity, same
     // empty handling) — just over a (start, end) slice of the
     // underlying buffer.
-    const values = this.values;
+    const values = this._values;
     const validity = this.validity;
     if (validity === undefined) {
       for (let b = 0; b < bins; b += 1) {
@@ -1106,8 +1106,12 @@ ChunkedFloat64Column.prototype.lastDefined = function (): number | undefined {
 };
 ChunkedFloat64Column.prototype.toFloat64Array = function (): Float64Array {
   // Chunked storage has no single contiguous buffer; materialize
-  // gathers chunks into a fresh `Float64Array(this.length)`.
-  return materializeChunkedFloat64(this).values;
+  // gathers chunks into a fresh `Float64Array(this.length)`. Delegate
+  // to the materialized column's `toFloat64Array` rather than reaching
+  // for its `_values` field directly — keeps this code path inside the
+  // public API contract and inherits any future length-bounding fixes
+  // automatically.
+  return materializeChunkedFloat64(this).toFloat64Array();
 };
 ChunkedFloat64Column.prototype.bin = function <R extends BinReducerName>(
   bins: number,

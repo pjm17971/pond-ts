@@ -13,7 +13,7 @@ export const max: ReducerDef = {
     //   numeric.reduce((a, b) => a >= b ? a : b)
     // exactly. See `min.ts` for the full rationale. Closed Codex
     // review finding on PR #153.
-    const values = col.values;
+    const values = col._values;
     const validity = col.validity;
     let hi: number | undefined;
     if (validity === undefined) {

@@ -26,7 +26,7 @@ export const min: ReducerDef = {
     // PR #153. A principled "filter NaN consistently across both
     // paths" fix is a separate concern tracked in the followup
     // issue.
-    const values = col.values;
+    const values = col._values;
     const validity = col.validity;
     let lo: number | undefined;
     if (validity === undefined) {

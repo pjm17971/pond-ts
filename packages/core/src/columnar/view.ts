@@ -102,7 +102,7 @@ export function withRowSelection<S extends ColumnSchema>(
  * builds a flat key buffer regardless of value-column chunking).
  *
  * **Use case.** Reducers (step 2+) and hot-path callers that want
- * to dereference `Float64Column.values` / `StringColumn.indices`
+ * to dereference `Float64Column._values` / `StringColumn.indices`
  * directly first call `materialize` so the narrow on
  * `storage === 'packed'` is unconditional. Read/scan callers can
  * skip this — chunked columns route through chunk lookup

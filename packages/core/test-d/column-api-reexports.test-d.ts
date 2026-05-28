@@ -47,11 +47,13 @@ import {
 declare const someColumn: Column;
 // Compile-time: should narrow by kind.
 if (someColumn.kind === 'number') {
-  // After kind-narrowing, .storage tells you packed vs chunked.
-  if (someColumn.storage === 'packed') {
-    const _values: Float64Array = someColumn.values;
-    void _values;
-  }
+  // After kind-narrowing, `toFloat64Array()` is the documented public
+  // access for the underlying Float64Array regardless of storage. The
+  // substrate-level `_values` field is reachable on the packed
+  // variant for substrate code that walks it directly with `.length`
+  // as the bound — but consumer code should prefer `toFloat64Array`.
+  const _values: Float64Array = someColumn.toFloat64Array();
+  void _values;
 }
 
 // ─── Class types are reachable + instanceof-usable ───────────────

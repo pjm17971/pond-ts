@@ -97,8 +97,8 @@ describe('Float64Column.sliceByRange', () => {
     const col = new Float64Column(buf, 5);
     const slice = col.sliceByRange(1, 4);
     expect(slice.length).toBe(3);
-    expect(slice.values.buffer).toBe(buf.buffer);
-    expect(Array.from(slice.values.subarray(0, slice.length))).toEqual([
+    expect(slice._values.buffer).toBe(buf.buffer);
+    expect(Array.from(slice._values.subarray(0, slice.length))).toEqual([
       20, 30, 40,
     ]);
   });
@@ -140,8 +140,8 @@ describe('Float64Column.sliceByIndices', () => {
     const col = new Float64Column(Float64Array.of(10, 20, 30, 40, 50), 5);
     const slice = col.sliceByIndices(Int32Array.of(4, 0, 2));
     expect(slice.length).toBe(3);
-    expect(Array.from(slice.values)).toEqual([50, 10, 30]);
-    expect(slice.values.buffer).not.toBe(col.values.buffer);
+    expect(Array.from(slice._values)).toEqual([50, 10, 30]);
+    expect(slice._values.buffer).not.toBe(col._values.buffer);
   });
 
   it('marks out-of-range indices invalid', () => {
@@ -276,7 +276,7 @@ describe('float64ColumnFromArray', () => {
     const col = float64ColumnFromArray([1, 2, 3, 4]);
     expect(col.length).toBe(4);
     expect(col.validity).toBeUndefined();
-    expect(Array.from(col.values.subarray(0, col.length))).toEqual([
+    expect(Array.from(col._values.subarray(0, col.length))).toEqual([
       1, 2, 3, 4,
     ]);
   });
@@ -400,7 +400,7 @@ describe('Multi-byte slice / gather', () => {
     it('zero-copy values subarray still works across byte-spanning slices', () => {
       const col = multiByteFloat64Source();
       const slice = col.sliceByRange(0, 16);
-      expect(slice.values.buffer).toBe(col.values.buffer);
+      expect(slice._values.buffer).toBe(col._values.buffer);
       expect(slice.length).toBe(16);
     });
   });

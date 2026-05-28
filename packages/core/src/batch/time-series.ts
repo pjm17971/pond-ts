@@ -1084,48 +1084,38 @@ export class TimeSeries<S extends SeriesSchema> {
   }
 
   /**
-   * Example (after kind narrowing):
+   * Example (chart / typed-array consumer):
    * ```ts
-   * const col = series.column('cpu');
-   * if (col?.kind === 'number' && col.storage === 'packed') {
-   *   const xs = series.keyColumn().begin; // Float64Array
-   *   const ys = col.values;               // Float64Array
-   *   for (let i = 0; i < ys.length; i += 1) ctx.lineTo(xs[i], ys[i]);
-   * }
+   * const col = series.column('cpu');     // Float64Column | ChunkedFloat64Column
+   * const xs = series.keyColumn().begin;  // Float64Array
+   * const ys = col.toFloat64Array();      // Float64Array (storage-agnostic)
+   * for (let i = 0; i < ys.length; i += 1) ctx.lineTo(xs[i], ys[i]);
    * ```
    *
-   * Returns the underlying `Column` (typed-array-backed) for a
-   * named value column. The `Column` union is 8 variants
-   * (number / boolean / string / array × packed / chunked); callers
-   * narrow on `column.kind` first, then `column.storage`, to reach
-   * the kind-specific hot-path fields.
+   * Returns the public column class for a named value column. The
+   * schema-narrowed `Name` parameter (RFC §7.2) constrains `name`
+   * to a value column declared in the schema; typos and key-column
+   * names fail to compile rather than returning `undefined` at
+   * runtime. The return type narrows on the schema's declared kind
+   * for that column — `Float64Column | ChunkedFloat64Column` for
+   * `'number'`, `BooleanColumn | ChunkedBooleanColumn` for
+   * `'boolean'`, etc. No `| undefined`.
    *
-   * **Phase 4.7 spike API — shape not yet stable.** This is the
-   * minimum-viable surface that lets chart / typed-array consumers
-   * reach the columnar substrate without going through row-shaped
-   * `Event` materialization. The intended consumers are external
-   * adapters (`@pond-ts/charts`, future Arrow / WASM-kernel
-   * bridges) that need direct access to:
+   * The columns expose a high-level method surface (`at(i)`,
+   * `slice(s, e)`, `min()` / `max()` / `mean()` / etc.,
+   * `toFloat64Array()` for numeric storage-agnostic gather,
+   * `bin(W, reducer)` for the chart per-pixel downsampler) plus
+   * substrate-level fields for hot-path code (`length`,
+   * `validity`, etc.).
    *
-   * - `column.values` — `Float64Array` (number, packed), bit-packed
-   *   `Uint8Array` (boolean, packed), dictionary + indices (string,
-   *   dict-encoded), or fallback array (string fallback / array
-   *   kind). Not present on chunked variants — those expose
-   *   `column.chunks` instead.
-   * - `column.validity` — `ValidityBitmap | undefined` (absent
-   *   means "every cell defined" per the framework convention).
-   * - `column.kind` / `column.storage` — discriminators for
-   *   dispatching on per-kind shape.
+   * Use `keyColumn()` for the key axis (returns `TimeKeyColumn` /
+   * `TimeRangeKeyColumn` / `IntervalKeyColumn` narrowed by the
+   * schema's first-column kind).
    *
-   * Returns `undefined` when `name` is not a value column in the
-   * schema (or names the key column). Use `keyColumn()` for the
-   * key axis.
-   *
-   * **Treat the returned buffers as read-only.** `readonly` on
-   * `Column.values` is a TS marker; the `Float64Array` / `Uint8Array`
-   * itself is mutable at runtime. Writing to `column.values[i]`
-   * would corrupt the trusted-construction substrate (and any
-   * subarray views shared with other consumers). The framework
+   * **Read-only buffer contract.** The methods that hand back a
+   * typed array (`toFloat64Array()`, `keyColumn().begin`, etc.)
+   * share storage with the column. Writing to those buffers
+   * corrupts the trusted-construction substrate. The framework
    * doesn't defensively clone on read.
    *
    * **Phase 4.7 step 8b (2026-05-27): schema-narrowed signature.**

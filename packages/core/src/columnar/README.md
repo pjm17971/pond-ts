@@ -77,7 +77,7 @@ hot-path fields:
 ```ts
 if (col.kind === 'number') {
   if (col.storage === 'packed') {
-    col.values; // Float64Array — direct iteration for reducers
+    col._values; // Float64Array — direct iteration for reducers
   } else {
     col.chunks; // ReadonlyArray<Float64Column>
   }

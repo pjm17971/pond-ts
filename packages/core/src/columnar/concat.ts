@@ -350,7 +350,7 @@ function concatKeyColumns<S extends ColumnSchema>(
       for (let s = 0; s < stores.length; s += 1) {
         const k = stores[s]!.keys as IntervalKeyColumn;
         const labelCol = k.labels as Float64Column;
-        flat.set(labelCol.values.subarray(0, k.length), lc);
+        flat.set(labelCol._values.subarray(0, k.length), lc);
         lc += k.length;
       }
       labels = new Float64Column(flat, totalLength);

@@ -38,7 +38,7 @@ export type ColumnKind = 'number' | 'boolean' | 'string' | 'array';
  * - `'packed'` — a single flat typed-array buffer (or dictionary +
  *   indices for `StringColumn`, or array of cells for `ArrayColumn`).
  *   Reducers and other hot-path callers can dereference the kind-
- *   specific field (e.g. `Float64Column.values`) directly after
+ *   specific field (e.g. `Float64Column._values`) directly after
  *   narrowing on `kind` **and** `storage === 'packed'`.
  * - `'chunked'` — a sequence of packed chunks concatenated logically
  *   via `chunkOffsets`. Reads/scans route through chunk lookup; the
@@ -117,7 +117,7 @@ interface ColumnBase<T, K extends ColumnKind> {
  *
  *     if (col.kind === 'number') {
  *       if (col.storage === 'packed') {
- *         col.values; // Float64Array (Float64Column)
+ *         col._values; // Float64Array (Float64Column)
  *       } else {
  *         col.chunks; // ReadonlyArray<Float64Column> (ChunkedFloat64Column)
  *       }
@@ -142,17 +142,33 @@ export type Column =
 /* -------------------------------------------------------------------------- */
 
 /**
- * Numeric value column backed by a `Float64Array`. The values buffer
- * is dense — undefined / missing cells are tracked solely by the
- * `validity` bitmap. Buffer slots corresponding to invalid cells hold
- * an arbitrary value (typically `0`); callers must consult `validity`
- * before treating a slot as meaningful.
+ * Numeric value column backed by a `Float64Array`. The underlying
+ * `_values` buffer is dense — undefined / missing cells are tracked
+ * solely by the `validity` bitmap. Buffer slots corresponding to
+ * invalid cells hold an arbitrary value (typically `0`); callers
+ * must consult `validity` before treating a slot as meaningful.
+ *
+ * `_values` is **substrate-internal**: it's the raw buffer handle
+ * that reducers, builders, and other substrate-level code reach
+ * for in their hot paths. The class permits `length <=
+ * _values.length` (capacity-grown columns from
+ * `ColumnarRingBuffer.toColumn` etc.), so `_values.length` is NOT
+ * the row count; substrate consumers must walk with `this.length`
+ * as the bound. Consumer-style code that wants a `Float64Array`
+ * of exactly `this.length` should use `toFloat64Array()` from the
+ * public column-API surface (`src/column.ts`).
  */
 export class Float64Column implements ColumnBase<number, 'number'> {
   readonly kind = 'number' as const;
   readonly storage = 'packed' as const;
   readonly length: number;
-  readonly values: Float64Array;
+  /**
+   * @internal Substrate-level raw buffer handle. May be oversized
+   * (`_values.length > length` for capacity-grown columns). Walk
+   * with `this.length` as the bound. For consumer code that wants
+   * a length-bounded `Float64Array`, use `toFloat64Array()`.
+   */
+  readonly _values: Float64Array;
   readonly validity?: ValidityBitmap;
 
   constructor(values: Float64Array, length: number, validity?: ValidityBitmap) {
@@ -167,7 +183,7 @@ export class Float64Column implements ColumnBase<number, 'number'> {
         `Float64Column validity length mismatch: column ${length}, validity ${validity.length}`,
       );
     }
-    this.values = values;
+    this._values = values;
     this.length = length;
     if (validity !== undefined) this.validity = validity;
   }
@@ -175,13 +191,13 @@ export class Float64Column implements ColumnBase<number, 'number'> {
   read(i: number): number | undefined {
     if (i < 0 || i >= this.length) return undefined;
     if (this.validity && !this.validity.isDefined(i)) return undefined;
-    return this.values[i];
+    return this._values[i];
   }
 
   scan(fn: (value: number, i: number) => void, options?: ScanOptions): void {
     const skipInvalid = options?.skipInvalid ?? true;
     const v = this.validity;
-    const values = this.values;
+    const values = this._values;
     if (!v) {
       for (let i = 0; i < this.length; i += 1) {
         fn(values[i]!, i);
@@ -203,7 +219,7 @@ export class Float64Column implements ColumnBase<number, 'number'> {
     if (hi <= lo) {
       return new Float64Column(new Float64Array(0), 0);
     }
-    const valuesSlice = this.values.subarray(lo, hi);
+    const valuesSlice = this._values.subarray(lo, hi);
     const validitySlice = validitySliceByRange(
       this.validity,
       lo,
@@ -219,7 +235,7 @@ export class Float64Column implements ColumnBase<number, 'number'> {
       const idx = indices[i]!;
       // Out-of-range indices read 0 (the buffer default); validity
       // gather marks those slots invalid below.
-      out[i] = idx >= 0 && idx < this.length ? this.values[idx]! : 0;
+      out[i] = idx >= 0 && idx < this.length ? this._values[idx]! : 0;
     }
     const validity = validityGatherByIndices(
       this.validity,
