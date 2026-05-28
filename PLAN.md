@@ -70,13 +70,20 @@ expert and reviews PRs touching that surface. Will inform
   `LiveView.eventRate()`, `useCurrent` value narrowing.
 - **Writeup:** `website/docs/how-to-guides/dashboard-guide.mdx`.
 
-### gRPC pipeline (in flight; M3 merged, M3.5 in progress)
+### gRPC pipeline (M3.5 done; **V5 columnar re-bench wave queued 2026-05-28**)
 
 Claude agent. Three-process gRPC + WebSocket stack: producer
 (`@pond-ts/dev-producer` candidate) → aggregator (`@pond-ts/server`
 candidate, runs a server-side `LiveSeries`) → web dashboard (the read
 side, `useRemoteLiveSeries` candidate). Targeting M5 extraction
 sweep producing three RFC-style design docs.
+
+**Active wave: V5 columnar re-bench.** Per Phase 4.7's "Next wave"
+sequencing, the experiment re-benches against the matured substrate
+(v0.17.1 vs the V4 baseline at v0.14.0) to surface which substrate
+step earns library work next (Step 7 LiveSeries ring buffer vs
+Step 3 Phase C rolling fast path). Plan:
+[`columnar-rebench.md`](https://github.com/pjm17971/pond-grpc-experiment/blob/main/friction-notes/columnar-rebench.md).
 
 - **Drove so far:** v0.11.3 (`pond-ts/types` subpath export — schema-
   as-contract without runtime dep), v0.11.4 (`LiveSeries.toJSON` /
@@ -4583,6 +4590,103 @@ land cleanly. Tentative version map:
 Release shape is tentative; if implementation surfaces a different
 sequencing or a chunk doesn't earn its slot, the version map
 adjusts.
+
+### Next wave: gRPC re-bench → substrate adoption (queued 2026-05-28)
+
+The chart-experiment closed its adoption + measurement cycle on
+2026-05-28 (see
+[`pjm17971/pond-ts-charts-experiment/STATUS.md`](https://github.com/pjm17971/pond-ts-charts-experiment/blob/main/STATUS.md))
+and validated the substrate against single-column and multi-column
+chart workloads at N=10M / 60fps. The natural next consumer for
+substrate validation is the **gRPC experiment** — that's where the
+columnar overhaul was originally strategically aimed (per the
+columnar-core RFC's motivation), and the substrate has matured
+upstream of the gRPC workload without the gRPC hot path re-benching
+against it.
+
+**Wave shape.** Three phases. Documented in detail at
+[`pjm17971/pond-grpc-experiment/friction-notes/columnar-rebench.md`](https://github.com/pjm17971/pond-grpc-experiment/blob/main/friction-notes/columnar-rebench.md) —
+that file is the binding plan for the experiment-side work; this
+section is the pond-ts side.
+
+- **Phase A — Baseline re-bench (gRPC agent, no library code).**
+  Run the V4 bench harness (`pnpm perf` — four bench:agg load
+  points + ceiling profile) against the current v0.17.1 pin. V4 was
+  measured at v0.14.0; v0.15.0 (fused rolling), v0.16.0
+  (pipeline.stats), v0.17.0 (live.sample), v0.17.1 (partitionBy
+  default-inherit) have shipped since. The V5 row of the
+  V1→V2→V3→V4 bench table is the deliverable. **No public API
+  consequences.**
+
+- **Phase B — Library work prioritized by what V5 surfaces.** Two
+  candidates, both pre-named in this Phase 4.7 roadmap:
+  - **Step 7 — `LiveSeries` numeric ring buffer.** The structural
+    fix for V4's 35.6% per-event GC pressure (vs 28.7% in manual
+    V1). Wires the already-shipped `ColumnarRingBuffer` (step 1h)
+    underneath `LiveSeries`'s internal storage. Skips per-event
+    Event/Time allocation on `pushMany`. **Public API consequence:**
+    The columnar-core RFC commits to "Public APIs (`Event`, `at(i)`,
+    `live.on('event')`, etc.) stay row-oriented at the boundary."
+    Step 7 must preserve every existing live-side invariant —
+    retention semantics, ordering modes, grace-window behavior,
+    subscriber ordering. The internal-vs-public split is the load-
+    bearing design question; ring buffer is internal, row-shape
+    intake/emission stays at the boundary.
+  - **Step 3 Phase C — `series.rolling()` columnar fast path.** The
+    structural fix for V4's 8.2% `LivePartitionedSyncRolling.ingest`
+    self-time line. Per-reducer `rollingColumn` state factory (or
+    batch-recompute over substrate slices). **Public API
+    consequence:** the per-reducer extension surface is the design
+    question — is `rollingColumn` an internal hook on the reducer
+    registry, or is it a public extension contract (analogous to
+    `ReducerDef.reduceColumn` from PR #153)? Defer the decision to
+    the V5-surfaced friction; if no custom-reducer driver shows up,
+    keep it internal.
+
+  Ordering between Step 7 and Step 3C depends on V5's profile.
+  If GC pressure remains the dominant cost line, Step 7 first. If
+  reducer state work dominates after lazy events do whatever they
+  can do, Step 3 Phase C first.
+
+- **Phase C — Consumer re-adoption + dashboard validation.** The
+  gRPC experiment bumps to whatever ships from Phase B and
+  produces the V6 bench. In parallel, the **dashboard agent** —
+  the second consumer surface, owning the React/`useSnapshot` /
+  `useLiveQuery` path — gets looped in for adoption friction on
+  the same substrate. Two independent friction reports converge
+  on the writeup: gRPC reports the throughput story, dashboard
+  reports the snapshot/render story. Substrate's strategic
+  justification is met when both consumers report wins.
+
+**Operating rules for this wave.**
+
+- **PR merges wait for human approval.** Standing instruction from
+  2026-05-28 — every library PR in this wave gets the standard
+  two-layer review (Layer 1 self + Layer 2 adversarial agent + Codex
+  pass when below-high confidence), then **pauses** for human review
+  before merge. Agent-merge default per CLAUDE.md is suspended for
+  this wave so the user can pace engagement.
+- **Each PR carries a benchmark.** Performance-centered work
+  (which most of this wave is) reports before/after numbers in the
+  commit message per the CLAUDE.md "Performance check for new
+  operators" section. The V4 bench table format is the template.
+- **Each PR carries a plan summary and motivation in the body.**
+  Including a section on public API consequences when any exist —
+  even invariant-preserving changes (Step 7) get an explicit
+  "invariants preserved" subsection so the diff reviewer can verify
+  rather than infer.
+- **Friction notes live in the consumer experiment, not pond-ts.**
+  gRPC's V5 / V6 reports land in `friction-notes/columnar-rebench.md`
+  in the experiment repo; pond-ts gets the corresponding PR with the
+  library-actionable item. Same discipline the chart-experiment
+  used.
+
+**What this leaves on the table (intentionally).** Steps 4
+(derived transforms columnar), 5 (aggregate planner), 6 (string/
+dict reducers), 8e/8f/8g (additional chart sub-steps) all defer
+until a consumer friction earns their shape. The chart-experiment's
+M3 (chunked rendering) and M5 (interval heatmap) remain deferred
+per their respective notes.
 
 **Cross-references:**
 
