@@ -8,7 +8,7 @@ export const avg: ReducerDef = {
       : numeric.reduce((s, v) => s + v, 0) / numeric.length;
   },
   reduceColumn(col) {
-    const values = col.values;
+    const values = col._values;
     const validity = col.validity;
     if (validity === undefined) {
       if (col.length === 0) return undefined;

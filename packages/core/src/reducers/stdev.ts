@@ -26,7 +26,7 @@ export const stdev: ReducerDef = {
     // incremental contract (`add` then read snapshot) precludes a
     // second walk; their callers accept the precision trade-off,
     // and the `Math.max(0, ...)` guard there at least avoids NaN.
-    const values = col.values;
+    const values = col._values;
     const validity = col.validity;
     let s = 0;
     let n = 0;

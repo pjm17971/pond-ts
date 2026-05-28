@@ -431,7 +431,7 @@ describe('materializeChunked* helpers', () => {
     const plain = materializeChunkedFloat64(chunked);
     expect(plain).toBeInstanceOf(Float64Column);
     expect(plain.length).toBe(5);
-    expect(Array.from(plain.values)).toEqual([1, 99, 3, 4, 5]);
+    expect(Array.from(plain._values)).toEqual([1, 99, 3, 4, 5]);
     expect(plain.validity).toBeDefined();
     expect(plain.read(0)).toBe(1);
     expect(plain.read(1)).toBeUndefined();

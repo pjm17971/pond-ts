@@ -6,7 +6,7 @@ export const sum: ReducerDef = {
     return numeric.reduce((s, v) => s + v, 0);
   },
   reduceColumn(col) {
-    const values = col.values;
+    const values = col._values;
     const validity = col.validity;
     let s = 0;
     if (validity === undefined) {

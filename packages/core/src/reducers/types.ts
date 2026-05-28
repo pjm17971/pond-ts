@@ -77,7 +77,7 @@ export type ReducerDef = {
    * Implementations should:
    * - Honor `col.validity` — skip rows where `validity.isDefined(i)` is
    *   false (or use `col.validity === undefined` to know "all defined").
-   * - Iterate the underlying `col.values: Float64Array` directly. The
+   * - Iterate the underlying `col._values: Float64Array` directly. The
    *   whole point is to avoid the per-cell object access of the
    *   row-API path.
    *

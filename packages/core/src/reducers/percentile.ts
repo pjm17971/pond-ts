@@ -57,7 +57,7 @@ export function reducePercentileColumn(
   q: number,
 ): number | undefined {
   const validity = col.validity;
-  const values = col.values;
+  const values = col._values;
   let dense: Float64Array;
   let denseLength = 0;
   let hasNaN = false;

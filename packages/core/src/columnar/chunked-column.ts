@@ -249,7 +249,7 @@ export class ChunkedFloat64Column {
     if (this.validity && !this.validity.isDefined(i)) return undefined;
     const c = findChunkForRow(this.chunkOffsets, i);
     const local = i - this.chunkOffsets[c]!;
-    return this.chunks[c]!.values[local]!;
+    return this.chunks[c]!._values[local]!;
   }
 
   /**
@@ -325,7 +325,7 @@ export class ChunkedFloat64Column {
       }
       const c = findChunkForRow(this.chunkOffsets, globalIdx);
       const local = globalIdx - this.chunkOffsets[c]!;
-      out[i] = this.chunks[c]!.values[local]!;
+      out[i] = this.chunks[c]!._values[local]!;
       validBits[i >> 3]! |= 1 << (i & 7);
     }
     if (!hasInvalid) {
@@ -718,7 +718,7 @@ export function materializeChunkedFloat64(
   let cursor = 0;
   for (let c = 0; c < chunked.chunks.length; c += 1) {
     const chunk = chunked.chunks[c]!;
-    out.set(chunk.values.subarray(0, chunk.length), cursor);
+    out.set(chunk._values.subarray(0, chunk.length), cursor);
     cursor += chunk.length;
   }
   return new Float64Column(out, chunked.length, chunked.validity);
