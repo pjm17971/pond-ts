@@ -58,6 +58,7 @@ import { LiveFusedRolling } from './live-fused-rolling.js';
 import { LiveReduce } from './live-reduce.js';
 import {
   EventArrayLiveStorage,
+  RingLiveStorage,
   compareKeys,
   type LiveStorage,
 } from './live-storage.js';
@@ -258,13 +259,21 @@ export class LiveSeries<S extends SeriesSchema> {
 
     validateSchema(this.schema);
 
-    // Storage strategy. The behavior-preserving extraction uses the
-    // `Event[]` backing for every ordering mode. A follow-up adds a
-    // `ColumnarRingBuffer` backing for the append-only `strict` /
-    // `drop` modes; `reorder` keeps the array backing (an append-only
-    // ring cannot splice mid-stream). Selecting here keeps every
-    // accessor below storage-agnostic.
-    this.#storage = new EventArrayLiveStorage<S>(this.schema);
+    // Storage strategy. The append-only `strict` / `drop` modes use
+    // the `ColumnarRingBuffer` backing (skips long-lived `Event`
+    // retention — the GC win). `reorder` mode requires sorted
+    // mid-stream insertion, which an append-only ring cannot do, so
+    // it keeps the `Event[]` backing. Interval-keyed series also keep
+    // the array backing for now (ring interval label-kind inference
+    // is deferred). Selecting here keeps every accessor below
+    // storage-agnostic.
+    const keyKind = this.schema[0]!.kind;
+    const ringEligible =
+      (this.#ordering === 'strict' || this.#ordering === 'drop') &&
+      (keyKind === 'time' || keyKind === 'timeRange');
+    this.#storage = ringEligible
+      ? new RingLiveStorage<S>(this.schema)
+      : new EventArrayLiveStorage<S>(this.schema);
 
     this.#onEvent = new Set();
     this.#onBatch = new Set();
@@ -429,8 +438,10 @@ export class LiveSeries<S extends SeriesSchema> {
 
     if (added.length === 0) return;
 
+    // `#applyRetention` updates `#statsEvicted` by count internally
+    // (listener-independent) and only materializes the evicted events
+    // when an `'evict'` listener will consume them.
     const evicted = this.#applyRetention();
-    if (evicted.length > 0) this.#statsEvicted += evicted.length;
 
     for (const fn of this.#onBatch) fn(added);
     if (evicted.length > 0) {
@@ -486,8 +497,10 @@ export class LiveSeries<S extends SeriesSchema> {
 
     if (added.length === 0) return;
 
+    // `#applyRetention` updates `#statsEvicted` by count internally
+    // (listener-independent) and only materializes the evicted events
+    // when an `'evict'` listener will consume them.
     const evicted = this.#applyRetention();
-    if (evicted.length > 0) this.#statsEvicted += evicted.length;
 
     for (const fn of this.#onBatch) fn(added);
     if (evicted.length > 0) {
@@ -1187,6 +1200,17 @@ export class LiveSeries<S extends SeriesSchema> {
 
     if (evictCount === 0) return [];
 
+    // Counter advances by count regardless of whether anyone listens.
+    this.#statsEvicted += evictCount;
+
+    // Materialize evicted events only when an `'evict'` listener will
+    // consume them. With no listener, `dropPrefix` skips the per-row
+    // Event materialization — the dominant cost on the ring backing's
+    // retention hot path (firehose ingest with no evict subscriber).
+    if (this.#onEvict.size === 0) {
+      this.#storage.dropPrefix(evictCount);
+      return [];
+    }
     return this.#storage.evictPrefix(evictCount);
   }
 }

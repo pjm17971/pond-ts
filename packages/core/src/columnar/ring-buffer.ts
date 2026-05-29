@@ -579,6 +579,75 @@ export class ColumnarRingBuffer<S extends ColumnSchema = ColumnSchema> {
   }
 
   /* ------------------------------------------------------------------------ */
+  /* Per-row read surface (Step 7)                                             */
+  /*                                                                           */
+  /* Cheap O(1) reads at a LOGICAL index, for the row-API adapter             */
+  /* (`RingLiveStorage`) to materialize a single `Event` without              */
+  /* snapshotting the whole ring. Trusted: the caller guarantees              */
+  /* `0 <= i < length`. Out-of-range reads return garbage / throw — the       */
+  /* `LiveSeries` layer bounds-checks before calling.                         */
+  /* ------------------------------------------------------------------------ */
+
+  /** @internal Begin timestamp (ms) at logical index `i`. */
+  _beginAt(i: number): number {
+    return this.#keys.begin[(this.#head + i) % this.#capacity]!;
+  }
+
+  /**
+   * @internal End timestamp (ms) at logical index `i`. For `time`
+   * keys (no separate `end` buffer) returns the begin value, matching
+   * the `end === begin` invariant.
+   */
+  _endAt(i: number): number {
+    const phys = (this.#head + i) % this.#capacity;
+    if (this.#keys.kind === 'time') return this.#keys.begin[phys]!;
+    return this.#keys.end[phys]!;
+  }
+
+  /**
+   * @internal Interval label at logical index `i`. Returns `undefined`
+   * for non-interval rings (no label axis).
+   */
+  _labelAt(i: number): string | number | undefined {
+    if (this.#keys.kind !== 'interval') return undefined;
+    const phys = (this.#head + i) % this.#capacity;
+    if (this.#keys.labelKind === 'string') {
+      return (this.#keys.labels as Array<string | undefined>)[phys];
+    }
+    return (this.#keys.labels as Float64Array)[phys];
+  }
+
+  /**
+   * @internal Value-column cell at logical index `i`, by column name.
+   * Returns `undefined` for missing cells (validity bit clear for
+   * number / boolean; `undefined` slot for string / array). Throws
+   * `RangeError` if the column name isn't a value column.
+   */
+  _valueAt(i: number, columnName: string): unknown {
+    const ring = this.#values.get(columnName);
+    if (ring === undefined) {
+      throw new RangeError(
+        `ColumnarRingBuffer._valueAt: column '${columnName}' is not a value column`,
+      );
+    }
+    const phys = (this.#head + i) % this.#capacity;
+    switch (ring.kind) {
+      case 'number':
+        return (ring.validity[phys >> 3]! & (1 << (phys & 7))) !== 0
+          ? ring.values[phys]
+          : undefined;
+      case 'boolean':
+        return (ring.validity[phys >> 3]! & (1 << (phys & 7))) !== 0
+          ? (ring.values[phys >> 3]! & (1 << (phys & 7))) !== 0
+          : undefined;
+      case 'string':
+        return ring.values[phys];
+      case 'array':
+        return ring.values[phys];
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
   /* Internal                                                                  */
   /* ------------------------------------------------------------------------ */
 

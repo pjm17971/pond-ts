@@ -4,6 +4,7 @@ import { Event } from '../../src/core/event.js';
 import { Time } from '../../src/core/time.js';
 import {
   EventArrayLiveStorage,
+  RingLiveStorage,
   type LiveStorage,
 } from '../../src/live/live-storage.js';
 import type { EventForSchema, SeriesSchema } from '../../src/schema/index.js';
@@ -12,9 +13,10 @@ import type { EventForSchema, SeriesSchema } from '../../src/schema/index.js';
 /* Conformance suite — shared LiveStorage contract                             */
 /*                                                                             */
 /* This suite exercises the LiveStorage interface contract independent of the  */
-/* concrete backing. PR-2a runs it against EventArrayLiveStorage; PR-2b adds   */
-/* a RingLiveStorage factory to the same `backings` table so both backings     */
-/* prove the identical contract.                                               */
+/* concrete backing. Both backings run the same suite from one `backings`      */
+/* table, proving they satisfy the identical contract. RingLiveStorage is      */
+/* append-only (no sorted insert), so its reorder-specific tests are skipped   */
+/* via `supportsSortedInsert: false`.                                          */
 /* -------------------------------------------------------------------------- */
 
 const SCHEMA = [
@@ -41,7 +43,11 @@ const backings: Backing[] = [
     make: (schema) => new EventArrayLiveStorage(schema),
     supportsSortedInsert: true,
   },
-  // PR-2b appends a RingLiveStorage entry here.
+  {
+    name: 'RingLiveStorage',
+    make: (schema) => new RingLiveStorage(schema),
+    supportsSortedInsert: false,
+  },
 ];
 
 for (const backing of backings) {
@@ -101,6 +107,32 @@ for (const backing of backings) {
       s.appendTrusted(ev(1000, 10));
       expect(s.evictPrefix(0)).toEqual([]);
       expect(s.length).toBe(1);
+    });
+
+    it('dropPrefix drops the oldest n without materializing', () => {
+      const s = make();
+      for (let i = 1; i <= 5; i += 1) s.appendTrusted(ev(i * 1000, i * 10));
+      s.dropPrefix(2);
+      expect(s.length).toBe(3);
+      expect(s.at(0)!.get('value')).toBe(30);
+      expect(s.last()!.get('value')).toBe(50);
+    });
+
+    it('dropPrefix(0) is a no-op', () => {
+      const s = make();
+      s.appendTrusted(ev(1000, 10));
+      s.dropPrefix(0);
+      expect(s.length).toBe(1);
+    });
+
+    it('dropPrefix then at() still materializes survivors correctly', () => {
+      const s = make();
+      for (let i = 1; i <= 5; i += 1) s.appendTrusted(ev(i * 1000, i * 10));
+      s.dropPrefix(3);
+      // Survivors are indices 3,4 (value 40, 50) at new logical 0,1.
+      expect(s.at(0)!.get('value')).toBe(40);
+      expect(s.at(1)!.get('value')).toBe(50);
+      expect(s.beginAt(0)).toBe(4000);
     });
 
     it('clear empties the buffer and returns everything', () => {
