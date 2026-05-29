@@ -1062,11 +1062,18 @@ describe('_appendRowTrusted (Array value columns)', () => {
   });
 });
 
-describe('_appendRowTrusted — failure-atomic semantics', () => {
+describe('_appendRowTrusted — eviction recency under sustained push', () => {
   it('a single-row append past retention preserves the most-recent rows', () => {
     // After length === retention, every subsequent _appendRowTrusted
     // evicts one. The ring's order must remain consistent: oldest at
     // index 0, newest at index length-1.
+    //
+    // Note: failure-atomic semantics (a throw mid-call leaves the
+    // ring unchanged) are not provokable at the JS runtime level —
+    // the structural ordering of stage → grow → evict → write IS
+    // the proof, mirroring how `appendBatch`'s tests cover the same
+    // property. The describe name says what this test does, not the
+    // property the structural ordering provides.
     const ring = new ColumnarRingBuffer(TIME_SCHEMA, { retention: 3 });
     for (let i = 1; i <= 10; i += 1) {
       ring._appendRowTrusted(i * 1000, i * 1000, undefined, [i, true]);
