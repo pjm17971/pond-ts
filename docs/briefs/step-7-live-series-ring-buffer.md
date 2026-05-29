@@ -510,17 +510,55 @@ GC drops below 10% AND ceiling moves materially, Step 3C is earned by
 the remaining per-event reducer-state cost. If GC doesn't drop, Step 7
 needs a follow-up before Step 3C earns its slot.
 
-## 10. Status
+## 10. Decisions (post-review, 2026-05-29)
 
-**Awaiting human review.** Once approved, the implementation pass
-begins with:
+Human review approved the brief with the following decisions locked
+in. Subsequent sessions: these are binding for the Step 7 PR.
+
+- **Q1 (default retention ceiling):** Resolved as recommended —
+  high default (`MAX_COLUMN_LENGTH = 2^31 - 8` or a more conservative
+  ceiling like 2^24); documented limit.
+- **Q2 (evict-listener materialization):** Resolved as recommended —
+  materialize evicted Events at the moment of eviction. Amortized
+  O(1) per push.
+- **Q3 (skip listener allocation when zero listeners):** Resolved
+  as recommended — **NO** for the initial Step 7 PR. Keeps the diff
+  focused on the storage swap. Revisit as a follow-up if the bench
+  shows the unconditional allocation earns optimization.
+- **Q4 (row-shape ring entry point):** Resolved as recommended —
+  **NO**. Substrate stays column-shape; pushMany builds the
+  intermediate `ColumnarStore` per call and trusts V8's nursery.
+- **Q5 (interval-keyed LiveSeries):** Resolved as recommended —
+  **deferred to Step 7.5**. Initial Step 7 supports time-keyed and
+  timeRange-keyed schemas; interval-keyed support lands when a real
+  consumer asks for it.
+- **Q6 (NEW — `live.column('x')` public API):** **Deferred until
+  consumer friction earns it.** Post-Step 7, `live.toTimeSeries().column('x')`
+  is the cheap path (snapshot is now a direct typed-buffer handoff
+  via `TimeSeries.fromTrustedStore(ring.snapshot())`). The dashboard
+  agent is the most likely consumer to surface need; loop them in
+  during Phase C. If they measure snapshot overhead as material, the
+  follow-up is a one-liner sugar method.
+- **Q7 (NEW — Step 7 / Step 3 Phase C boundary):** **Step 7 scope
+  is strict — storage swap only.** Internal-only ring; reducers
+  (`LiveAggregation`, `LiveRollingAggregation`, `LiveFusedRolling`,
+  `LivePartitionedFusedRolling`) continue reading via materialized
+  Events in Step 7. **Step 3 Phase C is the separate PR** that
+  opens the internal column channel to reducers + adds the
+  `rollingColumn` state factory. Keeps each PR reviewable; lets
+  V6 bench independently characterize Step 7's GC win before Step
+  3 Phase C earns its slot.
+
+## 11. Status
+
+**Approved 2026-05-29. Implementation pass begins:**
 1. Create branch `feat/step-7-live-series-ring`.
 2. Land the helpers + storage swap + invariant pin-tests as a single
    PR.
 3. Run pond-ts perf + gRPC V6 bench; report both in the PR body.
 4. Open PR for Layer 2 + Codex review + human approval.
 
-No code begins until this brief gets a green light.
+PR merge **blocks on human approval** per the wave's standing rule.
 
 ---
 
