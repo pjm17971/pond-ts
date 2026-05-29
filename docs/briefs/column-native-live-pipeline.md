@@ -143,6 +143,20 @@ transiently — young-gen, GC'd; compat path). `at(i)` lazy-materializes
   chunked vs array source — ingest/consume/heap) confirms the spike's
   win survives integration; then gRPC re-bench at the OOM cells with
   the heap profile as the before-number.
+* **Before-number LOCKED (gRPC heap profile, 2026-05-29).** Cell:
+  100 hosts × 700 ev/s/host (70k/s), retention 90s, strict; snapshot
+  at +75s. **6.73 M events in the source deque**, 2.06 GB heapUsed,
+  5.71 GB RSS, major GC up to **750 ms**. Heap (1.92 GB node
+  self-size, 55 M nodes): `Object` data records 683 MB + `heap
+number` 320 MB + `Event` 258 MB + `Time` 257 MB + deque arrays
+  265 MB + host-string refs ~150 MB. The `Event`+`Time`+`Object`
+  cluster ≈ 62% of heap — precisely what chunked columns remove.
+  **~285 B/event today → ~30 B/event projected ≈ 9× reduction** on
+  the source deque (the 4.6× spike figure was conservative — a
+  simpler schema; the real workload's boxed numbers / string refs /
+  data records inflate the per-event cost columns collapse). 750 ms
+  GC pauses are already stalling ingest — the GC-rate framing is not
+  speculative.
 * **Public API:** zero new surface. Retention preserved (Q1). The
   `'event'` / `at(i)` / `toTimeSeries` contracts hold.
 
