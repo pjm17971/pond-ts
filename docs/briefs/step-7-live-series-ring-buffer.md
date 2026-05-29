@@ -574,16 +574,126 @@ in. Subsequent sessions: these are binding for the Step 7 PR.
   V6 bench independently characterize Step 7's GC win before Step
   3 Phase C earns its slot.
 
-## 11. Status
+## 11. Architecture revision — storage strategy layer (2026-05-29)
 
-**Approved 2026-05-29. Implementation pass begins:**
-1. Create branch `feat/step-7-live-series-ring`.
-2. Land the helpers + storage swap + invariant pin-tests as a single
-   PR.
-3. Run pond-ts perf + gRPC V6 bench; report both in the PR body.
-4. Open PR for Layer 2 + Codex review + human approval.
+During implementation, a structural conflict surfaced that the
+original §2 sketch glossed: **`reorder` mode requires sorted
+mid-stream insertion, which an append-only ring buffer physically
+cannot do** (circular structure → mid-insertion shifts all
+subsequent slots across the wraparound boundary, O(N) with ugly
+mechanics).
 
-PR merge **blocks on human approval** per the wave's standing rule.
+A Codex consult (relayed by the user) converged on the right shape:
+**don't scatter `this.#ring ? … : …` conditionals through
+LiveSeries — extract a private storage-strategy layer.**
+
+### `LiveStorage<S>` interface
+
+```ts
+interface LiveStorage<S extends SeriesSchema> {
+  readonly length: number;
+  at(index: number): EventForSchema<S> | undefined;
+  keyAt(index: number): EventKey | undefined;     // bisect / includesKey
+  beginAt(index: number): number | undefined;     // cheap; retention maxAge + ordering checks (zero key alloc)
+  first(): EventForSchema<S> | undefined;
+  last(): EventForSchema<S> | undefined;
+  appendTrusted(event: EventForSchema<S>): void;          // strict / drop: append to tail
+  insertSortedTrusted(event: EventForSchema<S>): void;    // reorder: sorted insert (array impl only)
+  evictPrefix(n: number): ReadonlyArray<EventForSchema<S>>;  // materialize + drop oldest n
+  clear(): ReadonlyArray<EventForSchema<S>>;
+  snapshot(name: string): TimeSeries<S>;
+}
+```
+
+### Two implementations in this wave
+
+1. **`RingLiveStorage`** — `ordering: 'strict' | 'drop'`. Backs the
+   append-only modes with `ColumnarRingBuffer` + `_appendRowTrusted`
+   + lazy event cache. **The measured GC win.** The V5 ceiling
+   workload runs `strict`, so this is exactly where the win lands.
+2. **`EventArrayLiveStorage`** — `ordering: 'reorder'`. Extraction
+   of the current `Event[]` + `#insert`-splice + `#applyRetention`
+   logic into a storage class. Behavior-identical to today. The safe
+   compatibility fallback for the late-data path (M4).
+
+`LiveSeries` selects the implementation at construction based on
+ordering mode and retains **all** public semantics — ordering
+policy, grace-window checks, stats increments, the
+`event → retention → batch → evict` listener ordering, the rejected
+counter. Storage owns mechanics, not contract.
+
+### Future: `IndexedColumnarLiveStorage` (NOT this wave)
+
+The principled long-term `reorder` backing: append rows physically
+into column chunks, maintain a sorted logical-order index mapping
+logical position → physical row id. Late events append physically,
+then insert a row reference into the order index. Values stay
+columnar; only the order index mutates. Gives `reorder` the same
+columnar memory/GC profile as the ring without forcing splices.
+Deferred deliberately — it's a real ordered-column-store design
+(chunked keys, stable row ids, index insertion, compaction /
+tombstones, retention across logical order), worth doing on its own,
+not squeezed into the storage swap. Earns its slot when a late-data
+workload needs the columnar profile.
+
+### Retention orchestration (load-bearing correctness point)
+
+Both Codex and the library agent flagged: **ring auto-retention must
+not change observable semantics.** The current contract is per-event
+listeners fire BEFORE retention runs (they observe the pre-retention
+buffer state). Resolution:
+
+- Ring's own `retention` = `DEFAULT_RING_RETENTION` (high ceiling),
+  **decoupled from `maxEvents`**. `_appendRowTrusted`'s auto-evict
+  never fires during a normal push — it's only a backstop for a
+  single pushMany larger than the ceiling.
+- `LiveSeries` orchestrates retention exactly as today: append all
+  rows + fire per-event listeners (pre-retention state preserved) →
+  compute evict count from `maxEvents` / `maxAge` → call
+  `storage.evictPrefix(n)` (materializes evicted events, advances
+  head, remaps the event cache) → fire batch → fire evict.
+- `beginAt(i)` on the interface keeps the `maxAge` retention walk
+  zero-allocation (reads the ring's `begin` buffer directly rather
+  than allocating an `EventKey` per probe).
+
+This preserves the exact `event → retention → batch → evict`
+ordering and the pre-retention-observation contract for both storage
+backends.
+
+### Memory note (no regression)
+
+With ring `retention` decoupled from `maxEvents`, a large pushMany
+temporarily overshoots `maxEvents` before `evictPrefix` runs — the
+ring capacity grows to the peak length, same as the current `Event[]`
+path grows then splices. No regression; common-case (small pushMany)
+overshoot is negligible.
+
+## 12. PR split (2026-05-29)
+
+The strategy extraction makes a clean two-PR split, lower risk than
+one large diff:
+
+- **PR-2a — storage strategy extraction (behavior-preserving
+  refactor).** Introduce `LiveStorage<S>` + `EventArrayLiveStorage`;
+  route every `LiveSeries` accessor through `#storage`. **All three
+  ordering modes still use the array backing.** No behavior change;
+  the full existing LiveSeries test suite must pass unchanged. Lands
+  the architecture in isolation so any refactor regression is caught
+  before ring complexity is added.
+- **PR-2b — `RingLiveStorage` for strict/drop + the win.** Add the
+  ring-backed storage, switch strict/drop modes to it, add the
+  invariant pin-tests (§5) and the perf bench. The measured GC win
+  + V6 gRPC bench land here.
+
+This is `#167`'s sibling discipline — substrate addition was its own
+PR; the LiveSeries work splits refactor-then-win.
+
+## 13. Status
+
+**Approved 2026-05-29; architecture revised to strategy layer.
+Implementation pass begins with PR-2a (the refactor).**
+
+PR merges **block on human approval** per the wave's standing rule.
 
 ---
 
