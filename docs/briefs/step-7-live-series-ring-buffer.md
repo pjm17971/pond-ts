@@ -525,9 +525,34 @@ in. Subsequent sessions: these are binding for the Step 7 PR.
   as recommended — **NO** for the initial Step 7 PR. Keeps the diff
   focused on the storage swap. Revisit as a follow-up if the bench
   shows the unconditional allocation earns optimization.
-- **Q4 (row-shape ring entry point):** Resolved as recommended —
-  **NO**. Substrate stays column-shape; pushMany builds the
-  intermediate `ColumnarStore` per call and trusts V8's nursery.
+- **Q4 (row-shape ring entry point):** **REVERSED post-survey
+  (2026-05-29).** Pre-coding analysis treated this as "minor friction;
+  trust the nursery." End-to-end cost-shape analysis surfaced a real
+  ~2× overhead: the batched-ColumnarStore path makes two passes
+  through N rows (rows → batch buffers → ring's circular buffers)
+  and allocates ~80KB of transient typed-arrays per pushMany at gRPC
+  ceiling load (~16MB/sec at 200 pushMany/sec). This is exactly the
+  GC pressure Step 7 is meant to eliminate.
+
+  **Resolution: extend the substrate with an internal row-shape
+  append method.** ColumnarRingBuffer gains `_appendRowTrusted(keys,
+  values)` (or similar — name TBD during implementation) following
+  the existing `_underscore` convention for in-package trusted
+  callers. Schema validation happens once at ring construction; the
+  trusted-append path skips re-validation and writes directly to
+  circular buffers in one pass.
+
+  **Justification.** The substrate's header documents its purpose as
+  *"streaming sources (LiveSeries, gRPC ingest, websocket feeds)
+  emit rows continuously."* `appendBatch` was the right entry for
+  bulk-load-from-snapshot; the real-time streaming case wants
+  row-shape natively. The addition aligns the substrate's API
+  surface with the workload it was designed for, rather than forcing
+  every streaming caller to build a column wrapper around row data.
+
+  **Scope.** Internal-only method. Not exported from
+  `packages/core/src/index.ts`. Pre-1.0 substrate API; the user
+  approved managing any pre-1.0 churn here as we go.
 - **Q5 (interval-keyed LiveSeries):** Resolved as recommended —
   **deferred to Step 7.5**. Initial Step 7 supports time-keyed and
   timeRange-keyed schemas; interval-keyed support lands when a real
