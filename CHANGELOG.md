@@ -7,9 +7,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 file covers both packages. Pre-1.0: minor bumps may include new features and
 type-level changes; patch bumps are strictly additive.
 
-[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/pjm17971/pond-ts/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/pjm17971/pond-ts/compare/v0.17.1...v0.18.0
 
 ## [Unreleased]
+
+## [0.18.0] — 2026-05-30
+
+This release graduates the **Phase 4.7 columnar substrate** from
+framework-internal (shipped piecemeal to `main` since v0.17.1) to a
+user-visible **public column API**, plus a column-native live buffer that
+fixes a high-partition-count OOM. Everything is additive except one
+documented breaking change (interval label kinds) and one documented
+behavior change (chunked-backed `pushMany` commit semantics). Pre-1.0: the
+column API is expected to keep moving toward its eventual shape.
+
+### Added
+
+- **Public column API (Phase 4.7 step 8).** A column-centric extraction
+  surface on `TimeSeries`, for high-throughput and charting consumers that
+  want typed-array access instead of per-`Event` iteration. Additive — every
+  existing row / `Event` API is unchanged.
+  - `series.column(name)` returns a schema-narrowed typed column view, with
+    public re-exports of the `Float64Column` / `BooleanColumn` /
+    `StringColumn` / `KeyColumn` (time / timeRange / interval) variants
+    ([#154](https://github.com/pjm17971/pond-ts/pull/154),
+    [#155](https://github.com/pjm17971/pond-ts/pull/155)).
+  - `Float64Column`: scalar reductions (`min` / `max` / `sum` / `mean` /
+    `count` / …) and `scan`
+    ([#155](https://github.com/pjm17971/pond-ts/pull/155)); `bin(...)` for
+    histogram / downsample bucketing
+    ([#156](https://github.com/pjm17971/pond-ts/pull/156)); and
+    `toFloat64Array()` for a storage-agnostic gather into a dense array
+    ([#165](https://github.com/pjm17971/pond-ts/pull/165)).
+  - `KeyColumn.at(i)` and `.slice(start, end)`
+    ([#159](https://github.com/pjm17971/pond-ts/pull/159)).
+- **Columnar substrate (Phase 4.7 step 1, framework layer).** All
+  eight sub-steps (1a–1h) shipped to main as PRs #132 / #133 /
+  #134 / #135 / #136 / #147 / #148 / #149. See `PLAN.md` and
+  [`packages/core/src/columnar/README.md`](packages/core/src/columnar/README.md)
+  for the full inventory. Framework-internal — surfaced behind the existing
+  `TimeSeries` API at step 2 (below) and the public column API at step 8
+  (above).
+
+### Changed
+
+- **Chunked columnar live backing for strict time-keyed `LiveSeries`**
+  ([#170](https://github.com/pjm17971/pond-ts/pull/170)). A top-level
+  `LiveSeries` with `ordering: 'strict'` and a time key now backs its
+  retained window with batch-granular columnar chunks instead of an
+  `Event[]` window — each `pushMany` validates straight into typed columns,
+  retaining **zero `Event` objects** (~4.7× less retained heap in-pond; the
+  high-partition-count OOM fix). Two consequences:
+  - **`pushMany` commit semantics** on the chunked path: the batch is
+    appended atomically _before_ any `'event'` fires, so a listener observes
+    the full post-batch `length` (not a row-by-row `1, 2, 3`), and a listener
+    that throws mid-batch leaves the whole batch committed. The per-row
+    `Event[]` backing (`reorder` / `drop` / interval-keyed /
+    internally-created series) keeps per-row commit. Listener _values_ and
+    `event → batch → evict` ordering are unchanged.
+  - **`LiveReduce` eviction** resolves by event identity (primary) with a
+    FIFO-frontier fallback for the chunked backing's materialized evictions —
+    correct for both `reorder` and the chunked backing. `min` / `max` /
+    `first` / `last` / `samples` over a `reorder` source **with retention**
+    remain a documented limitation (see `LiveReduce` JSDoc and PLAN
+    "Deferred") — pre-existing, not introduced here.
+- **Internal, behavior-preserving performance work.** Column-native intake
+  bypasses per-row `Event` allocation at `TimeSeries` construction
+  ([#151](https://github.com/pjm17971/pond-ts/pull/151)); numeric reducers
+  (`min` / `max` / `sum` / `avg` / …) compute over typed-array columns where
+  available, with NaN parity preserved
+  ([#153](https://github.com/pjm17971/pond-ts/pull/153)); the live storage
+  strategy was extracted behind an internal interface
+  ([#168](https://github.com/pjm17971/pond-ts/pull/168)).
 
 ### Changed (BREAKING)
 
@@ -45,16 +115,6 @@ type-level changes; patch bumps are strictly additive.
     must share a kind), not the per-interval level. Type-level
     narrowing of `IntervalKeyedSchema<S>` over label kind is a
     follow-up deferred to a later sub-step.
-
-### Added
-
-- **Columnar substrate (Phase 4.7 step 1, framework layer).** All
-  eight sub-steps (1a–1h) shipped to main as PRs #132 / #133 /
-  #134 / #135 / #136 / #147 / #148 / #149. See `PLAN.md` and
-  [`packages/core/src/columnar/README.md`](packages/core/src/columnar/README.md)
-  for the full inventory. Framework-internal — no public API
-  surface yet; the substrate becomes user-visible behind the
-  existing `TimeSeries` API at Phase 4.7 step 2.
 
 ## [0.17.1] — 2026-05-11
 
