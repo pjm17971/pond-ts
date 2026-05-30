@@ -13,10 +13,14 @@ section carries inline attribution; this table is the index for cold readers.
 
 | Section                                              | Contributor                                                                 |
 | ---------------------------------------------------- | --------------------------------------------------------------------------- |
-| Original draft (all sections)                        | pond-ts library agent (Claude) — synthesizing a design thread with pjm17971 |
+| Original draft (§A–§D + open questions)              | pond-ts library agent (Claude) — synthesizing a design thread with pjm17971 |
 | §B corral / LSM-overlay architecture (the core idea) | pjm17971                                                                    |
 | §A columnar-output framing (the seed)                | pjm17971                                                                    |
 | Reducer-combine taxonomy + count-window analysis     | pond-ts library agent (Claude)                                              |
+| Review notes §1 (design / coherence)                 | neutral pond-ts review agent (Claude)                                       |
+| Review notes §2 (adversarial technical)              | Codex                                                                       |
+| Review notes §3 (use-case, gRPC)                     | gRPC experiment agent (Claude)                                              |
+| Author response & amendments — V2                    | pond-ts library agent (Claude)                                              |
 
 **Audience:** future pond-ts contributors deciding how the _live boundary_
 (the protocol between a `LiveSeries`/`LiveSource` and its listeners and
@@ -64,8 +68,13 @@ unit:
 
 - It already _is_ the columnar window. Post-Step-2a a `TimeSeries` wraps a
   `#store`; the chunked backing already holds `ColumnarStore` chunks, so
-  handing a listener `TimeSeries.fromTrustedStore(chunk)` is near-zero-cost
-  (cheaper than `snapshot()`, which still row-rebuilds).
+  wrapping a chunk as a series is near-zero-cost (cheaper than `snapshot()`,
+  which still row-rebuilds). _Correction (Review notes §4b/§7): the
+  trusted-store factory today lives on `ColumnarStore` / `SeriesStore`, not on
+  `TimeSeries` — a thin public `TimeSeries` (or lighter `LiveRun`) view over a
+  chunk is small **new** surface, not zero. The "near-zero-cost" claim holds;
+  the "zero new vocabulary" claim does not. See the payload-shape fork in the
+  amendment._
 - It reuses the entire chart-extraction column API (`Float64Column`,
   `KeyColumn.at`, `toFloat64Array`, `bin`). The consumer who wants
   throughput walks columns; the consumer who wants per-event iteration calls
@@ -122,13 +131,26 @@ read/reduce:  base window from main chunks
               -> reducer-specific combine/merge
 ```
 
-An LSM-ish lifecycle bounds the corral:
+An LSM-ish lifecycle bounds the corral ("corral" = the small sorted side
+buffer holding accepted out-of-order rows until they're folded into the main
+store):
 
 ```text
 append chunks -> immutable sorted-ish runs
 late corral   -> small sorted mutable run (memtable-ish)
-watermark     -> once grace passes, compact corral rows into main runs
+grace-flush   -> once the reorder grace window passes, compact corral rows
+                 into main runs
 ```
+
+> **Terminology — this "grace-flush" is NOT a streaming watermark.** It is a
+> storage-internal compaction/flush trigger (LSM "flush"), purely a function
+> of when out-of-order rows can no longer arrive. It says nothing about output
+> finality or emission, and does not reintroduce the semantic watermark that
+> [`streaming.md`'s "Why no watermarks" non-goal](streaming.md) rejects as the
+> slippery slope to "mini Beam." Earlier drafts of this section called it a
+> "watermark"; that was a poor word choice flagged in review (see Review
+> notes §1). The north-star cross-reference stands — this is a GC/flush
+> mechanism, not a finality protocol.
 
 **The property worth protecting above all else:** when the corral is empty
 (the common case — late rows are rare), read cost collapses to _exactly_
@@ -176,8 +198,8 @@ The overlay is clean for **time windows** (`maxAge`) and non-monotonic for
 
 Resolution options for count windows: (a) compute last-N over merged tail
 keys and _mask_ displaced main rows (reducer must support a
-remove-that-isn't-an-eviction); or (b) provisional-until-watermark semantics
-(simpler, adds latency).
+remove-that-isn't-an-eviction); or (b) provisional-until-grace-flush
+semantics (simpler, adds latency).
 
 **Recommended v1 scope:** support `maxAge` (time window) only for columnar
 reorder; punt count-window-reorder to "snapshot and reduce." Time windows
@@ -190,26 +212,38 @@ Compacting corral rows into immutable columnar chunks means producing a new
 chunk for the affected run. Late rows usually cluster near the tail, so
 compaction touches only the newest 1–2 chunks; a very old late row touching
 an old chunk is rare. A corral row that ages out of the retention window
-before the watermark never needs compacting — it's just evicted. So corral
-churn ≈ (late rate × grace window), bounded; compaction is amortized cheap,
-worst-case bounded.
+before the grace-flush never needs compacting — it's just evicted. So corral
+churn ≈ (late rate × grace window), bounded. **Compaction _rewrite_ cost,
+however, is not yet bounded by the data structure** — an adversarial reorder
+stream can keep targeting the oldest retained run. "Amortized cheap" is
+workload optimism until a concrete compaction policy is specified (threshold,
+max run size, in-place vs leveled rewrite, late-row coalescing). Flagged by
+Codex (Review notes §2); resolving it is a precondition for §B graduating from
+RFC to build.
 
 ---
 
 ## §C — The unifying protocol
 
-_Original draft: pond-ts library agent (Claude)._
+_Original draft: pond-ts library agent (Claude). **Downgraded in V2** — see
+Review notes §1 and the amendment: the "one spine" claim below oversells the
+link; §A and §B share a premise and one primitive, not a full substrate._
 
-§A and §B are not two threads. Both demand the same thing: **the live
-boundary protocol should be structural/columnar, not per-row-`Event`.**
+§A and §B share a premise: **the live boundary protocol should be
+structural/columnar, not per-row-`Event`.** (The original draft called this
+"one substrate, two consumers"; review rightly flagged that as oversell — §A
+exercises only `appendRun`/`dropByKeyRange`, while `insertLate`/`compact` and
+the hard parts are pure §B. They are adjacent ideas sharing one primitive, not
+a single spine. Kept here as written with the correction noted; resolved in
+the amendment.)
 
 Once the boundary vocabulary is structural deltas —
 
 ```text
-appendRun(chunk)      // the fast path: a whole batch as one columnar run
-insertLate(run)       // a sorted mid-stream insert (corral admission)
-dropRange(n)          // retention eviction of the oldest n
-compact(corral->run)  // watermark: fold late rows into main runs
+appendRun(chunk)         // the fast path: a whole batch as one columnar run
+insertLate(run)          // a sorted mid-stream insert (corral admission)
+dropByKeyRange(from,to)  // retention eviction by key-range (see below: NOT dropRange(n))
+compact(corral->run)     // grace-flush: fold late rows into main runs
 ```
 
 — both wins fall out of one substrate:
@@ -218,10 +252,18 @@ compact(corral->run)  // watermark: fold late rows into main runs
   window per run, an explicit late-insert, an explicit drop) instead of N
   synthesized `Event`s.
 - **Reduce side (§B):** `LiveReduce` consumes the same deltas, so eviction
-  stops being identity/FIFO guesswork — `dropRange` and `insertLate` are
-  unambiguous. That ambiguity is exactly where PR #170's reducer bug lived:
-  the per-row protocol couldn't say "this evict removed the _sorted-prefix_,
-  not the oldest _arrival_."
+  stops being identity/FIFO guesswork. That ambiguity is exactly where PR
+  #170's reducer bug lived: the per-row protocol couldn't say "this evict
+  removed the _sorted-prefix_, not the oldest _arrival_." **But structural
+  deltas are necessary, not sufficient** (Codex, Review notes §4): a bare
+  `dropRange(n)` is _still_ ambiguous under reorder — it must mean "drop the
+  oldest rows in the merged logical order as of sequence number S," and the
+  reducer must receive the removed keys/ids or be able to reproduce the same
+  merged view. Otherwise the identity bug is merely _relocated_ from `Event`
+  identity to "which physical rows did this logical range refer to?" This is
+  why the v1 vocabulary above uses `dropByKeyRange(from,to)`, not
+  `dropRange(n)` — key-range eviction is unambiguous under the time-window v1
+  scope; count/prefix eviction reopens the ambiguity.
 
 **The reducer/consumer contract.** Two ways to make removal unambiguous
 under reordering, possibly both:
@@ -294,6 +336,167 @@ binding version; this RFC stays as the "why."
    beside them?
 6. **first/last redefinition:** is moving reorder first/last from
    arrival-order to time-order a welcome semantic fix or a breaking surprise?
+
+---
+
+## Review notes — 2026-05-30
+
+Three independent reviews ran the multi-agent pattern against the original
+draft, on deliberately non-overlapping lenses. Full text lives on
+[PR #171](https://github.com/pjm17971/pond-ts/pull/171); the load-bearing
+points are captured here so the RFC stays self-contained for a cold reader.
+
+### §1 — Design / coherence review _(neutral pond-ts review agent, Claude)_
+
+[Full comment.](https://github.com/pjm17971/pond-ts/pull/171#issuecomment-4582886622)
+A fresh reader with no authoring stake, on internal-coherence and
+scope-discipline:
+
+1. **§C is the weakest claim.** §A and §B share one verb (`appendRun`) and a
+   slogan, not a spine — §C's own "these are orthogonal" line concedes it. The
+   "one substrate" framing oversells the connective tissue.
+2. **Watermark contradiction (load-bearing).** §B's "watermark compaction" +
+   the `streaming.md` north-star cross-ref collide with `streaming.md`'s
+   attributed "Why no watermarks" non-goal. The distinction (storage-internal
+   flush vs semantic watermark) must be drawn explicitly.
+3. **Center of gravity vs §D's restraint.** §B is ~40% of the doc at
+   implementation altitude for a bug already fixed and that no consumer hits;
+   the prose honors friction-driven, the page-weight builds the cathedral.
+4. Smaller: §B silently reopens the brief's resolved Q4; `TimeSeries.fromTrustedStore`
+   overstates (factory is on the store classes); §A has an honest-tensions
+   list, riskier §B has none; "corral" undefined on first use.
+
+### §2 — Adversarial technical review _(Codex)_
+
+[Full comment.](https://github.com/pjm17971/pond-ts/pull/171#issuecomment-4582894490)
+Grounded in the #170 implementation and reducer code:
+
+1. **Overlay invariants underspecified.** "Append-only main, mostly in-order"
+   isn't enough — once compaction lands a late row, either compaction rewrites
+   the affected run preserving sorted metadata, or main becomes a _set of
+   sorted runs_ and all readers do multi-run overlay reads. This determines
+   whether retention stays prefix-droppable and whether `beginAt(i)` stays
+   cheap. There's also an **admission race**: a late row within grace but older
+   than the retention cutoff must be rejected _before_ entering the corral, or
+   compaction resurrects already-evicted rows.
+2. **Compaction cost isn't bounded by the structure** — only by workload
+   optimism — until a concrete policy exists.
+3. **Reducer taxonomy needs "provided-state-is-X" qualifiers:** `stdev` needs
+   `(n, mean, M2)`; `unique` needs refcount-by-value not a bare set; `min`/`max`
+   are Tier 1 only with value-removable state (today's monotone deque does NOT
+   qualify); `median`/`percentile` depend on materialized sorted arrays + same
+   logical window + interpolation semantics; `topN` must carry the tie-break
+   key; `first`/`last` time-order is a semantic switch, not a silent retier.
+4. **Structural deltas are necessary, not sufficient** — `dropRange(n)` stays
+   ambiguous unless it carries eviction coordinates; prefer key-range eviction
+   for the time-window v1.
+5. §D's narrow fix is a **narrow _extrema_ fix** (`min`/`max`) — `first`/`last`/
+   `samples` still need ordered-by-logical-order state or a documented
+   "unsupported" stance.
+6. Count-window v1 scope is right but must be **operational**: `maxEvents` _and_
+   mixed `maxAge + maxEvents` force array/row fallback.
+7. `TimeSeries` payload must not imply a full independent snapshot if it's
+   really a window view; a lighter `LiveRun`/`ColumnarRun` view may be cleaner,
+   with `toTimeSeries()`/`events()` as adapters.
+
+### §3 — Use-case review _(gRPC experiment agent, Claude)_
+
+[Full comment.](https://github.com/pjm17971/pond-ts/pull/171#issuecomment-4582901573)
+The OOM-motivation consumer, grounded in its heap profile and `BENCH.md`:
+
+- **§A's friction is already measured, not hypothetical.** `fanout.ts`'s
+  serialize tax is **0.44 ms p99 ≈ 50%** of the per-pushMany budget at
+  saturation; ~80% of that budget is per-`Event` listener work _after_ pond's
+  own work; ~6.7M transient row-object allocations/min. A `TimeSeries<S>`
+  window listener collapses the recordFanout loop to two column reads. **Strong
+  endorsement; `TimeSeries<S>` is the right unit** (they already consume it).
+- **Q3:** add the columnar listener as a _new_ name additively; don't change
+  `'batch'`'s payload (migration safety).
+- **§B:** they use `reorder` only on a low-volume late-data path, `maxAge`
+  only, never at firehose — **time-window-only v1 is fine**, count-window N/A,
+  first/last→time-order safe for them.
+- **§C migration:** low-to-moderate, no blockers; structural deltas are
+  _simpler_ for their subscribers; they don't need stable row ids.
+- Offer: an A/B wire-side allocation measurement (Event-count delta with vs
+  without the chunked backing's transient materialization) against
+  pond@0.17.1.
+
+## Author response & amendments — V2, 2026-05-30 _(pond-ts library agent, Claude)_
+
+The reviews converge cleanly; the direction holds and is sharper. **Inline
+corrections already applied to the original draft** (each marked in place):
+watermark → grace-flush + an explicit "not a semantic watermark"
+disambiguation (§1.2); `fromTrustedStore` factual fix (§1.4/§2.7);
+`dropRange(n)` → `dropByKeyRange` in §C's vocabulary (§2.4); the compaction-cost
+caveat (§2.2); the "one spine" downgrade flag and the necessary-not-sufficient
+correction on the reduce-side bullet (§1.1/§2.4); "corral" defined on first use
+(§1.4). V2 positions on the rest:
+
+1. **§C downgraded, accepted (§1.1).** §A and §B are adjacent ideas sharing a
+   _premise_ (structural/columnar boundary) and one primitive (`appendRun` /
+   run-as-unit), not one substrate. The honest unification is narrower: §A is
+   independently valuable and buildable without any of §B; §C's value is the
+   _delta vocabulary + eviction-coordinate discipline_, which §B needs and §A
+   merely benefits from. The RFC no longer claims building §A teaches you §B.
+
+2. **§A is the first _earned_ step — status change (§3).** The gRPC profile is
+   a real, measured friction signal (50% of the saturation budget is the
+   output `Event` tax), not the hypothetical §D framed. §A graduates from
+   "deferred until friction" to **"earned; smallest first increment of this
+   RFC."** Accepting the offered A/B allocation measurement to quantify the
+   delta against the shipped chunked backing before any API lands. This does
+   **not** pull §B forward — §B stays unearned.
+
+3. **§A payload is an open fork, not settled (§2.7/§1.4).** `TimeSeries<S>`
+   (gRPC endorses; they already consume it) vs a lighter `LiveRun`/`ColumnarRun`
+   view with `toTimeSeries()`/`events()` adapters (Codex: avoids implying a
+   full independent snapshot). Resolution deferred to the §A design spike;
+   Q1 reframed accordingly. Q3 resolved: **additive new name, `'batch'`
+   unchanged.**
+
+4. **§B invariants are now preconditions, not hand-waves (§2.1/§2.2).** Before
+   §B could graduate: (a) pick the main-store model — rewrite-in-place
+   preserving sorted-run metadata _vs_ explicit sorted-run-set with multi-run
+   overlay reads; (b) specify the admission policy that rejects
+   below-retention-cutoff late rows before they enter the corral; (c) specify a
+   concrete compaction policy (threshold / max run size / leveling /
+   coalescing). These are logged in §B inline and gate any build.
+
+5. **Reducer taxonomy carries Codex's qualifiers (§2.3).** Each tier entry is
+   "Tier N _provided the state is X_." The key one for honesty: today's
+   `min`/`max` monotone-deque state does **not** qualify for Tier 1 — the
+   value-removable structure is exactly the §D narrow fix. The taxonomy
+   describes _achievable-with-the-right-state_, not _today's-state_.
+
+6. **§D reworded to "narrow _extrema_ fix" (§2.5).** The `min`/`max`
+   sorted-array fix does not cover `first`/`last`/`samples`; those need
+   logical-order-keyed state or a documented "unsupported under reorder +
+   retention" stance. The PLAN "Deferred" note inherits this precision.
+
+7. **Count-window scope made operational (§2.6).** Columnar reorder v1 is
+   `maxAge`-only; `maxEvents` and mixed `maxAge + maxEvents` fall back to the
+   array/row backing (the count side reintroduces displacement / overlay
+   non-monotonicity). Q4 resolved on the scope axis: time-window-only is the
+   line.
+
+8. **Q4-reopen acknowledged (§1.4).** §B does reopen the brief's resolved "Q4:
+   reorder keeps the array backing" — deliberately, as RFC-level exploration of
+   the indexed-columnar path the brief deferred as "not a known different
+   failure." Not a silent contradiction; an explicit "revisit when earned."
+
+9. **Page-weight / center-of-gravity (§1.3).** §B's depth is _exploratory_ —
+   the shape to reach for _if_ a reorder consumer earns it — not a build spec.
+   Marked as such rather than trimmed: it captures real design thinking
+   (pjm17971's corral architecture) worth preserving, and §D + the gRPC review
+   both confirm §A, not §B, is the near-term path.
+
+**Net:** no change to the strategic direction. The doc is more honest (§C
+downgrade, watermark disambiguation, taxonomy qualifiers), and the _sequencing_
+sharpened materially: **§A is now the earned first step** (gRPC's measured
+tax), §B's preconditions are explicit, and the narrow extrema fix is the
+proportionate near-term answer to the documented reducer gap. Next concrete
+move when the user chooses to act: an §A design spike + the gRPC A/B
+measurement — not a §B build.
 
 ## Cross-references
 
