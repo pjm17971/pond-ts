@@ -236,6 +236,13 @@ export class LiveSeries<S extends SeriesSchema> {
   readonly #onEvent: Set<EventListener<S>>;
   readonly #onBatch: Set<BatchListener<S>>;
   readonly #onEvict: Set<EvictListener<S>>;
+  /**
+   * Column-native delta subscribers (chunked backing only). Fires with
+   * the appended `ColumnarStore` per `pushMany` — the internal hook the
+   * partition router uses to route column-native (no `Event`
+   * materialization). Empty unless a `_onChunk` consumer attached.
+   */
+  readonly #onChunk: Set<(store: ColumnarStore<S>) => void>;
 
   // Pipeline counters for {@link LiveSeries.stats}. Incremented in
   // the `pushMany` / `_pushTrustedEvents` paths and `#applyRetention`.
@@ -314,6 +321,7 @@ export class LiveSeries<S extends SeriesSchema> {
 
     this.#onEvent = new Set();
     this.#onBatch = new Set();
+    this.#onChunk = new Set();
     this.#onEvict = new Set();
   }
 
@@ -523,31 +531,58 @@ export class LiveSeries<S extends SeriesSchema> {
    * `'event'` fan-out happens before `#applyRetention`.
    */
   #pushManyColumnar(rows: ReadonlyArray<RowForSchema<S>>): void {
-    const chunked = this.#chunked!;
     const { keys, columns } = validateAndNormalizeColumnar<S>({
       name: this.name,
       schema: this.schema,
       rows,
     });
 
-    // Strict ordering, two parts:
-    //   (1) INTRA-batch order is already enforced by
-    //       `validateAndNormalizeColumnar` above — it throws
-    //       `ValidationError("row N is out of order")` on a
-    //       non-decreasing-by-(begin,end) violation within the batch.
-    //   (2) CROSS-batch boundary — the batch's first key must be `>=`
-    //       the buffer's current last. `validateAndNormalizeColumnar`
-    //       can't see `last`, so we check it here, with the same
-    //       `ValidationError` shape/message as the per-row
-    //       `#insertPerRow` strict path.
-    // (All-or-nothing: a violating batch is rejected before the chunk
-    // is appended. Strict callers send in-order batches; an intra-batch
-    // inversion surfaces the column-intake's "row N" message rather
-    // than the timestamp message — both `ValidationError`, type
-    // contract preserved.)
-    const n = keys.length;
+    // INTRA-batch order is enforced by `validateAndNormalizeColumnar`
+    // above (it throws `ValidationError("row N is out of order")`). The
+    // cross-batch boundary check + the commit/fan-out are shared with
+    // `_appendChunkTrusted` via `#commitChunk`.
+    const store = ColumnarStore.fromTrustedStore(this.schema, keys, columns);
+    this.#commitChunk(store);
+  }
+
+  /**
+   * @internal — append a pre-validated `ColumnarStore` as one chunk to a
+   * chunked-backed series, with the full fan-out + retention pass. Trust
+   * contract: the caller guarantees the store conforms to this series'
+   * schema and is internally sorted (intra-chunk order). Used by the
+   * column-native partition router (`LivePartitionedSeries.#routeChunk`),
+   * which scatters a source chunk into per-partition sub-stores via
+   * `withRowSelection` (a packed gather) and appends each here — **no
+   * per-row `Event` is materialized** on that path, which is the
+   * partition-retention OOM fix. Empty stores are a no-op.
+   */
+  _appendChunkTrusted(store: ColumnarStore<S>): void {
+    if (this.#chunked === null) {
+      throw new Error(
+        'LiveSeries._appendChunkTrusted: series is not chunked-backed (internal misuse)',
+      );
+    }
+    if (store.length === 0) return;
+    this.#commitChunk(store);
+  }
+
+  /**
+   * Append one already-built `ColumnarStore` chunk, then run the
+   * `chunk → event → retention → batch → evict` fan-out. Shared by
+   * `#pushManyColumnar` (rows → validated store) and `_appendChunkTrusted`
+   * (a trusted store, e.g. a scattered partition sub-batch). The
+   * cross-batch strict-order boundary check lives here so both paths
+   * enforce it identically.
+   */
+  #commitChunk(store: ColumnarStore<S>): void {
+    const chunked = this.#chunked!;
+    const n = store.length;
+
+    // CROSS-batch boundary: the chunk's first key must be `>=` the
+    // buffer's current last. (Intra-chunk order is guaranteed upstream.)
+    // Same `ValidationError` shape as the per-row `#insertPerRow` path.
     if (n > 0 && chunked.length > 0) {
-      const firstBegin = keys.beginAt(0);
+      const firstBegin = store.beginAt(0);
       const lastBegin = chunked.beginAt(chunked.length - 1)!;
       if (firstBegin < lastBegin) {
         throw new ValidationError(
@@ -556,19 +591,23 @@ export class LiveSeries<S extends SeriesSchema> {
       }
     }
 
-    // All-or-nothing commit: the whole batch lands as one chunk BEFORE
-    // any `'event'` fires. This is the deliberate divergence from the
-    // per-row `Event[]` path documented on `pushMany` — handlers see
-    // the full post-batch `length`, and a mid-fan-out throw leaves the
-    // entire batch committed (vs the row path's prefix commit). Per-row
-    // commit here would mean a per-row `Event`, defeating the backing.
-    const store = ColumnarStore.fromTrustedStore(this.schema, keys, columns);
+    // All-or-nothing commit: the whole chunk lands BEFORE any fan-out
+    // (the documented divergence from the per-row path — see `pushMany`).
     chunked.appendStore(store);
     this.#statsIngested += n;
 
-    // Materialize the batch's events as transient objects ONLY if an
+    // Column-native delta hook: fires with the appended store, no
+    // materialization. The partition router consumes this; its presence
+    // does NOT force `Event` synthesis (that's the point — column-native
+    // routing never materializes the source's events).
+    if (this.#onChunk.size > 0) {
+      for (const fn of this.#onChunk) fn(store);
+    }
+
+    // Materialize the chunk's events as transient objects ONLY if an
     // `'event'` / `'batch'` listener will consume them — with no row
-    // listeners, no `Event` is ever created (the heap/GC win).
+    // listeners (column-native consumers use `#onChunk`), no `Event` is
+    // ever created (the heap/GC win).
     const added =
       this.#onEvent.size > 0 || this.#onBatch.size > 0
         ? materializeEventsFromStore(store, this.schema)
@@ -663,6 +702,32 @@ export class LiveSeries<S extends SeriesSchema> {
     if (evicted.length > 0) {
       for (const fn of this.#onEvict) fn(evicted);
     }
+  }
+
+  /**
+   * @internal — whether this series uses the chunked columnar backing
+   * (top-level `strict` time-keyed). Lets `LivePartitionedSeries` choose
+   * column-native chunk routing (`_onChunk` + `_appendChunkTrusted`) over
+   * the per-event `Event[]` path. Not part of the public surface.
+   */
+  get _isChunked(): boolean {
+    return this.#chunked !== null;
+  }
+
+  /**
+   * @internal — subscribe to the column-native delta stream: `fn` fires
+   * with the just-appended `ColumnarStore` on every `pushMany` /
+   * `_appendChunkTrusted` (chunked backing only). Returns an unsubscribe.
+   * Unlike `'event'` / `'batch'`, attaching a chunk listener does NOT
+   * cause the series to materialize transient `Event`s — it's the hook
+   * `LivePartitionedSeries` routes through to keep partitioning
+   * column-native. No-op stream on the `Event[]` backing (never fires).
+   */
+  _onChunk(fn: (store: ColumnarStore<S>) => void): () => void {
+    this.#onChunk.add(fn);
+    return () => {
+      this.#onChunk.delete(fn);
+    };
   }
 
   /**

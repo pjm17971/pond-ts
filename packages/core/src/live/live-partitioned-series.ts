@@ -11,6 +11,8 @@ import {
   type LiveFillMapping,
   type LiveFillStrategy,
 } from './live-view.js';
+import { withRowSelection } from '../columnar/view.js';
+import type { ColumnarStore } from '../columnar/store.js';
 import type { Trigger } from './triggers.js';
 import {
   type AggregateMap,
@@ -177,6 +179,15 @@ export class LivePartitionedSeries<
   readonly #onSpawn: Set<SpawnListener<S, K>>;
   readonly #disposers: Set<() => void>;
   readonly #unsubscribeSource: () => void;
+  /**
+   * Column-native routing: `true` when the source is a chunked-backed
+   * `LiveSeries` (top-level strict time-keyed). Then partitioning routes
+   * source chunks → per-partition column sub-batches (no per-row
+   * `Event`), and partition sub-series use the chunked backing — the
+   * partition-retention OOM fix (the gRPC V6 finding). `false` falls back
+   * to the per-event `Event[]` path for any other source.
+   */
+  readonly #routeColumnar: boolean;
 
   // Pipeline counters for {@link LivePartitionedSeries.stats}.
   // Cumulative since construction; never reset.
@@ -222,21 +233,43 @@ export class LivePartitionedSeries<
     this.#onSpawn = new Set();
     this.#disposers = new Set();
 
+    // Column-native routing path: when the source is a chunked-backed
+    // LiveSeries (top-level strict time-keyed), route its appended chunks
+    // through `scatterByPartition`-style bucketing into per-partition
+    // column sub-batches — no per-row `Event`, and partitions use the
+    // chunked backing. Any other source (array-backed: reorder / drop /
+    // interval / non-LiveSeries) keeps the per-event `Event[]` path.
+    const chunkedSource =
+      (source as { _isChunked?: unknown })._isChunked === true &&
+      typeof (source as { _onChunk?: unknown })._onChunk === 'function';
+    this.#routeColumnar = chunkedSource;
+
     if (this.groups) {
       for (const g of this.groups) {
         this.#spawnPartition(g);
       }
     }
 
-    // Replay source's existing events into the right partitions.
-    for (let i = 0; i < source.length; i++) {
-      this.#routeEvent(source.at(i)!);
+    if (chunkedSource) {
+      // Replay the source's existing buffer: one chunk per partition via
+      // the trusted path (one-time, cold — not the hot path).
+      this.#replayChunked(source);
+      // Subscribe to the source's column-native chunk stream.
+      this.#unsubscribeSource = (
+        source as unknown as {
+          _onChunk: (fn: (store: ColumnarStore<S>) => void) => () => void;
+        }
+      )._onChunk((store) => this.#routeChunk(store));
+    } else {
+      // Replay source's existing events into the right partitions.
+      for (let i = 0; i < source.length; i++) {
+        this.#routeEvent(source.at(i)!);
+      }
+      // Subscribe to new events from the source (per-event path).
+      this.#unsubscribeSource = source.on('event', (event) => {
+        this.#routeEvent(event);
+      });
     }
-
-    // Subscribe to new events from the source.
-    this.#unsubscribeSource = source.on('event', (event) => {
-      this.#routeEvent(event);
-    });
   }
 
   /**
@@ -983,11 +1016,13 @@ export class LivePartitionedSeries<
     const opts: LiveSeriesOptions<S> = {
       name: `${this.name}/${String(key)}`,
       schema: this.schema,
-      // Partition sub-series are fed per-event via `_pushTrustedEvents`
-      // by `#routeEvent`, so they use the Event[] backing. They're not
-      // the OOM driver; chunking them is deferred to columnar routing
-      // (`scatterByPartition`) — see the column-native-live-pipeline brief.
-      __backing: 'array',
+      // Column-native routing (`#routeColumnar`): partitions take the
+      // chunked backing (`'auto'` → chunked for the strict time-keyed
+      // partitions inherited from a chunked source), fed batch-at-a-time
+      // by `#routeChunk` — no per-partition `Event[]` (the OOM fix). The
+      // per-event path keeps `'array'` (fed one Event at a time by
+      // `#routeEvent`, so a chunked backing would make 1-row chunks).
+      __backing: this.#routeColumnar ? 'auto' : 'array',
     };
     if (this.#partitionOptions.ordering !== undefined)
       opts.ordering = this.#partitionOptions.ordering;
@@ -1002,8 +1037,12 @@ export class LivePartitionedSeries<
     return part;
   }
 
-  #routeEvent(event: EventForSchema<S>): void {
-    const key = partitionKey(event, this.by) as K;
+  /**
+   * Find the partition for `key`, spawning it if absent. Enforces the
+   * declared-`groups` guard. Shared by `#routeEvent` (per-event),
+   * `#routeChunk` (column-native), and the chunked replay.
+   */
+  #ensurePartition(key: K): LiveSeries<S> {
     let part = this.#partitions.get(key);
     if (!part) {
       if (this.groups && !this.groups.includes(key)) {
@@ -1016,6 +1055,12 @@ export class LivePartitionedSeries<
       }
       part = this.#spawnPartition(key);
     }
+    return part;
+  }
+
+  #routeEvent(event: EventForSchema<S>): void {
+    const key = partitionKey(event, this.by) as K;
+    const part = this.#ensurePartition(key);
     this.#statsEventsRouted++;
     // Trusted-pipeline fast path: the source LiveSeries already
     // constructed and validated this Event against `S`, and partition
@@ -1023,6 +1068,74 @@ export class LivePartitionedSeries<
     // instead of round-tripping `Event → row → Event` (which would
     // re-validate and re-allocate per event).
     part._pushTrustedEvents([event]);
+  }
+
+  /**
+   * Column-native routing: scatter a source chunk into per-partition
+   * column sub-batches and append each to its chunked partition — **no
+   * per-row `Event`** (the partition-retention OOM fix). Bucketing uses
+   * the SAME key derivation as {@link partitionKey} (String-coerced;
+   * `' undefined'` sentinel) so chunked and per-event routing partition
+   * identically. (`scatterByPartition` itself keys by raw value and
+   * throws on undefined, so we bucket inline and gather via
+   * `withRowSelection` — scatter's underlying packed-gather primitive.)
+   */
+  #routeChunk(store: ColumnarStore<S>): void {
+    const col = store.columns.get(String(this.by));
+    if (col === undefined) return; // partition column always in schema
+    const n = store.length;
+    const buckets = new Map<K, number[]>();
+    for (let i = 0; i < n; i += 1) {
+      const v = col.read(i);
+      const key = (v === undefined ? ' undefined' : `${String(v)}`) as K;
+      let indices = buckets.get(key);
+      if (indices === undefined) {
+        indices = [];
+        buckets.set(key, indices);
+      }
+      indices.push(i);
+    }
+    for (const [key, indices] of buckets) {
+      const part = this.#ensurePartition(key);
+      this.#statsEventsRouted += indices.length;
+      // `withRowSelection` gathers the bucket's rows into a packed
+      // sub-store (typed-array copy, no `Event`); the partition's chunked
+      // backing takes it as one chunk via `_appendChunkTrusted`.
+      const sub = withRowSelection(
+        store,
+        Int32Array.from(indices),
+      ) as ColumnarStore<S>;
+      part._appendChunkTrusted(sub);
+    }
+  }
+
+  /**
+   * One-time replay of a chunked source's existing buffer at
+   * construction: group existing events by partition key and feed each
+   * partition one chunk via the trusted path. Cold path (not the hot
+   * routing loop) — uses `_pushTrustedEvents` (rebuilds rows → one
+   * chunk) rather than re-deriving a store, which is fine off the hot
+   * path.
+   */
+  #replayChunked(source: LiveSource<S>): void {
+    const len = source.length;
+    if (len === 0) return;
+    const buckets = new Map<K, EventForSchema<S>[]>();
+    for (let i = 0; i < len; i += 1) {
+      const event = source.at(i)!;
+      const key = partitionKey(event, this.by) as K;
+      let evs = buckets.get(key);
+      if (evs === undefined) {
+        evs = [];
+        buckets.set(key, evs);
+      }
+      evs.push(event);
+    }
+    for (const [key, evs] of buckets) {
+      const part = this.#ensurePartition(key);
+      this.#statsEventsRouted += evs.length;
+      part._pushTrustedEvents(evs);
+    }
   }
 
   /**
