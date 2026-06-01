@@ -74,6 +74,19 @@ type ViewOptions<S extends SeriesSchema> = {
   windowMs?: number;
 };
 
+/**
+ * The key-column type for `LiveView.keyColumn()` — `TimeKeyColumn` for a
+ * time-keyed schema. The gather implements time keys only, so a
+ * non-time-keyed view resolves to an error-message string type: using the
+ * result (e.g. `.begin`) is a compile error rather than a runtime throw.
+ * (`never` wouldn't do — property access on `never` is silently allowed.)
+ * Reuses `KeyColumnForSchema`, gated on the time variant.
+ */
+type TimeKeyOnly<S extends SeriesSchema> =
+  KeyColumnForSchema<S> extends TimeKeyColumn
+    ? KeyColumnForSchema<S>
+    : 'LiveView.keyColumn() supports time-keyed views only — use toTimeSeries() for other key kinds';
+
 export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   readonly [EMITS_EVICT] = true as const;
   readonly name: string;
@@ -521,12 +534,12 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
    * `TimeKeyColumn` directly from the view's current events.
    * Time-keyed series only.
    */
-  keyColumn(): KeyColumnForSchema<S> {
+  keyColumn(): TimeKeyOnly<S> {
     return gatherTimeKeyColumn(
       this.#events,
       null,
       this.schema,
-    ) as unknown as KeyColumnForSchema<S>;
+    ) as unknown as TimeKeyOnly<S>;
   }
 
   /**
@@ -560,10 +573,17 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   partitionBy<Col extends ValueColumnNameForSchema<S>>(
     col: Col,
   ): { toMap<R>(fn: (group: LiveColumnGroup<S>) => R): Map<string, R> } {
-    const events = this.#events;
+    const live = this.#events;
     const schema = this.schema;
     return {
       toMap: <R>(fn: (group: LiveColumnGroup<S>) => R): Map<string, R> => {
+        // Freeze the current window's row identity for the lifetime of the
+        // result. `#events` is mutated in place (append/evict), so a group
+        // (or a closure over it) returned by `fn` would otherwise read
+        // shifted / out-of-range rows after a later push. The shallow copy
+        // is event refs only (events are immutable) — cheap, and preserves
+        // the "snapshot-style read of the current window" contract.
+        const events = live.slice();
         const buckets = new Map<string, number[]>();
         for (let i = 0; i < events.length; i += 1) {
           // Mirror TimeSeries `partitionKeyOf` (single-column): a missing
@@ -730,12 +750,12 @@ export class LiveColumnGroup<S extends SeriesSchema> {
     return this.#indices.length;
   }
 
-  keyColumn(): KeyColumnForSchema<S> {
+  keyColumn(): TimeKeyOnly<S> {
     return gatherTimeKeyColumn(
       this.#events,
       this.#indices,
       this.schema,
-    ) as unknown as KeyColumnForSchema<S>;
+    ) as unknown as TimeKeyOnly<S>;
   }
 
   column<Name extends NumericColumnNameForSchema<S>>(

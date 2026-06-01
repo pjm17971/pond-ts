@@ -1,12 +1,19 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import type { LiveSource, SeriesSchema } from 'pond-ts';
 
+// The capability marker pond-ts stamps on evict-emitting sources
+// (`LiveSeries`, `LiveView`). It's a registered symbol
+// (`Symbol.for('pond-ts:emitsEvict')` in pond-ts), so reconstructing it
+// here yields the identical symbol — no import needed. The
+// `clear-evicts-without-event` test guards against key drift.
+const EMITS_EVICT = Symbol.for('pond-ts:emitsEvict');
+
 export interface UseLiveVersionOptions {
   /**
    * Minimum interval between React notifications, in ms. The version
-   * counter bumps *immediately* on every source event (no buffering);
+   * counter bumps *immediately* on every source change (no buffering);
    * `throttle` only bounds how often React is told to re-render.
-   * `0` notifies synchronously per event. Default 100.
+   * `0` notifies synchronously per change. Default 100.
    */
   throttle?: number;
 }
@@ -18,7 +25,7 @@ export interface UseLiveVersionOptions {
  * `LiveSeries` / `LiveView` mutate in place, so a `useMemo([liveView])`
  * keyed on the view never re-runs. This hook gives React a
  * monotonically-increasing version that changes (at most once per
- * `throttle`) whenever the source appends — the missing invalidation
+ * `throttle`) whenever the source mutates — the missing invalidation
  * trigger. Read columns straight off the live view, keyed on the
  * returned version:
  *
@@ -34,8 +41,11 @@ export interface UseLiveVersionOptions {
  * );
  * ```
  *
- * Built on `useSyncExternalStore` (tearing-safe). Experimental (0.19.0)
- * — surface may change in 0.19.x.
+ * Tracks **both** append (`'event'`) and eviction (`'evict'`, on sources
+ * that emit it — e.g. `clear()` / retention prune), and advances the
+ * revision on subscribe so a change between render and the subscribe
+ * effect is still picked up (the `useSyncExternalStore` post-subscribe
+ * re-read). Experimental (0.19.0) — surface may change in 0.19.x.
  */
 export function useLiveVersion<S extends SeriesSchema>(
   source: LiveSource<S>,
@@ -44,7 +54,7 @@ export function useLiveVersion<S extends SeriesSchema>(
   const throttleMs = options?.throttle ?? 100;
 
   const store = useMemo(() => {
-    let version = 0; // bumped immediately on every source event
+    let version = 0; // bumped on every observed source mutation
     let committed = 0; // last version React has been notified about
     let timer: ReturnType<typeof setTimeout> | null = null;
     let unsubSource: (() => void) | null = null;
@@ -55,21 +65,43 @@ export function useLiveVersion<S extends SeriesSchema>(
       committed = version;
       for (const l of listeners) l();
     };
+    const onChange = (): void => {
+      version += 1;
+      if (throttleMs <= 0) {
+        flush();
+      } else if (timer === null) {
+        timer = setTimeout(flush, throttleMs);
+      }
+    };
 
     return {
       subscribe(cb: () => void): () => void {
         listeners.add(cb);
-        // Subscribe to the source lazily on the first listener.
         if (unsubSource === null) {
-          unsubSource = source.on('event', () => {
-            version += 1;
-            if (throttleMs <= 0) {
-              flush();
-            } else if (timer === null) {
-              timer = setTimeout(flush, throttleMs);
-            }
-          });
+          const unsubEvent = source.on('event', onChange);
+          // Also track eviction (clear / retention prune) on sources that
+          // emit it — otherwise a `clear()` with no following append leaves
+          // a column reader stale.
+          let unsubEvict: (() => void) | undefined;
+          if (EMITS_EVICT in source) {
+            unsubEvict = (
+              source as unknown as {
+                on(type: 'evict', fn: () => void): () => void;
+              }
+            ).on('evict', onChange);
+          }
+          unsubSource = () => {
+            unsubEvent();
+            unsubEvict?.();
+          };
         }
+        // Close the render-before-subscribe gap: a mutation between render
+        // and this effect fires no observed callback, so advance the
+        // revision now. useSyncExternalStore re-reads getSnapshot after
+        // subscribe; the bumped value forces one re-render that re-reads
+        // the (now-current) view.
+        version += 1;
+        committed = version;
         return () => {
           listeners.delete(cb);
           if (listeners.size === 0) {
@@ -82,9 +114,9 @@ export function useLiveVersion<S extends SeriesSchema>(
           }
         };
       },
-      // Stable between notifications — only advances at flush, exactly
-      // when listeners are told. (Returning the live `version` would
-      // violate useSyncExternalStore's getSnapshot contract.)
+      // Stable between notifications — only advances at flush / subscribe,
+      // exactly when React is told. (Returning the live `version` would
+      // violate the getSnapshot contract.)
       getSnapshot: (): number => committed,
     };
   }, [source, throttleMs]);

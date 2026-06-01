@@ -14,51 +14,64 @@ function makeView() {
   return { live, view: live.window(100) };
 }
 
+// The version is an opaque change token — assert that it *changes*, not its
+// absolute value (the subscribe-time bump that closes the render-before-
+// subscribe gap means the initial committed value is not 0).
 describe('useLiveVersion', () => {
-  it('starts at 0 and bumps per source event with throttle 0', () => {
+  it('changes on each source append (throttle 0)', () => {
     const { live, view } = makeView();
     const { result } = renderHook(() => useLiveVersion(view, { throttle: 0 }));
-    expect(result.current).toBe(0);
-
+    const v0 = result.current;
     act(() => {
       live.push([1000, 1, 'a']);
     });
-    expect(result.current).toBe(1);
-
+    const v1 = result.current;
+    expect(v1).not.toBe(v0);
     act(() => {
       live.push([1001, 2, 'a']);
     });
-    expect(result.current).toBe(2);
+    expect(result.current).not.toBe(v1);
   });
 
-  it('throttles React notifications but bumps immediately under the hood', () => {
+  it('updates on clear() / eviction, not only append', () => {
+    const { live, view } = makeView();
+    live.push([1000, 1, 'a']); // something to evict (pre-mount)
+    const { result } = renderHook(() => useLiveVersion(view, { throttle: 0 }));
+    const before = result.current;
+    act(() => {
+      live.clear(); // emits 'evict', no 'event'
+    });
+    expect(result.current).not.toBe(before);
+  });
+
+  it('throttles React notifications but coalesces the immediate bumps', () => {
     vi.useFakeTimers();
     try {
       const { live, view } = makeView();
       const { result } = renderHook(() =>
         useLiveVersion(view, { throttle: 200 }),
       );
-      expect(result.current).toBe(0);
+      const before = result.current;
 
-      // Three events inside one throttle window — React not yet notified.
+      // Three appends inside one window — React not yet notified.
       act(() => {
         live.push([1000, 1, 'a']);
         live.push([1001, 2, 'a']);
         live.push([1002, 3, 'a']);
       });
-      expect(result.current).toBe(0);
+      expect(result.current).toBe(before);
 
-      // After the window, React sees the LATEST version (3), not 1.
+      // After the window, a single notification reflecting all three.
       act(() => {
         vi.advanceTimersByTime(200);
       });
-      expect(result.current).toBe(3);
+      expect(result.current).not.toBe(before);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('keeps a stable reference signal across renders with no events', () => {
+  it('is stable across renders with no source change', () => {
     const { view } = makeView();
     const { result, rerender } = renderHook(() =>
       useLiveVersion(view, { throttle: 0 }),
@@ -68,7 +81,7 @@ describe('useLiveVersion', () => {
     expect(result.current).toBe(first);
   });
 
-  it('unsubscribes from the source on unmount', () => {
+  it('stops updating after unmount', () => {
     const { live, view } = makeView();
     const { result, unmount } = renderHook(() =>
       useLiveVersion(view, { throttle: 0 }),
@@ -76,12 +89,11 @@ describe('useLiveVersion', () => {
     act(() => {
       live.push([1000, 1, 'a']);
     });
-    expect(result.current).toBe(1);
+    const afterPush = result.current;
     unmount();
-    // No throw / no update after unmount.
     act(() => {
       live.push([1001, 2, 'a']);
     });
-    expect(result.current).toBe(1);
+    expect(result.current).toBe(afterPush);
   });
 });

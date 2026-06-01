@@ -5,6 +5,7 @@
  * rejects non-numeric columns at compile time).
  */
 import { LiveSeries } from '../src/index.js';
+import type { LiveView } from '../src/index.js';
 
 const schema = [
   { name: 'time', kind: 'time' },
@@ -46,3 +47,15 @@ view.partitionBy('host').toMap((g) => {
   g.column('host');
   return g.length;
 });
+
+// keyColumn() is implemented for time-keyed views only — a non-time-keyed
+// view's keyColumn() resolves to an error-message string type, so using its
+// result is a compile error (not a runtime throw). Type-only via `declare`
+// (a non-time-keyed live source isn't worth constructing at runtime here).
+const nonTimeSchema = [
+  { name: 'timeRange', kind: 'timeRange' },
+  { name: 'v', kind: 'number' },
+] as const;
+declare const nonTimeView: LiveView<typeof nonTimeSchema>;
+// @ts-expect-error keyColumn() supports time-keyed views only
+nonTimeView.keyColumn().begin;

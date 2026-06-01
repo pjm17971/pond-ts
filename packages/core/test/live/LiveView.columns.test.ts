@@ -151,4 +151,31 @@ describe('LiveView.partitionBy().toMap() — walk-now', () => {
       expect(walkNow.get(key)).toBe(n);
     }
   });
+
+  it('groups stay stable after later eviction (snapshot-style slice)', () => {
+    const live = new LiveSeries({ name: 's', schema, ordering: 'strict' });
+    live.pushMany([
+      [1000, 10, 'a'],
+      [1001, 20, 'a'],
+    ]);
+    const view = live.window(2); // count window keeps the last 2
+    // Return the group itself (a lazy reader), then mutate the view.
+    const g = view
+      .partitionBy('host')
+      .toMap((grp) => grp)
+      .get('a')!;
+    expect(Array.from(g.column('cpu').toFloat64Array())).toEqual([10, 20]);
+
+    // Pushing two more evicts the original pair (splice from the front).
+    live.pushMany([
+      [1002, 30, 'a'],
+      [1003, 40, 'a'],
+    ]);
+
+    // Without the toMap() slice, the group's indices would now read the
+    // shifted rows ([30, 40]); the snapshot freeze keeps [10, 20].
+    expect(g.length).toBe(2);
+    expect(Array.from(g.column('cpu').toFloat64Array())).toEqual([10, 20]);
+    expect(Array.from(g.keyColumn().begin)).toEqual([1000, 1001]);
+  });
 });
