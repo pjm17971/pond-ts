@@ -178,4 +178,22 @@ describe('LiveView.partitionBy().toMap() — walk-now', () => {
     expect(Array.from(g.column('cpu').toFloat64Array())).toEqual([10, 20]);
     expect(Array.from(g.keyColumn().begin)).toEqual([1000, 1001]);
   });
+
+  it('throws on a missing / key partition column instead of silently merging', () => {
+    const view = make().window(10);
+    // Bad column name (the generic blocks this at compile time; the cast
+    // models a JS caller / schema drift). Without the guard, every row's
+    // get('nope') is undefined → all collapse into one bucket.
+    expect(() =>
+      (view as { partitionBy(c: string): { toMap(fn: unknown): unknown } })
+        .partitionBy('nope')
+        .toMap((g: { length: number }) => g.length),
+    ).toThrow(/not a value column/);
+    // The key column is rejected too (it's excluded by schema.slice(1)).
+    expect(() =>
+      (
+        view as { partitionBy(c: string): { toMap(fn: unknown): unknown } }
+      ).partitionBy('time'),
+    ).toThrow(/not a value column/);
+  });
 });

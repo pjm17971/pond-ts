@@ -573,6 +573,24 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   partitionBy<Col extends ValueColumnNameForSchema<S>>(
     col: Col,
   ): { toMap<R>(fn: (group: LiveColumnGroup<S>) => R): Map<string, R> } {
+    // Validate the partition column at runtime. The generic restricts `col`
+    // to value columns at compile time, but a JS caller, an `as any`, a
+    // loose `SeriesSchema`, or schema drift can slip a bad / key / missing
+    // name through — and `get(col)` would then return undefined for every
+    // row, collapsing them all into the one ' undefined' bucket. That's a
+    // silent single-merged-series, not a loud failure. Fail fast instead,
+    // matching `TimeSeries.partitionBy`.
+    if (
+      !this.schema
+        .slice(1)
+        .some((c) => (c as { name: string }).name === (col as string))
+    ) {
+      throw new ValidationError(
+        `LiveView.partitionBy(): '${String(col)}' is not a value column in ` +
+          `the schema — partitioning by a missing or key column would ` +
+          `silently collapse every row into one bucket.`,
+      );
+    }
     const live = this.#events;
     const schema = this.schema;
     return {
