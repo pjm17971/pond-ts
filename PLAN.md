@@ -4754,8 +4754,9 @@ wrong tier. What it _did_ deliver is real and worth keeping: minor GC max
 pause **−74%**, ingest→fanout p99 **−78%**, pushManyTotal p99 **−77%** —
 Phase 1 is a churn/latency fix, **not** the heap fix it was billed as.
 
-**Phase 2 — column-native partition routing: DELIVERED ([#175](https://github.com/pjm17971/pond-ts/pull/175)),
-held, then un-held 2026-06-03 as P0 of the collect-output arc**
+**Phase 2 — column-native partition routing: MERGED ([#175](https://github.com/pjm17971/pond-ts/pull/175),
+2026-06-03) as P0 of the collect-output arc** — held on delivery, un-held +
+merged after the collect-output measurements landed
 ([brief](docs/briefs/collect-output-columnar-arc.md)). #175 cleared gRPC V8
 (60× fewer ColumnarStores, −99.4% Event retention, +24% throughput) but was
 **held** — the partition-retention OOM it fixes wasn't a binding production
