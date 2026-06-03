@@ -77,10 +77,22 @@ rendering needs — rejected. Per-partition-direct it is.
 - **P1 — chunk the rolling output per partition (the new core work).** Route the
   rolling reducer's `#outputEvents` fan-in through #175's coalescing tier so each
   partition's `avg`/`sd`/… land in a chunked sub-series. This is the piece
-  beyond #175. Heap + per-partition-read bench gate.
+  beyond #175. **Input-shape, not just cadence** (#175 final review): #175's
+  `stageRows` slices a _source store_ via `beginAt`/`valueAt`, but the rolling
+  output is freshly-built `Event`s with no source store — so P1 adds a
+  **tuple-level staging entry** (stage a built row-tuple directly) reusing the
+  coalescing tier's flush/commit machinery but not its source-slice intake.
+  Heap + per-partition-read bench gate.
 - **P2 — per-partition `windowColumn` read surface (public; API gate).** A way
-  to access each partition's chunked sub-series and `windowColumn` it. Widens
-  the public live surface → human sign-off + L2 + Codex. Experimental (0.19.x).
+  to access each partition's chunked sub-series and `windowColumn` it. **Read
+  contract must patch the pending tier** (#175 final review): the coalescing
+  tier's pending rows (≤ `flushThreshold` per partition — the freshest data, the
+  live tail a dashboard charts) are boxed row-tuples, not a typed-array column,
+  so the windowed read concats `[zero-copy committed chunk slices] + [the
+  pending tail materialized to a small typed array]`. The tail is ≤255 rows ×
+  columns — negligible vs the N-row window, so the zero-copy win holds for the
+  bulk; but the read is _wrong_ if it skips the tail. Widens the public live
+  surface → human sign-off + L2 + Codex. Experimental (0.19.x).
 - **P3 — wire the dashboard + A/B.** Shift the baseline read from
   unify-then-re-partition to per-partition-direct; dashboard agent runs the A/B
   on their real memo + harness. The binding realized-win number.
@@ -101,9 +113,13 @@ rendering needs — rejected. Per-partition-direct it is.
 2. **React invalidation across partitions.** One `useLiveVersion` bump for the
    partitioned source on any partition update, vs per-partition subscriptions.
    Start with one bump (simplest; matches the source granularity).
-3. **Rolling-output chunking mechanism (P1).** Reuse `stageRows` / the
-   coalescing tier verbatim, or a rolling-specific flush cadence (rolling emits
-   one output per window step — cadence differs from raw ingest).
+3. **Rolling-output staging mechanism (P1) — input shape, then cadence.**
+   `stageRows` can't be reused verbatim: it slices a source store, and the
+   rolling output has none. Add a tuple-level staging entry (stage a built
+   row-tuple) on the coalescing tier. _Then_ consider cadence — rolling emits
+   one output per window step, sparser than raw ingest, so the 256-row flush
+   threshold may want a time/idle-based flush too, or the live tail sits in the
+   pending tier longer (P2's read patch handles correctness regardless).
 4. **Empty-window + warm-up contract.** `windowColumn` throws on empty today
    (spike). The rolling warm-up emits `NaN`/undefined before the first full
    window — decide the read contract for partial windows.
