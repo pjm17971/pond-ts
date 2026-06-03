@@ -119,6 +119,54 @@ with increment 1. Experimental (0.19.x); surface may change.
 2. **Dashboard A/B**: raw-line path, reported back.
 3. **If the win lands**: human sign-off → real implementation → PLAN entry.
 
+## Spike results (2026-06-03)
+
+**Built** (commit `280bf58`, branch `spike/structural-window`):
+`ChunkedColumnarLiveStorage.windowColumn(name, start, end)` — reads one
+numeric column over a row range straight off the chunk buffers (interior
+chunks whole, boundaries `subarray`'d). 9 tests incl. a zero-copy alias
+pin; 2041 core tests green.
+
+**Decisions resolved:**
+
+- **Decision 2 (substrate) — done.** `windowColumn` is the read; it
+  generalizes the `#evictExact` boundary-slice to a non-mutating range read.
+- **Return shape — `Float64Array`, not `ChunkedColumn`.** The consumer's
+  actual need is a typed array for canvas; returning it directly is
+  zero-copy on a single chunk (`subarray` view) and one concat across
+  chunks, with no dependency on the public-API `toFloat64Array` prototype
+  augmentation (which the isolated store test doesn't load). The composable
+  `ChunkedColumn` return is a refinement the real surface can add.
+- **Decision 1 (where the public read surface lives) — still open.** The
+  spike put the primitive on the **store** (internal, not exported), which
+  trips no API gate. Promoting it to a public `LiveSeries`/view surface is
+  the gated step (human sign-off + L2 + Codex), deferred to the real impl.
+
+**Measured** (`scripts/perf-liveview-structural.mjs`), reading cpu/avg/sd
+over the whole window vs the increment-1 `Event.get()` gather:
+
+| n / hosts | inc-1 gather | chunked concat | zero-copy | concat speedup |
+| --------- | ------------ | -------------- | --------- | -------------- |
+| 12k / 8   | 0.337 ms     | 0.023 ms       | 0.001 ms  | 14.7×          |
+| 48k / 32  | 1.35 ms      | 0.094 ms       | 0.001 ms  | 14.4×          |
+| 96k / 64  | 2.744 ms     | 0.196 ms       | 0.001 ms  | 14×            |
+
+Flat **~14×** on the realistic multi-chunk concat path; effectively free
+single-chunk. The raw-line zero-copy win is real.
+
+**Bridge to the bigger collect-output prize.** `windowColumn` delivers its
+win on a **contiguous** row range. The dashboard's baseline partitions by
+host, and hosts are interleaved across the collected series — *not*
+contiguous — so `windowColumn` does not apply per-partition **unless each
+partition is stored as its own contiguous chunked sub-series**. That is
+exactly what [#175](https://github.com/pjm17971/pond-ts/pull/175)'s
+per-partition chunked routing provides. So the collect-output arc =
+un-hold #175 (per-partition chunked stores + coalescing) → per-partition
+`windowColumn`. Sized by `perf-baseline-memo-split.mjs` (gather = 90-96%
+of the baseline memo) × this (~14× on that gather), with the per-tick
+bucketing also eliminated (moves to fan-in time). The arc is decisively
+justified on the numbers; the remaining gate is un-holding #175.
+
 ## Cross-references
 
 - [`column-on-liveview-spike.md`](column-on-liveview-spike.md) — increment 1
