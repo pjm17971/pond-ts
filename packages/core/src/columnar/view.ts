@@ -103,15 +103,20 @@ export function withRowSelection<S extends ColumnSchema>(
  * / `pctChange`'s `{ drop: true }`, which slices off the
  * predecessor-less first row.
  *
- * **Bounds.** `start` / `end` are forgiving the same way
- * `Array.prototype.slice` is: `start` clamps up to `0`, `end` clamps
- * down to `length`, and a non-positive clamped span returns an empty
- * store. Unlike `withRowSelection`, no eager validation is needed —
- * a range can't manufacture phantom rows the way an arbitrary index
- * array can, and the key + value `sliceByRange` clamp **identically**
- * (the key column's clamp mirrors `Float64Column.sliceByRange`
- * exactly), so the sliced key length always matches every sliced
- * column length and `fromTrustedStore`'s length invariant holds.
+ * **Bounds.** Integer out-of-range `start` / `end` are forgiving
+ * like `Array.prototype.slice`: `start` clamps up to `0`, `end`
+ * clamps down to `length`, and a non-positive clamped span returns
+ * an empty store. (The `Array.slice` analogy stops at integers — a
+ * fractional or `NaN` bound is *rejected* by the underlying key
+ * column's `validateColumnLength`, not silently truncated.) Unlike
+ * `withRowSelection`, no eager validation is needed — a range can't
+ * manufacture phantom rows the way an arbitrary index array can, and
+ * the key + value `sliceByRange` clamp **identically** (the key
+ * column's clamp mirrors `Float64Column.sliceByRange` exactly), so
+ * the sliced key length always matches every sliced column length
+ * and `fromTrustedStore`'s length invariant holds. The key is sliced
+ * first, so a bad bound throws before any value column is touched —
+ * never a partially-built store.
  *
  * Cost: O(C) for packed columns (C zero-copy subarray views) plus
  * O(C · chunks-spanned) for chunked columns. No per-row walk.
@@ -445,9 +450,12 @@ function sliceKeyColumnByIndices(
 }
 
 /**
- * Range-slices a key column to `[start, end)`, dispatching on key
- * kind so each branch's `sliceByRange` return type is preserved.
- * The contiguous-range counterpart of `sliceKeyColumnByIndices`.
+ * Range-slices a key column to `[start, end)`. The contiguous-range
+ * counterpart of `sliceKeyColumnByIndices`, kept structurally
+ * identical to its sibling for readability — a direct
+ * `keys.sliceByRange(start, end)` on the `KeyColumn` union would also
+ * type-check and return `KeyColumn`, so the per-kind `instanceof`
+ * dispatch is a consistency choice, not a type requirement.
  */
 function sliceKeyColumnByRange(
   keys: KeyColumn,

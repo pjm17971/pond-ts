@@ -233,6 +233,15 @@ describe('withRowRange', () => {
     }
   });
 
+  it('rejects fractional bounds (throws before touching value columns)', () => {
+    // The Array.prototype.slice analogy is integers-only: a fractional
+    // span produces a non-integer length that the key column's
+    // validateColumnLength rejects. The key is sliced first, so this
+    // throws before any value column is sliced — never a half-built store.
+    const source = makeBasicStore();
+    expect(() => withRowRange(source, 1.5, 4)).toThrow();
+  });
+
   it('preserves validity through the slice', () => {
     const schema = [
       { name: 'time', kind: 'time' },
