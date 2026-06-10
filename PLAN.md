@@ -38,6 +38,24 @@ for the philosophy. This section is the canonical roster: who's
 working on what, what each has driven into the library, where each
 track is now.
 
+### Internal robustness audits
+
+Complementing the experiment loop (which surfaces _user-facing_ API
+friction), a fresh model periodically does a full-project read-only
+audit targeting _internal_ robustness — the issues experiments route
+around rather than report. As the available model improves, re-run.
+
+- **2026-06-10 (fable, against v0.20.0):**
+  [`docs/notes/technical-audit-2026-06.md`](docs/notes/technical-audit-2026-06.md).
+  Healthy baseline (~2,100 tests, ~zero debt markers, honest decision
+  log). Top findings triaged into the backlog: live-layer listener
+  error isolation + re-entrancy contract; partition-cardinality cap
+  (double-signalled with the metric-agent review); perf-scripts-in-CI
+  - coverage; React `useSyncExternalStore` migration; operator
+    extraction + type-safe schema helpers. Two findings cross-validated
+    independent signals (partition OOM; the "which aggregation style"
+    doc gap), which bumped their rank.
+
 ### CSV-cleaner (complete; v0.9.x)
 
 Three-agent run (Claude, Codex, Gemini) on a real per-host metrics
