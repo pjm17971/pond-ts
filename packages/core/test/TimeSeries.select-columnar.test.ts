@@ -105,4 +105,19 @@ describe('column-native select()', () => {
     const r = make().select('n');
     expect(r.reduce('n', 'sum')).toBe(6);
   });
+
+  it('selects zero value columns → key-only series', () => {
+    const r = make().select();
+    expect(r.schema.map((c) => c.name)).toEqual(['time']);
+    expect(r.length).toBe(3);
+    expect(Array.from(r.keyColumn().begin)).toEqual([0, 1000, 2000]);
+    expect(r.at(1)!.begin()).toBe(1000);
+    expect(r.at(1)!.data()).toEqual({}); // no value columns
+  });
+
+  // NOTE: select() on a chunked-backed store is implementation-sound
+  // (withColumnsSelected references columns regardless of storage), but it
+  // can't be pinned here yet — there's no public chunked-TimeSeries
+  // constructor. Add an assertion when the `fromTrustedColumns` carry-forward
+  // (#107) lands one.
 });
