@@ -325,11 +325,14 @@ cleanup pass for shim removal.
 
 **What's still aspirational** (not shipped here):
 
-- Operator extraction from `batch/time-series.ts` (4524 lines).
-  The structural move is done; the "thin API shell + `batch/operators/*.ts`"
-  goal in ARCHITECTURE.md hasn't started. Same for
-  `live/live-series.ts` (1185 lines) and `live/live-partitioned-series.ts`
-  (1448 lines).
+- Operator extraction from `batch/time-series.ts` (~4850 lines).
+  **Underway as of the Step-4 transform wave** — `batch/operators/`
+  now exists with `cumulative.ts` as the first extracted operator
+  (PR #190); `select` / `rename` reshape the store column-native but
+  inline (not yet pulled into `operators/`). The "thin API shell +
+  `batch/operators/*.ts`" goal in ARCHITECTURE.md is now in motion,
+  one operator per PR. Not yet started for `live/live-series.ts`
+  (1185 lines) and `live/live-partitioned-series.ts` (1448 lines).
 - `io/` layer (row/object/json/point converters) is reserved in
   ARCHITECTURE.md but not yet created — comes into existence when
   operator extraction surfaces the relevant code paths.
@@ -4054,14 +4057,18 @@ Status: adopted 2026-05-11. Not started.
 note; for current ground-truth see the consultant assessment
 ([`docs/notes/columnar-arc-assessment-2026-06.md`](docs/notes/columnar-arc-assessment-2026-06.md),
 against v0.20.0). **Shipped:** substrate (1a–1h), batch columnar-first intake,
-reduce fast paths (3A: 59–73× numeric), public column API (step 8), and
-_conditional_ live chunked backing (step 7, strict-time-keyed only). **The
-middle of the pipeline — transforms and windowed aggregation — is still
-row-shaped.** Recommended remaining sequence (consultant §5, north-star-ranked):
-**3B aggregate per-bucket → 4 transforms + operator extraction →
-chart carry-forwards → 6 dict reducers → 5 planner → 3C rolling (last;
-numerical risk stacks there).** Every step before 3C is zero-or-negative
-public surface. Live §A (column-native output) stays **friction-gated** — the
+reduce fast paths (3A: 59–73× numeric), **3B aggregate per-bucket** (#186/#187),
+public column API (step 8), _conditional_ live chunked backing (step 7,
+strict-time-keyed only), and the **first transforms + operator extraction**
+(step 4: `select` #188, `rename` #189, `cumulative` #190 — the latter the first
+op pulled into `batch/operators/`, establishing the template). **The remaining
+middle of the pipeline — the rest of the transforms and windowed rolling — is
+still row-shaped.** Recommended remaining sequence (consultant §5,
+north-star-ranked), with the shipped prefix struck through: ~~3B aggregate
+per-bucket~~ → **4 transforms + operator extraction (in progress: `diff`/`rate`/
+`pctChange` → `fill` → `map` → `collapse` remain)** → chart carry-forwards →
+6 dict reducers → 5 planner → 3C rolling (last; numerical risk stacks there).
+Every step before 3C is zero-or-negative public surface. Live §A (column-native output) stays **friction-gated** — the
 zero-copy arc was correctly killed by measurement (`perf-band-gather.mjs`).
 Near-term items tracked as backlog tasks (3B, step 4 + extraction, row/columnar
 parity suite, `toFloat64Array` carry-forward, bundle-budget re-pin). North
@@ -4427,13 +4434,20 @@ columnar.mjs`.
        no-NaN common case). 8 new regression tests pin row/column
        parity across all reducers on NaN-bearing inputs.
    - **3 Phase B — `series.aggregate()` per-bucket fast path.**
-     Deferred. Each bucket gets a row-index slice; reducers
-     process `col.sliceByRange(start, end)` or a
-     `reduceColumnRange(col, start, end)`. Friction item #6 from
+     ✅ Shipped (PR #186 + empty-bucket strengthening re-commit
+     #187, merged 2026-06). `tryAggregateColumnarTimeKeyed(begins,
+getColumn, buckets, columns)` in `batch/aggregate-columns.ts`
+     reduces each time-keyed bucket straight off the column via the
+     Phase-A `reduceColumn` fast paths, no per-bucket event
+     materialization. Honest-baseline caveat pinned in
+     `scripts/perf-aggregate-range.mjs` (the displaced `states` path
+     was lighter than the custom-fn baseline; the small floor
+     regression was accepted against goal-3, no magic-number
+     threshold). Friction item #6 from
      [M1 chart-extraction](experiments/pond-ts-charts/) flagged
-     `reduceColumnRange` as the more directly useful next step
-     than Phase C — chart's per-frame Y-extent compute over the
-     visible subarray is exactly the shape this serves.
+     `reduceColumnRange` as the more directly useful next step than
+     Phase C — chart's per-frame Y-extent compute over the visible
+     subarray is exactly the shape this serves.
    - **3 Phase C — `series.rolling()` fast path.** Deferred.
      Sliding windows need add/remove semantics; monotonic-deque
      - running-stats patterns don't map cleanly to a single
@@ -4449,7 +4463,34 @@ columnar.mjs`.
      the closed state).
 4. Derived transforms (~3 weeks) — `select` / `rename` / `filter` /
    `slice` / `head` / `tail` / `diff` / `rate` / `pctChange` /
-   `cumulative` / `shift` columnar paths.
+   `cumulative` / `shift` columnar paths. **In progress — recovers
+   the 3.6× columnar construction win that the consultant found
+   "evaporates at the first transform" (batch operators read
+   `this.events`, forcing full lazy materialization).** Each
+   transform reshapes the store directly via the column-native view
+   ops (`withColumnsSelected` / `withColumnsRenamed` /
+   `withColumnReplaced`) + `#fromTrustedStore`, no events touched.
+   Doubles as **operator extraction** (ARCHITECTURE.md "thin API
+   shell + `batch/operators/*.ts`"): each op becomes a pure
+   `(store, schema, spec) → {store, schema}` function, the method a
+   thin delegate. Per-transform status:
+   - **`select`** ✅ Shipped (PR #188, merged 2026-06). Column-native
+     reshape via `withColumnsSelected`; 7–10× pipeline win
+     (`newPipeline ≈ build`).
+   - **`rename`** ✅ Shipped (PR #189, merged 2026-06).
+     `withColumnsRenamed`; stricter than the old event path (rejects
+     key-rename + target collisions). Same pipeline win.
+   - **`cumulative`** ✅ Shipped (PR #190, merged 2026-06). **First
+     fully extracted operator** — `cumulativeOp` in
+     `batch/operators/cumulative.ts`, establishing the Step-4
+     template. 5.4–5.9× pipeline win. Exact parity (11 existing +
+     7 column-native-edge tests); a type-defeated non-numeric target
+     now fails fast (kind guard) instead of silently corrupting.
+   - **Remaining (sequential — shared god-file):** `diff` / `rate` /
+     `pctChange` (the `#diffOrRate` family; needs a `ColumnarStore`
+     row-slice for `drop`, may carry a small substrate precursor) →
+     `fill` → `map` → `collapse`. Each a focused PR in the
+     `cumulative` template shape.
 5. Aggregate planner (~2 weeks).
 6. String / dictionary reducer adaptation (~2 weeks).
 7. `LiveSeries` numeric ring buffer (~2 weeks).
