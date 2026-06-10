@@ -121,7 +121,16 @@ console.log(JSON.stringify({ aggregateRange: rows }, null, 2));
 console.log(
   '\nrowPath = custom-fn reducers (forces the event-walk path);\n' +
     'fastPath = built-in reducers (columnar per-bucket reduce). 5 reducers\n' +
-    '(sum/avg/min/max/p95) per call. Floor scenario must not regress badly.',
+    '(sum/avg/min/max/p95) per call.\n\n' +
+    'BASELINE CAVEAT: the custom-fn row path is HEAVIER than the built-in\n' +
+    'incremental `states` path the fast path actually displaces (custom-fn\n' +
+    'gathers + filters + reduces a values array per bucket; `states` does an\n' +
+    'incremental add). So these speedups OVER-state the win, and the floor\n' +
+    "(1 event/bucket) isn't truly neutral — vs `states` it regresses ~15%\n" +
+    '(L2 review on PR #186). Accepted: the floor is near-identity aggregation;\n' +
+    'realistic densities (≥~tens/bucket) still win clearly. A row-path\n' +
+    'threshold (consultant rec) would erase the floor loss but adds a\n' +
+    'magic-number heuristic that misfires on skewed bucket distributions.',
 );
 if (!globalThis.gc)
   console.error('\n[note] run with --expose-gc for stable GC timing');
