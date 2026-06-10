@@ -5,6 +5,7 @@ import {
   Float64Column,
   IntervalKeyColumn,
   StringColumn,
+  float64ColumnFromArray,
   materialize,
   stringColumnFromArray,
   timeKeyColumnFromArray,
@@ -13,6 +14,7 @@ import {
   withColumnReplaced,
   withColumnsRenamed,
   withColumnsSelected,
+  withRowRange,
   withRowSelection,
 } from '../../src/columnar/index.js';
 
@@ -147,6 +149,140 @@ describe('withRowSelection (materializing)', () => {
     const view = withRowSelection(source, Int32Array.of(0, 1));
     // The view's `value` column should be a different instance.
     expect(view.columns.get('value')).not.toBe(source.columns.get('value'));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* withRowRange — contiguous row-range slice (the sliceByRange sibling)        */
+/*                                                                            */
+/* withRowRange delegates to each column's / the key's sliceByRange, so the   */
+/* per-column slicing (incl. chunk-spanning) is covered at the primitive      */
+/* level — these tests pin the COMPOSITION: keys + every column sliced to the */
+/* same range, schema preserved, clamping consistent enough that              */
+/* fromTrustedStore's length invariant always holds, and validity / key kinds */
+/* survive.                                                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('withRowRange', () => {
+  it('slices a contiguous range across keys and all columns', () => {
+    const source = makeBasicStore(); // 5 rows, keys 1000..5000
+    const view = withRowRange(source, 1, 4);
+    expect(view.length).toBe(3);
+    expect(view.beginAt(0)).toBe(2000);
+    expect(view.beginAt(2)).toBe(4000);
+    expect(view.valueAt(0, 'value')).toBe(20);
+    expect(view.valueAt(2, 'value')).toBe(40);
+    expect(view.valueAt(0, 'load')).toBe(0.2);
+  });
+
+  it('preserves the schema instance', () => {
+    const source = makeBasicStore();
+    const view = withRowRange(source, 1, 3);
+    expect(view.schema).toBe(source.schema);
+  });
+
+  it('is a full-length identity in values (start=0, end=length)', () => {
+    const source = makeBasicStore();
+    const view = withRowRange(source, 0, source.length);
+    expect(view.length).toBe(5);
+    expect(view.beginAt(0)).toBe(1000);
+    expect(view.valueAt(4, 'value')).toBe(50);
+  });
+
+  it('drops the first row (diff/rate drop:true shape)', () => {
+    const source = makeBasicStore();
+    const view = withRowRange(source, 1, source.length);
+    expect(view.length).toBe(4);
+    expect(view.beginAt(0)).toBe(2000); // original row 0 is gone
+    expect(view.valueAt(0, 'value')).toBe(20);
+  });
+
+  it('clamps start up to 0 and end down to length', () => {
+    const source = makeBasicStore();
+    const view = withRowRange(source, -5, 999);
+    expect(view.length).toBe(5);
+    expect(view.beginAt(0)).toBe(1000);
+    expect(view.beginAt(4)).toBe(5000);
+  });
+
+  it('returns an empty store for a non-positive clamped span', () => {
+    const source = makeBasicStore();
+    expect(withRowRange(source, 3, 3).length).toBe(0); // start === end
+    expect(withRowRange(source, 4, 2).length).toBe(0); // start > end
+    expect(withRowRange(source, 10, 20).length).toBe(0); // beyond length
+  });
+
+  it('keeps key and column lengths in lockstep on every range (no fromTrustedStore throw)', () => {
+    const source = makeBasicStore();
+    // Identical clamping between key.sliceByRange and column.sliceByRange is
+    // what makes these all construct without a length-mismatch RangeError.
+    for (const [s, e] of [
+      [0, 5],
+      [2, 5],
+      [0, 3],
+      [1, 4],
+      [3, 3],
+      [4, 2],
+      [-10, 100],
+    ] as const) {
+      const v = withRowRange(source, s, e);
+      expect(v.keys.length).toBe(v.length);
+      for (const def of source.schema.slice(1)) {
+        expect(v.columns.get(def.name)!.length).toBe(v.length);
+      }
+    }
+  });
+
+  it('rejects fractional bounds (throws before touching value columns)', () => {
+    // The Array.prototype.slice analogy is integers-only: a fractional
+    // span produces a non-integer length that the key column's
+    // validateColumnLength rejects. The key is sliced first, so this
+    // throws before any value column is sliced — never a half-built store.
+    const source = makeBasicStore();
+    expect(() => withRowRange(source, 1.5, 4)).toThrow();
+  });
+
+  it('preserves validity through the slice', () => {
+    const schema = [
+      { name: 'time', kind: 'time' },
+      { name: 'v', kind: 'number', required: false },
+    ] as const;
+    const keys = timeKeyColumnFromArray([0, 1000, 2000, 3000]);
+    const v = float64ColumnFromArray([10, undefined, 30, undefined]);
+    const source = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['v', v]]),
+    );
+    const view = withRowRange(source, 1, 4); // rows [undefined, 30, undefined]
+    expect(view.length).toBe(3);
+    expect(view.valueAt(0, 'v')).toBeUndefined(); // gap survives at new index 0
+    expect(view.valueAt(1, 'v')).toBe(30);
+    expect(view.valueAt(2, 'v')).toBeUndefined();
+  });
+
+  it('preserves interval-key labels through the slice', () => {
+    const schema = [
+      { name: 'bucket', kind: 'interval' },
+      { name: 'count', kind: 'number' },
+    ] as const;
+    const begin = Float64Array.of(0, 86_400_000, 172_800_000);
+    const end = Float64Array.of(86_400_000, 172_800_000, 259_200_000);
+    const labels = stringColumnFromArray(['day-1', 'day-2', 'day-3'], {
+      forceDict: true,
+    });
+    const keys = new IntervalKeyColumn(begin, end, labels, 3);
+    const counts = new Float64Column(Float64Array.of(42, 99, 7), 3);
+    const source = ColumnarStore.fromTrustedStore(
+      schema,
+      keys,
+      new Map([['count', counts]]),
+    );
+    const view = withRowRange(source, 1, 3); // day-2, day-3
+    expect(view.length).toBe(2);
+    expect((view.keys as IntervalKeyColumn).labelAt(0)).toBe('day-2');
+    expect((view.keys as IntervalKeyColumn).labelAt(1)).toBe('day-3');
+    expect(view.valueAt(0, 'count')).toBe(99);
   });
 });
 
