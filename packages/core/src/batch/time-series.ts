@@ -81,6 +81,7 @@ import {
 } from './operators/cumulative.js';
 import { diffRateOp, type DiffRateMode } from './operators/diff-rate.js';
 import { fillOp, type ResolvedFillSpec } from './operators/fill.js';
+import { mapOp, type ColumnMapper } from './operators/map.js';
 import { BoundedSequence } from '../sequence/bounded-sequence.js';
 import {
   parseTimestampString,
@@ -1285,6 +1286,52 @@ export class TimeSeries<S extends SeriesSchema> {
       schema,
       rows: toRows(schema, mappedEvents),
     });
+  }
+
+  /**
+   * Example: `series.mapColumns({ celsius: (c) => c * 1.8 + 32 })`.
+   * Applies a per-cell value transform to one or more value columns and
+   * returns a new series. Each mapper is `(value) => newValue` and must
+   * return the **same kind** it received (number→number, string→string,
+   * …), so the schema is unchanged.
+   *
+   * This is the column-scoped counterpart of {@link TimeSeries.map}:
+   * `map` rebuilds whole rows through an `Event => Event` closure (and
+   * can change the schema or key), whereas `mapColumns` transforms
+   * individual columns' values in place — it reads the columns directly
+   * (no per-row `Event`), so it stays on the fast columnar path.
+   *
+   * **Missing cells carry:** the mapper is called only on defined
+   * values; a missing (`undefined`) cell stays missing. A stored `NaN`
+   * is a defined number, so the mapper *is* called on it.
+   *
+   * **Multi-entity series:** `mapColumns` is per-cell and stateless, so
+   * it is unaffected by entity interleaving (unlike `cumulative` /
+   * `diff`); no `partitionBy` scoping is needed.
+   */
+  mapColumns<const Targets extends ValueColumnNameForSchema<S>>(spec: {
+    [K in Targets]: (
+      value: NonNullable<EventDataForSchema<S>[K]>,
+    ) => NonNullable<EventDataForSchema<S>[K]>;
+  }): TimeSeries<S> {
+    // Column-native (Step 4): the per-cell transform is applied straight
+    // off the store's columns in the extracted `mapOp` — no `this.events`
+    // materialization, no per-row `Event`. Same kind in/out ⇒ schema is
+    // unchanged. The method is a thin delegate.
+    const entries = Object.entries(spec) as Array<[string, ColumnMapper]>;
+    if (entries.length === 0) {
+      throw new Error('mapColumns() requires at least one column');
+    }
+    const { store, schema } = mapOp<S>(
+      this.#store.store,
+      this.schema,
+      new Map(entries),
+    );
+    return TimeSeries.#fromTrustedStore(
+      this.name,
+      schema,
+      store as unknown as ColumnarStore<ColumnSchema>,
+    );
   }
 
   /** Example: `series.asTime({ at: "center" })`. Converts the series key type to `"time"` using the supplied anchor within each event extent. */

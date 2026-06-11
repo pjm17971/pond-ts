@@ -14,6 +14,18 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`TimeSeries.mapColumns({ col: (value) => newValue })`** — a per-cell column
+  value transform. The column-scoped counterpart of the event-based `map()`:
+  where `map(schema, event => newEvent)` rebuilds whole rows through an
+  arbitrary closure (and can change the schema/key), `mapColumns` transforms
+  individual columns' values in place, reading the columns directly (no
+  per-row `Event`) so it stays on the fast columnar path. Same kind in/out
+  (number→number, string→string, …), so the schema is unchanged; missing cells
+  carry (the mapper isn't called on `undefined`). ~5–6× faster than the
+  `map()` workaround on a build → transform → read pipeline.
+
 ### Changed
 
 - **`select` / `rename` / `slice` / `cumulative` / `diff` / `rate` /
