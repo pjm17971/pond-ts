@@ -1412,8 +1412,11 @@ export class TimeSeries<S extends SeriesSchema> {
     // begin/end buffers — no events. The label fn receives the interval's
     // TimeRange (its [begin, end] extent) + index, NOT the whole event
     // (breaking — see CHANGELOG [Unreleased]). Label kind is inferred from the
-    // first label (string → StringColumn, number → Float64Column) and must be
-    // consistent across rows (mixed kinds throw, matching event intake).
+    // first label — the two `IntervalValue` kinds, string → StringColumn /
+    // number → Float64Column — and must be consistent across rows (a mix
+    // throws, as at event intake). A type-defeated non-string/number label
+    // (e.g. a boolean via `as any`) is rejected here rather than coerced the
+    // way intake would (`true → 1`); throwing on the nonsense input is safer.
     const schema = Object.freeze([
       { name: 'interval', kind: 'interval' as const },
       ...this.schema.slice(1),
