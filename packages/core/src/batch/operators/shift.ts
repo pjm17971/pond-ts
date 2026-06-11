@@ -24,6 +24,12 @@ import type { SeriesSchema } from '../../schema/index.js';
  * Returns the reshaped store + the output schema; the result-schema
  * cast is the single trust boundary, and the `TimeSeries.shift` method
  * wraps the store via `#fromTrustedStore`.
+ *
+ * A non-numeric target is unreachable through the typed surface
+ * (`NumericColumnNameForSchema<S>`); defeating that constraint makes the
+ * `Float64Column` replacement collide with the existing column's kind, so
+ * `withColumnReplaced`'s kind guard throws a `RangeError` naming the column
+ * — fail-fast, matching `cumulativeOp` / `diffRateOp`.
  */
 export function shiftOp<S extends SeriesSchema, OutSchema extends SeriesSchema>(
   store: ColumnarStore<S>,
