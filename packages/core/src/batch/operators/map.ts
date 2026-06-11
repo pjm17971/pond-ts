@@ -64,10 +64,12 @@ function columnFromValuesByKind(kind: string, values: unknown[]): Column {
  * boundary, and the `TimeSeries.mapColumns` method wraps the store via
  * `#fromTrustedStore`.
  *
- * A mapper that returns `undefined` for a defined cell (only reachable
- * by defeating the `(value: T) => T` type) introduces a gap the
- * declared schema may not advertise — type-illegal input, not handled
- * specially; the cell simply reads back missing.
+ * A mapper that — only by defeating the `(value: T) => T` type —
+ * returns `undefined`, or a value of the wrong kind (e.g. a string
+ * from a numeric mapper via an `as` cast), produces a cell the
+ * same-kind builder can't store: `columnFromValuesByKind` coerces it
+ * to missing, so the cell reads back as a gap the declared schema may
+ * not advertise. Both are type-illegal inputs, not handled specially.
  */
 export function mapOp<S extends SeriesSchema>(
   store: ColumnarStore<S>,
