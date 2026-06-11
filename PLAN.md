@@ -4067,9 +4067,10 @@ pipeline — the rest of the transforms and windowed rolling — is still
 row-shaped.** Recommended remaining sequence (consultant §5, north-star-ranked),
 with the shipped prefix struck through: ~~3B aggregate per-bucket~~ →
 **4 transforms + operator extraction (shipped: cumulative #190, diff/rate #192,
-fill #194, slice; remaining: `shift` → `collapse`, with `tail`/`filter` as
-judgment calls — `map` is out of scope, it's an arbitrary event→event closure)**
-→ chart carry-forwards → 6 dict reducers → 5 planner → 3C rolling
+fill #194, slice #195, mapColumns; remaining: `shift` → `collapse`, with
+`tail`/`filter` as judgment calls — the event-based `map` stays out of scope,
+distinct from the new per-cell `mapColumns`)** → chart carry-forwards → 6 dict
+reducers → 5 planner → 3C rolling
 (last; numerical risk stacks there).
 Every step before 3C is zero-or-negative public surface. Live §A (column-native output) stays **friction-gated** — the
 zero-copy arc was correctly killed by measurement (`perf-band-gather.mjs`).
@@ -4520,17 +4521,28 @@ getColumn, buckets, columns)` in `batch/aggregate-columns.ts`
      (negative indices, `ToInteger` truncation, clamps) to an absolute
      range first. Pinned by an 11-case suite incl. a differential
      sweep against `Array.prototype.slice`.
+   - **`mapColumns`** ✅ Shipped (PR — this wave-step). **New public
+     method** (not a conversion): a per-cell column value transform,
+     `mapColumns({ col: (value) => newValue })`, extracted as `mapOp`.
+     Same kind in/out (number→number, string→string, …) ⇒ schema
+     unchanged; missing cells carry. The column-scoped counterpart of
+     the event-based `map()` — fills the gap that there was no
+     ergonomic per-cell column transform (you'd have used the slow
+     event `map`). ~5–6× pipeline win. Same-kind enforced at the type
+     level (`mapColumns.test-d.ts`); chunked-input + NaN pinned via
+     direct `mapOp`. Surfaced by the user from the PR-comment scope
+     note below.
    - **Remaining (genuinely column-native-able, sequential):**
      `shift` (per-target numeric shift+pad, `cumulative`-shaped) →
      `collapse` (reads only the keyed columns, per-row reducer over a
      minimal `{key: value}` object, no full Event). Judgment calls:
      `tail(duration)` (key-bisect + `withRowRange`), `filter`
      (predicate is event-shaped; result subset via `withRowSelection`).
-     **`map` is NOT in scope** — it's an arbitrary event→event closure
-     (`map(nextSchema, (event, i) => newEvent)`); it cannot be
-     vectorized over columns and correctly stays event-shaped (the
-     escape hatch for arbitrary transforms). An earlier PLAN draft
-     wrongly listed `map` as a wave step.
+     **The event-based `map(nextSchema, (event, i) => newEvent)` is NOT
+     in scope** — an arbitrary event→event closure can't be vectorized
+     over columns; it stays event-shaped (the escape hatch). (This is
+     distinct from the new per-cell `mapColumns` above — an earlier
+     PLAN draft conflated them.)
 5. Aggregate planner (~2 weeks).
 6. String / dictionary reducer adaptation (~2 weeks).
 7. `LiveSeries` numeric ring buffer (~2 weeks).
