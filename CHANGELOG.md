@@ -49,6 +49,22 @@ type-level changes; patch bumps are strictly additive.
   A stored `NaN` is still a defined value the mapper sees — map it to a finite
   number, or to `undefined` (missing), to clean it. (Closes a hole introduced
   alongside `mapColumns` in 0.21.0.)
+- **`aggregate('stdev')` is now numerically stable and path-independent.** The
+  bucketed row path used a one-pass `sq/n − mean²` accumulator that cancels
+  catastrophically on near-equal large-magnitude values — returning `0` (e.g.
+  `[1e10, 1e10+1, 1e10+2, 1e10+3]` → `0` instead of `≈1.118`), or a negative
+  variance whose `sqrt` is `NaN` that the validating constructor then rejected
+  with a throw. Because the columnar fast path is all-or-nothing, an unrelated
+  mapping (e.g. a `count` over a string column) could silently flip the _same_
+  series' stdev between the correct two-pass value and the broken one-pass one.
+  The row path now uses Welford's online variance — O(1) per element, no
+  buffer, so the live aggregation path that shares it stays O(1) — matching the
+  two-pass fast path to floating-point precision. **Correction:** 0.21.0's
+  columnar `aggregate()` fast path (#186) was described as "signature +
+  semantics unchanged", but it did change released `stdev` output for
+  fast-path-qualifying aggregates (one-pass → two-pass); this fix makes every
+  path agree. (`rolling`/`smooth` stdev keep the one-pass form for now — a
+  separate, deferred item.)
 
 ## [0.21.0] — 2026-06-11
 

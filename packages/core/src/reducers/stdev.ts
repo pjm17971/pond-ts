@@ -22,10 +22,21 @@ export const stdev: ReducerDef = {
     // the two-pass; the column path does the same to keep results
     // identical across paths. Closed L2 review finding on PR #153.
     //
-    // Bucket / rolling paths keep one-pass because their
-    // incremental contract (`add` then read snapshot) precludes a
-    // second walk; their callers accept the precision trade-off,
-    // and the `Math.max(0, ...)` guard there at least avoids NaN.
+    // `bucketState` now uses **Welford's online variance** (stable,
+    // O(1) per add, no buffer) so the bucketed `aggregate()` row path
+    // matches this two-pass column path to floating-point precision —
+    // closing the §1.1 fast-path-vs-row-path divergence (and the
+    // missing-clamp NaN crash) without regressing the live layer,
+    // which shares `bucketState` and depends on O(1) state. The two
+    // formulas agree to ~1e-15, not bit-for-bit (Welford accumulates
+    // in add-order, the two-pass in array-order) — far below the gross
+    // cancellation the old one-pass `sq/n − mean²` produced (0 instead
+    // of ~1.118 on near-equal large values).
+    //
+    // `rollingState` keeps the one-pass form: its sliding window needs
+    // `remove`, which Welford can't do stably (windowed removal
+    // drifts), and it already has the `Math.max(0, …)` clamp.
+    // Stabilising rolling stdev is a separate, deferred item.
     const values = col._values;
     const validity = col.validity;
     let s = 0;
@@ -60,21 +71,25 @@ export const stdev: ReducerDef = {
     return Math.sqrt(variance / n);
   },
   bucketState() {
-    let s = 0;
-    let sq = 0;
+    // Welford's online variance — see the note in `reduceColumn`. `m2` is the
+    // running sum of squared deviations from the current mean; it is ≥ 0 by
+    // construction, so the `Math.max(0, …)` only absorbs FP round-off (−0 /
+    // sub-ULP), never the gross negative the old one-pass `sq/n − mean²` hit.
     let n = 0;
+    let mean = 0;
+    let m2 = 0;
     return {
       add(v) {
         if (typeof v === 'number') {
-          s += v;
-          sq += v * v;
-          n++;
+          n += 1;
+          const delta = v - mean;
+          mean += delta / n;
+          m2 += delta * (v - mean);
         }
       },
       snapshot() {
         if (n === 0) return undefined;
-        const mean = s / n;
-        return Math.sqrt(sq / n - mean * mean);
+        return Math.sqrt(Math.max(0, m2 / n));
       },
     };
   },

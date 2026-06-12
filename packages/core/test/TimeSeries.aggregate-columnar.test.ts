@@ -220,3 +220,61 @@ describe('aggregate() columnar fast path — row-path fallbacks', () => {
     expect(vals(r, 'hosts')).toEqual([2, 1]);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* stdev — numerical stability across paths (audit v2 §1.1).                    */
+/*                                                                             */
+/* The fast path (two-pass reduceColumn) and the row path (bucketState) must   */
+/* agree. Pre-fix bucketState used one-pass `sq/n − mean²`, which cancels       */
+/* catastrophically on near-equal large values — so aggregate('stdev') silently */
+/* changed result (or crashed with NaN) when an unrelated mapping flipped the   */
+/* all-or-nothing fast path to the row path. bucketState is now Welford.        */
+/* -------------------------------------------------------------------------- */
+describe('aggregate(stdev) — path-independent (audit §1.1)', () => {
+  const seq = Sequence.every('1s');
+  // Near-equal large values in one bucket → population stdev = sqrt(5/4).
+  const bigCluster: Row[] = [
+    [0, 1e10, 'a'],
+    [200, 1e10 + 1, 'a'],
+    [400, 1e10 + 2, 'a'],
+    [800, 1e10 + 3, 'a'],
+  ];
+  const STDEV_5_4 = Math.sqrt(5 / 4); // ≈ 1.118033988749895
+
+  it('fast path and forced row path agree (was 1.118 vs 0)', () => {
+    const s = series(bigCluster);
+    // pure numeric built-in → columnar fast path (two-pass reduceColumn)
+    const fast = s.aggregate(seq, { sd: { from: 'value', using: 'stdev' } });
+    // a string-source mapping disqualifies the all-or-nothing fast path for
+    // the whole call → stdev goes through the row path (Welford bucketState)
+    const row = s.aggregate(seq, {
+      sd: { from: 'value', using: 'stdev' },
+      hc: { from: 'host', using: 'count' },
+    });
+    expect((vals(fast, 'sd') as number[])[0]).toBeCloseTo(STDEV_5_4, 9);
+    expect((vals(row, 'sd') as number[])[0]).toBeCloseTo(STDEV_5_4, 9); // pre-fix: 0
+    // the two paths agree to within floating-point noise
+    expect((vals(row, 'sd') as number[])[0]).toBeCloseTo(
+      (vals(fast, 'sd') as number[])[0],
+      9,
+    );
+  });
+
+  it('forced row path stays finite on cancellation-prone data (was NaN→throw)', () => {
+    // [5e7+0.1, 5e7+0.2, 5e7+0.3] → pop stdev = sqrt(0.02/3) ≈ 0.0816. The
+    // old one-pass formula computed a negative variance → sqrt → NaN, which
+    // the validating constructor then rejected. Welford's M2 ≥ 0.
+    const s = series([
+      [0, 5e7 + 0.1, 'a'],
+      [200, 5e7 + 0.2, 'a'],
+      [400, 5e7 + 0.3, 'a'],
+    ]);
+    const row = s.aggregate(seq, {
+      sd: { from: 'value', using: 'stdev' },
+      hc: { from: 'host', using: 'count' }, // force the row path
+    });
+    const v = (vals(row, 'sd') as number[])[0];
+    expect(Number.isFinite(v)).toBe(true);
+    expect(v).toBeCloseTo(Math.sqrt(0.02 / 3), 6);
+  });
+});
