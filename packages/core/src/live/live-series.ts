@@ -50,10 +50,6 @@ import {
   type TimeSeriesJsonOutputArray,
   type TimeSeriesJsonOutputObject,
 } from '../schema/index.js';
-import type {
-  AggregateOutputMapResultSchema,
-  RollingOutputMapSchema,
-} from '../schema/index.js';
 import { LiveFusedRolling } from './live-fused-rolling.js';
 import { LiveReduce } from './live-reduce.js';
 import {
@@ -74,6 +70,7 @@ import type {
   FusedMapping,
   FusedMappingValid,
   FusedRollingSchema,
+  ValidatedAggregateMap,
 } from '../schema/index.js';
 
 import type { DurationInput } from '../core/duration.js';
@@ -1013,31 +1010,19 @@ export class LiveSeries<S extends SeriesSchema> {
     );
   }
 
-  aggregate<const M extends AggregateMap<S>>(
+  aggregate<const M extends ValidatedAggregateMap<S, M>>(
     sequence: Sequence,
     mapping: M,
   ): LiveAggregation<S, AggregateSchema<S, M>>;
-  aggregate<const M extends AggregateOutputMap<S>>(
-    sequence: Sequence,
-    mapping: M,
-  ): LiveAggregation<S, AggregateOutputMapResultSchema<S, M>>;
-  aggregate(
-    sequence: Sequence,
-    mapping: AggregateMap<S> | AggregateOutputMap<S>,
-  ): LiveAggregation<S> {
+  aggregate(sequence: Sequence, mapping: AggregateMap<S>): LiveAggregation<S> {
     return new LiveAggregation(this, sequence, mapping);
   }
 
-  rolling<const M extends AggregateMap<S>>(
+  rolling<const M extends ValidatedAggregateMap<S, M>>(
     window: RollingWindow,
     mapping: M,
     options?: LiveRollingOptions,
   ): LiveRollingAggregation<S, RollingSchema<S, M>>;
-  rolling<const M extends AggregateOutputMap<S>>(
-    window: RollingWindow,
-    mapping: M,
-    options?: LiveRollingOptions,
-  ): LiveRollingAggregation<S, RollingOutputMapSchema<S, M>>;
   /**
    * Keyed-form fused multi-window rolling. Maintains N windows in
    * one ingest pass over a single shared deque; emits one merged
@@ -1103,16 +1088,12 @@ export class LiveSeries<S extends SeriesSchema> {
    * `[time, ...mappingColumns]`. Composes with the rest of the
    * live operator surface.
    */
-  reduce<const M extends AggregateMap<S>>(
+  reduce<const M extends ValidatedAggregateMap<S, M>>(
     mapping: M,
     options?: LiveRollingOptions,
   ): LiveReduce<S, RollingSchema<S, M>>;
-  reduce<const M extends AggregateOutputMap<S>>(
-    mapping: M,
-    options?: LiveRollingOptions,
-  ): LiveReduce<S, RollingOutputMapSchema<S, M>>;
   reduce(
-    mapping: AggregateMap<S> | AggregateOutputMap<S>,
+    mapping: AggregateMap<S>,
     options?: LiveRollingOptions,
   ): LiveReduce<S> {
     return new LiveReduce(this, mapping, options);

@@ -6,7 +6,6 @@ import type { TemporalLike } from '../core/temporal.js';
 import type { BatchSampleStrategy } from '../sequence/sample.js';
 import type {
   AggregateMap,
-  AggregateOutputMap,
   AggregateSchema,
   AlignSchema,
   BaselineSchema,
@@ -24,10 +23,7 @@ import type {
   SmoothAppendSchema,
   SmoothMethod,
   SmoothSchema,
-} from '../schema/index.js';
-import type {
-  AggregateOutputMapResultSchema,
-  RollingOutputMapSchema,
+  ValidatedAggregateMap,
 } from '../schema/index.js';
 
 type SequenceLike = Sequence | BoundedSequence;
@@ -618,17 +614,12 @@ export class PartitionedTimeSeries<
   }
 
   /** Per-partition `rolling`. See {@link TimeSeries.rolling}. */
-  rolling<const Mapping extends AggregateMap<S>>(
+  rolling<const Mapping extends ValidatedAggregateMap<S, Mapping>>(
     window: DurationInput,
     mapping: Mapping,
     options?: { alignment?: RollingAlignment; minSamples?: number },
   ): PartitionedTimeSeries<RollingSchema<S, Mapping>, K>;
-  rolling<const Mapping extends AggregateOutputMap<S>>(
-    window: DurationInput,
-    mapping: Mapping,
-    options?: { alignment?: RollingAlignment; minSamples?: number },
-  ): PartitionedTimeSeries<RollingOutputMapSchema<S, Mapping>, K>;
-  rolling<const Mapping extends AggregateMap<S>>(
+  rolling<const Mapping extends ValidatedAggregateMap<S, Mapping>>(
     sequence: SequenceLike,
     window: DurationInput,
     mapping: Mapping,
@@ -639,17 +630,6 @@ export class PartitionedTimeSeries<
       minSamples?: number;
     },
   ): PartitionedTimeSeries<AggregateSchema<S, Mapping>, K>;
-  rolling<const Mapping extends AggregateOutputMap<S>>(
-    sequence: SequenceLike,
-    window: DurationInput,
-    mapping: Mapping,
-    options?: {
-      alignment?: RollingAlignment;
-      sample?: AlignSample;
-      range?: TemporalLike;
-      minSamples?: number;
-    },
-  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>, K>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rolling(...args: any[]): any {
     // `rolling` arg shapes: `(window, mapping, opts?)` or
@@ -817,16 +797,11 @@ export class PartitionedTimeSeries<
   }
 
   /** Per-partition `aggregate`. See {@link TimeSeries.aggregate}. */
-  aggregate<const Mapping extends AggregateMap<S>>(
+  aggregate<const Mapping extends ValidatedAggregateMap<S, Mapping>>(
     sequence: SequenceLike,
     mapping: Mapping,
     options?: { range?: TemporalLike },
   ): PartitionedTimeSeries<AggregateSchema<S, Mapping>, K>;
-  aggregate<const Mapping extends AggregateOutputMap<S>>(
-    sequence: SequenceLike,
-    mapping: Mapping,
-    options?: { range?: TemporalLike },
-  ): PartitionedTimeSeries<AggregateOutputMapResultSchema<S, Mapping>, K>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   aggregate(...args: any[]): any {
     // `aggregate(sequence, mapping, opts?)` — mapping is at index 1.
