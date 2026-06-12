@@ -37,7 +37,7 @@ if (!event) {
   throw new Error('missing event');
 }
 
-console.log(event.key().asString());
+console.log(event.key().toDate().toISOString());
 console.log(event.get('cpu'));
 console.log(event.data().host);
 ```

@@ -2194,7 +2194,8 @@ export class TimeSeries<S extends SeriesSchema> {
   ): TimeSeries<SeriesSchema> {
     if (this.schema[0].kind !== 'time') {
       throw new TypeError(
-        `pivotByGroup requires a time-keyed series; got ${this.schema[0].kind}`,
+        `pivotByGroup requires a time-keyed series; got ${this.schema[0].kind}` +
+          ` — piping from aggregate/materialize? call .asTime({ at: 'begin' }) first`,
       );
     }
     const valueColumnDef = this.schema.find(
