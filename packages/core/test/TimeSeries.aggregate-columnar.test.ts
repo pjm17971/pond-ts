@@ -251,13 +251,15 @@ describe('aggregate(stdev) — path-independent (audit §1.1)', () => {
       sd: { from: 'value', using: 'stdev' },
       hc: { from: 'host', using: 'count' },
     });
-    expect((vals(fast, 'sd') as number[])[0]).toBeCloseTo(STDEV_5_4, 9);
-    expect((vals(row, 'sd') as number[])[0]).toBeCloseTo(STDEV_5_4, 9); // pre-fix: 0
-    // the two paths agree to within floating-point noise
-    expect((vals(row, 'sd') as number[])[0]).toBeCloseTo(
-      (vals(fast, 'sd') as number[])[0],
-      9,
-    );
+    const f = (vals(fast, 'sd') as number[])[0]!;
+    const r = (vals(row, 'sd') as number[])[0]!;
+    expect(f).toBeCloseTo(STDEV_5_4, 9);
+    expect(r).toBeCloseTo(STDEV_5_4, 9); // pre-fix: 0
+    // The two paths agree to ~1e-15 *relative* — not bit-for-bit (Welford
+    // accumulates in add-order, the two-pass in array-order). Assert relative
+    // agreement so this holds at any magnitude, not just where they happen to
+    // round identically.
+    expect(Math.abs(r - f) / f).toBeLessThan(1e-12);
   });
 
   it('forced row path stays finite on cancellation-prone data (was NaN→throw)', () => {
