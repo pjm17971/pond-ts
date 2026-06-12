@@ -815,12 +815,21 @@ export class TimeSeries<S extends SeriesSchema> {
    * the supplied `parse.timeZone`, which defaults to `UTC`.
    */
   static fromJSON<S extends SeriesSchema>(
-    input: TimeSeriesJsonInput<S> & { parse?: TimeZoneOptions },
+    input: TimeSeriesJsonInput<S> & {
+      parse?: TimeZoneOptions;
+      /**
+       * Sort rows by key before construction (off by default; see
+       * `TimeSeriesInput.sort`). Useful when reviving a wire payload whose
+       * rows aren't guaranteed sorted — avoids a manual pre-sort.
+       */
+      sort?: boolean;
+    },
   ): TimeSeries<S> {
     return new TimeSeries({
       name: input.name,
       schema: input.schema,
       rows: parseJsonRows(input.schema, input.rows, input.parse),
+      sort: input.sort ?? false,
     });
   }
 
@@ -954,6 +963,16 @@ export class TimeSeries<S extends SeriesSchema> {
       this.#store = trustedStore;
     } else {
       this.schema = Object.freeze(input.schema.slice()) as S;
+      // `{ sort: true }` sorts unsorted input by key before intake (otherwise
+      // the intake's non-decreasing-order check throws). Stable, so rows with
+      // equal keys keep their input order; same key comparator as
+      // `fromEvents` / `concat`. Copies the array — the caller's `rows` is not
+      // mutated.
+      const rows = input.sort
+        ? [...input.rows].sort((a, b) =>
+            compareEventKeys(toKey(a[0] as KeyLike), toKey(b[0] as KeyLike)),
+          )
+        : input.rows;
       // `SeriesStore.fromValidatedRows` runs the column-native
       // intake (`validateAndNormalizeColumnar`) — same validation
       // rules as the pre-2a row-shape `validateAndNormalize` but
@@ -962,7 +981,7 @@ export class TimeSeries<S extends SeriesSchema> {
       // on first `eventAt(i)` access via the store's per-row cache.
       this.#store = SeriesStore.fromValidatedRows(
         this.schema,
-        input.rows,
+        rows,
       ) as SeriesStore<S>;
     }
     Object.freeze(this);
@@ -1255,14 +1274,16 @@ export class TimeSeries<S extends SeriesSchema> {
    * series.events[i]` holds whenever both are accessed.
    */
   at(index: number): EventForSchema<S> | undefined {
-    // Match pre-2a array-indexing semantics: non-integer or NaN
-    // inputs return undefined rather than throwing downstream from
-    // `#store.eventAt`. `this.events[NaN]` returned undefined per
-    // JS array semantics (key coercion + miss); the direct route
-    // to `#store.eventAt(NaN)` would proceed past the bounds check
-    // and attempt key materialization at the invalid row. Closed
-    // Codex round 4's medium finding on PR #150.
-    if (!Number.isInteger(index) || index < 0 || index >= this.#store.length) {
+    // Non-integer / NaN inputs return undefined rather than throwing
+    // downstream from `#store.eventAt` (`this.events[NaN]` returned undefined
+    // per JS array semantics; the direct route to `#store.eventAt(NaN)` would
+    // proceed past the bounds check and materialize a key at an invalid row).
+    // Closed Codex round 4's medium finding on PR #150.
+    if (!Number.isInteger(index)) return undefined;
+    // Negative indices count from the end — parity with `LiveSeries.at` and
+    // `Array.prototype.at` (`at(-1)` is the last event).
+    if (index < 0) index += this.#store.length;
+    if (index < 0 || index >= this.#store.length) {
       return undefined;
     }
     return this.#store.eventAt(index) as unknown as EventForSchema<S>;

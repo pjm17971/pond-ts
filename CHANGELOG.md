@@ -16,6 +16,16 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- **`new TimeSeries({ …, sort: true })` (and `TimeSeries.fromJSON`) sort rows by
+  key on construction.** Pond requires rows in non-decreasing key order and
+  throws otherwise; `sort: true` accepts unsorted input (messy CSVs, merged
+  sources) and sorts it for you instead of forcing a manual pre-sort. The sort
+  is **stable** — rows with equal keys keep their input order — matching what
+  `TimeSeries.fromEvents` already does. The out-of-order error now names the
+  option. (Audit v2 §5 F3.)
+
 ### Changed
 
 - **CommonJS consumers now get a clear error instead of
@@ -33,6 +43,18 @@ type-level changes; patch bumps are strictly additive.
 
 ### Fixed
 
+- **Shipped `.d.ts` now type-check under `skipLibCheck: false`.** The internal
+  `EMITS_EVICT` marker symbol was `@internal` (stripped from the emitted
+  `series.d.ts`) but still referenced by un-stripped public declarations — a
+  by-name re-export in `schema/index.d.ts` and the `[EMITS_EVICT]` brand members
+  on `LiveSeries` / `LiveView` — leaving dangling references that broke strict
+  consumer builds with **TS2305**. Those references are now `@internal` too, so
+  the symbol is fully stripped from the published types; runtime behavior is
+  unchanged. (Audit v2 §5 F2.)
+- **`TimeSeries.at(-1)` counts from the end**, matching `LiveSeries.at` and
+  `Array.prototype.at` (it previously returned `undefined` for any negative
+  index). Deep underflow (e.g. `at(-100)` on a 3-event series) still returns
+  `undefined`, and the non-integer / `NaN` guard is unchanged. (Audit v2 §5 F8.)
 - **Docs: corrected `Time.asString()` (does not exist), the missing
   `aggregate`/`materialize` → `pivotByGroup` rekey pointer, and an
   inaccurate `rolling().value()` return-type example.** The getting-started
