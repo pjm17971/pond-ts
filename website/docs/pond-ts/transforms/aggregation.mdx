@@ -58,6 +58,10 @@ const fiveMin = cpu.aggregate(Sequence.every('5m'), {
 // fiveMin.at(0)?.get('cpu') -> number | undefined
 ```
 
+The output is **interval-keyed**. To feed it into a transform that
+requires a time-keyed series (e.g. `pivotByGroup`, which throws at
+runtime on interval keys), rekey first with `.asTime({ at: 'begin' })`.
+
 ### Mapping shapes
 
 Two forms; mix them in one call:
@@ -252,10 +256,10 @@ are partition / long-to-wide ops, not collapses.
 Same parameter shape (sequence + range), same output key shape
 (`Interval`-keyed grid), different reduction.
 
-| Question                                                  | Operator                                  |
-| --------------------------------------------------------- | ----------------------------------------- |
-| "What's the rollup of every event in this bucket?"        | `aggregate(seq, mapping)`                 |
-| "What was the value at this grid point?"                  | `align(seq, { method, sample })`          |
+| Question                                           | Operator                         |
+| -------------------------------------------------- | -------------------------------- |
+| "What's the rollup of every event in this bucket?" | `aggregate(seq, mapping)`        |
+| "What was the value at this grid point?"           | `align(seq, { method, sample })` |
 
 ```ts
 // aggregate — one row per minute, value reduced from sources inside.

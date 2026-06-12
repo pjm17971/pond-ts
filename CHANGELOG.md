@@ -26,6 +26,21 @@ type-level changes; patch bumps are strictly additive.
   `TimeSeries.fromEvents` already does. The out-of-order error now names the
   option. (Audit v2 §5 F3.)
 
+### Changed
+
+- **CommonJS consumers now get a clear error instead of
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.** Both `pond-ts` and `@pond-ts/react`
+  add a `require` condition to their `exports["."]` map pointing at a tiny
+  shipped CJS stub that throws an ESM-only message naming `import` as the
+  fix. The packages remain ES-module-only; this only improves the error a
+  `require('pond-ts')` caller sees. (Audit v2 §5 F6/F7/F9/F10/F11)
+- **Published tarballs no longer ship `*.js.map` / `*.d.ts.map` source
+  maps.** The maps referenced a `../src` tree that was never included in
+  the tarball (`files: ["dist", …]`), so they were dead weight (~⅓ of the
+  unpacked size). A `prepack` step now strips them from the published
+  artifact for both packages; local `npm run build` still emits them, so
+  in-repo debugging is unaffected. (Audit v2 §5 F6/F7/F9/F10/F11)
+
 ### Fixed
 
 - **Shipped `.d.ts` now type-check under `skipLibCheck: false`.** The internal
@@ -40,6 +55,15 @@ type-level changes; patch bumps are strictly additive.
   `Array.prototype.at` (it previously returned `undefined` for any negative
   index). Deep underflow (e.g. `at(-100)` on a 3-event series) still returns
   `undefined`, and the non-integer / `NaN` guard is unchanged. (Audit v2 §5 F8.)
+- **Docs: corrected `Time.asString()` (does not exist), the missing
+  `aggregate`/`materialize` → `pivotByGroup` rekey pointer, and an
+  inaccurate `rolling().value()` return-type example.** The getting-started
+  example now calls `event.key().toDate().toISOString()`; the aggregation
+  and reshape pages note that interval-keyed output must be rekeyed with
+  `.asTime({ at: 'begin' })` before a time-keyed transform like
+  `pivotByGroup` (whose runtime error now says so too); the rolling page
+  documents `value()` as `Record<string, ColumnValue | undefined>`.
+  (Audit v2 §5 F6/F7/F9/F10/F11)
 
 ## [0.22.0] — 2026-06-12
 

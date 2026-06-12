@@ -131,7 +131,9 @@ const smoothed = long.pivotByGroup('host', 'cpu').rolling('5m', {
 const filled = long.pivotByGroup('host', 'cpu').fill({ 'api-2_cpu': 'hold' });
 ```
 
-Requires a time-keyed input. See
+Requires a time-keyed input. Piping from `aggregate`/`materialize`?
+Their output is interval-keyed, so `pivotByGroup` throws at runtime —
+rekey first with `.asTime({ at: 'begin' })`. See
 [Charting → Per-group wide rows](../advanced/charting#per-group-wide-rows-one-source-categorical-column)
 for the end-to-end Recharts pipeline.
 
@@ -635,11 +637,11 @@ each group spawns multiple derived columns.
 
 ## See also
 
-| Op                    | Page                                   | Shape                                               |
-| --------------------- | -------------------------------------- | --------------------------------------------------- |
-| `select(...cols)`     | [Eventwise](./transformations#select)        | narrow columns; row count unchanged                 |
-| `rename(mapping)`     | [Eventwise](./transformations#rename)        | rename columns; row count unchanged                 |
-| `collapse(cols, out)` | [Eventwise](./transformations#collapse)      | merge several columns into one; row count unchanged |
-| `map(schema, fn)`     | [Eventwise](./transformations#map)           | per-event schema transform                          |
-| `aggregate(seq, m)`   | [Aggregation](./aggregation#aggregate) | collapse to fewer events on a grid                  |
-| `reduce(mapping)`     | [Aggregation](./aggregation#reduce)    | collapse whole series to one record                 |
+| Op                    | Page                                    | Shape                                               |
+| --------------------- | --------------------------------------- | --------------------------------------------------- |
+| `select(...cols)`     | [Eventwise](./transformations#select)   | narrow columns; row count unchanged                 |
+| `rename(mapping)`     | [Eventwise](./transformations#rename)   | rename columns; row count unchanged                 |
+| `collapse(cols, out)` | [Eventwise](./transformations#collapse) | merge several columns into one; row count unchanged |
+| `map(schema, fn)`     | [Eventwise](./transformations#map)      | per-event schema transform                          |
+| `aggregate(seq, m)`   | [Aggregation](./aggregation#aggregate)  | collapse to fewer events on a grid                  |
+| `reduce(mapping)`     | [Aggregation](./aggregation#reduce)     | collapse whole series to one record                 |

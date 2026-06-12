@@ -174,7 +174,8 @@ rolling.on('event', (event) => {
   console.log('rolling avg:', event.get('cpu'));
 });
 
-rolling.value(); // current { cpu: number } record
+rolling.value(); // Record<string, ColumnValue | undefined>, e.g. { cpu: 0.42 }
+//   (each value is `undefined` until the window reaches minSamples)
 ```
 
 Both [mapping shapes](#mapping-shapes) work on live the same way

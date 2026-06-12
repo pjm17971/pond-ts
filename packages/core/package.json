@@ -17,7 +17,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/cjs-fallback.cjs"
     },
     "./types": {
       "types": "./dist/schema/public.d.ts",
@@ -35,7 +36,7 @@
     "build": "tsc -p tsconfig.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"test-d/**/*.ts\"",
-    "prepack": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE && cp ../../CHANGELOG.md ./CHANGELOG.md && npm run build",
+    "prepack": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE && cp ../../CHANGELOG.md ./CHANGELOG.md && npm run build && cp cjs-fallback.cjs dist/cjs-fallback.cjs && find dist -name '*.map' -delete",
     "test": "npm run test:type && npm run test:runtime",
     "test:runtime": "vitest run",
     "test:type": "tsc -p tsconfig.types.json",
