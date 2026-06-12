@@ -16,6 +16,13 @@ type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`TimeSeries.at(-1)` counts from the end**, matching `LiveSeries.at` and
+  `Array.prototype.at` (it previously returned `undefined` for any negative
+  index). Deep underflow (e.g. `at(-100)` on a 3-event series) still returns
+  `undefined`, and the non-integer / `NaN` guard is unchanged. (Audit v2 §5 F8.)
+
 ## [0.22.0] — 2026-06-12
 
 ### Changed
