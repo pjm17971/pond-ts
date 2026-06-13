@@ -91,6 +91,31 @@ describe('aggregate first/last columnar fast path', () => {
     expect(out.at(0)?.get('value')).toBe(6); // avg of [5, 7]
     expect(out.at(0)?.get('label')).toBe('x');
   });
+
+  // Guards the invariant the whole boundary-scan correctness rests on: the
+  // defined-check is "is the cell missing", NOT "is the value falsy". A
+  // stored 0 / false / '' is a DEFINED value and must be selected, not
+  // skipped as if it were missing.
+  it('treats falsy defined values (0, false) as present, not missing', () => {
+    const falsySchema = [
+      { name: 'time', kind: 'time' },
+      { name: 'n', kind: 'number', required: false },
+      { name: 'flag', kind: 'boolean', required: false },
+    ] as const;
+    const out = new TimeSeries({
+      name: 's',
+      schema: falsySchema,
+      rows: [
+        [0, 0, false], // first defined: n=0, flag=false
+        [10_000, 5, true],
+      ],
+    }).aggregate(seq, {
+      n_first: { from: 'n', using: 'first' },
+      flag_first: { from: 'flag', using: 'first' },
+    });
+    expect(out.at(0)?.get('n_first')).toBe(0);
+    expect(out.at(0)?.get('flag_first')).toBe(false);
+  });
 });
 
 describe('partitioned aggregate takes the fast path (parity)', () => {
