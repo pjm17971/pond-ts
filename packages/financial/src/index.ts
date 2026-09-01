@@ -48,3 +48,7 @@ export type { MacdOptions } from './studies/macd.js';
 export { macd } from './studies/macd.js';
 export type { AtrOptions } from './studies/atr.js';
 export { atr } from './studies/atr.js';
+export type { ObvOptions } from './studies/obv.js';
+export { obv } from './studies/obv.js';
+export type { VwapOptions } from './studies/vwap.js';
+export { vwap } from './studies/vwap.js';

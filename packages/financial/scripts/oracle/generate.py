@@ -92,6 +92,34 @@ assert all(v > 0 for v in _wins.values()), (
 h = pd.Series(highs, dtype="float64")
 low_s = pd.Series(lows, dtype="float64")
 
+# Volume for the volume studies (OBV, VWAP; later MFI / A/D / CMF).
+#
+# Positive and VARYING - a constant volume makes VWAP identical to the plain
+# mean of typical price, so a fixture on constant volume cannot tell a
+# weighted study from an unweighted one, and OBV on it is just a count of
+# up-bars minus down-bars times a constant. Two incommensurate periods keep it
+# from repeating, a floor of ~500 keeps it positive, and every eleventh bar
+# (offset 7) carries a SPIKE of five to nine times the typical volume, so a
+# VWAP that drops the weighting is off by a visible amount, not a rounding
+# one. The asserts below hold both properties if the series ever changes.
+volumes = [
+    round(
+        1500
+        + 600 * math.sin(i / 2.7)
+        + 400 * math.cos(i / 5.1)
+        + (8000 + 300 * (i % 5) if i % 11 == 7 else 0)
+    )
+    for i in range(N)
+]
+assert all(v > 0 for v in volumes), "oracle volume must be strictly positive"
+assert len(set(volumes)) > N // 2, "oracle volume must vary, not repeat"
+assert sum(v > 5000 for v in volumes) >= 5, (
+    "oracle volume needs several spike bars - without them a VWAP that "
+    "dropped the weighting is within rounding of the plain mean"
+)
+
+vol = pd.Series(volumes, dtype="float64")
+
 
 def col(series: pd.Series) -> list:
     """A pandas Series -> JSON list; NaN / non-finite (missing) -> null."""
@@ -340,6 +368,67 @@ def atr(n: int) -> dict:
     return {"atr": col(a)}
 
 
+def obv() -> dict:
+    """On-Balance Volume, as TA-Lib defines it.
+
+    OBV[i] = OBV[i-1] + sign(close[i] - close[i-1]) * volume[i], seeded with
+    OBV[0] = volume[0] (TA-Lib's convention; some implementations seed at 0,
+    which only offsets the whole line). An unchanged close adds nothing. No
+    period, and no warm-up: the mask is empty on both sides.
+
+    Computed in pandas here and asserted against TA-Lib - mask first, then
+    values - when it is installed.
+    """
+    signed = np.sign(s.diff()) * vol
+    signed.iloc[0] = vol.iloc[0]
+    o = signed.cumsum()
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.OBV(
+                np.asarray(closes, dtype=float), np.asarray(volumes, dtype=float)
+            )
+        )
+        assert list(o.isna()) == list(ref.isna()), (
+            f"OBV warm-up differs from TA-Lib: ours first valid "
+            f"{o.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(o - ref)))
+        assert delta < 1e-9, f"OBV disagrees with TA-Lib by {delta}"
+        print(f"  obv(): matches TA-Lib to {delta:.3g} (warm-ups identical)")
+    else:
+        print("  obv(): pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"obv": col(o)}
+
+
+def vwap(n: int) -> dict:
+    """Rolling VWAP: sum(typicalPrice * volume) / sum(volume) over n bars,
+    typicalPrice = (high + low + close) / 3.
+
+    TA-Lib has no VWAP, and there is no single definition - the intraday
+    desk's VWAP is ANCHORED (cumulative from the session open, no window).
+    The rolling form is what ships (the package's bar-count-window shape);
+    the anchored form is a session-reset study and is deferred to that phase.
+    So this is a pandas replication of OUR definition, not a vendor check.
+
+    The fixture must be able to tell the weighted mean from the plain one:
+    asserted below as a minimum separation somewhere in the series.
+    """
+    tp = (h + low_s + s) / 3
+    v = (tp * vol).rolling(n).sum() / vol.rolling(n).sum()
+
+    plain = tp.rolling(n).mean()
+    sep = float(np.nanmax(np.abs(v - plain)))
+    assert sep > 0.25, (
+        f"VWAP({n}) sits within {sep} of the unweighted mean of typical price "
+        "- the fixture's volume is too flat to catch a dropped weighting"
+    )
+    print(f"  vwap({n}): pandas replication; {sep:.3f} from the plain mean at its widest")
+
+    return {"vwap": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -393,6 +482,9 @@ cases = [
     },
     {"study": "atr", "params": {"period": 14}, "expected": atr(14)},
     {"study": "atr", "params": {"period": 3}, "expected": atr(3)},
+    {"study": "obv", "params": {}, "expected": obv()},
+    {"study": "vwap", "params": {"period": 14}, "expected": vwap(14)},
+    {"study": "vwap", "params": {"period": 5}, "expected": vwap(5)},
 ]
 
 out = {
@@ -418,9 +510,17 @@ out = {
                 "Wilder: seed = mean of first n diffs, then "
                 "(prev*(n-1) + x)/n; cross-checked against TA-Lib"
             ),
+            "obv": (
+                "cumsum(sign(close.diff()) * volume), OBV[0] = volume[0]; "
+                "cross-checked against TA-Lib"
+            ),
+            "vwap": (
+                "rolling: (tp*volume).rolling(n).sum() / volume.rolling(n).sum(), "
+                "tp = (high+low+close)/3; pandas replication (no TA-Lib VWAP)"
+            ),
         },
     },
-    "input": {"closes": closes, "highs": highs, "lows": lows},
+    "input": {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes},
     "cases": cases,
 }
 

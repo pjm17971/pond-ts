@@ -45,7 +45,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
-import { atr, ema, macd, rsi, sma } from '../src/index.js';
+import { atr, ema, macd, obv, rsi, sma, vwap } from '../src/index.js';
 
 const closeSchema = [
   { name: 'time', kind: 'time' },
@@ -351,5 +351,155 @@ describe('[talib] all-missing input yields all-missing output', () => {
         (x) => x === undefined,
       ),
     ).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The volume studies. OBV and VWAP each have TWO scale properties, because   */
+/* each has two inputs on different axes: OBV is a sum of volumes (linear in  */
+/* volume, blind to the price level), VWAP is an average of prices (linear in */
+/* price, blind to the volume level). Both halves are real assertions — an    */
+/* implementation that weighted OBV by the size of the price change, or       */
+/* normalised VWAP by total volume, would pass one and fail the other.        */
+/* -------------------------------------------------------------------------- */
+
+const ohlcvSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+  { name: 'volume', kind: 'number' },
+] as const;
+
+/** 40 wavy bars with volume spikes; `px` scales every price, `vol` every
+ *  volume. */
+const volumeBars = (px: number, vol: number, n = 40) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: ohlcvSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      const v = 1000 + 700 * Math.sin(i / 2.3) + (i % 7 === 3 ? 5000 : 0);
+      return [i, (c + 1.1) * px, (c - 0.8) * px, c * px, v * vol];
+    }) as Array<[number, number, number, number, number]>,
+  });
+
+/** `scaled` is `base` times `factor`, bar for bar, with the same gaps. */
+const sameShape = (
+  base: Array<number | undefined>,
+  scaled: Array<number | undefined>,
+  factor: number,
+) => {
+  expect(scaled).toHaveLength(base.length);
+  // At least one defined value, or the loop below pins nothing.
+  expect(base.some((x) => x !== undefined)).toBe(true);
+  for (let i = 0; i < base.length; i += 1) {
+    if (base[i] === undefined) expect(scaled[i], `bar ${i}`).toBeUndefined();
+    else expect(scaled[i]! / factor, `bar ${i}`).toBeCloseTo(base[i]!, 9);
+  }
+};
+
+describe('[talib] volume studies: scale behaviour', () => {
+  it('obv scales LINEARLY with volume', () => {
+    sameShape(
+      col(obv(volumeBars(1, 1)), 'obv'),
+      col(obv(volumeBars(1, 7)), 'obv'),
+      7,
+    );
+  });
+
+  it('obv is unchanged by scaling the price', () => {
+    // Only the SIGN of each close change is read, and scaling preserves it.
+    sameShape(
+      col(obv(volumeBars(1, 1)), 'obv'),
+      col(obv(volumeBars(1000, 1)), 'obv'),
+      1,
+    );
+  });
+
+  it('vwap scales LINEARLY with price', () => {
+    sameShape(
+      col(vwap(volumeBars(1, 1), { period: 5 }), 'vwap'),
+      col(vwap(volumeBars(1000, 1), { period: 5 }), 'vwap'),
+      1000,
+    );
+  });
+
+  it('vwap is unchanged by scaling the volume', () => {
+    // Volume is a WEIGHT: it appears in numerator and denominator alike.
+    sameShape(
+      col(vwap(volumeBars(1, 1), { period: 5 }), 'vwap'),
+      col(vwap(volumeBars(1, 7), { period: 5 }), 'vwap'),
+      1,
+    );
+  });
+});
+
+describe('[talib] volume studies over another study compose their warm-up', () => {
+  it('obv over a smoothed close starts at its first value, not empty', () => {
+    // A running sum carries forward forever, so a leading NaN in the seed
+    // would empty the whole column — the rsi(sma(...)) regression, again.
+    const smoothed = sma(volumeBars(1, 1), { period: 3, output: 'sc' });
+    const v = col(obv(smoothed, { close: 'sc', output: 'o' }), 'o');
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(2); // sma(3) first valid at 2
+    // Seeded with THAT bar's volume, then carried — proof the sum ran from
+    // the shifted seed rather than from bar 0 with the head skipped.
+    const vol = col(smoothed, 'volume');
+    expect(v[2]).toBeCloseTo(vol[2]!, 9);
+    expect(v.slice(2).every((x) => x !== undefined)).toBe(true);
+    expect(new Set(v.slice(2)).size).toBeGreaterThan(1);
+  });
+
+  it('vwap over a smoothed close is a count window: it emits once it spans period rows', () => {
+    // The same contract `sma(sma(...))` pins in study-missing-cells: a
+    // count window emits once it spans `period` ROWS and averages whichever
+    // are present. So vwap(4) over sma(3) is first valid at 3, computed from
+    // the two rows the inner study has by then — not at 5.
+    const smoothed = sma(volumeBars(1, 1), { period: 3, output: 'sc' });
+    const v = col(vwap(smoothed, { period: 4, close: 'sc', output: 'w' }), 'w');
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(3);
+    expect(v.slice(3).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing output (volume studies)', () => {
+  const allMissingBars = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [
+        number,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+      ]
+    >,
+  });
+
+  it('obv', () => {
+    const v = col(obv(allMissingBars as never), 'obv');
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('vwap', () => {
+    const v = col(vwap(allMissingBars as never, { period: 5 }), 'vwap');
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

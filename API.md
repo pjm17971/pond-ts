@@ -451,6 +451,8 @@ per input.
 | `rsi`                       | `rsi`                                | `{ period?, column?, output? }` (Wilder, default 14)                      | `packages/financial/src/studies/rsi.ts`            |
 | `macd`                      | `macdLine`, `macdSignal`, `macdHist` | `{ fastPeriod?, slowPeriod?, signalPeriod?, column?, prefix? }` (12/26/9) | `packages/financial/src/studies/macd.ts`           |
 | `atr`                       | `atr`                                | `{ period?, high?, low?, close?, output? }` (Wilder, default 14)          | `packages/financial/src/studies/atr.ts`            |
+| `obv`                       | `obv`                                | `{ close?, volume?, output? }` (no period; TA-Lib seed `volume[0]`)       | `packages/financial/src/studies/obv.ts`            |
+| `vwap`                      | `vwap`                               | `{ period, high?, low?, close?, volume?, output? }` (rolling, typical px) | `packages/financial/src/studies/vwap.ts`           |
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).

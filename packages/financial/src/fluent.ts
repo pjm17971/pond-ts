@@ -63,6 +63,10 @@ import { macd as macdStudy } from './studies/macd.js';
 import type { AtrOptions } from './studies/atr.js';
 import { atr as atrStudy } from './studies/atr.js';
 import type { PercentChangeOptions } from './studies/percent-change.js';
+import type { ObvOptions } from './studies/obv.js';
+import { obv as obvStudy } from './studies/obv.js';
+import type { VwapOptions } from './studies/vwap.js';
+import { vwap as vwapStudy } from './studies/vwap.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -141,6 +145,14 @@ declare module 'pond-ts' {
         `${Prefix}Hist`
       >
     >;
+    /** Fluent On-Balance Volume. */
+    obv<const Output extends string = 'obv'>(
+      options?: ObvOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent rolling VWAP. */
+    vwap<const Output extends string = 'vwap'>(
+      options: VwapOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
 
@@ -224,4 +236,16 @@ proto.macd = function (
   options?: MacdOptions<SeriesSchema, string>,
 ) {
   return macdStudy(this, options);
+};
+proto.obv = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ObvOptions<SeriesSchema, string>,
+) {
+  return obvStudy(this, options);
+};
+proto.vwap = function (
+  this: TimeSeries<SeriesSchema>,
+  options: VwapOptions<SeriesSchema, string>,
+) {
+  return vwapStudy(this, options);
 };
