@@ -451,6 +451,9 @@ per input.
 | `rsi`                       | `rsi`                                | `{ period?, column?, output? }` (Wilder, default 14)                      | `packages/financial/src/studies/rsi.ts`            |
 | `macd`                      | `macdLine`, `macdSignal`, `macdHist` | `{ fastPeriod?, slowPeriod?, signalPeriod?, column?, prefix? }` (12/26/9) | `packages/financial/src/studies/macd.ts`           |
 | `atr`                       | `atr`                                | `{ period?, high?, low?, close?, output? }` (Wilder, default 14)          | `packages/financial/src/studies/atr.ts`            |
+| `stochastic`                | `stochK`, `stochD`                   | `{ kPeriod?, slowing?, dPeriod?, high?, low?, close?, prefix? }` (14/3/3; `slowing: 1` = fast) | `packages/financial/src/studies/stochastic.ts`     |
+| `williamsR`                 | `williamsR`                          | `{ period?, high?, low?, close?, output? }` (default 14, bounded −100..0) | `packages/financial/src/studies/williams-r.ts`     |
+| `donchian`                  | `dcUpper`, `dcLower`, `dcMiddle`     | `{ period?, high?, low?, prefix? }` (default 20)                          | `packages/financial/src/studies/donchian.ts`       |
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).

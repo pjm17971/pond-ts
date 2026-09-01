@@ -9,6 +9,9 @@ import {
   envelope,
   rsi,
   macd,
+  stochastic,
+  williamsR,
+  donchian,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -233,5 +236,82 @@ describe('[PND-STUDYBOX] gaps in the source propagate', () => {
     expect(v[4]).toBeCloseTo(102, 10);
     expect(v[5]).toBeCloseTo(102.5, 10);
     expect(v.some((x) => typeof x === 'number' && Number.isNaN(x))).toBe(false);
+  });
+});
+
+describe('[PND-STUDYBOX] range-position studies: where the missing rows are', () => {
+  // No `!isNaN` assertions here — `withColumn` maps NaN to missing on its
+  // typed door, so such a check can never fire. What is worth pinning is
+  // WHERE the missing rows are, and how many.
+  const ohlc = (rows: Array<[number, number, number]>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: rows.map(([h, l, c], i) => [i * MINUTE, h, l, c]) as Array<
+        [number, number, number, number]
+      >,
+    });
+  const wavy = ohlc(
+    Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      return [
+        c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+        c - 0.3 - 0.5 * Math.abs(Math.cos(i / 2.5)),
+        c,
+      ];
+    }),
+  );
+
+  it('stochastic warms up %K and %D at different bars', () => {
+    const out = stochastic(wavy, { kPeriod: 5, slowing: 3, dPeriod: 3 });
+    const k = cells(out, 'stochK');
+    const d = cells(out, 'stochD');
+    // %K: kPeriod + slowing − 2 = 6 missing rows; %D: two more.
+    expect(k.slice(0, 6).every((x) => x === undefined)).toBe(true);
+    expect(typeof k[6]).toBe('number');
+    expect(nullCountOf(out, 'stochK')).toBe(6);
+    expect(d.slice(0, 8).every((x) => x === undefined)).toBe(true);
+    expect(typeof d[8]).toBe('number');
+    expect(nullCountOf(out, 'stochD')).toBe(8);
+  });
+
+  it('williamsR warms up over period − 1 rows', () => {
+    const out = williamsR(wavy, { period: 5 });
+    const v = cells(out, 'williamsR');
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[4]).toBe('number');
+    expect(nullCountOf(out, 'williamsR')).toBe(4);
+  });
+
+  it('donchian warms up on all three lines', () => {
+    const out = donchian(wavy, { period: 5 });
+    for (const name of ['dcUpper', 'dcLower', 'dcMiddle']) {
+      const v = cells(out, name);
+      expect(
+        v.slice(0, 4).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(typeof v[4], name).toBe('number');
+      expect(nullCountOf(out, name), name).toBe(4);
+    }
+  });
+
+  it('stochastic and williamsR emit missing on a flat window (0/0 has no position)', () => {
+    // The deliberate delta from TA-Lib, which reports 0 for both — "at the
+    // very bottom" for %K and "at the very top" for %R, on the same bar.
+    const flat = ohlc(Array.from({ length: 10 }, () => [42, 42, 42]));
+    const st = stochastic(flat, { kPeriod: 3, slowing: 2, dPeriod: 2 });
+    expect(nullCountOf(st, 'stochK')).toBe(10);
+    expect(nullCountOf(st, 'stochD')).toBe(10);
+    expect(nullCountOf(williamsR(flat, { period: 3 }), 'williamsR')).toBe(10);
+    // Donchian has no division: a flat window is a zero-width channel.
+    const dc = donchian(flat, { period: 3 });
+    expect(nullCountOf(dc, 'dcUpper')).toBe(2);
+    expect(cells(dc, 'dcMiddle')[9]).toBe(42);
   });
 });

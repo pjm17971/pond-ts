@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import { sma, ema, bollinger } from '../src/index.js';
+import { stochastic, williamsR, donchian } from '../src/index.js';
 import '../src/fluent.js';
 
 const closeSchema = [
@@ -93,6 +94,45 @@ describe('fluent studies (opt-in prototype augmentation)', () => {
     );
     for (const c of ['sma', 'e', 'bbMiddle', 'bbUpper', 'bbLower']) {
       expect(col(fluent, c)).toEqual(col(functional, c));
+    }
+  });
+
+  it('mounts the range-position studies, exactly as the standalone functions', () => {
+    const ohlc = () =>
+      new TimeSeries({
+        name: 'bars',
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'high', kind: 'number' },
+          { name: 'low', kind: 'number' },
+          { name: 'close', kind: 'number' },
+        ] as const,
+        rows: Array.from({ length: 12 }, (_, i) => {
+          const c = 100 + 5 * Math.sin(i / 2);
+          return [i, c + 1 + 0.5 * Math.abs(Math.cos(i)), c - 1, c];
+        }) as Array<[number, number, number, number]>,
+      });
+    const fluent = ohlc()
+      .stochastic({ kPeriod: 3, slowing: 2, dPeriod: 2 })
+      .williamsR({ period: 3 })
+      .donchian({ period: 3 });
+    const functional = donchian(
+      williamsR(stochastic(ohlc(), { kPeriod: 3, slowing: 2, dPeriod: 2 }), {
+        period: 3,
+      }),
+      { period: 3 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'stochK',
+      'stochD',
+      'williamsR',
+      'dcUpper',
+      'dcLower',
+      'dcMiddle',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
     }
   });
 });

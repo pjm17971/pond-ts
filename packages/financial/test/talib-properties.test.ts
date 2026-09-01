@@ -46,6 +46,7 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import { atr, ema, macd, rsi, sma } from '../src/index.js';
+import { donchian, stochastic, williamsR } from '../src/index.js';
 
 const closeSchema = [
   { name: 'time', kind: 'time' },
@@ -351,5 +352,182 @@ describe('[talib] all-missing input yields all-missing output', () => {
         (x) => x === undefined,
       ),
     ).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The range-position studies: stochastic, williamsR, donchian.             */
+/* ------------------------------------------------------------------------ */
+
+const ohlcSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+] as const;
+
+/** Oscillating bars with genuine range variation, scaled by `k`. The
+ *  half-widths vary so no window is flat and the extremes do not always sit
+ *  on the window's edges. */
+const rangeBars = (n: number, k = 1) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: ohlcSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      return [
+        i,
+        (c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2))) * k,
+        (c - 0.3 - 0.5 * Math.abs(Math.cos(i / 2.5))) * k,
+        c * k,
+      ];
+    }) as Array<[number, number, number, number]>,
+  });
+
+describe('[talib] scale behaviour of the range-position studies', () => {
+  const K = 100000;
+
+  it('stochastic is unchanged by scaling the input', () => {
+    // A ratio of price differences, like RSI: scale-free in exact
+    // arithmetic, and the test is that float error at 1e5× does not break
+    // that.
+    const opts = { kPeriod: 5, slowing: 3, dPeriod: 3 } as const;
+    const base = stochastic(rangeBars(40), opts);
+    const scaled = stochastic(rangeBars(40, K), opts);
+    for (const name of ['stochK', 'stochD']) {
+      const b = col(base, name);
+      const s = col(scaled, name);
+      expect(b.filter((x) => x !== undefined).length, name).toBeGreaterThan(30);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i], `${name}[${i}]`).toBeCloseTo(b[i]!, 9);
+      }
+    }
+  });
+
+  it('williamsR is unchanged by scaling the input', () => {
+    const base = col(williamsR(rangeBars(40), { period: 5 }), 'williamsR');
+    const scaled = col(williamsR(rangeBars(40, K), { period: 5 }), 'williamsR');
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) expect(scaled[i], `bar ${i}`).toBeUndefined();
+      else expect(scaled[i], `bar ${i}`).toBeCloseTo(base[i]!, 9);
+    }
+  });
+
+  it('donchian scales LINEARLY with the input, like atr', () => {
+    // A channel is in the price's units; scaling every price scales it.
+    const base = donchian(rangeBars(40), { period: 5 });
+    const scaled = donchian(rangeBars(40, 3), { period: 5 });
+    for (const name of ['dcUpper', 'dcLower', 'dcMiddle']) {
+      const b = col(base, name);
+      const s = col(scaled, name);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i]! / 3, `${name}[${i}]`).toBeCloseTo(b[i]!, 9);
+      }
+    }
+  });
+});
+
+describe('[talib] the range-position studies compose over another study', () => {
+  // `close` redirected at an SMA(6) of itself: defined from bar 5. The range
+  // is still read off the raw high/low, so this is the shape where the
+  // inputs warm up at different times.
+  const smoothed = () => sma(rangeBars(40), { period: 6, output: 'sc' });
+
+  it('stochastic starts late rather than coming back empty', () => {
+    const r = stochastic(smoothed(), {
+      kPeriod: 4,
+      slowing: 2,
+      dPeriod: 2,
+      close: 'sc',
+    });
+    const k = col(r, 'stochK');
+    const d = col(r, 'stochD');
+    expect(k).toHaveLength(40);
+    // fast %K first at 5 (the close), %K one bar on, %D one more.
+    expect(firstValid(k)).toBe(6);
+    expect(firstValid(d)).toBe(7);
+    expect(k.slice(6).every((x) => x !== undefined)).toBe(true);
+    expect(d.slice(7).every((x) => x !== undefined)).toBe(true);
+    expect(new Set(k.slice(6)).size).toBeGreaterThan(1);
+  });
+
+  it('williamsR starts late rather than coming back empty', () => {
+    const v = col(
+      williamsR(smoothed(), { period: 4, close: 'sc' }),
+      'williamsR',
+    );
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('donchian over a smoothed high starts on its first bar (core count-window contract)', () => {
+    // The edges compose on core's rolling reducers, whose window counts
+    // ROWS, not values: the channel's upper edge appears on the smoothed
+    // high's first bar with whatever the window holds by then — the same
+    // contract `sma(sma(...))` and `rollingMax` already ship — rather than
+    // `period − 1` bars after it. Pinned so a change to that contract is
+    // noticed here.
+    const src = sma(rangeBars(40), { period: 6, column: 'high', output: 'sh' });
+    const r = donchian(src, { period: 4, high: 'sh' });
+    expect(col(r, 'dcUpper')).toHaveLength(40);
+    expect(firstValid(col(r, 'dcLower'))).toBe(3); // raw low: period − 1
+    expect(firstValid(col(r, 'dcUpper'))).toBe(5); // the smoothed high's own start
+    expect(firstValid(col(r, 'dcMiddle'))).toBe(5);
+  });
+});
+
+describe('[talib] all-missing bars yield all-missing range-position studies', () => {
+  const allMissingBars = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [number, number | undefined, number | undefined, number | undefined]
+    >,
+  });
+
+  it('stochastic', () => {
+    const r = stochastic(allMissingBars as never, { kPeriod: 3 });
+    for (const name of ['stochK', 'stochD']) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('williamsR', () => {
+    const v = col(
+      williamsR(allMissingBars as never, { period: 3 }),
+      'williamsR',
+    );
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('donchian', () => {
+    const r = donchian(allMissingBars as never, { period: 3 });
+    for (const name of ['dcUpper', 'dcLower', 'dcMiddle']) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
   });
 });

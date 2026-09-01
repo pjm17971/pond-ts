@@ -8,11 +8,14 @@
 import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
 import { bollinger, ema, macd, rsi, sma } from '../dist/index.js';
+import { donchian, stochastic, williamsR } from '../dist/index.js';
 
 const PERIOD = 20;
 
 function makeBars(length) {
   const time = new Float64Array(length);
+  const high = new Float64Array(length);
+  const low = new Float64Array(length);
   const close = new Float64Array(length);
   const volume = new Float64Array(length);
   let px = 100;
@@ -20,16 +23,21 @@ function makeBars(length) {
     time[i] = 1_700_000_000_000 + i * 60_000;
     px += Math.sin(i * 0.001) * 0.3 + ((i * 2654435761) % 97) / 970 - 0.05;
     close[i] = px;
+    // Varying half-widths, so the range studies never see a flat window.
+    high[i] = px + 0.2 + 0.3 * Math.abs(Math.sin(i / 4));
+    low[i] = px - 0.2 - 0.3 * Math.abs(Math.cos(i / 3));
     volume[i] = 1_000 + ((i * 40_503) % 5_000);
   }
   const series = TimeSeries.fromColumns({
     name: 'bars',
     schema: [
       { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
       { name: 'close', kind: 'number' },
       { name: 'volume', kind: 'number' },
     ],
-    columns: { time, close, volume },
+    columns: { time, high, low, close, volume },
   });
   return { series, close };
 }
@@ -93,6 +101,13 @@ function scaleResults(length) {
       benchmark('macd({ 12, 26, 9 })', () => macd(series)),
       benchmark('bollinger({ period: 20 })', () =>
         bollinger(series, { period: PERIOD }),
+      ),
+      benchmark('stochastic({ 14, 3, 3 })', () => stochastic(series)),
+      benchmark('williamsR({ period: 14 })', () =>
+        williamsR(series, { period: 14 }),
+      ),
+      benchmark('donchian({ period: 20 })', () =>
+        donchian(series, { period: PERIOD }),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

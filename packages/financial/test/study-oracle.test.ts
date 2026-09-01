@@ -25,6 +25,9 @@ import {
   rsi,
   macd,
   atr,
+  stochastic,
+  williamsR,
+  donchian,
 } from '../src/index.js';
 
 interface OracleCase {
@@ -39,6 +42,9 @@ interface OracleCase {
     fastPeriod?: number;
     slowPeriod?: number;
     signalPeriod?: number;
+    kPeriod?: number;
+    slowing?: number;
+    dPeriod?: number;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -127,6 +133,15 @@ function run(c: OracleCase): unknown {
           signalPeriod?: number;
         },
       );
+    case 'stochastic':
+      return stochastic(
+        ohlcSeries(),
+        p as { kPeriod?: number; slowing?: number; dPeriod?: number },
+      );
+    case 'williamsR':
+      return williamsR(ohlcSeries(), p as { period?: number });
+    case 'donchian':
+      return donchian(ohlcSeries(), p as { period?: number });
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

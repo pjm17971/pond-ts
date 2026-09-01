@@ -63,6 +63,12 @@ import { macd as macdStudy } from './studies/macd.js';
 import type { AtrOptions } from './studies/atr.js';
 import { atr as atrStudy } from './studies/atr.js';
 import type { PercentChangeOptions } from './studies/percent-change.js';
+import type { StochasticOptions } from './studies/stochastic.js';
+import { stochastic as stochasticStudy } from './studies/stochastic.js';
+import type { WilliamsROptions } from './studies/williams-r.js';
+import { williamsR as williamsRStudy } from './studies/williams-r.js';
+import type { DonchianOptions } from './studies/donchian.js';
+import { donchian as donchianStudy } from './studies/donchian.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -139,6 +145,23 @@ declare module 'pond-ts' {
       AppendOpt<
         AppendOpt<AppendOpt<S, `${Prefix}Line`>, `${Prefix}Signal`>,
         `${Prefix}Hist`
+      >
+    >;
+    /** Fluent stochastic oscillator (`%K` / `%D`). */
+    stochastic<const Prefix extends string = 'stoch'>(
+      options?: StochasticOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}K`>, `${Prefix}D`>>;
+    /** Fluent Williams %R. */
+    williamsR<const Output extends string = 'williamsR'>(
+      options?: WilliamsROptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Donchian channel. */
+    donchian<const Prefix extends string = 'dc'>(
+      options?: DonchianOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, `${Prefix}Upper`>, `${Prefix}Lower`>,
+        `${Prefix}Middle`
       >
     >;
   }
@@ -224,4 +247,22 @@ proto.macd = function (
   options?: MacdOptions<SeriesSchema, string>,
 ) {
   return macdStudy(this, options);
+};
+proto.stochastic = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: StochasticOptions<SeriesSchema, string>,
+) {
+  return stochasticStudy(this, options);
+};
+proto.williamsR = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: WilliamsROptions<SeriesSchema, string>,
+) {
+  return williamsRStudy(this, options);
+};
+proto.donchian = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: DonchianOptions<SeriesSchema, string>,
+) {
+  return donchianStudy(this, options);
 };

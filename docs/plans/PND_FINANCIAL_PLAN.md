@@ -49,6 +49,31 @@ each study is a vocabulary wrapper following the studies README checklist
 (uniform `column`/`output` shape, bar-count periods, length-preserving
 warm-up, fluent method, oracle case).
 
+**Landed — stochastics / Williams %R / Donchian (one kernel).** All three
+read the trailing highest-high / lowest-low, so they share
+`kernels/highest-lowest.ts` (`highestLowestValues`: both extremes in ONE
+`rolling` scan; `percentOfRangeValues`: `100·(c−LL)/(HH−LL)`, which _is_ fast
+`%K`, with `%R = %K − 100`). Decisions, each measured against TA-Lib in the
+oracle: (1) **one `stochastic` with `slowing`**, not `stochastic` +
+`stochasticFast` — `slowing: 1` is `STOCHF` and is asserted as such. (2) **`%K`
+emits from its own first valid bar** (15 at 14/3/3) where TA-Lib masks it to
+`%D`'s (17) — the `macd` per-column precedent; values agree to `5.7e-14` on
+every bar TA-Lib emits. (3) **Flat window → `undefined`** where TA-Lib
+gives `0` — `0` is also "close at the bottom of a real range" for `%K` and
+"at the top" for `%R`, so TA-Lib's convention contradicts itself across the
+two studies on the same bar; the `rsi` precedent. (4) **The slow-K smoothing
+is a raw-array kernel (`rollingMeanValues`) that waits for `slowing`
+_values_**, not a scratch-column `sma`: core's count-window `avg` counts rows
+and would have put "3-bar" `%K` on bar 13 with one value in it (TA-Lib and
+pandas: bar 15). It reuses `rollingMeanSdInto` plus a NaN mask, so it is the
+same SMA `sma()` gives (pinned bit-for-bit). (5) A **misnamed `high`/`low`
+reads all-missing** in the kernel rather than throwing from core's `rolling`,
+so a multi-input study has one rule for all its inputs (the `atr` precedent;
+single-column `rollingMax` still throws — left alone). Considered and
+rejected: clamping `%K`/`%R` to their bounds (a redirected `close` outside
+its range should read outside, honestly); a Donchian `close`-based breakout
+column (a rule, not a study).
+
 ### [PND-SFOLD] — K6 stateful-fold kernel (studies Phase 3)
 
 A few Phase-3 studies (PSAR, SuperTrend, etc.) need the K6 stateful-fold
