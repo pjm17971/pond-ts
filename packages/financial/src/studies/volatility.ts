@@ -80,6 +80,17 @@ export interface HistoricalVolatilityOptions<
  *   gap under the rolling kernel's contract — the window still spans
  *   `period` rows, σ is over the finite returns in it, and a window with no
  *   finite return is `undefined`.
+ *
+ *   **Read the consequence before relying on it.** A window with exactly
+ *   ONE finite return has a σ of `0`, so an interior bad price emits
+ *   `hv = 0` on the bars around it — and `0` reads as "no volatility", the
+ *   opposite of what a corrupt price means. This is the package's rolling
+ *   contract (`rollingStdev`, `bollinger` and `zScore` do the same over a
+ *   gap), kept here for consistency with them; it is a deliberate
+ *   **divergence from pandas**, whose `rolling(n).std()` reports `NaN`
+ *   unless all `n` are present. Pinned by a test so the behaviour is
+ *   chosen rather than incidental. Fill or drop bad prices upstream if a
+ *   gap must not read as calm.
  * - **A leading gap shifts the start** rather than shrinking the first
  *   window: over another study's output (whose warm-up leaves missing rows
  *   at the head) the first σ still covers `period` real returns. That is

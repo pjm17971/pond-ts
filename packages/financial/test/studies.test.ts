@@ -811,4 +811,25 @@ describe('historicalVolatility', () => {
       [undefined],
     );
   });
+
+  it('an interior bad price yields σ = 0 over the one surviving return', () => {
+    // Found by the Layer-2 review of #686 and pinned so it is deliberate.
+    // The bad price at bar 2 kills the returns ending at bars 2 and 3. At
+    // period 2, the windows ending at bars 2 and 4 each hold ONE finite
+    // return, whose σ is 0 — which reads as "no volatility", the opposite of
+    // a corrupt price. That is the package's rolling contract (fewer
+    // contributors, not a missing window) and a documented divergence from
+    // pandas, which gives NaN there.
+    const v = col(
+      historicalVolatility(bars([100, 101, 0, 102, 103, 104]), {
+        period: 2,
+        annualize: 1,
+      }),
+      'hv',
+    );
+    expect(v[2]).toBe(0); // window = returns at bars 1, 2 → one finite
+    expect(v[3]).toBeUndefined(); // returns at bars 2, 3 → none finite
+    expect(v[4]).toBe(0); // returns at bars 3, 4 → one finite
+    expect(v[5]).toBeGreaterThan(0); // both returns present again
+  });
 });
