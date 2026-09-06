@@ -417,17 +417,30 @@ def historical_volatility(n: int, annualize: float) -> dict:
 #   - the close must never sit exactly ON an extreme, or %K would be an exact
 #     0 or 100 there and a swapped numerator (`HH - close` for `close - LL`)
 #     would be invisible on that bar.
-_interior = 0
-for _i in range(13, N):
-    _wh = highs[_i - 13 : _i + 1]
-    _wl = lows[_i - 13 : _i + 1]
-    if _wh.index(max(_wh)) not in (0, 13) or _wl.index(min(_wl)) not in (0, 13):
-        _interior += 1
-assert _interior > 0, "no 14-bar window has an interior extreme"
-assert all(
-    min(lows[max(0, _i - 13) : _i + 1]) < closes[_i] < max(highs[max(0, _i - 13) : _i + 1])
-    for _i in range(13, N)
-), "a close sits exactly on a 14-bar extreme; %K would read an exact 0/100"
+# Checked for EVERY window length a range-position case below uses, not just
+# the default 14 -- a Layer-2 review of #687 found the 5-bar cases unguarded.
+# "Not always at the edges" is made quantitative: at least ten windows must
+# have an interior extreme (the fixture has 17 at 5 bars, more at 14), so an
+# edge-reading bug differs from the oracle on at least ten bars per case.
+for _n in (5, 14):
+    _interior = 0
+    for _i in range(_n - 1, N):
+        _wh = highs[_i - _n + 1 : _i + 1]
+        _wl = lows[_i - _n + 1 : _i + 1]
+        if _wh.index(max(_wh)) not in (0, _n - 1) or _wl.index(min(_wl)) not in (
+            0,
+            _n - 1,
+        ):
+            _interior += 1
+    _windows = N - _n + 1
+    assert _interior >= 10, (
+        f"only {_interior}/{_windows} {_n}-bar windows have an interior extreme; "
+        "an edge-reading bug would be caught on too few bars to trust"
+    )
+    assert all(
+        min(lows[_i - _n + 1 : _i + 1]) < closes[_i] < max(highs[_i - _n + 1 : _i + 1])
+        for _i in range(_n - 1, N)
+    ), f"a close sits exactly on a {_n}-bar extreme; %K would read an exact 0/100"
 
 
 def _hh_ll(n: int):

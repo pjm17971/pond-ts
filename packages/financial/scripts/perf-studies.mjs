@@ -7,8 +7,16 @@
 // run from `packages/financial/` after `npm run build` at the repo root.
 import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
-import { bollinger, ema, macd, rsi, sma } from '../dist/index.js';
-import { donchian, stochastic, williamsR } from '../dist/index.js';
+import {
+  bollinger,
+  donchian,
+  ema,
+  macd,
+  rsi,
+  sma,
+  stochastic,
+  williamsR,
+} from '../dist/index.js';
 
 const PERIOD = 20;
 

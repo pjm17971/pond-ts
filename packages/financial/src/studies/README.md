@@ -41,6 +41,17 @@ and a doc note, not a second study that differs invisibly.
   - `columnValues(series, column)` — a raw column as an array (for arithmetic
     like percent-change / the z-score numerator).
   - `emaValues(series, column, period)` — a span-EMA as an array.
+  - `wilderValues(values, period, start)` (`kernels/wilder.ts`) — Wilder's
+    SMA-seeded recursion over a raw array (RSI, ATR; ADX next).
+  - `trueRangeValues(high, low, close)` (`kernels/true-range.ts`) — the
+    true-range array (ATR; Keltner, SuperTrend next).
+  - `highestLowestValues(series, high, low, period)` and
+    `percentOfRangeValues(close, hh, ll)` (`kernels/highest-lowest.ts`) —
+    HH/LL from **one** scan, and `100·(c−LL)/(HH−LL)` (stochastics, %R,
+    Donchian; Aroon, Keltner-style channels next).
+  - `rollingMeanValues(values, period)` (`kernels/rolling-mean.ts`) — SMA of
+    a **derived** array that waits for `period` finite _values_ (not rows —
+    the scratch-column route warms up one bar early over a NaN head).
 - Guard the output name(s) with `assertNoColumn` before doing work.
 - Append with `series.withColumn(output, values)` (it appends an **optional**
   number column — required for the `undefined` warm-up to survive a later

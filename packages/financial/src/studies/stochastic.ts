@@ -96,7 +96,7 @@ export interface StochasticOptions<
  * - **A leading gap shifts the start.** Running with `close` redirected at
  *   another study's output starts that many bars later.
  * - **An interior gap** in `close` costs that bar's fast `%K`, then
- *   `slowing` bars of `%K` and `dPeriod` more of `%D` — the window
+ *   `slowing` bars of `%K` and `dPeriod − 1` more of `%D` — the window
  *   recovers once the gap has left it, unlike a Wilder recursion. A gap in
  *   `high` or `low` is skipped by the range (core's reducer policy: the
  *   extreme over the cells the window does hold), so it costs nothing unless
