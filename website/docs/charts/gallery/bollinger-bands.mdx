@@ -151,10 +151,10 @@ Studies compose, because each one returns a series:
 
 ```ts
 import '@pond-ts/financial/fluent';
+import { bollinger, ema } from '@pond-ts/financial';
 
 const study = bars.bollinger({ period: 20 }).ema({ period: 10 });
-// …or as plain functions, without augmenting TimeSeries:
-import { bollinger, ema } from '@pond-ts/financial';
+// …or as plain functions, without augmenting TimeSeries — the same series:
 const same = ema(bollinger(bars, { period: 20 }), { period: 10 });
 ```
 

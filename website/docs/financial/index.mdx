@@ -12,9 +12,9 @@ import FinancialCalendarChart from '@site/src/examples/financial-calendar-chart'
 Two things, both built on plain pond series:
 
 - **Studies** — twenty technical indicators (`sma`, `bollinger`, `rsi`,
-  `macd`, `atr`, `stochastic`, `vwap`, …), each a pure function that appends
-  columns to a bar `TimeSeries`, verified against a pandas oracle (the named
-  indicators against TA-Lib as well).
+  `macd`, `atr`, `stochastic`, `vwap`, …), each a method you chain on a bar
+  `TimeSeries` to append its columns, verified against a pandas oracle (the
+  named indicators against TA-Lib as well).
 - **A trading calendar** — a session schedule (open/close instants, holidays,
   intraday breaks) plus the query surface pond's data ops and
   `@pond-ts/charts`' trading-time axis need. One class, `TradingCalendar`.
@@ -25,9 +25,10 @@ step.
 
 ## Studies
 
-A study is `(series, options) => series`: it reads a column (default
-`'close'`, or the named `high` / `low` / `close` / `volume` inputs for the
-multi-input ones), computes over bar-count periods, and **appends** its
+A study takes a series and options and returns the series with more columns
+on it: it reads a column (default `'close'`, or the named `high` / `low` /
+`close` / `volume` inputs for the multi-input ones), computes over bar-count
+periods, and **appends** its
 output column(s) with the warm-up rows left `undefined` so the result lines
 up on the source's time axis. Studies compose because each returns the
 widened series. Opt in to the fluent surface once and chain them:
