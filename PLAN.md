@@ -1241,31 +1241,32 @@ pandas-oracle-verified) have shipped. Plan:
   momentum, HV, ROC-as-`percentChange`, stochastics, %R, Donchian, OBV,
   rolling VWAP — each oracle-verified with a fluent method; PRs #681 onward).
   **Phase 2 is under way**: the K2 moving-average engine (#695) and its first
-  ten consumers — `keltner`, `atrBands`, `qstick`, `trix`, `coppock` (#696)
-  and `priceOscillator`, `disparityIndex`, `detrendedPriceOscillator`,
-  `elderRay`, `awesomeOscillator` (#697) — have landed on top of it, which
-  closes the Phase-1 **ATR bands** leftover; batch two added the volume /
-  money-flow group (`accumulationDistribution`, `chaikinOscillator`,
-  `priceVolumeTrend`, `chaikinMoneyFlow`, `moneyFlowIndex`, `forceIndex`,
-  `easeOfMovement`, `volumeOscillator`, #699; VROC is a recipe on
-  `percentChange`) and the momentum tail (`chandeMomentum`,
-  `ultimateOscillator`, `commodityChannelIndex`, `intradayMomentumIndex`,
-  `relativeVigorIndex`, `psychologicalLine`, #700). **Forty-four studies
-  shipped.** Next Phase-2 batches by kernel family: the volatility tail
-  (Chaikin volatility, Mass, Choppiness, Ulcer, VHF, Vortex, Gopalakrishnan,
-  relative volatility), the trend / directional group that needs Wilder's
-  +DM/−DM (ADX/DMS, Aroon — the G3 argmax), then K7 regression (five
-  projections from one kernel) and K8 two-series (Beta, correlation, relative
-  strength). Left open here: the **anchored /
+  ten consumers (#696, #697) closed the Phase-1 **ATR bands** leftover; batch
+  two added the volume / money-flow group (#699; VROC is a recipe on
+  `percentChange`) and the momentum tail (#700); batch three added the
+  Wilder directional group (`directionalMovement` → `dmi*`, `aroon` on the
+  O(N) monotonic-deque `barsSinceExtremeValues`, `vortex`, #702) and the
+  volatility tail (`chaikinVolatility`, `massIndex`, `choppinessIndex`,
+  `ulcerIndex`, `verticalHorizontalFilter`, `gopalakrishnanRangeIndex`,
+  `relativeVolatilityIndex` → `relVol`, #703 — none of which TA-Lib
+  implements, so every oracle case is a pandas replication asserting the
+  first-valid bar plus a measured separation from the plausible wrong turn).
+  **Fifty-one studies shipped.** Next Phase-2 batches by kernel family: K7
+  regression (five projections from one kernel — linear regression line,
+  slope, intercept, angle, forecast oscillator / TSF) and K8 two-series
+  (Beta, correlation, relative strength). Left open here: the **anchored /
   session VWAP**, which needs a reset and belongs with the session-anchored
   studies. Package-wide questions surfaced by the wave, none blocking:
-  `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine now proves
-  every EMA-family formula on TA-Lib's seed and bounds the transient, so
-  the convention is settled by precedent unless a consumer asks); the
-  Wilder-vs-`ema` interior-gap asymmetry (decided with ADX: kept, per
-  study documentation — record in the financial plan); a monotonic-deque
-  fast path for core's rolling min/max, for which `aroon`'s deque kernel is
-  now the measured evidence.
+  `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine proves every
+  EMA-family formula on TA-Lib's seed and bounds the transient, so the
+  convention is settled by precedent unless a consumer asks); the
+  Wilder-vs-`ema` interior-gap asymmetry (**decided 2026-09-06: kept**,
+  documented per study, decision record in the financial plan); a
+  monotonic-deque fast path for core's rolling min/max, for which `aroon`
+  (107 ms vs `donchian`'s 246 ms at 1M bars) is the measured evidence; and
+  `rollingValues`' reducer-dependent answer to a misnamed column
+  (`stdev`/`avg` read all-missing, `max`/`min` throw — pinned both ways in
+  #703, unifying it moves shipped studies so it waits for a consumer).
 - **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
   (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
