@@ -40,8 +40,10 @@ Three conventions make the corpus uniform and composable:
 - **`output` / `prefix`** — what to name the result column(s), so overlays don't
   collide.
 - **Bar-count periods, length-preserving warm-up** — `period` is a number of
-  bars; the first `period − 1` rows are `undefined` (the chart renders that as a
-  clean gap, so a moving average simply starts once it has enough history).
+  bars; the warm-up rows are `undefined` (the chart renders that as a clean
+  gap, so a moving average simply starts once it has enough history). For a
+  rolling study that is the first `period − 1` rows; the difference-built ones
+  cost one more — see the warm-up note under the tables.
 
 ```ts
 import { bollinger, ema } from '@pond-ts/financial';
@@ -56,9 +58,11 @@ Every study is also a **fluent method** on `TimeSeries` once you opt in with
 
 ### What's here today
 
-Twenty studies, every one oracle-verified (pandas, and TA-Lib where TA-Lib
-has the indicator) and each a batch transform (`TimeSeries → TimeSeries +
-columns`). Grouped by where they are drawn:
+Twenty studies, every one verified against a pandas oracle before it
+shipped — and the eight named indicators (`rsi`, `macd`, `atr`, `stochastic`,
+`williamsR`, `momentum`, `percentChange`, `obv`) bar-for-bar against TA-Lib
+too. Each is a batch transform (`TimeSeries → TimeSeries + columns`). Grouped
+by where they are drawn:
 
 **Overlays — drawn on the price row**
 
