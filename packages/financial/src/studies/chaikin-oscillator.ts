@@ -72,7 +72,7 @@ export interface ChaikinOscillatorOptions<
  *   `slowPeriod − 1` rows, length-preserving.
  * - **A leading gap shifts the A/D seed**, so the oscillator starts late
  *   rather than coming back empty.
- * - **An interior gap — or a flat bar (`high === low`) — ends the line.**
+ * - **An interior gap ends the line** (a flat bar does not — it adds `0`).
  *   The A/D level is unknown from there on
  *   ({@link accumulationDistributionValues}), and so is every average of it.
  *   This is the {@link obv} asymmetry inherited whole, and the documented

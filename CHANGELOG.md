@@ -128,12 +128,11 @@ include new features and type-level changes; patch bumps are strictly additive.
 
   **One new kernel**, `clvValues` / `accumulationDistributionValues`
   (`kernels/close-location.ts`), shared by A/D, the Chaikin oscillator and CMF.
-  A **flat bar (`high === low`) has no close location** (`0/0`) and reads as
-  missing, the same call `percentOfRangeValues` makes for a flat window — which
-  is a **deliberate delta from TA-Lib's `AD`**, where a flat bar folds in as a
-  zero contribution and the line carries on. The consequence is asymmetric and
-  is documented per study: it ends the cumulative A/D line, but costs CMF only
-  the windows containing it. Similarly, a window with **no money flow at all**
+  A **flat bar (`high === low`) has a close location of exactly `0`** — its
+  numerator `(c − l) − (h − c)` is forced to zero, so `0` is the value rather
+  than a convention — and so A/D matches TA-Lib's `AD` on every bar, halts
+  included, and CMF counts the bar's volume in its denominator as every
+  conventional CMF does. A window with **no money flow at all**
   makes `mfi` `undefined` where TA-Lib reports `0` — and TA-Lib reports `0`
   for any window whose total flow is merely below `1.0`, measured returning `0`
   where the answer is `100` on a rising series with `1e-9` volume.

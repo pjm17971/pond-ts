@@ -28,13 +28,14 @@ describe('clvValues', () => {
     expect(out[0]).toBe(out[1]);
   });
 
-  it('is missing on a flat bar — TA-Lib’s AD calls it 0', () => {
-    // The ratio is 0/0. Reported as no answer, the same call
-    // `percentOfRangeValues` makes for a flat window.
+  it('is 0 on a flat bar — the numerator is exactly zero, and TA-Lib’s AD agrees', () => {
+    // Unlike a stochastic's flat WINDOW, a flat bar's `(c − l) − (h − c)` is
+    // forced to zero, so 0 is the value, not a convention. A missing close on
+    // a flat bar is still a gap.
     expect(read(clvValues(arr(10, 14), arr(10, 10), arr(10, 13)))).toEqual([
-      undefined,
-      0.5,
+      0, 0.5,
     ]);
+    expect(read(clvValues(arr(10), arr(10), arr(NaN)))).toEqual([undefined]);
   });
 
   it('is missing when any of the three prices is', () => {
@@ -85,14 +86,14 @@ describe('accumulationDistributionValues', () => {
     expect(read(hole)).toEqual([50, undefined, undefined]);
   });
 
-  it('a flat bar stops the line — the documented TA-Lib delta', () => {
+  it('a flat bar adds 0 and the line carries on — as TA-Lib’s AD does', () => {
     const out = accumulationDistributionValues(
       arr(12, 13, 16),
       arr(10, 13, 14),
       arr(11.5, 13, 16),
       arr(100, 200, 300),
     );
-    expect(read(out)).toEqual([50, undefined, undefined]);
+    expect(read(out)).toEqual([50, 50, 350]);
   });
 
   it('is all-missing on all-missing input, length kept', () => {

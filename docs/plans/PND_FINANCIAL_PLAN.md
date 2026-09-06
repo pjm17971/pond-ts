@@ -404,22 +404,25 @@ behind a boolean rather than a knob on one.
 `chaikinMoneyFlow`, `moneyFlowIndex`, `forceIndex`, `easeOfMovement` and
 `volumeOscillator`, over **one** new kernel. Decisions:
 
-(1) **The close location value is a kernel, and a flat bar has none.**
-`clvValues` / `accumulationDistributionValues` (`kernels/close-location.ts`)
-are shared by three studies, which is what earned the file. `CLV` is the
-stochastic's "position in a range" at a different arity — `clv = 2·%K/100 − 1`
-over the bar's own high and low — so `high === low` is the same `0/0`
-`percentOfRangeValues` already reports as missing, and it reports missing here.
-**Deliberate delta from TA-Lib's `AD`**, which guards `if (h − l > 0)` and folds
-a flat bar in as a zero contribution: measured (0.7.1) on twelve bars with bar 3
-flattened, TA-Lib gives `[0, 100, 100, 100, 100, 400, …, 1900]`. Two reasons to
-diverge: `0` is a _reading_ ("buyers and sellers exactly balanced") for a bar
-that reported none, and a zero-range bar is usually a halt. The **cost is
-asymmetric and is stated per study** rather than averaged into a slogan — it
-ends the cumulative A/D line, and costs CMF only the `period` windows holding
-it. Considered and rejected: an explicit "flat bar contributes 0" special case
-in `accumulationDistribution` alone, which would have matched TA-Lib outright at
-the price of A/D and CMF disagreeing about the same bar.
+(1) **The close location value is a kernel, and a flat bar's is exactly
+`0`.** `clvValues` / `accumulationDistributionValues`
+(`kernels/close-location.ts`) are shared by three studies, which is what
+earned the file. `CLV` is the stochastic's "position in a range" at a different
+arity — `clv = 2·%K/100 − 1` over the bar's own high and low — and the builder
+first carried the stochastic's flat-window rule across (`high === low` →
+missing, on the "no answer beats a conventional zero" precedent), documenting
+it as a deliberate delta from TA-Lib's `AD`. The Layer-2 review of #699 argued
+the algebra and won: on a flat bar the numerator `(c − l) − (h − c)` is
+_forced_ to zero — the close is at the high and at the low — so `0` is the
+ratio's value in the limit and the only contribution the bar can make, where a
+stochastic's flat window has a numerator that is not forced to anything. So a
+flat bar contributes `0`: A/D matches TA-Lib bar-for-bar with no delta (measured
+on twelve bars with bar 3 flattened, both give `[0, 100, 100, 100, 100, 400, …,
+1900]`), the Chaikin oscillator carries on through a halt, and CMF keeps the
+bar's volume in its denominator as every conventional CMF does. Only a
+_missing_ price is a gap. The lesson is recorded for the next flat-window
+decision: ask whether the numerator is forced to zero before reaching for
+`undefined`.
 
 (2) **The Chaikin oscillator is the one EMA-family study with no seed delta —
 measured, not assumed.** Every other EMA study here carries the `macd`

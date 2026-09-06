@@ -94,9 +94,18 @@ export function volumeOscillator<
   S extends SeriesSchema,
   const Output extends string = 'volOsc',
 >(series: TimeSeries<S>, options: VolumeOscillatorOptions<S, Output> = {}) {
+  const fastPeriod = options.fastPeriod ?? 5;
+  const slowPeriod = options.slowPeriod ?? 10;
+  if (fastPeriod >= slowPeriod) {
+    // Validated here so the error names THIS study, not the one it
+    // delegates to (a Layer-2 review of #699 ran it and read `priceOscillator`).
+    throw new TypeError(
+      `volumeOscillator fastPeriod (${fastPeriod}) must be shorter than slowPeriod (${slowPeriod})`,
+    );
+  }
   return priceOscillator(series, {
-    fastPeriod: options.fastPeriod ?? 5,
-    slowPeriod: options.slowPeriod ?? 10,
+    fastPeriod,
+    slowPeriod,
     maType: options.maType ?? 'sma',
     mode: 'percent',
     column: (options.volume ??

@@ -2178,11 +2178,10 @@ out = {
             "accumulationDistribution": (
                 "cumsum(CLV * volume), CLV = ((c-l)-(h-c))/(h-l); "
                 "cross-checked against TA-Lib AD (mask and values). No period "
-                "and no warm-up. A FLAT bar (h == l) is where the two part "
-                "company: TA-Lib folds it in as a zero contribution, pond "
-                "reports no close location and the running sum stops - the "
-                "fixture always has a range, so the case is unit-tested "
-                "TypeScript-side rather than here"
+                "and no warm-up. A FLAT bar (h == l) contributes 0 on both "
+                "sides (the CLV numerator is exactly zero), so the two agree "
+                "everywhere - the fixture always has a range, so the flat "
+                "bar is unit-tested TypeScript-side"
             ),
             "chaikinOscillator": (
                 "EMA(AD, fast) - EMA(AD, slow), defaults 3 / 10; "

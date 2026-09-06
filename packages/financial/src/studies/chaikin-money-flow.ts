@@ -42,7 +42,9 @@ export interface ChaikinMoneyFlowOptions<
  * {@link accumulationDistribution} is a running level; this is the same
  * per-bar pressure expressed as a **bounded, comparable** reading — a
  * volume-weighted mean of {@link clvValues}, so it lies in `[−1, +1]` on any
- * instrument at any price. Above zero is net accumulation over the window,
+ * instrument at any price whose closes sit inside their bars (a `close`
+ * redirected at a smoothed column can read outside, honestly — the kernel
+ * does not clamp). Above zero is net accumulation over the window,
  * below zero net distribution; ±0.25 or so is the conventional strong
  * reading. Appends one column, `undefined` for the first `period − 1` rows.
  *
@@ -70,18 +72,12 @@ export interface ChaikinMoneyFlowOptions<
  *   weight by, so there is no answer — not `0`, and not the plain mean of
  *   CLV. (`0 / 0` in the kernel, which needs no guard; see
  *   {@link rollingWeightedMeanValues}.)
- * - **A flat bar (`high === low`) leaves the window's sums entirely** —
- *   both of them, so the reading is the CMF of the bars that *do* have a
- *   range rather than one diluted by a bar with no close location. It is
- *   {@link clvValues}' `0/0` rule plus the kernel's "a gap in either input
- *   drops the row from both sums". The conventional implementations
- *   (TA-Lib has none, but ChartIQ and StockCharts agree) count a flat bar as
- *   a `0` contribution while keeping its volume in the denominator, which
- *   pulls the reading toward zero by an amount that depends on how much
- *   volume traded in a bar that reported no direction. **Deliberate delta**,
- *   same call {@link accumulationDistribution} makes — but note the contrast
- *   in cost: a flat bar ends the A/D line, and here it only affects the
- *   `period` windows that contain it.
+ * - **A flat bar (`high === low`) contributes `0` to the numerator and its
+ *   volume to the denominator**, pulling the reading toward zero by however
+ *   much traded in a bar that reported no direction. That is the
+ *   conventional CMF (ChartIQ and StockCharts agree; TA-Lib has none) and it
+ *   follows from {@link clvValues}' flat-bar value being exactly `0`, the
+ *   same rule {@link accumulationDistribution} runs on.
  * - **A gap in any input** behaves the same way and recovers once it leaves
  *   the window. As with every count-window study the window is emitted once
  *   it spans `period` **rows**, computed from whichever are present.

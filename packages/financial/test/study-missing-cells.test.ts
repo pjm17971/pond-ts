@@ -999,11 +999,11 @@ describe('[PND-STUDYBOX] the volume & money-flow studies: where the missing rows
     expect(nullCountOf(out, 'ad')).toBe(6); // bars 2..7 — never recovers
   });
 
-  it('accumulationDistribution: a FLAT bar is a gap, where TA-Lib carries on', () => {
+  it('accumulationDistribution: a FLAT bar is not a gap — it adds 0, like TA-Lib', () => {
     const out = accumulationDistribution(flowBars(closes, volumes, 3));
-    expect(typeof cells(out, 'ad')[2]).toBe('number');
-    expect(cells(out, 'ad')[3]).toBeUndefined();
-    expect(nullCountOf(out, 'ad')).toBe(5); // bars 3..7
+    const ad = cells(out, 'ad');
+    expect(ad[3]).toBe(ad[2]); // the flat bar's contribution is exactly 0
+    expect(nullCountOf(out, 'ad')).toBe(0);
   });
 
   it('chaikinOscillator: the slow EMA’s warm-up, then the A/D line’s gap rule', () => {

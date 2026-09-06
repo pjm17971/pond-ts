@@ -26,15 +26,21 @@ import { cumulativeValues } from './cumulative.js';
  * and a second pass for an affine map), but the **flat-range rule is
  * deliberately the same one**, and for the same reason:
  *
- * - **`high === low` → `NaN` (missing).** The ratio is `0/0`: a bar with no
- *   range has no close location, and there is no honest value for "where in
- *   nothing did it close". **TA-Lib's `AD` calls it `0`** (its C code guards
- *   `if (high − low > 0)` and adds nothing for that bar), which is the
- *   conventional answer everywhere this quantity appears; pond distinguishes
- *   "no answer" from "an answer that happens to be zero" throughout
- *   (`percentOfRangeValues`' flat window, RSI's flat window, Bollinger's
- *   σ = 0) and does here too. The consequence for a *running sum* built on
- *   it is documented on {@link accumulationDistributionValues}.
+ * - **`high === low` → `0`, not missing.** This is the one place the
+ *   flat-range rule is NOT `percentOfRangeValues`' `undefined`, and the
+ *   reason is algebraic rather than conventional: the numerator
+ *   `(c − l) − (h − c)` is exactly zero on any flat bar (the close is at the
+ *   high and at the low), so `0` is the value the ratio takes in the limit
+ *   from either side and the only contribution the bar can make to a money
+ *   flow — a stochastic's flat *window*, by contrast, has a numerator that
+ *   is not forced to zero. It is also TA-Lib's `AD` (`if (high − low > 0)`
+ *   … else add nothing) and every conventional CMF, so a running sum built
+ *   on it carries on through a halt instead of ending there. (The first cut
+ *   reported `NaN` here for consistency with the stochastic rule; the
+ *   Layer-2 review of #699 made the algebraic case, and it is the better
+ *   one.) A close outside `[low, high]` on a flat bar is only reachable by
+ *   redirecting `close`, and reads `0` too — the bar has no range to place
+ *   it in.
  *
  * `NaN` marks a gap ([PND-STUDYBOX]) and propagates through the arithmetic on
  * its own, so a bar missing any of its three prices has no close location.
@@ -55,9 +61,12 @@ export function clvValues(
     const h = high[i]!;
     const l = low[i]!;
     const range = h - l;
-    // `range === 0` is the flat bar (see above). A NaN input makes `range`
-    // NaN, which is not `=== 0`, so it falls to the division and propagates.
-    out[i] = range === 0 ? NaN : (2 * close[i]! - h - l) / range;
+    // `range === 0` is the flat bar (see above): the numerator is exactly
+    // zero, so the value is 0 — but only when the close is present, so a
+    // missing close still reads as a gap. A NaN input makes `range` NaN,
+    // which is not `=== 0`, so it falls to the division and propagates.
+    const c = close[i]!;
+    out[i] = range === 0 ? (c === c ? 0 : NaN) : (2 * c - h - l) / range;
   }
   return out;
 }

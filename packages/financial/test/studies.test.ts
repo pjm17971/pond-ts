@@ -2936,10 +2936,10 @@ describe('accumulationDistribution', () => {
     expect(hole.slice(2)).toEqual([undefined, undefined]);
   });
 
-  it('treats a flat bar as a gap — the documented delta from TA-Lib', () => {
+  it('a flat bar contributes 0 and the line carries on — matching TA-Lib', () => {
     // TA-Lib's AD folds a zero-range bar in as a ZERO contribution and
-    // carries on (measured 0.7.1). A bar with no range has no close
-    // location, so this reports no level from there on.
+    // carries on (measured 0.7.1); so does this, because the close
+    // location's numerator is exactly zero on a flat bar.
     const v = col(
       accumulationDistribution(
         ohlcv([
@@ -2951,8 +2951,8 @@ describe('accumulationDistribution', () => {
       ),
       'ad',
     );
-    expect(v.slice(0, 2)).toEqual([50, -50]);
-    expect(v.slice(2)).toEqual([undefined, undefined]);
+    // bar 3: (17−16) − (18−17) = 0, so it adds 0 as well.
+    expect(v).toEqual([50, -50, -50, -50]);
   });
 
   it('rejects a colliding output', () => {
@@ -3217,9 +3217,9 @@ describe('chaikinMoneyFlow', () => {
     expect(v[3]).toBeCloseTo(300 / 700, 12);
   });
 
-  it('drops a flat bar from BOTH sums and recovers once it leaves', () => {
-    // A window study, unlike the A/D line: the same flat bar costs only the
-    // windows that contain it.
+  it('a flat bar adds 0 to the numerator and its volume to the denominator', () => {
+    // The conventional CMF: a bar that reported no direction dilutes the
+    // reading by however much traded in it.
     const v = col(
       chaikinMoneyFlow(
         ohlcv([
@@ -3232,9 +3232,9 @@ describe('chaikinMoneyFlow', () => {
       ),
       'cmf',
     );
-    expect(v[1]).toBeCloseTo(0.5, 12); // bar 0 alone: 50/100
-    expect(v[2]).toBeCloseTo(1, 12); // bar 2 alone: 300/300
-    expect(v[3]).toBeCloseTo(300 / 700, 12);
+    expect(v[1]).toBeCloseTo(50 / 300, 12); // (50 + 0) / (100 + 200)
+    expect(v[2]).toBeCloseTo(300 / 500, 12); // (0 + 300) / (200 + 300)
+    expect(v[3]).toBeCloseTo(300 / 700, 12); // bar 3's CLV is 0 too
   });
 
   it('defaults to period 20 and the `cmf` column', () => {
@@ -3858,6 +3858,10 @@ describe('volumeOscillator', () => {
     expect(() => volumeOscillator(ohlcv(bars5), { fastPeriod: 0 })).toThrow(
       TypeError,
     );
+    // The error names THIS study, not the one it delegates to.
+    expect(() =>
+      volumeOscillator(ohlcv(bars5), { fastPeriod: 10, slowPeriod: 5 }),
+    ).toThrow(/^volumeOscillator fastPeriod/);
     expect(() => volumeOscillator(ohlcv(bars5), { output: 'close' })).toThrow(
       /collides/,
     );

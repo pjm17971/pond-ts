@@ -60,7 +60,7 @@ export interface AccumulationDistributionOptions<
  * bar-for-bar in the oracle fixture (delta `0`, and an identical — empty —
  * warm-up mask). No `period`, so there is one case rather than two.
  *
- * ## Edges — the running-sum rules, plus the flat bar
+ * ## Edges — the running-sum rules
  *
  * - **A leading gap in any input shifts the seed** to the first bar where
  *   all four are present, which is what lets the line run over another
@@ -69,15 +69,12 @@ export interface AccumulationDistributionOptions<
  *   term is unknown; skipping it would report a level silently off by the
  *   missing contribution for the rest of the series. Fill before running if
  *   you need continuity.
- * - **A flat bar (`high === low`) is treated as a gap and stops the line.**
- *   Its close location is `0/0`, and pond reports no answer rather than a
- *   conventional zero. **TA-Lib disagrees** — it contributes `0` for such a
- *   bar and carries on; measured on twelve bars with bar 3 flattened, TA-Lib
- *   reports `[0, 100, 100, 100, 100, 400, …, 1900]`. The delta and the
- *   reasoning are on {@link clvValues} and
- *   {@link accumulationDistributionValues}; the short version is that a bar
- *   with no range is usually a halt, and `0` there reads as "buyers and
- *   sellers exactly balanced", which is a claim the bar did not make.
+ * - **A flat bar (`high === low`) contributes `0` and the line carries on** —
+ *   the close location's numerator is exactly zero there, so this is the
+ *   value, not a convention ({@link clvValues}). It is also what TA-Lib's
+ *   `AD` does (measured on twelve bars with bar 3 flattened: `[0, 100, 100,
+ *   100, 100, 400, …, 1900]`), so the two agree on every bar, halts
+ *   included. Only a *missing* price is a gap.
  * - **Scale behaviour:** linear in volume, and **invariant under any affine
  *   change of price** — scaling or shifting every price leaves the close
  *   location, and so the line, unchanged. Both pinned by property tests.
