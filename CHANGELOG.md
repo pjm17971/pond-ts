@@ -70,6 +70,75 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the volume & money-flow group** (corpus §6.6) — eight
+  studies over one new kernel, all in the uniform shape (redirectable bar
+  inputs, bar-count periods, length-preserving warm-up, a fluent method) and
+  each with oracle cases at two parameterisations where it has a period.
+  - **`accumulationDistribution({ high?, low?, close?, volume?, output = 'ad' })`**
+    → `ad`. Chaikin's running total of `CLV × volume`, where
+    `CLV = ((close − low) − (high − close)) / (high − low)` grades _where in
+    its own range_ a bar closed. Like `obv` it has **no period** and no
+    warm-up. **Matches TA-Lib `AD` exactly** (delta `0`) on bars with a range.
+  - **`chaikinOscillator({ fastPeriod = 3, slowPeriod = 10, high?, low?, close?, volume?, output = 'chaikinOsc' })`**
+    → `chaikinOsc`. `EMA(A/D, 3) − EMA(A/D, 10)`, the A/D line's momentum.
+    **Matches TA-Lib `ADOSC` exactly** (delta `0`, identical masks) — the one
+    EMA-family study here with **no seed delta**, because TA-Lib's own `ADOSC`
+    seeds both EMAs on the first A/D value, which is pond's convention. (The
+    oracle also asserts the SMA-seeded reconstruction is visibly different, so
+    the case pins which seed ships.)
+  - **`priceVolumeTrend({ close?, volume?, output = 'pvt' })`** → `pvt`. The
+    running total of `volume × (close − prevClose)/prevClose` — OBV's idea
+    scaled by _how far_ price moved. The **fraction**, not the percent: it
+    composes on the `ROC` kernel and divides by 100, which is the one place
+    that constant appears. **`pvt[0]` is `undefined`, not `0`** — the term
+    needs a previous close, and unlike OBV there is no vendor convention to
+    seed from; every later level is identical either way.
+  - **`chaikinMoneyFlow({ period = 20, high?, low?, close?, volume?, output = 'cmf' })`**
+    → `cmf`. `Σ CLV·volume / Σ volume` over the window — the A/D term as a
+    **bounded** `[−1, +1]` reading. Runs on the same `rollingWeightedMeanValues`
+    kernel as `vwap`, so it inherits its edge rules; `Σ volume = 0` →
+    `undefined`.
+  - **`moneyFlowIndex({ period = 14, high?, low?, close?, volume?, output = 'mfi' })`**
+    → `mfi`. The RSI form on raw money flow (`typical price × volume`, split
+    by the direction of the typical price). **Matches TA-Lib `MFI`** to
+    `2.8e-14` with identical masks. Warm-up is **`period` rows, not
+    `period − 1`** (the first bar has no previous typical price), the `rsi` /
+    `atr` off-by-one.
+  - **`forceIndex({ period = 13, close?, volume?, output = 'force' })`** →
+    `force`. Elder's `EMA((close − prevClose) × volume, 13)`; **`period: 1` is
+    the raw, unsmoothed force**, so no `smooth: false` flag is needed. No
+    `maType` — Elder names the EMA (the `elderRay` precedent).
+  - **`easeOfMovement({ period = 14, maType = 'sma', scale = 100_000_000, high?, low?, volume?, output = 'eom' })`**
+    → `eom`. Arms' midpoint move divided by the box ratio
+    `(volume / scale) / (high − low)`, MA-smoothed. `scale` is StockCharts' /
+    ChartIQ's constant and is a **pure linear multiplier**, exposed because the
+    right value depends on the instrument's volume units, not on taste. A flat
+    bar and a zero-volume bar both report `undefined` (two zero denominators).
+  - **`volumeOscillator({ fastPeriod = 5, slowPeriod = 10, maType = 'sma', volume?, output = 'volOsc' })`**
+    → `volOsc`. `100 · (MA(volume, 5) − MA(volume, 10)) / MA(volume, 10)`. This
+    is **literally `priceOscillator`'s percent mode over the volume column**, so
+    it delegates to it rather than restating the arithmetic — a test pins the
+    identity. What the wrapper adds is the name and the volume-appropriate
+    defaults (5/10/sma against 12/26/ema).
+
+  **Volume Rate of Change is not a study**: the corpus names it, but
+  `percentChange({ column: 'volume' })` _is_ its definition (and is
+  TA-Lib-verified through `ROC`), so what ships is a recipe note in API.md and
+  a test that pins it — step 0 of the studies README.
+
+  **One new kernel**, `clvValues` / `accumulationDistributionValues`
+  (`kernels/close-location.ts`), shared by A/D, the Chaikin oscillator and CMF.
+  A **flat bar (`high === low`) has a close location of exactly `0`** — its
+  numerator `(c − l) − (h − c)` is forced to zero, so `0` is the value rather
+  than a convention — and so A/D matches TA-Lib's `AD` on every bar, halts
+  included, and CMF counts the bar's volume in its denominator as every
+  conventional CMF does. A window with **no money flow at all**
+  makes `mfi` `undefined` where TA-Lib reports `0` — and TA-Lib reports `0`
+  for any window whose total flow is merely below `1.0`, measured returning `0`
+  where the answer is `100` on a rising series with `1e-9` volume.
+
+### Added
+
 - `@pond-ts/financial`: **five K2 consumers** — the first studies built on the
   moving-average engine, two channels and three smoothed rates. All five take
   the uniform shape (bar-count periods, redirectable inputs, length-preserving

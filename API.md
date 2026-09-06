@@ -471,10 +471,23 @@ on the series.
 | `detrendedPriceOscillator`  | `dpo`                                | `{ period?, maType?, column?, output? }` (`price − MA[i − ⌊period/2⌋−1]`, default 20/sma)                                            | `packages/financial/src/studies/detrended-price-oscillator.ts` |
 | `elderRay`                  | `elderBull`, `elderBear`             | `{ period?, high?, low?, close?, prefix? }` (`high/low − EMA(close)`, default 13)                                                    | `packages/financial/src/studies/elder-ray.ts`                  |
 | `awesomeOscillator`         | `ao`                                 | `{ fastPeriod?, slowPeriod?, high?, low?, output? }` (SMA 5 − SMA 34 of `(high+low)/2`)                                              | `packages/financial/src/studies/awesome-oscillator.ts`         |
+| `accumulationDistribution`  | `ad`                                 | `{ high?, low?, close?, volume?, output? }` (no period; cumulative CLV·volume, = TA-Lib `AD`)                                        | `packages/financial/src/studies/accumulation-distribution.ts`  |
+| `chaikinOscillator`         | `chaikinOsc`                         | `{ fastPeriod?, slowPeriod?, high?, low?, close?, volume?, output? }` (EMA 3 − EMA 10 of A/D, = TA-Lib `ADOSC`)                      | `packages/financial/src/studies/chaikin-oscillator.ts`         |
+| `priceVolumeTrend`          | `pvt`                                | `{ close?, volume?, output? }` (no period; cumulative fractional-change·volume; bar 0 undefined)                                     | `packages/financial/src/studies/price-volume-trend.ts`         |
+| `chaikinMoneyFlow`          | `cmf`                                | `{ period?, high?, low?, close?, volume?, output? }` (Σ CLV·vol / Σ vol over 20, bounded −1..+1)                                     | `packages/financial/src/studies/chaikin-money-flow.ts`         |
+| `moneyFlowIndex`            | `mfi`                                | `{ period?, high?, low?, close?, volume?, output? }` (RSI form on typical-price·volume, default 14, = TA-Lib `MFI`)                  | `packages/financial/src/studies/money-flow-index.ts`           |
+| `forceIndex`                | `force`                              | `{ period?, close?, volume?, output? }` (EMA of Δclose·volume, Elder's 13; `period: 1` is the raw force)                             | `packages/financial/src/studies/force-index.ts`                |
+| `easeOfMovement`            | `eom`                                | `{ period?, maType?, scale?, high?, low?, volume?, output? }` (Arms' box ratio, 14/sma/1e8; quadratic in price)                      | `packages/financial/src/studies/ease-of-movement.ts`           |
+| `volumeOscillator`          | `volOsc`                             | `{ fastPeriod?, slowPeriod?, maType?, volume?, output? }` (5/10/sma; `priceOscillator` percent-mode over volume)                     | `packages/financial/src/studies/volume-oscillator.ts`          |
 
 Every study also exports its options type (`SmaOptions`-style, named for the
 study). `PriceOscillatorMode` (`'percent' | 'absolute'`) is exported alongside
 `PriceOscillatorOptions` — `packages/financial/src/studies/price-oscillator.ts`.
+
+**Volume Rate of Change is `percentChange({ column: 'volume' })`** — the corpus
+names it separately, but the formula is identical (and TA-Lib-verified through
+`ROC`), so there is no `volumeRateOfChange` study. A test in
+`test/studies.test.ts` pins the recipe.
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).

@@ -57,6 +57,11 @@ and a doc note, not a second study that differs invisibly.
   - `rollingMeanValues(values, period)` (`kernels/rolling-mean.ts`) — SMA of
     a **derived** array that waits for `period` finite _values_ (not rows —
     the scratch-column route warms up one bar early over a NaN head).
+  - `clvValues(high, low, close)` and
+    `accumulationDistributionValues(high, low, close, volume)`
+    (`kernels/close-location.ts`) — where the close sits in the bar's own
+    range (`[−1, +1]`, missing on a flat bar) and the running sum of it
+    weighted by volume (A/D, Chaikin oscillator, CMF).
 - Guard the output name(s) with `assertNoColumn` before doing work.
 - Append with `series.withColumn(output, values)` (it appends an **optional**
   number column — required for the `undefined` warm-up to survive a later

@@ -1482,6 +1482,314 @@ def awesome_oscillator(fast: int, slow: int) -> dict:
     return {"ao": col(v)}
 
 
+def _clv() -> pd.Series:
+    """Close Location Value: ((c - l) - (h - c)) / (h - l), in [-1, +1].
+
+    The per-bar term of the A/D line and of Chaikin Money Flow. The fixture's
+    bars always have a range, so the h == l case (which pond reports as
+    missing and TA-Lib's AD folds in as a zero contribution) does not arise
+    here - it is unit-tested TypeScript-side instead.
+    """
+    return ((s - low_s) - (h - s)) / (h - low_s)
+
+
+def _ad_line() -> pd.Series:
+    return (_clv() * vol).cumsum()
+
+
+def accumulation_distribution() -> dict:
+    """Accumulation/Distribution line: cumsum(CLV * volume), as TA-Lib's AD.
+
+    No period and no warm-up - the term reads one bar, so the line is defined
+    from bar 0. Cross-checked against TA-Lib (mask, then values).
+    """
+    ad = _ad_line()
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.AD(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                np.asarray(volumes, dtype=float),
+            )
+        )
+        assert list(ad.isna()) == list(ref.isna()), (
+            f"AD warm-up differs from TA-Lib: ours first valid "
+            f"{ad.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(ad - ref)))
+        assert delta < 1e-9, f"AD disagrees with TA-Lib by {delta}"
+        print(f"  accumulationDistribution(): matches TA-Lib to {delta:.3g}")
+    else:
+        print("  accumulationDistribution(): TA-Lib not installed - SKIPPED")
+
+    # A study that read the SIGN of the close change (OBV's term) rather than
+    # the close's LOCATION in the bar would be a different line entirely.
+    signed = (np.sign(s.diff()) * vol).cumsum()
+    sep = float(np.nanmax(np.abs(ad - signed)))
+    assert sep > 1000, f"A/D sits within {sep} of the OBV shape on this fixture"
+
+    return {"ad": col(ad)}
+
+
+def chaikin_oscillator(fast: int, slow: int) -> dict:
+    """Chaikin Oscillator: EMA(AD, fast) - EMA(AD, slow), TA-Lib's ADOSC.
+
+    THE SEED AGREES HERE, which is the exception in this file. Every other
+    EMA-family case keeps pond's first-sample seed against TA-Lib's SMA seed
+    and bounds the transient - but TA-Lib's own ADOSC seeds both EMAs with
+    the FIRST A/D value, which is pond's convention, so this one is asserted
+    as an exact match. The SMA-seeded reconstruction is computed below too,
+    and asserted to be DIFFERENT, so the case pins which seed we ship.
+    """
+    ad = _ad_line()
+    v = _ema_first_seed(ad, fast) - _ema_first_seed(ad, slow)
+    label = f"chaikinOscillator({fast},{slow})"
+
+    assert v.first_valid_index() == slow - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {slow - 1}"
+    )
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.ADOSC(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                np.asarray(volumes, dtype=float),
+                fastperiod=fast,
+                slowperiod=slow,
+            )
+        )
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(v - ref)))
+        assert delta < 1e-9, f"{label} disagrees with TA-Lib ADOSC by {delta}"
+        sma_seed = pd.Series(
+            _ema_sma_seed(ad.to_numpy(), fast) - _ema_sma_seed(ad.to_numpy(), slow)
+        )
+        seed_gap = float(np.nanmax(np.abs(sma_seed - ref)))
+        assert seed_gap > 1.0, (
+            f"{label}: the SMA-seeded reconstruction is only {seed_gap} from "
+            "TA-Lib - this fixture cannot tell the two seeds apart"
+        )
+        print(
+            f"  {label}: matches TA-Lib ADOSC to {delta:.3g} on POND's "
+            f"first-sample EMA seed (an SMA seed would be {seed_gap:.1f} out)"
+        )
+    else:
+        print(f"  {label}: TA-Lib not installed - cross-check SKIPPED")
+
+    return {"chaikinOsc": col(v)}
+
+
+def price_volume_trend() -> dict:
+    """Price-Volume Trend: cumsum(fractional close change * volume).
+
+    No TA-Lib function. PVT[0] is NULL, not 0: the term needs a previous
+    close, and pond does not invent a seed where no vendor convention forces
+    one (OBV's volume[0] seed is TA-Lib's and is matched; this has none).
+    Every later level is the same either way.
+    """
+    pvt = (s.pct_change() * vol).cumsum()
+
+    assert pvt.first_valid_index() == 1, (
+        f"PVT first valid at {pvt.first_valid_index()}, expected 1"
+    )
+    # The plausible wrong turn is the ABSOLUTE change (a "price times volume"
+    # sum) rather than the fractional one.
+    absolute = (s.diff() * vol).cumsum()
+    sep = float(np.nanmax(np.abs(pvt - absolute)))
+    assert sep > 100, (
+        f"PVT sits within {sep} of the absolute-change version - the fixture "
+        "cannot tell the fractional form apart"
+    )
+    print(
+        f"  priceVolumeTrend(): pandas replication (no TA-Lib PVT); first "
+        f"valid at 1, {sep:.0f} from the absolute-change version"
+    )
+    return {"pvt": col(pvt)}
+
+
+def chaikin_money_flow(n: int) -> dict:
+    """Chaikin Money Flow: sum(CLV * volume) / sum(volume) over n bars.
+
+    No TA-Lib function - a pandas replication of the same weighted-mean shape
+    VWAP uses, with the volume weighting asserted to be visible on this
+    fixture (the spike bars are what make it so).
+    """
+    clv = _clv()
+    v = (clv * vol).rolling(n).sum() / vol.rolling(n).sum()
+    label = f"chaikinMoneyFlow({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    assert float(np.nanmax(np.abs(v))) <= 1.0, f"{label} left [-1, +1]"
+    plain = clv.rolling(n).mean()
+    sep = float(np.nanmax(np.abs(v - plain)))
+    assert sep > 0.02, (
+        f"{label} sits within {sep} of the UNWEIGHTED mean of CLV - the "
+        "fixture's volume is too flat to catch a dropped weighting"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib CMF); first valid at "
+        f"{n - 1}, {sep:.3f} from the unweighted mean of CLV"
+    )
+    return {"cmf": col(v)}
+
+
+def money_flow_index(n: int) -> dict:
+    """Money Flow Index: 100 * posFlow / (posFlow + negFlow) over n bars,
+    flow = typical price * volume, direction from the typical price.
+
+    Cross-checked against TA-Lib MFI (mask, then values). An unchanged
+    typical price contributes to neither sum - TA-Lib's rule too. TA-Lib
+    reports 0 where the window's total flow is zero (or merely below 1.0);
+    pond reports NULL for a zero total, the rsi flat-window rule. That case
+    does not arise on this fixture, so the values agree outright.
+    """
+    tp = (h + low_s + s) / 3
+    flow = tp * vol
+    d = tp.diff()
+    pos = flow.where(d > 0, 0.0)
+    neg = flow.where(d < 0, 0.0)
+    pos.iloc[0] = math.nan  # no previous typical price
+    neg.iloc[0] = math.nan
+    up = pos.rolling(n).sum()
+    down = neg.rolling(n).sum()
+    v = 100 * up / (up + down)
+    label = f"moneyFlowIndex({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(the first bar has no previous typical price)"
+    )
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.MFI(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                np.asarray(volumes, dtype=float),
+                timeperiod=n,
+            )
+        )
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(v - ref)))
+        assert delta < 1e-9, f"{label} disagrees with TA-Lib MFI by {delta}"
+        print(f"  {label}: matches TA-Lib MFI to {delta:.3g}")
+    else:
+        print(f"  {label}: TA-Lib not installed - cross-check SKIPPED")
+
+    # An MFI that weighted by volume alone (dropping the typical price from
+    # the flow) is the same shape with different numbers; separate it.
+    alt_up = vol.where(d > 0, 0.0)
+    alt_up.iloc[0] = math.nan
+    alt_down = vol.where(d < 0, 0.0)
+    alt_down.iloc[0] = math.nan
+    alt = 100 * alt_up.rolling(n).sum() / (
+        alt_up.rolling(n).sum() + alt_down.rolling(n).sum()
+    )
+    sep = float(np.nanmax(np.abs(v - alt)))
+    assert sep > 0.05, f"{label} is within {sep} of the volume-only version"
+
+    return {"mfi": col(v)}
+
+
+def force_index(n: int) -> dict:
+    """Elder's Force Index: EMA(close.diff() * volume, n) on POND's EMA seed.
+
+    No TA-Lib function. First valid at n (not n-1): the raw force has no
+    value on bar 0, and the EMA's array door waits for n FINITE values.
+    """
+    raw = s.diff() * vol
+    v = _ema_first_seed(raw, n)
+    label = f"forceIndex({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n}"
+    )
+    # Dropping the volume factor is the mutation this separation catches.
+    wrong = _ema_first_seed(s.diff(), n)
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 100, f"{label} is within {sep} of the volume-less version"
+    print(
+        f"  {label}: pandas replication (no TA-Lib force index) on pond's EMA "
+        f"seed; first valid at {n}"
+    )
+    return {"force": col(v)}
+
+
+def ease_of_movement(n: int, kind: str, scale: float = 100_000_000.0) -> dict:
+    """Arms' Ease of Movement: MA(distance / boxRatio, n), where
+    distance = mid.diff(), boxRatio = (volume / scale) / (high - low), so the
+    1-bar value is mid.diff() * (high - low) * scale / volume.
+
+    No TA-Lib function. `scale` is StockCharts'/ChartIQ's 100,000,000 and is
+    a pure linear multiplier. First valid at n (the 1-bar value needs a
+    previous midpoint, and every MA type's array door waits for n finite
+    values).
+    """
+    mid = (h + low_s) / 2
+    raw = mid.diff() * (h - low_s) * scale / vol
+    v = _ma_over(raw, kind, n)
+    label = f"easeOfMovement({n},{kind})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n}"
+    )
+    # Dropping the (high - low) factor from the box ratio is the mutation
+    # this separation catches - it is the half of the definition that makes
+    # EOM quadratic in price rather than linear.
+    wrong = _ma_over(mid.diff() * scale / vol, kind, n)
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 100, f"{label} is within {sep} of the range-less version"
+    print(
+        f"  {label}: pandas replication (no TA-Lib EOM); first valid at {n}, "
+        f"{sep:.0f} from the version that drops the bar's range"
+    )
+    return {"eom": col(v)}
+
+
+def volume_oscillator(fast: int, slow: int, kind: str) -> dict:
+    """Volume Oscillator: 100 * (MA(volume, fast) - MA(volume, slow)) /
+    MA(volume, slow) - the price oscillator's percent mode over VOLUME.
+
+    No TA-Lib function. What this case pins that priceOscillator's own cases
+    cannot is that the study reads the VOLUME column and applies the 5/10/sma
+    defaults, so it is deliberately built from the same helpers.
+    """
+    fast_ma = _ma_over(vol, kind, fast)
+    slow_ma = _ma_over(vol, kind, slow)
+    v = 100 * (fast_ma - slow_ma) / slow_ma
+    label = f"volumeOscillator({fast},{slow},{kind})"
+
+    expected_first = slow - 1
+    assert v.first_valid_index() == expected_first, (
+        f"{label} first valid at {v.first_valid_index()}, expected "
+        f"{expected_first}"
+    )
+    # Reading the CLOSE instead of the volume is the obvious wrong turn.
+    wrong = 100 * (_ma_over(s, kind, fast) - _ma_over(s, kind, slow)) / _ma_over(
+        s, kind, slow
+    )
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 5, f"{label} is within {sep} of the close-based version"
+    print(
+        f"  {label}: pandas replication (no TA-Lib volume oscillator); first "
+        f"valid at {expected_first}, {sep:.1f} from the close-based version"
+    )
+    return {"volOsc": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -1678,6 +1986,64 @@ cases = [
         "params": {"longPeriod": 6, "shortPeriod": 3, "wmaPeriod": 4},
         "expected": coppock(6, 3, 4),
     },
+    {
+        "study": "accumulationDistribution",
+        "params": {},
+        "expected": accumulation_distribution(),
+    },
+    {
+        "study": "chaikinOscillator",
+        "params": {"fastPeriod": 3, "slowPeriod": 10},
+        "expected": chaikin_oscillator(3, 10),
+    },
+    {
+        "study": "chaikinOscillator",
+        "params": {"fastPeriod": 4, "slowPeriod": 12},
+        "expected": chaikin_oscillator(4, 12),
+    },
+    {"study": "priceVolumeTrend", "params": {}, "expected": price_volume_trend()},
+    {
+        "study": "chaikinMoneyFlow",
+        "params": {"period": 20},
+        "expected": chaikin_money_flow(20),
+    },
+    {
+        "study": "chaikinMoneyFlow",
+        "params": {"period": 5},
+        "expected": chaikin_money_flow(5),
+    },
+    {
+        "study": "moneyFlowIndex",
+        "params": {"period": 14},
+        "expected": money_flow_index(14),
+    },
+    {
+        "study": "moneyFlowIndex",
+        "params": {"period": 5},
+        "expected": money_flow_index(5),
+    },
+    {"study": "forceIndex", "params": {"period": 13}, "expected": force_index(13)},
+    {"study": "forceIndex", "params": {"period": 2}, "expected": force_index(2)},
+    {
+        "study": "easeOfMovement",
+        "params": {"period": 14, "maType": "sma"},
+        "expected": ease_of_movement(14, "sma"),
+    },
+    {
+        "study": "easeOfMovement",
+        "params": {"period": 5, "maType": "ema"},
+        "expected": ease_of_movement(5, "ema"),
+    },
+    {
+        "study": "volumeOscillator",
+        "params": {"fastPeriod": 5, "slowPeriod": 10, "maType": "sma"},
+        "expected": volume_oscillator(5, 10, "sma"),
+    },
+    {
+        "study": "volumeOscillator",
+        "params": {"fastPeriod": 4, "slowPeriod": 12, "maType": "ema"},
+        "expected": volume_oscillator(4, 12, "ema"),
+    },
 ]
 
 out = {
@@ -1808,6 +2174,66 @@ out = {
                 "SMA(fast) - SMA(slow) of the median price (high+low)/2; "
                 "pandas replication (no TA-Lib AO), first valid at slow-1, "
                 "separated from the close-based version"
+            ),
+            "accumulationDistribution": (
+                "cumsum(CLV * volume), CLV = ((c-l)-(h-c))/(h-l); "
+                "cross-checked against TA-Lib AD (mask and values). No period "
+                "and no warm-up. A FLAT bar (h == l) contributes 0 on both "
+                "sides (the CLV numerator is exactly zero), so the two agree "
+                "everywhere - the fixture always has a range, so the flat "
+                "bar is unit-tested TypeScript-side"
+            ),
+            "chaikinOscillator": (
+                "EMA(AD, fast) - EMA(AD, slow), defaults 3 / 10; "
+                "cross-checked against TA-Lib ADOSC EXACTLY - the one "
+                "EMA-family study with no seed delta, because TA-Lib's own "
+                "ADOSC seeds both EMAs on the FIRST A/D value, which is "
+                "pond's convention. The SMA-seeded reconstruction is asserted "
+                "to be visibly different, so the case pins the seed"
+            ),
+            "priceVolumeTrend": (
+                "cumsum(close.pct_change() * volume) - the FRACTIONAL change, "
+                "not the percent one; pandas replication (no TA-Lib PVT). "
+                "PVT[0] is null (no previous close, and no vendor convention "
+                "to seed from); first valid at 1, separated from the "
+                "absolute-change version"
+            ),
+            "chaikinMoneyFlow": (
+                "sum(CLV * volume) / sum(volume) over n, default 20; pandas "
+                "replication (no TA-Lib CMF) on the same weighted-mean shape "
+                "as VWAP. First valid at n-1, bounded by [-1, +1], and "
+                "separated from the UNWEIGHTED mean of CLV"
+            ),
+            "moneyFlowIndex": (
+                "100 * posFlow / (posFlow + negFlow) over n, flow = typical "
+                "price * volume, direction from the typical price, default "
+                "14; cross-checked against TA-Lib MFI. Unchanged typical "
+                "price counts for neither side (TA-Lib's rule). Warm-up is n "
+                "rows, not n-1. TA-Lib reports 0 for a window whose total "
+                "flow is zero - or merely below 1.0 - where pond reports null "
+                "(the rsi flat-window rule); neither case arises here"
+            ),
+            "forceIndex": (
+                "EMA(close.diff() * volume, n) on POND's first-sample EMA "
+                "seed, default 13 (Elder); pandas replication (no TA-Lib "
+                "function). First valid at n, not n-1: the raw force has no "
+                "value on bar 0 and the EMA array door waits for n finite "
+                "VALUES. period 1 is the raw, unsmoothed force"
+            ),
+            "easeOfMovement": (
+                "MA(mid.diff() * (h-l) * scale / volume, n), defaults 14 / "
+                "sma / scale 100,000,000 (StockCharts, ChartIQ); pandas "
+                "replication (no TA-Lib EOM). First valid at n; separated "
+                "from the version that drops the bar's range, which is the "
+                "half of the definition making EOM QUADRATIC in price"
+            ),
+            "volumeOscillator": (
+                "100 * (MA(volume,fast) - MA(volume,slow)) / MA(volume,slow), "
+                "defaults 5 / 10 / sma - the price oscillator's percent mode "
+                "over volume, which is what the study delegates to. pandas "
+                "replication (no TA-Lib function); first valid at slow-1, "
+                "separated from the close-based version so the column is "
+                "pinned"
             ),
         },
     },
