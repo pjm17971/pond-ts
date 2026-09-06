@@ -3,7 +3,7 @@ import type {
   SeriesSchema,
   TimeSeries,
 } from 'pond-ts';
-import { DEFAULT_OHLCV, DEFAULT_SOURCE } from '../contract/columns.js';
+import { DEFAULT_OHLCV } from '../contract/columns.js';
 import {
   assertNoColumn,
   assertPeriod,
@@ -19,7 +19,9 @@ export interface AtrBandsOptions<
   period?: number;
   /** Band half-width in ATRs. **Default `2`.** */
   multiplier?: number;
-  /** The field the bands are drawn around. **Default `'close'`.** */
+  /** The field the bands are drawn around. **Default: whatever `close`
+   *  resolves to** (`'close'` unless redirected), so redirecting `close`
+   *  moves the bands with the true range. */
   column?: NumericColumnNameForSchema<S>;
   /** High column (ATR input). **Default `'high'`.** */
   high?: NumericColumnNameForSchema<S>;
@@ -94,10 +96,14 @@ export function atrBands<
     throw new TypeError('atrBands multiplier must be a positive finite number');
   }
 
-  const column = (options.column ?? DEFAULT_SOURCE) as string;
   const highName = (options.high ?? DEFAULT_OHLCV.high) as string;
   const lowName = (options.low ?? DEFAULT_OHLCV.low) as string;
   const closeName = (options.close ?? DEFAULT_OHLCV.close) as string;
+  // The field the bands sit around defaults to the SAME close the true
+  // range reads, so redirecting `close` alone moves both together (a
+  // Layer-2 review of #696 caught the default silently staying on the
+  // schema's `close` while the ATR came from the redirected one).
+  const column = (options.column ?? closeName) as string;
   const prefix = (options.prefix ?? 'atrb') as Prefix;
   const upperName = `${prefix}Upper` as const;
   const lowerName = `${prefix}Lower` as const;

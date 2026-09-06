@@ -73,8 +73,8 @@ export interface QstickOptions<S extends SeriesSchema, Output extends string> {
  *   comparable across instruments at different price levels. Chande's own
  *   reading is relative to its own recent range.
  * - **The body is a derived array**, so the MA runs through the K2 engine's
- *   array door, where every type — `sma` included — waits for `period`
- *   **finite** values. First value at bar `period − 1` for the window types
+ *   array door, where a window type — `sma` included — emits only once the
+ *   last `period` rows are **all** finite. First value at bar `period − 1` for the window types
  *   on gap-free input; the composed types (`dema`, `hull`, …) land later,
  *   per `movingAverageValues`.
  * - **A bar missing either open or close has no body**, and the gap then

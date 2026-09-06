@@ -489,11 +489,12 @@ by studies) — `packages/financial/src/kernels/rolling.ts`.
 
 ### Moving-average engine (kernel K2)
 
-| Export                                 | Purpose                                                                                                                                      | Source                                             |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `MaType`                               | The MA-type vocabulary: `'sma' \| 'ema' \| 'wma' \| 'smma' \| 'dema' \| 'tema' \| 'trima' \| 'hull' \| 'kama' \| 'zlema'`                    | `packages/financial/src/kernels/moving-average.ts` |
-| `MA_TYPES`                             | The same menu as a readonly array (validation, fan-out over every type)                                                                      | `packages/financial/src/kernels/moving-average.ts` |
-| `movingAverageValues(v, period, type)` | One MA over a raw `Float64Array` — for studies whose input is derived (Keltner's typical price, Coppock's WMA of ROCs, the Price Oscillator) | `packages/financial/src/kernels/moving-average.ts` |
+| Export                                 | Purpose                                                                                                                                                     | Source                                             |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `MaType`                               | The MA-type vocabulary: `'sma' \| 'ema' \| 'wma' \| 'smma' \| 'dema' \| 'tema' \| 'trima' \| 'hull' \| 'kama' \| 'zlema'`                                   | `packages/financial/src/kernels/moving-average.ts` |
+| `MA_TYPES`                             | The same menu as a readonly array (validation, fan-out over every type)                                                                                     | `packages/financial/src/kernels/moving-average.ts` |
+| `movingAverageValues(v, period, type)` | One MA over a raw `Float64Array` — for studies whose input is derived (Keltner's typical price, Coppock's WMA of ROCs, the Price Oscillator)                | `packages/financial/src/kernels/moving-average.ts` |
+| `percentChangeValues(v, periods)`      | Percent change vs `periods` bars ago (×100) over a raw `Float64Array` — the ROC every rate-of-change study composes on (`percentChange`, `trix`, `coppock`) | `packages/financial/src/kernels/rate-of-change.ts` |
 
 `MovingAverageTypeOptions` (the `movingAverage` study's options: the shared
 `MovingAverageOptions` plus `type`) —

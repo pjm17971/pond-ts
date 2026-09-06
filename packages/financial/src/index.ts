@@ -24,6 +24,7 @@ export { DEFAULT_OHLCV, DEFAULT_SOURCE } from './contract/columns.js';
 export type { RollingReducer } from './kernels/rolling.js';
 export type { MaType } from './kernels/moving-average.js';
 export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
+export { percentChangeValues } from './kernels/rate-of-change.js';
 export type {
   MovingAverageOptions,
   MovingAverageTypeOptions,

@@ -98,7 +98,7 @@ assert all(v > 0 for v in _wins.values()), (
 # half-widths are deliberately NARROWER than its close-to-close moves (see the
 # true-range note above), so an unclamped previous close would sit outside its
 # own bar on the gap bars - which is exactly the shape the high/low asserts
-# were added to stop. Measured on this series: 47 of the 80 opens are the
+# were added to stop. Measured on this series: 46 of the 80 opens are the
 # previous close exactly, and 33 are gap bars.
 #
 # The 0.05 inset keeps the open strictly INSIDE the range rather than on it,

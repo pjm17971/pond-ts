@@ -145,8 +145,9 @@ export function keltner<
   const close = columnValues(wide, closeName);
 
   // Typical price is a derived array, so the centre goes through the K2
-  // engine's ARRAY door — where every type, `sma` included, waits for
-  // `period` finite values. That is the rule for derived inputs (the studies
+  // engine's ARRAY door — where every window type, `sma` included, emits
+  // only once the last `period` rows are ALL finite (a gap blanks every
+  // window that contains it). That is the rule for derived inputs (the studies
   // README): averaging a partly-warm typical price as if it were data is how
   // slow %K ended up one bar early.
   const middle = movingAverageValues(

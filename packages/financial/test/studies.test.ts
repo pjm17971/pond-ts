@@ -2175,3 +2175,48 @@ describe('the K2 consumers pin their published defaults', () => {
     );
   });
 });
+
+describe('atrBands — a redirected close moves the bands with it', () => {
+  // Layer-2 review of #696: `column` used to default to the schema's
+  // `close` independently of the `close` option, so
+  // `atrBands({ close: 'c2' })` drew bands from c2's true range around
+  // the OTHER close. `column` now defaults to whatever `close` resolves to.
+  const series = new TimeSeries({
+    name: 'two-closes',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+      { name: 'c2', kind: 'number' },
+    ] as const,
+    rows: Array.from({ length: 12 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 2);
+      return [i, c + 1.5, c - 1.2, c, c + 10 + Math.cos(i)];
+    }) as Array<[number, number, number, number, number]>,
+  });
+  it('centres on the redirected close by default', () => {
+    const out = atrBands(series, { period: 3, multiplier: 2, close: 'c2' });
+    const upper = col(out, 'atrbUpper');
+    const a = col(atr(series, { period: 3, close: 'c2' }), 'atr');
+    const c2 = col(series, 'c2');
+    for (let i = 0; i < 12; i += 1) {
+      if (upper[i] === undefined) continue;
+      expect(upper[i]! - c2[i]!, `bar ${i}`).toBeCloseTo(2 * a[i]!, 12);
+    }
+    expect(upper.filter((v) => v !== undefined).length).toBeGreaterThan(0);
+  });
+  it('an explicit column still wins', () => {
+    const out = atrBands(series, {
+      period: 3,
+      multiplier: 2,
+      close: 'c2',
+      column: 'close',
+    });
+    const upper = col(out, 'atrbUpper');
+    const a = col(atr(series, { period: 3, close: 'c2' }), 'atr');
+    const c = col(series, 'close');
+    const i = 11;
+    expect(upper[i]! - c[i]!).toBeCloseTo(2 * a[i]!, 12);
+  });
+});

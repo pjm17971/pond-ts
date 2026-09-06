@@ -122,7 +122,8 @@ export function coppock<
 
   // The WMA goes through the K2 engine's array door, so it is the same
   // linear-weight average `movingAverage({ type: 'wma' })` gives — and,
-  // being the array door, it waits for `wmaPeriod` finite values rather than
-  // rows, which is the rule for a derived input.
+  // being the array door, it emits only once the last `wmaPeriod` rows are
+  // all finite (a missing ROC blanks the windows holding it), which is the
+  // rule for a derived input.
   return series.withColumn(output, movingAverageValues(sum, wmaPeriod, 'wma'));
 }
