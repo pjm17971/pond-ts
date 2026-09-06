@@ -30,6 +30,12 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  chandeMomentum,
+  ultimateOscillator,
+  commodityChannelIndex,
+  intradayMomentumIndex,
+  relativeVigorIndex,
+  psychologicalLine,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -375,5 +381,83 @@ describe('fluent K2 oscillators', () => {
       output: 'd2',
     });
     expect(col(smaD, 'disparity')[20]).not.toBeCloseTo(col(emaD, 'd2')[20]!, 6);
+  });
+});
+
+describe('fluent momentum tail', () => {
+  const momBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        const o = c - 0.8 * Math.cos(i / 2.1);
+        return [
+          i,
+          o,
+          Math.max(o, c) + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          Math.min(o, c) - 0.4 - 0.6 * Math.abs(Math.cos(i / 2.4)),
+          c,
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('chains all six and matches the standalone functions bar for bar', () => {
+    const fluent = momBars()
+      .chandeMomentum({ period: 5 })
+      .ultimateOscillator({ shortPeriod: 3, mediumPeriod: 5, longPeriod: 9 })
+      .commodityChannelIndex({ period: 5 })
+      .intradayMomentumIndex({ period: 5 })
+      .relativeVigorIndex({ period: 4 })
+      .psychologicalLine({ period: 5 });
+    const functional = psychologicalLine(
+      relativeVigorIndex(
+        intradayMomentumIndex(
+          commodityChannelIndex(
+            ultimateOscillator(chandeMomentum(momBars(), { period: 5 }), {
+              shortPeriod: 3,
+              mediumPeriod: 5,
+              longPeriod: 9,
+            }),
+            { period: 5 },
+          ),
+          { period: 5 },
+        ),
+        { period: 4 },
+      ),
+      { period: 5 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of ['cmo', 'uo', 'cci', 'imi', 'rvi', 'rviSignal', 'psy']) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('passes the periods through, not just the defaults', () => {
+    // A mount that dropped the options object would still produce numbers;
+    // the period is the knob that changes the answer.
+    const short = momBars().chandeMomentum({ period: 3 });
+    const long = momBars().chandeMomentum({ period: 9, output: 'cmo9' });
+    expect(col(short, 'cmo')[20]).not.toBeCloseTo(col(long, 'cmo9')[20]!, 6);
+    // …and the positional weights: a different short period must move UO.
+    const fast = momBars().ultimateOscillator({
+      shortPeriod: 2,
+      mediumPeriod: 5,
+      longPeriod: 9,
+    });
+    const slow = momBars().ultimateOscillator({
+      shortPeriod: 4,
+      mediumPeriod: 5,
+      longPeriod: 9,
+      output: 'uo2',
+    });
+    expect(col(fast, 'uo')[25]).not.toBeCloseTo(col(slow, 'uo2')[25]!, 6);
   });
 });

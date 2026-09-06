@@ -399,6 +399,130 @@ Disparity) — it is arithmetic anyone can write and the comparable form is the
 one worth naming; and a `centered` flag on DPO, which would be a second series
 behind a boolean rather than a knob on one.
 
+**Landed — the momentum tail (§6.3).** `chandeMomentum`,
+`ultimateOscillator`, `commodityChannelIndex`, `intradayMomentumIndex`,
+`relativeVigorIndex` and `psychologicalLine` — six oscillators that are all
+**ratios**, which is the property that shapes the batch: unlike the price-unit
+family (`elderRay`, `atrBands`, `awesomeOscillator`) every one is invariant to
+**both** a scale factor and a constant shift, and both halves are asserted,
+because an implementation that dropped a normalisation keeps the shift
+invariance and loses the scale one. Decisions:
+
+(1) **CMO ships Chande's unsmoothed sums, and step 0 is why.** TA-Lib's `CMO`
+Wilder-smooths the two legs, which makes it **exactly `2 · rsi − 100`** — the
+generator asserts that (`2.8e-14` on the oracle input at both parameterisations)
+rather than asserting our agreement with it. Shipping TA-Lib's definition would
+have added a study that is an affine restatement of a shipped column, which is
+the failure mode the studies README's step 0 exists to catch. The two are a
+genuinely different series, not a warm-up transient: identical warm-ups
+(both first emit on bar `period`) and **68.28 points apart at `period 14`**,
+131.55 at `period 5`, on a scale spanning 200 — asserted as a minimum
+separation so the fixture cannot stop telling them apart. Chande's form is also
+the one the corpus names and the one VIDYA's adaptive constant is defined on,
+so it is the form a future K2 `vidya` type will want. Rejected: a
+`smoothing: 'wilder' | 'none'` option — two indicators behind a flag, and the
+caller who wants TA-Lib's number already has `2 · rsi(...) − 100` exactly.
+
+(2) **The Ultimate Oscillator takes three named periods, not a tuple.** The
+4/2/1 weights are **positional**, so `periods: [28, 14, 7]` is a silently
+different indicator while `longPeriod: 7` is obviously wrong at the call site;
+the three are validated strictly increasing for the same reason. The weights
+themselves are not an option (nobody publishes an alternative). Parity with
+`ULTOSC` is exact — **7.1e-15**, identical masks, at both `(7,14,28)` and
+`(3,5,9)` — and the generator additionally asserts our `trueRangeValues` is
+`talib.TRANGE` **bit-for-bit** (`0.0`), so the ATR family and this study measure
+range identically by construction rather than by coincidence. The warm-up is
+`longPeriod` rows, not `longPeriod − 1`: both `BP` and `TR` read the previous
+close.
+
+(3) **CCI brought the package's first super-linear kernel, and it is stated
+rather than hidden.** `rollingMeanAbsDevValues` is **O(N·period)**: mean
+absolute deviation is not a moment, so it has no O(1) sliding update — one
+removal and one addition can flip the sign of every remaining term. A
+sub-linear form does exist (an order-statistic index over the window, prefix
+sums either side of the mean, `O(N log period)`), and it is **written down in
+the kernel docstring but not built**: measured at 1M bars, `period 20` costs
+128 ms and `period 100` costs 229 ms, so the deviation walk is ~1.3 ms per unit
+of period per 1M bars — ~25 ms of the 128 at the default, which is the same
+band as the linear studies rather than a different one. The tree form is the
+answer only if a caller wants CCI at a period in the thousands. The `period 20`
+default is ChartIQ's and is **not universal** (TA-Lib's own default is 14),
+which the docstring says so a vendor comparison checks the length first.
+
+(4) **A zero-deviation guard was written, and mutation testing deleted it.**
+CCI's `mad === 0` case is real (`undefined`, a deliberate delta from TA-Lib's
+`0`, on the `rsi` flat-window precedent) but it needs no branch: the window ends
+on the bar being reported, so a zero deviation forces a zero numerator and the
+case _is_ `0/0`. The explicit guard survived every mutation because no input can
+tell it is there — exactly the `rollingWeightedMeanValues` finding repeating,
+and now recorded twice. The same reasoning is why `chandeMomentum` and
+`intradayMomentumIndex` were written without one (non-negative legs: a zero
+denominator forces a zero numerator). It does **not** apply to `ultimateOscillator` and
+`relativeVigorIndex`, whose denominators can be zero over a non-zero numerator
+on inconsistent bars (a close outside its own range, which a redirected `close`
+option produces) — those guards kill mutations, and `±Infinity` reaching
+`withColumn` is the alternative.
+
+(5) **IMI is plain sums, not Wilder's.** The corpus maps it as "RSI form on
+`(C − O)`", and _RSI form_ is the ambiguity: RSI's averages are smoothed, every
+published statement of IMI's are not. The unsmoothed form ships, which is what
+gives it the window family's recover-after-a-gap behaviour instead of RSI's
+carry-to-the-end. Its warm-up is `period − 1`, one row shorter than `rsi` and
+`chandeMomentum`, because a body needs no previous bar. Over identical legs
+`imi = (cmo + 100)/2`, and a test pins that on a series whose opens are the
+previous close — the two studies checking each other's arithmetic.
+
+(6) **RVI is TradingView's, and the SWMA is a kernel.** The smoother is the
+**symmetric `(1,2,2,1)/6`** 4-bar filter, not the K2 engine's linear `wma(4)`;
+same width, same normalisation, completely different impulse response, so a
+kernel test pins the response to a unit spike (`1, 2, 2, 1`, not `4, 3, 2, 1`).
+The width is fixed rather than a `period` because "SWMA" names those weights and
+there is no published rule to generalise them. The signal line is a fourth SWMA
+of the index (TradingView's), the warm-up is per column (`period + 2` and
+`period + 5`), and this is the first study in the package to read all four OHLC
+columns.
+
+(7) **Psychological Line pins the two choices it has.** An unchanged close is
+**not** an up bar (strict `>`, so a flat window reads `0`, not `50` — some
+vendors count it as half, which is a different study), and it is the one ratio
+here with no `0/0` case at all because its denominator is `period`. A bar with
+no close leaves **two** bars undirected (its own and its successor's), which the
+array door then carries.
+
+(8) **One kernel was extracted rather than added.** `upDownLegValues` — the
+gain/loss split — was a private loop in `rsi`; `chandeMomentum` and
+`intradayMomentumIndex` need the same one, so it moved to `kernels/up-down.ts`
+and `rsi` now calls it (oracle unchanged). It earns a kernel because the obvious
+one-liners are both wrong in one case each: `Math.max(d, 0)` maps a flat bar
+correctly but `d > 0 ? d : 0` maps an **unknown** change to a flat one, and
+"flat" and "unknown" are the two answers the whole family's `0/0`-versus-gap
+behaviour depends on.
+
+(9) **A fixture finding worth carrying forward.** The oracle's `opens` are the
+previous close pulled inside the bar, so over a short window the candle bodies
+and the close-to-close changes nearly coincide: IMI and the same form on closes
+are **0.0 points apart at `n = 3`** and 0.07 at `n = 4`, reaching ~10 by
+`n = 12`. The second IMI oracle case is therefore `period 8` (6.2 points apart),
+not a shorter one — a fixture that cannot separate the two inputs would pass a
+study that read the wrong one.
+
+Perf at 1M bars (medians of 5, run twice, agreeing within 10%):
+`psychologicalLine` 50 ms, `intradayMomentumIndex` 82 ms, `chandeMomentum`
+90 ms, `commodityChannelIndex` 128 ms (229 at `period 100`),
+`relativeVigorIndex` 149 ms, `ultimateOscillator` 225 ms — against `rsi` 59 ms,
+`awesomeOscillator` 85 ms and the range studies' 250–330 ms. The two dearest are
+the two that run the most kernel passes (UO computes six rolling means plus a
+true range; RVI two SWMAs, two rolling means and a third SWMA), which is what
+"a study is options-validation plus kernel calls" is supposed to cost.
+
+**Considered and not built**: a `weights` option on the Ultimate Oscillator
+(the definition is the weights); a `maType` on any of the six (none of the
+published definitions has a smoother to choose — CMO and IMI sum, CCI averages
+by definition, RVI's filter is named in its own definition); the
+`O(N log period)` mean-absolute-deviation kernel (documented, gated on a caller
+who wants a period in the thousands); and a half-credit rule for an unchanged
+close in `psychologicalLine` (a second study behind a boolean).
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

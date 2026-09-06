@@ -28,6 +28,12 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  chandeMomentum,
+  ultimateOscillator,
+  commodityChannelIndex,
+  intradayMomentumIndex,
+  relativeVigorIndex,
+  psychologicalLine,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -932,5 +938,164 @@ describe('[PND-STUDYBOX] the K2 oscillators: where the missing rows are', () => 
     });
     expect(nullCountOf(abs, 'abs')).toBe(2);
     expect(cells(abs, 'abs')[5]).toBe(0);
+  });
+});
+
+describe('[PND-STUDYBOX] the momentum tail: where the missing rows are', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is worth pinning is WHERE the
+  // missing rows are, and every one of these six is a WINDOW study, so the
+  // shared claim is: a gap costs the windows that contain it and the study
+  // then recovers. (Contrast `rsi`, whose Wilder recursion carries an
+  // interior gap to the end of the series — pinned above.)
+  const barSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'open', kind: 'number', required: false },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+
+  /** Bars built around each close; a missing close makes the whole bar
+   *  missing, which is what a dropped tick actually looks like. */
+  const momBars = (closes: Array<number | undefined>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: barSchema,
+      rows: closes.map((c, i) => [
+        i * MINUTE,
+        c === undefined ? undefined : c - 0.5,
+        c === undefined ? undefined : c + 1,
+        c === undefined ? undefined : c - 1,
+        c,
+      ]) as never,
+    });
+
+  const cleanCloses = [10, 12, 14, 20, 22, 24, 26, 28, 27, 29, 31, 30];
+  const holedCloses = [...cleanCloses];
+  holedCloses[2] = undefined as never;
+  const clean = momBars(cleanCloses);
+  const holed = momBars(holedCloses);
+
+  it('chandeMomentum loses the gap bar, the bar after it, and their windows', () => {
+    // A missing close costs TWO changes (its own and the next bar's), and at
+    // period 2 the windows containing either run to bar 4 — so the first
+    // reading moves from bar 2 to bar 5.
+    expect(nullCountOf(chandeMomentum(clean, { period: 2 }), 'cmo')).toBe(2);
+    const out = chandeMomentum(holed, { period: 2 });
+    expect(
+      cells(out, 'cmo')
+        .slice(0, 5)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'cmo')[5]).toBe('number');
+    expect(nullCountOf(out, 'cmo')).toBe(5);
+  });
+
+  it('psychologicalLine loses exactly the same rows as chandeMomentum', () => {
+    // Same input (a direction per bar), same array door — the two differ only
+    // in what they do with the legs, so their masks must agree.
+    expect(nullCountOf(psychologicalLine(clean, { period: 2 }), 'psy')).toBe(2);
+    const out = psychologicalLine(holed, { period: 2 });
+    expect(nullCountOf(out, 'psy')).toBe(5);
+    expect(typeof cells(out, 'psy')[5]).toBe('number');
+  });
+
+  it('intradayMomentumIndex loses only the windows over the gap BAR', () => {
+    // The body reads no previous bar, so the missing close costs one row of
+    // input, not two: bars 2 and 3's windows go, and bar 4 is back.
+    expect(
+      nullCountOf(intradayMomentumIndex(clean, { period: 2 }), 'imi'),
+    ).toBe(1);
+    const out = intradayMomentumIndex(holed, { period: 2 });
+    const v = cells(out, 'imi');
+    expect(typeof v[1]).toBe('number');
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined();
+    expect(typeof v[4]).toBe('number');
+    expect(nullCountOf(out, 'imi')).toBe(3);
+  });
+
+  it('commodityChannelIndex blanks every window containing the gap', () => {
+    expect(
+      nullCountOf(commodityChannelIndex(clean, { period: 3 }), 'cci'),
+    ).toBe(2);
+    const out = commodityChannelIndex(holed, { period: 3 });
+    expect(
+      cells(out, 'cci')
+        .slice(0, 5)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'cci')[5]).toBe('number');
+    expect(nullCountOf(out, 'cci')).toBe(5);
+  });
+
+  it('ultimateOscillator loses two bars of BP/TR and the windows over them', () => {
+    // Both legs read the PREVIOUS close, so the gap bar and the one after it
+    // have neither; at longPeriod 3 that reaches bar 5.
+    const opts = { shortPeriod: 1, mediumPeriod: 2, longPeriod: 3 } as const;
+    expect(nullCountOf(ultimateOscillator(clean, opts), 'uo')).toBe(3);
+    const out = ultimateOscillator(holed, opts);
+    expect(
+      cells(out, 'uo')
+        .slice(0, 6)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'uo')[6]).toBe('number');
+    expect(nullCountOf(out, 'uo')).toBe(6);
+  });
+
+  it('relativeVigorIndex pays the SWMA’s width as well as the window’s', () => {
+    // A positional weight cannot skip a cell, so the gap blanks four bars of
+    // each leg (the `wma` rule); the summation then blanks the windows over
+    // those, and the signal is a fourth SWMA on top.
+    const r = relativeVigorIndex(clean, { period: 2 });
+    expect(nullCountOf(r, 'rvi')).toBe(4);
+    expect(nullCountOf(r, 'rviSignal')).toBe(7);
+    const out = relativeVigorIndex(holed, { period: 2 });
+    expect(nullCountOf(out, 'rvi')).toBe(7);
+    expect(typeof cells(out, 'rvi')[7]).toBe('number');
+    expect(nullCountOf(out, 'rviSignal')).toBe(10);
+    expect(typeof cells(out, 'rviSignal')[10]).toBe('number');
+  });
+
+  it('the zero-denominator guards report missing, not ±Infinity', () => {
+    // Bars whose high and low both sit on the PREVIOUS close: true range is
+    // then identically 0, while buying pressure is not on the bar the close
+    // jumps. That combination is only reachable on inconsistent bars (a
+    // close outside its own range — which is what a redirected `close`
+    // option produces), and it is the only way to divide a non-zero
+    // numerator by zero here, so it is what the guards are for.
+    const jumps = [10, 10, 10, 10, 20, 20, 20, 20];
+    const noRange = new TimeSeries({
+      name: 'bars',
+      schema: barSchema,
+      rows: jumps.map((c, i) => [
+        i * MINUTE,
+        c - 2,
+        jumps[i - 1] ?? c,
+        jumps[i - 1] ?? c,
+        c,
+      ]) as never,
+    });
+    expect(
+      nullCountOf(
+        ultimateOscillator(noRange, {
+          shortPeriod: 1,
+          mediumPeriod: 2,
+          longPeriod: 3,
+        }),
+        'uo',
+      ),
+    ).toBe(8);
+    const r = relativeVigorIndex(noRange, { period: 2 });
+    expect(nullCountOf(r, 'rvi')).toBe(8);
+    expect(nullCountOf(r, 'rviSignal')).toBe(8);
+    // CCI's guard is the flat-window one: a constant typical price has no
+    // mean absolute deviation to divide by.
+    const flat = momBars([12, 12, 12, 12, 12, 12]);
+    expect(nullCountOf(commodityChannelIndex(flat, { period: 3 }), 'cci')).toBe(
+      6,
+    );
   });
 });

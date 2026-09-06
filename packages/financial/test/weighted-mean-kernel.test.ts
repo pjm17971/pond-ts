@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { rollingWeightedMeanValues } from '../src/kernels/weighted-mean.js';
+import {
+  rollingWeightedMeanValues,
+  symmetricWeightedValues,
+} from '../src/kernels/weighted-mean.js';
 
 /*
  * The kernel under VWAP (and a future VWMA), tested on its own. Every
@@ -76,5 +79,51 @@ describe('rollingWeightedMeanValues', () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+/*
+ * Ehlers' 4-bar symmetric filter — the Relative Vigor Index's smoother. The
+ * thing worth pinning is that it is SYMMETRIC: a linear `wma(4)` has the
+ * same width and the same normalisation and a completely different impulse
+ * response, so a fixture that could not tell them apart would let the wrong
+ * filter ship.
+ */
+describe('symmetricWeightedValues', () => {
+  it('is (x + 2x₋₁ + 2x₋₂ + x₋₃)/6, hand-computed', () => {
+    const out = read(symmetricWeightedValues(arr(1, 2, 3, 4, 5)));
+    expect(out.slice(0, 3)).toEqual([undefined, undefined, undefined]);
+    expect(out[3]).toBeCloseTo((4 + 2 * 3 + 2 * 2 + 1) / 6, 12); // 15/6
+    expect(out[4]).toBeCloseTo((5 + 2 * 4 + 2 * 3 + 2) / 6, 12); // 21/6
+  });
+
+  it('answers a unit spike with 1, 2, 2, 1 — not wma(4)’s 4, 3, 2, 1', () => {
+    const out = read(symmetricWeightedValues(arr(0, 0, 0, 6, 0, 0, 0, 0)));
+    expect(out[3]).toBeCloseTo(1, 12);
+    expect(out[4]).toBeCloseTo(2, 12);
+    expect(out[5]).toBeCloseTo(2, 12);
+    expect(out[6]).toBeCloseTo(1, 12);
+    expect(out[7]).toBeCloseTo(0, 12);
+  });
+
+  it('returns a constant unchanged (the weights sum to 6, and it divides by 6)', () => {
+    const out = read(symmetricWeightedValues(arr(7, 7, 7, 7, 7)));
+    expect(out[3]).toBeCloseTo(7, 12);
+    expect(out[4]).toBeCloseTo(7, 12);
+  });
+
+  it('blanks the gap bar and the three after it — a positional weight cannot skip a cell', () => {
+    const out = read(symmetricWeightedValues(arr(1, 1, 1, NaN, 1, 1, 1, 1)));
+    expect(out.slice(0, 7).every((x) => x === undefined)).toBe(true);
+    expect(out[7]).toBeCloseTo(1, 12);
+  });
+
+  it('is all-missing on an input shorter than the 4-bar window', () => {
+    expect(read(symmetricWeightedValues(arr(1, 2, 3)))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(read(symmetricWeightedValues(arr()))).toEqual([]);
   });
 });

@@ -32,6 +32,12 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  chandeMomentum,
+  ultimateOscillator,
+  commodityChannelIndex,
+  intradayMomentumIndex,
+  relativeVigorIndex,
+  psychologicalLine,
   MA_TYPES,
 } from '../src/index.js';
 
@@ -2782,6 +2788,705 @@ describe('awesomeOscillator', () => {
   it('is all-undefined when the slow period exceeds the series, length kept', () => {
     const v = col(awesomeOscillator(hlc(src), { slowPeriod: 9 }), 'ao');
     expect(v).toHaveLength(5);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/* The momentum tail (assessment §6.3): CMO, Ultimate, CCI, IMI, RVI, PSY.    */
+/*                                                                            */
+/* The oracle pins the VALUES against TA-Lib (Ultimate, CCI) or pandas (the   */
+/* other four). What is pinned here is what it cannot see: the hand-computed  */
+/* arithmetic on a tiny fixture, the definition forks (Chande vs TA-Lib's     */
+/* Wilder-smoothed CMO, the symmetric vs linear 4-bar filter), the            */
+/* zero-denominator guards, the defaults, and validation.                     */
+/* ========================================================================== */
+
+/** Open/high/low/close bars — the four-input shape `relativeVigorIndex`
+ *  reads, and the open/close pair `intradayMomentumIndex` does. */
+const ohlcBars = (rows: Array<[number, number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+    ] as const,
+    rows: rows.map(([o, h, l, c], i) => [i, o, h, l, c]) as Array<
+      [number, number, number, number, number]
+    >,
+  });
+
+/** A non-degenerate wavy close series: never monotonic, never flat. */
+const wavyCloses = Array.from(
+  { length: 40 },
+  (_, i) => 100 + 8 * Math.sin(i / 3.5) + 0.3 * i,
+);
+
+describe('chandeMomentum', () => {
+  it('is 100·(Σup − Σdown)/(Σup + Σdown), hand-computed', () => {
+    // Changes: _, +2, −1, +3, −1.
+    const v = col(
+      chandeMomentum(bars([10, 12, 11, 14, 13]), { period: 2 }),
+      'cmo',
+    );
+    expect(v).toHaveLength(5);
+    // Warm-up is `period` rows, not period − 1: the study reads differences.
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo((100 * (2 - 1)) / (2 + 1), 12); // {+2, −1}
+    expect(v[3]).toBeCloseTo((100 * (3 - 1)) / (3 + 1), 12); // {−1, +3}
+    expect(v[4]).toBeCloseTo((100 * (3 - 1)) / (3 + 1), 12); // {+3, −1}
+  });
+
+  it('saturates at ±100 on one-sided windows, and an unchanged bar counts as neither', () => {
+    expect(
+      col(chandeMomentum(bars([1, 2, 3, 4]), { period: 2 }), 'cmo')[3],
+    ).toBe(100);
+    expect(
+      col(chandeMomentum(bars([4, 3, 2, 1]), { period: 2 }), 'cmo')[3],
+    ).toBe(-100);
+    // One flat bar among gains does not count as a down bar; it just shrinks
+    // the up sum's share of nothing — the reading stays +100.
+    expect(
+      col(chandeMomentum(bars([1, 2, 2, 3]), { period: 2 }), 'cmo')[3],
+    ).toBe(100);
+  });
+
+  it('a perfectly flat window is undefined, not 0', () => {
+    const v = col(chandeMomentum(bars([5, 5, 5, 5, 5]), { period: 2 }), 'cmo');
+    expect(v).toHaveLength(5);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('is Chande’s UNSMOOTHED form, not TA-Lib’s (which is 2·rsi − 100)', () => {
+    // The definition fork this study exists to get right. TA-Lib smooths the
+    // two legs with Wilder's recursion, which makes its CMO an affine
+    // restatement of the shipped `rsi` — so ours must NOT equal 2·rsi − 100.
+    const src = bars(wavyCloses);
+    const ours = col(chandeMomentum(src, { period: 5 }), 'cmo');
+    const wilder = col(rsi(src, { period: 5 }), 'rsi');
+    let worst = 0;
+    for (let i = 0; i < wavyCloses.length; i += 1) {
+      if (ours[i] === undefined || wilder[i] === undefined) continue;
+      worst = Math.max(worst, Math.abs(ours[i]! - (2 * wilder[i]! - 100)));
+    }
+    // Measured on this series (against TA-Lib's own RSI): the two definitions
+    // are 80.58 points apart at their widest, on a scale spanning 200. A
+    // version that smoothed the legs would collapse this to ~0.
+    expect(worst).toBeGreaterThan(10);
+  });
+
+  it('recovers after an interior gap (a window forgets; rsi’s recursion does not)', () => {
+    const gappy = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: [10, 12, undefined, 14, 13, 15, 16, 18].map((c, i) => [
+        i,
+        c,
+      ]) as never,
+    });
+    const v = col(chandeMomentum(gappy as never, { period: 2 }), 'cmo');
+    // The gap costs its own bar and the two after it (both windows contain a
+    // missing change); bar 5 is the first with a full window of changes again.
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBeDefined();
+  });
+
+  it('defaults to period 14 and the `cmo` column; honours column and output', () => {
+    const v = col(chandeMomentum(bars(wavyCloses)), 'cmo');
+    expect(v.slice(0, 14).every((x) => x === undefined)).toBe(true);
+    expect(v[14]).toBeDefined();
+    expect(v).toEqual(
+      col(chandeMomentum(bars(wavyCloses), { period: 14 }), 'cmo'),
+    );
+    const renamed = chandeMomentum(
+      sma(bars(wavyCloses), { period: 3, output: 'fast' }),
+      { period: 4, column: 'fast', output: 'cmoFast' },
+    );
+    expect(col(renamed, 'cmoFast')[20]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding output; a misnamed column reads empty', () => {
+    expect(() => chandeMomentum(bars([1, 2, 3]), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => chandeMomentum(bars([1, 2, 3]), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => chandeMomentum(bars([1, 2, 3]), { output: 'close' })).toThrow(
+      /collides/,
+    );
+    expect(
+      col(
+        chandeMomentum(bars([1, 2, 3]), { period: 2, column: 'nope' as never }),
+        'cmo',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(chandeMomentum(bars([10, 12, 11]), { period: 5 }), 'cmo');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('ultimateOscillator', () => {
+  // h, l, c per bar. TR and BP both read the PREVIOUS close:
+  //   bar 1: TR = 13 − 10 = 3, BP = 12 − 10 = 2
+  //   bar 2: TR = 13 − 11 = 2, BP = 11 − 11 = 0
+  //   bar 3: TR = 14 − 11 = 3, BP = 14 − 11 = 3
+  const src: Array<[number, number, number]> = [
+    [11, 9, 10],
+    [13, 10, 12],
+    [13, 11, 11],
+    [14, 12, 14],
+  ];
+
+  it('is the 4/2/1-weighted blend of three BP/TR ratios, hand-computed', () => {
+    const v = col(
+      ultimateOscillator(hlc(src), {
+        shortPeriod: 1,
+        mediumPeriod: 2,
+        longPeriod: 3,
+      }),
+      'uo',
+    );
+    expect(v).toHaveLength(4);
+    // Warm-up is the LONGEST period, and it is `longPeriod` rows rather than
+    // `longPeriod − 1` because bar 0 has no previous close.
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    const a1 = 3 / 3;
+    const a2 = (0 + 3) / (2 + 3);
+    const a3 = (2 + 0 + 3) / (3 + 2 + 3);
+    expect(v[3]).toBeCloseTo((100 * (4 * a1 + 2 * a2 + a3)) / 7, 12);
+  });
+
+  it('a window of zero true range is undefined, not ±Infinity', () => {
+    // Every bar has no range, so TR sums to 0 — but the last close jumps, so
+    // buying pressure does not. Without the guard this is a division by zero.
+    const flatRange: Array<[number, number, number]> = [
+      [10, 10, 10],
+      [10, 10, 10],
+      [10, 10, 10],
+      [10, 10, 20],
+    ];
+    const v = col(
+      ultimateOscillator(hlc(flatRange), {
+        shortPeriod: 1,
+        mediumPeriod: 2,
+        longPeriod: 3,
+      }),
+      'uo',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('any one leg being undefined makes the reading undefined', () => {
+    // The two shorter legs are ready well before the longest one; the study
+    // must wait for all three rather than emitting a partial blend.
+    const rows = Array.from({ length: 12 }, (_, i) => {
+      const c = 100 + 4 * Math.sin(i / 2.2) + 0.2 * i;
+      return [c + 0.6, c - 0.5, c] as [number, number, number];
+    });
+    const v = col(
+      ultimateOscillator(hlc(rows), {
+        shortPeriod: 2,
+        mediumPeriod: 4,
+        longPeriod: 9,
+      }),
+      'uo',
+    );
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+  });
+
+  it('defaults to 7/14/28 and the `uo` column; honours the bar columns and output', () => {
+    const rows = Array.from({ length: 34 }, (_, i) => {
+      const c = 100 + 6 * Math.sin(i / 4) + 0.25 * i;
+      return [c + 0.8, c - 0.7, c] as [number, number, number];
+    });
+    const v = col(ultimateOscillator(hlc(rows)), 'uo');
+    expect(v.slice(0, 28).every((x) => x === undefined)).toBe(true);
+    expect(v[28]).toBeDefined();
+    expect(v).toEqual(
+      col(
+        ultimateOscillator(hlc(rows), {
+          shortPeriod: 7,
+          mediumPeriod: 14,
+          longPeriod: 28,
+        }),
+        'uo',
+      ),
+    );
+    // The weights are positional, so a different short period must move it.
+    expect(v[33]).not.toBeCloseTo(
+      col(ultimateOscillator(hlc(rows), { shortPeriod: 5 }), 'uo')[33]!,
+      6,
+    );
+    const named = ultimateOscillator(hlc(src), {
+      shortPeriod: 1,
+      mediumPeriod: 2,
+      longPeriod: 3,
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      output: 'ultimate',
+    });
+    expect(col(named, 'ultimate')[3]).toBeDefined();
+  });
+
+  it('rejects bad periods, a non-increasing triple, and a colliding output', () => {
+    expect(() => ultimateOscillator(hlc(src), { shortPeriod: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => ultimateOscillator(hlc(src), { mediumPeriod: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      ultimateOscillator(hlc(src), {
+        shortPeriod: 14,
+        mediumPeriod: 7,
+        longPeriod: 28,
+      }),
+    ).toThrow(/strictly increasing/);
+    expect(() =>
+      ultimateOscillator(hlc(src), {
+        shortPeriod: 7,
+        mediumPeriod: 14,
+        longPeriod: 14,
+      }),
+    ).toThrow(/strictly increasing/);
+    expect(() => ultimateOscillator(hlc(src), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('reads all-missing when an input column is misnamed, length kept', () => {
+    const v = col(
+      ultimateOscillator(hlc(src), {
+        shortPeriod: 1,
+        mediumPeriod: 2,
+        longPeriod: 3,
+        low: 'nope' as never,
+      }),
+      'uo',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('commodityChannelIndex', () => {
+  // Typical prices 10, 13, 16, 13 (built as close ± 1 around each).
+  const src = [10, 13, 16, 13].map(
+    (tp) => [tp + 1, tp - 1, tp] as [number, number, number],
+  );
+
+  it('is (tp − SMA)/(0.015 · meanAbsDev), hand-computed', () => {
+    const v = col(commodityChannelIndex(hlc(src), { period: 3 }), 'cci');
+    expect(v).toHaveLength(4);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    // {10,13,16}: mean 13, mad (3+0+3)/3 = 2 → (16−13)/(0.015·2) = 100.
+    expect(v[2]).toBeCloseTo(100, 10);
+    // {13,16,13}: mean 14, mad (1+2+1)/3 = 4/3 → (13−14)/(0.015·4/3) = −50.
+    expect(v[3]).toBeCloseTo(-50, 10);
+  });
+
+  it('uses the MEAN ABSOLUTE deviation, not the standard deviation', () => {
+    // On the window above the population stdev is √6 ≈ 2.449, not 2, so a
+    // z-score-shaped implementation lands at ≈81.6 rather than 100.
+    const v = col(commodityChannelIndex(hlc(src), { period: 3 }), 'cci');
+    const zLike = 3 / (0.015 * Math.sqrt(6));
+    expect(v[2]).not.toBeCloseTo(zLike, 3);
+  });
+
+  it('a window with zero deviation is undefined, not TA-Lib’s 0', () => {
+    const flat = [12, 12, 12, 12].map(
+      (tp) => [tp + 1, tp - 1, tp] as [number, number, number],
+    );
+    const v = col(commodityChannelIndex(hlc(flat), { period: 3 }), 'cci');
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('reads the typical price, not the close', () => {
+    // The closes sit on each bar's low with a VARYING half-range, so a study
+    // reading the close differs from this one by more than a constant.
+    const rows: Array<[number, number, number]> = Array.from(
+      { length: 24 },
+      (_, i) => {
+        const m = 100 + 5 * Math.sin(i / 2.5) + 0.3 * i;
+        const halfRange = 1 + 0.9 * Math.abs(Math.cos(i / 1.7));
+        return [m + halfRange, m - halfRange, m - halfRange];
+      },
+    );
+    const onTypical = col(
+      commodityChannelIndex(hlc(rows), { period: 5 }),
+      'cci',
+    );
+    // Redirecting high and low at the close makes tp === close exactly.
+    const onClose = col(
+      commodityChannelIndex(hlc(rows), {
+        period: 5,
+        high: 'close',
+        low: 'close',
+        output: 'cciClose',
+      }),
+      'cciClose',
+    );
+    expect(onTypical[20]).not.toBeCloseTo(onClose[20]!, 3);
+  });
+
+  it('defaults to period 20 and the `cci` column', () => {
+    const rows = Array.from({ length: 26 }, (_, i) => {
+      const c = 100 + 7 * Math.sin(i / 4) + 0.2 * i;
+      return [c + 0.9, c - 0.8, c] as [number, number, number];
+    });
+    const v = col(commodityChannelIndex(hlc(rows)), 'cci');
+    expect(v.slice(0, 19).every((x) => x === undefined)).toBe(true);
+    expect(v[19]).toBeDefined();
+    expect(v).toEqual(
+      col(commodityChannelIndex(hlc(rows), { period: 20 }), 'cci'),
+    );
+  });
+
+  it('rejects a bad period and a colliding output; a misnamed input reads empty', () => {
+    expect(() => commodityChannelIndex(hlc(src), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => commodityChannelIndex(hlc(src), { period: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => commodityChannelIndex(hlc(src), { output: 'close' })).toThrow(
+      /collides/,
+    );
+    expect(
+      col(
+        commodityChannelIndex(hlc(src), { period: 3, high: 'nope' as never }),
+        'cci',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(commodityChannelIndex(hlc(src), { period: 9 }), 'cci');
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('intradayMomentumIndex', () => {
+  // Bodies (close − open): +2, −1, +3, 0.
+  const src: Array<[number, number, number, number]> = [
+    [10, 13, 9, 12],
+    [12, 13, 10, 11],
+    [11, 15, 10, 14],
+    [14, 15, 13, 14],
+  ];
+
+  it('is 100·Σgain/(Σgain + Σloss) over the candle body, hand-computed', () => {
+    const v = col(intradayMomentumIndex(ohlcBars(src), { period: 2 }), 'imi');
+    expect(v).toHaveLength(4);
+    // Warm-up is period − 1: a body needs no previous bar.
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo((100 * 2) / 3, 12); // {+2, −1}
+    expect(v[2]).toBeCloseTo(75, 12); // {−1, +3}
+    expect(v[3]).toBeCloseTo(100, 12); // {+3, 0} — the doji adds nothing
+  });
+
+  it('an all-doji window is undefined, not 0 or 50', () => {
+    const dojis: Array<[number, number, number, number]> = [
+      [10, 11, 9, 10],
+      [10, 11, 9, 10],
+      [10, 11, 9, 10],
+    ];
+    const v = col(intradayMomentumIndex(ohlcBars(dojis), { period: 2 }), 'imi');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('is (chandeMomentum + 100)/2 when the open is the previous close', () => {
+    // Same form, different input: on a tape with no overnight gaps the candle
+    // body IS the close-to-close change, and the two studies coincide up to
+    // the affine map. This pins both formulas against each other.
+    const rows = wavyCloses.map(
+      (c, i) =>
+        [
+          i === 0 ? c - 0.5 : wavyCloses[i - 1]!,
+          Math.max(c, wavyCloses[i - 1] ?? c) + 1,
+          Math.min(c, wavyCloses[i - 1] ?? c) - 1,
+          c,
+        ] as [number, number, number, number],
+    );
+    const series = ohlcBars(rows);
+    const imi = col(intradayMomentumIndex(series, { period: 5 }), 'imi');
+    const cmo = col(chandeMomentum(series, { period: 5 }), 'cmo');
+    for (let i = 5; i < rows.length; i += 1) {
+      expect(imi[i], `bar ${i}`).toBeCloseTo((cmo[i]! + 100) / 2, 9);
+    }
+    // …and NOT before bar `period`: imi warms up one row earlier.
+    expect(imi[4]).toBeDefined();
+    expect(cmo[4]).toBeUndefined();
+  });
+
+  it('defaults to period 14 and the `imi` column; honours open/close and output', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      const o = c - 0.6 * Math.cos(i / 1.9);
+      return [o, Math.max(o, c) + 0.5, Math.min(o, c) - 0.5, c] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const v = col(intradayMomentumIndex(ohlcBars(rows)), 'imi');
+    expect(v.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(v[13]).toBeDefined();
+    const named = intradayMomentumIndex(ohlcBars(rows), {
+      period: 4,
+      open: 'open',
+      close: 'close',
+      output: 'chandeImi',
+    });
+    expect(col(named, 'chandeImi')[10]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding output; a series with no open reads empty', () => {
+    expect(() => intradayMomentumIndex(ohlcBars(src), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => intradayMomentumIndex(ohlcBars(src), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      intradayMomentumIndex(ohlcBars(src), { output: 'close' }),
+    ).toThrow(/collides/);
+    // The likely misconfiguration: a close-only series.
+    expect(
+      col(
+        intradayMomentumIndex(bars([10, 11, 12, 13]) as never, { period: 2 }),
+        'imi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+});
+
+describe('relativeVigorIndex', () => {
+  /** Bars with the given bodies (close − open) and a constant 30-wide range. */
+  const vigorBars = (bodies: number[]) =>
+    ohlcBars(
+      bodies.map(
+        (b) => [100 - b, 115, 85, 100] as [number, number, number, number],
+      ),
+    );
+
+  it('is ΣSWMA(body)/ΣSWMA(range) with a SWMA signal, hand-computed', () => {
+    // Bodies 0,0,0,6,0,0,12,0 → SWMA (1,2,2,1)/6 gives num = 1,2,2,3,4 from
+    // bar 3; the range is a flat 30, so its SWMA is 30 on every emitted bar.
+    const r = relativeVigorIndex(vigorBars([0, 0, 0, 6, 0, 0, 12, 0]), {
+      period: 2,
+    });
+    const v = col(r, 'rvi');
+    const sig = col(r, 'rviSignal');
+    expect(v).toHaveLength(8);
+    // Per-column warm-up: the index at period + 2, the signal three later.
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(sig.slice(0, 7).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBeCloseTo(3 / 60, 12); // (num 2 + num 1) / (30 + 30)
+    expect(v[5]).toBeCloseTo(4 / 60, 12);
+    expect(v[6]).toBeCloseTo(5 / 60, 12);
+    expect(v[7]).toBeCloseTo(7 / 60, 12);
+    // signal = SWMA of the index over its own last four values.
+    expect(sig[7]).toBeCloseTo(7 / 90, 12);
+  });
+
+  it('smooths with the SYMMETRIC (1,2,2,1)/6 weights, not a linear wma(4)', () => {
+    // A single unit body spike: the symmetric filter answers 1, 2, 2, 1 (over
+    // 6); a linear wma(4) would answer 4, 3, 2, 1 (over 10) — the response is
+    // the filter, so this is what tells the two apart.
+    const r = relativeVigorIndex(vigorBars([0, 0, 0, 6, 0, 0, 0, 0]), {
+      period: 1,
+    });
+    const v = col(r, 'rvi');
+    expect(v[3]).toBeCloseTo(1 / 30, 12);
+    expect(v[4]).toBeCloseTo(2 / 30, 12);
+    expect(v[5]).toBeCloseTo(2 / 30, 12);
+    expect(v[6]).toBeCloseTo(1 / 30, 12);
+    expect(v[7]).toBeCloseTo(0, 12);
+  });
+
+  it('a window of zero range is undefined on both columns, not ±Infinity', () => {
+    const noRange: Array<[number, number, number, number]> = Array.from(
+      { length: 10 },
+      () => [98, 100, 100, 100],
+    );
+    const r = relativeVigorIndex(ohlcBars(noRange), { period: 2 });
+    for (const name of ['rvi', 'rviSignal']) {
+      expect(col(r, name), name).toHaveLength(10);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('defaults to period 10 and the `rvi` prefix; honours a custom prefix', () => {
+    const rows = Array.from({ length: 24 }, (_, i) => {
+      const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+      const o = c - 0.7 * Math.cos(i / 2.1);
+      return [o, Math.max(o, c) + 0.9, Math.min(o, c) - 0.8, c] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const d = relativeVigorIndex(ohlcBars(rows));
+    expect(
+      col(d, 'rvi')
+        .slice(0, 12)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(d, 'rvi')[12]).toBeDefined();
+    expect(
+      col(d, 'rviSignal')
+        .slice(0, 15)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(d, 'rviSignal')[15]).toBeDefined();
+    const named = relativeVigorIndex(ohlcBars(rows), {
+      period: 3,
+      prefix: 'vigor',
+      open: 'open',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    expect(col(named, 'vigor')[10]).toBeDefined();
+    expect(col(named, 'vigorSignal')[10]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding prefix; a misnamed input reads empty', () => {
+    const b = vigorBars([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(() => relativeVigorIndex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => relativeVigorIndex(b, { period: 2.5 })).toThrow(TypeError);
+    expect(() => relativeVigorIndex(b, { prefix: 'close' })).toThrow(
+      /collides/,
+    );
+    const once = relativeVigorIndex(b, { period: 2 });
+    expect(() => relativeVigorIndex(once as never, { period: 2 })).toThrow(
+      /collides/,
+    );
+    expect(
+      col(
+        relativeVigorIndex(b, { period: 2, high: 'nope' as never }),
+        'rvi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = relativeVigorIndex(vigorBars([1, 2, 3, 4]), { period: 9 });
+    for (const name of ['rvi', 'rviSignal']) {
+      expect(col(r, name), name).toHaveLength(4);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('psychologicalLine', () => {
+  it('is the percent of up closes, hand-computed, with a flat bar NOT up', () => {
+    // Directions: _, up, up, down, flat.
+    const v = col(
+      psychologicalLine(bars([10, 11, 12, 11, 11]), { period: 2 }),
+      'psy',
+    );
+    expect(v).toHaveLength(5);
+    // Warm-up is `period` rows: bar 0 has no direction.
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBe(100); // {up, up}
+    expect(v[3]).toBe(50); // {up, down}
+    expect(v[4]).toBe(0); // {down, flat} — an unchanged close is not an up bar
+  });
+
+  it('takes only the period + 1 quantised levels, and reaches both ends', () => {
+    const v = col(psychologicalLine(bars(wavyCloses), { period: 4 }), 'psy');
+    const seen = new Set(v.filter((x) => x !== undefined));
+    for (const x of seen)
+      expect((x! * 4) / 100).toBeCloseTo(Math.round((x! * 4) / 100), 12);
+    expect(Math.max(...seen)).toBe(100);
+    expect(Math.min(...seen)).toBe(0);
+  });
+
+  it('a bar with no close costs its own direction AND the next bar’s', () => {
+    const gappy = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: [10, 11, undefined, 13, 14, 15, 16].map((c, i) => [i, c]) as never,
+    });
+    const v = col(psychologicalLine(gappy as never, { period: 2 }), 'psy');
+    // Bar 2's own close is missing and bar 3's predecessor is, so NEITHER has
+    // a direction; every window covering either is missing, which carries the
+    // hole to bar 4 as well. Bar 5 is the first with two directed bars again.
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBe(100);
+  });
+
+  it('defaults to period 12 and the `psy` column; honours column and output', () => {
+    const v = col(psychologicalLine(bars(wavyCloses)), 'psy');
+    expect(v.slice(0, 12).every((x) => x === undefined)).toBe(true);
+    expect(v[12]).toBeDefined();
+    expect(v).toEqual(
+      col(psychologicalLine(bars(wavyCloses), { period: 12 }), 'psy'),
+    );
+    const renamed = psychologicalLine(
+      sma(bars(wavyCloses), { period: 3, output: 'fast' }),
+      { period: 4, column: 'fast', output: 'psyFast' },
+    );
+    expect(col(renamed, 'psyFast')[20]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding output; a misnamed column reads empty', () => {
+    expect(() => psychologicalLine(bars([1, 2, 3]), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => psychologicalLine(bars([1, 2, 3]), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      psychologicalLine(bars([1, 2, 3]), { output: 'close' }),
+    ).toThrow(/collides/);
+    expect(
+      col(
+        psychologicalLine(bars([1, 2, 3]), {
+          period: 2,
+          column: 'nope' as never,
+        }),
+        'psy',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(psychologicalLine(bars([10, 12, 11]), { period: 5 }), 'psy');
+    expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

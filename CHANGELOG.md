@@ -70,6 +70,55 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the momentum tail** (assessment §6.3) — six
+  oscillators, all of them ratios rather than price-unit quantities, so all six
+  are invariant to **both** a scale factor and a constant shift (pinned by
+  property tests, which is the pair that catches a dropped normalisation).
+  Each ships with a fluent method, two oracle cases, hand-computed unit values,
+  missing-cell placement tests and a perf entry.
+  - **`chandeMomentum({ period = 14, column = 'close', output = 'cmo' })`** →
+    `cmo`, bounded `−100..100`. `100·(Σup − Σdown)/(Σup + Σdown)` over
+    **Chande's unsmoothed** window sums. **This is deliberately not TA-Lib's
+    `CMO`**, which Wilder-smooths the legs and is therefore exactly
+    `2 · rsi − 100` — a second name for a shipped column. The generator asserts
+    that identity (2.8e-14) as the reason, and measures the definition delta:
+    68.28 points at `period 14`, 131.55 at `period 5`, warm-ups identical.
+  - **`ultimateOscillator({ shortPeriod = 7, mediumPeriod = 14, longPeriod = 28, high?, low?, close?, output = 'uo' })`**
+    → `uo`, bounded `0..100`. Williams' three-horizon blend of buying pressure
+    over true range, weighted 4/2/1. Matches **TA-Lib `ULTOSC`** to 7.1e-15 with
+    identical masks; the true range is the package's own kernel, asserted equal
+    to `talib.TRANGE` exactly. Three **named** periods (not a tuple — the
+    weights are positional), validated strictly increasing.
+  - **`commodityChannelIndex({ period = 20, high?, low?, close?, output = 'cci' })`**
+    → `cci`. `(tp − SMA(tp))/(0.015 · meanAbsDev(tp))`, matching **TA-Lib
+    `CCI`** to 3.6e-12. Unbounded — ±100 is a convention, not a limit. A
+    zero-deviation window is `undefined` rather than TA-Lib's `0`.
+  - **`intradayMomentumIndex({ period = 14, open?, close?, output = 'imi' })`**
+    → `imi`, bounded `0..100`. RSI's form over the candle **body**, with
+    **plain** window sums rather than Wilder smoothing (Chande's definition; the
+    corpus's "RSI form" is the ambiguity this pins). Warm-up is `period − 1`, a
+    row shorter than `rsi`/`chandeMomentum`, because a body needs no previous
+    bar. Over identical legs `imi = (cmo + 100)/2`, which a test pins.
+  - **`relativeVigorIndex({ period = 10, open?, high?, low?, close?, prefix = 'rvi' })`**
+    → `rvi` / `rviSignal`. TradingView's definition: ratio of `SWMA(close −
+open)` sums to `SWMA(high − low)` sums, signal a fourth SWMA. **SWMA is the
+    symmetric `(1,2,2,1)/6` filter, not the K2 engine's linear `wma(4)`** — a
+    test pins the impulse response. The first study to read all four OHLC
+    columns.
+  - **`psychologicalLine({ period = 12, column = 'close', output = 'psy' })`** →
+    `psy`, bounded `0..100` and quantised to multiples of `100/period`. An
+    unchanged close is **not** an up bar (strict `>`), and a bar with no close
+    leaves both itself and its successor undirected.
+
+  **Kernels.** Three additions, none public: `rollingMeanAbsDevValues`
+  (CCI's denominator — the package's only **O(N·period)** kernel; the cost is
+  measured, and the `O(N log period)` order-statistic form that would replace
+  it is written down rather than left to be rediscovered),
+  `symmetricWeightedValues` (the 4-bar SWMA), and `upDownLegValues` (the
+  gain/loss split, now shared by `rsi`, `chandeMomentum` and
+  `intradayMomentumIndex` — `rsi` was moved onto it, with no change to its
+  numbers).
+
 - `@pond-ts/financial`: **five K2 consumers** — the first studies built on the
   moving-average engine, two channels and three smoothed rates. All five take
   the uniform shape (bar-count periods, redirectable inputs, length-preserving

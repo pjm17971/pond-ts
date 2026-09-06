@@ -70,6 +70,12 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  chandeMomentum,
+  ultimateOscillator,
+  commodityChannelIndex,
+  intradayMomentumIndex,
+  relativeVigorIndex,
+  psychologicalLine,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -1484,5 +1490,313 @@ describe('[talib] all-missing input yields all-missing K2 oscillators', () => {
         'ao',
       ),
     );
+  });
+});
+
+/* ==========================================================================
+ * The momentum tail (assessment §6.3).
+ *
+ * All six are RATIOS of quantities in price units — up moves against total
+ * movement, buying pressure against true range, an excursion against its own
+ * mean deviation — so unlike the price-unit family above (`elderRay`,
+ * `awesomeOscillator`, `atrBands`) every one of them is invariant to BOTH a
+ * scale factor and a constant shift. That pair is the assertion: an
+ * implementation that dropped a normalisation would keep the shift
+ * invariance and lose the scale one, and one that read a level where it
+ * should read a change would do the reverse.
+ * ========================================================================== */
+
+const momBars = (rows: Array<[number, number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+    ] as const,
+    rows: rows.map(([o, h, l, c], i) => [i, o, h, l, c]) as Array<
+      [number, number, number, number, number]
+    >,
+  });
+
+/** Non-degenerate OHLC bars: never monotonic, varying range, close never on
+ *  an extreme, bodies changing sign. `a` scales every price, `b` shifts it. */
+const momRows = (a = 1, b = 0): Array<[number, number, number, number]> =>
+  Array.from({ length: 40 }, (_, i) => {
+    const c = 100 + 8 * Math.sin(i / 3.5) + 0.3 * i;
+    const o = c - 0.9 * Math.cos(i / 2.1);
+    const up = 0.5 + 0.8 * Math.abs(Math.sin(i / 2.3));
+    const down = 0.5 + 0.8 * Math.abs(Math.cos(i / 1.9));
+    return [
+      o * a + b,
+      (Math.max(o, c) + up) * a + b,
+      (Math.min(o, c) - down) * a + b,
+      c * a + b,
+    ];
+  });
+
+describe('[talib] the momentum tail is scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const cases: Array<[string, string, (s: never) => unknown]> = [
+    ['chandeMomentum', 'cmo', (s) => chandeMomentum(s, { period: 5 })],
+    [
+      'ultimateOscillator',
+      'uo',
+      (s) =>
+        ultimateOscillator(s, {
+          shortPeriod: 3,
+          mediumPeriod: 5,
+          longPeriod: 9,
+        }),
+    ],
+    [
+      'commodityChannelIndex',
+      'cci',
+      (s) => commodityChannelIndex(s, { period: 5 }),
+    ],
+    [
+      'intradayMomentumIndex',
+      'imi',
+      (s) => intradayMomentumIndex(s, { period: 5 }),
+    ],
+    ['relativeVigorIndex', 'rvi', (s) => relativeVigorIndex(s, { period: 4 })],
+    [
+      'relativeVigorIndex',
+      'rviSignal',
+      (s) => relativeVigorIndex(s, { period: 4 }),
+    ],
+    ['psychologicalLine', 'psy', (s) => psychologicalLine(s, { period: 5 })],
+  ];
+
+  for (const [name, column, run] of cases) {
+    it(`${name} (${column}) is unchanged by scaling and by shifting`, () => {
+      const base = col(run(momBars(momRows()) as never), column);
+      expect(base.some((x) => x !== undefined)).toBe(true);
+      expectSame(base, col(run(momBars(momRows(K)) as never), column));
+      expectSame(base, col(run(momBars(momRows(1, SHIFT)) as never), column));
+    });
+  }
+
+  it('the readings are not constant — the invariance above is not vacuous', () => {
+    // expectSame passes trivially on a column that never varies, so pin that
+    // each study actually moves over this input.
+    const s = momBars(momRows()) as never;
+    const spread = (v: Array<number | undefined>) => {
+      const seen = v.filter((x) => x !== undefined) as number[];
+      return Math.max(...seen) - Math.min(...seen);
+    };
+    expect(
+      spread(col(chandeMomentum(s, { period: 5 }), 'cmo')),
+    ).toBeGreaterThan(10);
+    expect(
+      spread(
+        col(
+          ultimateOscillator(s, {
+            shortPeriod: 3,
+            mediumPeriod: 5,
+            longPeriod: 9,
+          }),
+          'uo',
+        ),
+      ),
+    ).toBeGreaterThan(10);
+    expect(
+      spread(col(commodityChannelIndex(s, { period: 5 }), 'cci')),
+    ).toBeGreaterThan(10);
+    expect(
+      spread(col(intradayMomentumIndex(s, { period: 5 }), 'imi')),
+    ).toBeGreaterThan(10);
+    expect(
+      spread(col(relativeVigorIndex(s, { period: 4 }), 'rvi')),
+    ).toBeGreaterThan(0.05);
+    expect(
+      spread(col(psychologicalLine(s, { period: 5 }), 'psy')),
+    ).toBeGreaterThan(10);
+  });
+
+  it('the bounded ones stay in their bands', () => {
+    const s = momBars(momRows()) as never;
+    const within = (
+      v: Array<number | undefined>,
+      lo: number,
+      hi: number,
+      label: string,
+    ) => {
+      for (const x of v) {
+        if (x === undefined) continue;
+        expect(x, label).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(x, label).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    };
+    within(col(chandeMomentum(s, { period: 5 }), 'cmo'), -100, 100, 'cmo');
+    within(
+      col(
+        ultimateOscillator(s, {
+          shortPeriod: 3,
+          mediumPeriod: 5,
+          longPeriod: 9,
+        }),
+        'uo',
+      ),
+      0,
+      100,
+      'uo',
+    );
+    within(col(intradayMomentumIndex(s, { period: 5 }), 'imi'), 0, 100, 'imi');
+    within(col(psychologicalLine(s, { period: 5 }), 'psy'), 0, 100, 'psy');
+  });
+});
+
+describe('[talib] the momentum tail over another study composes its warm-up', () => {
+  const wavy = Array.from(
+    { length: 30 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + i * 0.1,
+  );
+
+  it('chandeMomentum over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(chandeMomentum(src, { column: 'sma', period: 3 }), 'cmo');
+    expect(v).toHaveLength(wavy.length);
+    // sma(3) first valid at 2, so its first CHANGE is at 3, and a 3-bar sum
+    // of changes lands at 5.
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('psychologicalLine over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(psychologicalLine(src, { column: 'sma', period: 3 }), 'psy');
+    expect(v).toHaveLength(wavy.length);
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('commodityChannelIndex over a smoothed bar starts late rather than empty', () => {
+    const rows = momRows().slice(0, 30);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const sc = sma(sl, { period: 3, column: 'close', output: 'sc' });
+    const v = col(
+      commodityChannelIndex(sc, {
+        period: 3,
+        high: 'sh',
+        low: 'sl',
+        close: 'sc',
+      }),
+      'cci',
+    );
+    expect(v).toHaveLength(30);
+    // The three smoothed inputs are first valid at 2, so the typical price
+    // is too; a 3-bar window of it lands at 4.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('ultimateOscillator over a smoothed bar starts late rather than empty', () => {
+    const rows = momRows().slice(0, 30);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const sc = sma(sl, { period: 3, column: 'close', output: 'sc' });
+    const v = col(
+      ultimateOscillator(sc, {
+        shortPeriod: 2,
+        mediumPeriod: 3,
+        longPeriod: 4,
+        high: 'sh',
+        low: 'sl',
+        close: 'sc',
+      }),
+      'uo',
+    );
+    expect(v).toHaveLength(30);
+    // Inputs first valid at 2; both legs read the previous close, so the
+    // first defined BP/TR is at 3 and a 4-bar window of them at 6.
+    expect(firstValid(v)).toBe(6);
+    expect(v.slice(6).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('intradayMomentumIndex over a smoothed close composes its warm-up', () => {
+    const rows = momRows().slice(0, 30);
+    const sc = sma(momBars(rows), { period: 3, column: 'close', output: 'sc' });
+    const v = col(intradayMomentumIndex(sc, { period: 3, close: 'sc' }), 'imi');
+    expect(v).toHaveLength(30);
+    // The body is defined from the smoothed close's first bar (2), and a
+    // 3-bar window of it lands at 4.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('relativeVigorIndex over a smoothed close composes its warm-up', () => {
+    const rows = momRows().slice(0, 30);
+    const sc = sma(momBars(rows), { period: 3, column: 'close', output: 'sc' });
+    const r = relativeVigorIndex(sc, { period: 3, close: 'sc' });
+    const v = col(r, 'rvi');
+    expect(v).toHaveLength(30);
+    // The body starts at 2, the 4-bar SWMA 3 later, the 3-bar sum 2 later.
+    expect(firstValid(v)).toBe(7);
+    expect(v.slice(7).every((x) => x !== undefined)).toBe(true);
+    expect(firstValid(col(r, 'rviSignal'))).toBe(10);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing momentum-tail studies', () => {
+  const allMissing = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [
+        number,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+      ]
+    >,
+  });
+  const empty = (v: Array<number | undefined>) => {
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  };
+
+  it('chandeMomentum, psychologicalLine and intradayMomentumIndex', () => {
+    empty(col(chandeMomentum(allMissing as never, { period: 5 }), 'cmo'));
+    empty(col(psychologicalLine(allMissing as never, { period: 5 }), 'psy'));
+    empty(
+      col(intradayMomentumIndex(allMissing as never, { period: 5 }), 'imi'),
+    );
+  });
+
+  it('ultimateOscillator, commodityChannelIndex and relativeVigorIndex', () => {
+    empty(
+      col(
+        ultimateOscillator(allMissing as never, {
+          shortPeriod: 2,
+          mediumPeriod: 3,
+          longPeriod: 5,
+        }),
+        'uo',
+      ),
+    );
+    empty(
+      col(commodityChannelIndex(allMissing as never, { period: 5 }), 'cci'),
+    );
+    const r = relativeVigorIndex(allMissing as never, { period: 3 });
+    empty(col(r, 'rvi'));
+    empty(col(r, 'rviSignal'));
   });
 });

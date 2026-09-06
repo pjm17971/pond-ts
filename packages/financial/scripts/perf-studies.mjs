@@ -12,12 +12,18 @@ import {
   atrBands,
   awesomeOscillator,
   bollinger,
+  chandeMomentum,
+  commodityChannelIndex,
   coppock,
   detrendedPriceOscillator,
   disparityIndex,
   donchian,
   elderRay,
   ema,
+  intradayMomentumIndex,
+  psychologicalLine,
+  relativeVigorIndex,
+  ultimateOscillator,
   keltner,
   macd,
   movingAverage,
@@ -179,6 +185,32 @@ function scaleResults(length) {
       ),
       benchmark('awesomeOscillator({ 5, 34 })', () =>
         awesomeOscillator(series),
+      ),
+      // The momentum tail. Five of the six are options-validation plus
+      // O(N) kernel calls, so they should read as the sum of their parts.
+      // The exception is `commodityChannelIndex`, whose mean-absolute-
+      // deviation kernel is O(N·period) — the two entries below are there
+      // to show that growth explicitly rather than hide it in one number.
+      benchmark('chandeMomentum({ period: 14 })', () =>
+        chandeMomentum(series, { period: 14 }),
+      ),
+      benchmark('ultimateOscillator({ 7, 14, 28 })', () =>
+        ultimateOscillator(series),
+      ),
+      benchmark('commodityChannelIndex({ period: 20 })', () =>
+        commodityChannelIndex(series, { period: 20 }),
+      ),
+      benchmark('commodityChannelIndex({ period: 100 })', () =>
+        commodityChannelIndex(series, { period: 100 }),
+      ),
+      benchmark('intradayMomentumIndex({ period: 14 })', () =>
+        intradayMomentumIndex(series, { period: 14 }),
+      ),
+      benchmark('relativeVigorIndex({ period: 10 })', () =>
+        relativeVigorIndex(series, { period: 10 }),
+      ),
+      benchmark('psychologicalLine({ period: 12 })', () =>
+        psychologicalLine(series, { period: 12 }),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(
