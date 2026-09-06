@@ -44,6 +44,9 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  directionalMovement,
+  aroon,
+  vortex,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -555,5 +558,76 @@ describe('fluent momentum tail', () => {
       output: 'uo2',
     });
     expect(col(fast, 'uo')[25]).not.toBeCloseTo(col(slow, 'uo2')[25]!, 6);
+  });
+});
+
+describe('fluent: the Wilder directional group', () => {
+  const dirBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.4 - 0.6 * Math.abs(Math.cos(i / 2.4)),
+          c,
+        ];
+      }) as Array<[number, number, number, number]>,
+    });
+
+  it('chains all three and matches the standalone functions bar for bar', () => {
+    const fluent = dirBars()
+      .directionalMovement({ period: 6 })
+      .aroon({ period: 10 })
+      .vortex({ period: 6 });
+    const functional = vortex(
+      aroon(directionalMovement(dirBars(), { period: 6 }), { period: 10 }),
+      { period: 6 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+      'aroonUp',
+      'aroonDown',
+      'aroonOsc',
+      'viPlus',
+      'viMinus',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('passes the periods through, not just the defaults', () => {
+    // A mount that dropped the options object would still produce numbers;
+    // the period is the knob that changes the answer.
+    const short = dirBars().directionalMovement({ period: 4 });
+    const long = dirBars().directionalMovement({ period: 12, prefix: 'dm12' });
+    expect(col(short, 'dmiAdx')[50]).not.toBeCloseTo(
+      col(long, 'dm12Adx')[50]!,
+      6,
+    );
+    const fastAroon = dirBars().aroon({ period: 4 });
+    const slowAroon = dirBars().aroon({ period: 20, prefix: 'ar20' });
+    expect(col(fastAroon, 'aroonUp')[50]).not.toBe(
+      col(slowAroon, 'ar20Up')[50],
+    );
+    const fastVi = dirBars().vortex({ period: 4 });
+    const slowVi = dirBars().vortex({ period: 20, prefix: 'vi20' });
+    expect(col(fastVi, 'viPlus')[50]).not.toBeCloseTo(
+      col(slowVi, 'vi20Plus')[50]!,
+      6,
+    );
   });
 });

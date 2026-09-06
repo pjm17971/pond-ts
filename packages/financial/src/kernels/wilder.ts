@@ -30,7 +30,8 @@
  *
  * Operates on a raw `Float64Array` rather than a series column, because its
  * inputs are *derived* — RSI smooths gains and losses, ATR smooths true range,
- * and none of those are columns anyone asked to keep. `start` is the index of
+ * the DMS smooths both directional-movement legs and then its own `DX`, and
+ * none of those are columns anyone asked to keep. `start` is the index of
  * the first real sample, which lets a caller whose derivation costs a leading
  * row (any `diff`) seed from the right place without shifting its arrays:
  *

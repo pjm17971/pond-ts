@@ -55,8 +55,8 @@ except **ATR bands** (open: Keltner-style `close ± k·ATR` on
 session-anchored phase; needs a reset). The per-batch write-ups below are
 the decision record. Package-wide questions the wave surfaced, none
 blocking: `ema()`'s first-sample seed vs TA-Lib's SMA seed (MACD chose
-internal consistency); Wilder-vs-`ema` interior-gap asymmetry (decide
-before ADX); `percentChange.periods` vs `period` naming; the website study
+internal consistency); the Wilder-vs-`ema` interior-gap asymmetry (**decided by Peter with the
+directional group below — kept**, reasoning recorded); `percentChange.periods` vs `period` naming; the website study
 table has no rows for any of the new studies; a monotonic-deque fast path
 for core's rolling min/max would lift stochastics/%R/Donchian ~2×.
 
@@ -626,6 +626,222 @@ by definition, RVI's filter is named in its own definition); the
 `O(N log period)` mean-absolute-deviation kernel (documented, gated on a caller
 who wants a period in the thousands); and a half-credit rule for an unchanged
 close in `psychologicalLine` (a second study behind a boolean).
+
+**Landed — the Wilder directional group (§6.4).** `directionalMovement`,
+`aroon` and `vortex`, plus the two kernels they needed —
+`directionalMovementValues` (with the vortex's crossing legs beside it) and
+`barsSinceExtremeValues`, the corpus's **G3 argmax gap**. The batch's shape is
+the split between a _recursion_ and a _window_: two Wilder smooths stacked on
+a third for `ADX`, against two studies that recover from a gap. Decisions:
+
+(1) **The DMS ships Wilder's seed, and TA-Lib's own inconsistency is the
+argument.** TA-Lib's `ADX` family accumulates `+DM`/`−DM`/`TR` over the first
+`period − 1` bars and then takes one decayed step; Wilder's published
+worksheet sums the first `period` and decays from there, which is exactly
+`period ×` the mean-form recursion `wilderValues` runs — **and is what
+TA-Lib's own `ATR` does**. Measured on the oracle input at `period 14`,
+TA-Lib's `ATR` first value is `1.515450` while the true range its own `+DI` is
+dividing by on the same bar is `1.411787`: a caller plotting TA-Lib's `+DI`
+beside TA-Lib's `ATR` is reading two different ranges. Ours cannot diverge
+that way — the `DI` denominator is literally the `atrValues` call, and a unit
+test pins that a fixture with `+DM = 2`, bar range `2` and true range `3`
+reads `+DI = 200/3` rather than `100`. The cost is a **decaying transient**
+against TA-Lib rather than a wrong rate (the `macd`/`ema` precedent): `+DI`
+0.117 points at the first shared bar, 0.513 at worst, 0.0092 by bar 79;
+`ADX` 0.421 → 0.0046; at `period 5` it is larger at the start (2.58) and gone
+(1e-6) by bar 79, decaying as `(1 − 1/period)^k`. The oracle splits the proof
+the way `moving_average` splits the EMA family: **replay our own pipeline on
+TA-Lib's seed and assert the FORMULA exactly** (`≤ 2.9e-14` on all five
+columns, masks identical either way), then bound the pond-seed transient and
+assert it decays. Rejected: a second Wilder door taking TA-Lib's seeding —
+it would make `directionalMovement`'s range disagree with `atr()` inside our
+own package, which is the same trade `macd` refused.
+
+(2) **`ADXR` looks back `period − 1` bars.** Wilder's prose says "the `ADX`
+`period` days ago" and several vendors read that literally; TA-Lib uses
+`i − (period − 1)`, and so does this — it is what keeps the family
+mask-identical to TA-Lib, and it is the package's own **bar-count**
+convention, since a `period`-bar window spans `i − period + 1 … i` and this
+averages its two ends. Measured separation between the two readings on the
+oracle input: **2.64 points at `period 14`**, 8.19 at `period 5` — asserted in
+the generator so the fixture cannot stop telling them apart. A caller wanting
+the literal reading has `dmiAdx` on the series and can shift it.
+
+(3) **One study, five columns, five warm-ups** — the `macd` precedent, taken
+further than any study so far. `ADXR` as a knob or a separate study was
+rejected: it would re-run the entire pipeline to append one column that is two
+reads of a column the study already holds. Warm-ups are `period` /
+`2·period − 1` / `3·period − 2`, TA-Lib's own, and identical to its masks on
+every column — the seed moves values, never lookback.
+
+(4) **`+DI + −DI = 0` is `DX = 0`; a zero true range is `undefined`.** The
+house test (is the numerator _forced_ to zero by the same condition?) splits
+these two cleanly for once. Both `DM` legs are non-negative, so a zero sum
+means both are zero and `|+DI − −DI|` is exactly zero with it — the
+`clvValues` flat-bar case, and a real market state (a run of inside bars: range,
+but no directional movement), which TA-Lib also reads as `0`. A zero **true
+range** is not: there the `DI` ratio is a genuine `0/0`, and TA-Lib's `0`
+would be indistinguishable from a real reading. `vortex` needed the opposite
+answer for the same-looking case: `Σ TR = 0` does **not** force `Σ +VM = 0`,
+because a flat window can still be preceded by a bar at another level, so its
+guard is real (`±Infinity` is the alternative) and a unit test builds exactly
+that series.
+
+(5) **The G3 argmax kernel is a monotonic deque, and it is now the measured
+case for the core fast path.** `barsSinceExtremeValues` keeps a ring buffer of
+candidate indices, so it is O(N) and **flat in `period`**: measured at 1M bars,
+26.7 ms at `period 25` and 26.5 ms at `period 200`, against a naive re-scan's
+78 ms and 545 ms (both benchmarked, the naive form kept in `perf-studies.mjs`
+as the control). The consequence worth carrying forward is the comparison with
+the studies on core's reducers: `aroon` costs **102 ms** at 1M bars where
+`donchian` costs **247 ms** and `stochastic` 313 ms. That is the first measured
+number behind the standing note that a monotonic-deque fast path for core's
+rolling min/max would lift the range studies ~2×.
+
+(6) **Two window rules, deliberately different, in the same file.**
+`barsSinceExtremeValues` is **strict** — every one of the `period + 1` cells
+must be finite — where `highestLowestValues` skips gaps and reports the extreme
+over what it has. The distinction is that an extreme over the cells you _do_
+have is still an honest extreme, but its **age** is not: the hole could be
+hiding the very bar being asked about. TA-Lib's own answer is the argument for
+strictness — fed a `NaN` high it silently skips that bar (a comparison
+against `NaN` is false) and its output is bit-identical to the clean run
+(measured, `period 25`, holes at bars 30/40/60), so the hole leaves no trace
+and every age counted across it is confidently wrong.
+
+(7) **The window is `period + 1` bars** — the one place in the package where a
+`period` is not its window's bar count. Aroon's `period` counts the oldest
+_age_ reportable, and "`period` bars ago" is itself a reading. The rule lives
+in the kernel rather than in `aroon` so a second consumer cannot get it wrong,
+and the warm-up (`period` rows) is TA-Lib's.
+
+(8) **Ties go to the most recent bar**, measured rather than assumed: on the
+window `12, 11, 12, 10.5` at `period 4`, TA-Lib reports `aroonUp = 75` (the
+newer bar's age), not `25`. The deque gets this from **non-strict** eviction
+(`<=` for a max), and the generator asserts the measurement so the claim stays
+reproducible.
+
+(9) **The vortex's legs live in the DM kernel file, unexported.** `+VM` and
+`−VM` are the same shape as Wilder's split — a two-legged per-bar derivation
+off the previous bar's extremes — and the _contrast_ is the point: Wilder
+compares each extreme with the previous bar's same extreme (at most one leg
+non-zero, an inside bar reports nothing), the vortex crosses them (both legs
+always positive). Keeping them together is what makes that a comment rather
+than a coincidence. Only `directionalMovementValues` and
+`barsSinceExtremeValues` are public, on the `movingAverageValues` precedent;
+`vortexMovementValues` is module-scoped like `trueRangeValues`.
+
+Perf at 1M bars (medians of 5, run twice, agreeing within 8%):
+`aroon` 102 ms (110 at `period 200` — flat), `directionalMovement` 145 ms,
+`vortex` 143 ms — against `rsi` 55 ms, `atrBands` 66 ms, `donchian` 247 ms and
+`stochastic` 313 ms. The two Wilder-family studies cost what their kernel
+passes cost (`directionalMovement` runs a DM split, a true range and four
+Wilder smooths; `vortex` a movement split, a true range and three rolling
+means).
+
+Mutation matrix (failing tests per mutation, over the seven affected test
+files): DM sign guard removed 1 / 1, `Math.max(up, 0)` 4, non-strict leg
+comparison 1 / 1, NaN guard dropped 1, bar 0 zero-not-missing 1 / 1, `+VM`
+absolute value dropped 1, `+VM` reads its own low 8; argmax tie rule 3, warm-up
+one bar early 8, window one bar short 7, gap rule dropped 7, min mode 8, window
+`period` not `period + 1` 7; DMS `DX` guard inverted 1, `DX` absolute value 3,
+ADXR look-back `period` 6, ADXR without the look-back 5, ADX smoothed at the
+wrong rate 7, DI denominator unsmoothed 23; aroon age not inverted 4, down leg
+on the high column 5; vortex guard removed 1, legs swapped 4, plain-range
+denominator 4. **One real survivor, now fixed:** dropping the `up > 0` sign
+guard from the `+DM` leg killed nothing — the mirror case on `−DM` was covered
+and this one was not (the shape is an inside bar whose high fell _less_ than
+its low rose, where an unguarded leg reports a negative `+DM`); a kernel case
+was added and it now kills a test. **One mutation survives by construction and
+is left alone:** relaxing `up > 0` to `up >= 0` is semantically a no-op (at
+`up === 0` both branches assign `0`), the third instance of the
+`rollingWeightedMeanValues` / `commodityChannelIndex` finding — a branch no
+input can distinguish. The `wilderValues(…, start = 1)` calls are the same kind
+of documented no-op `atrValues` already carries.
+
+**Considered and not built**: an `adxr` boolean or a second study for it (see
+(3)); a `maType` on any of the three (Wilder's smoothing is the definition,
+and the vortex's sums are not an average of anything); clamping `+DI`/`−DI`
+into `0..100` (the bound is a property of consistent bars, not something to
+enforce — an inconsistent redirected `close` should read honestly); and
+promoting `barsSinceExtremeValues` to a core reducer, which is the right
+follow-up but belongs with the rolling min/max fast path it shares a structure
+with, not with a study batch.
+
+**Decision record — the Wilder-vs-`ema` interior-gap asymmetry.** Deferred
+since the Phase-1 write-up as "decide before ADX"; ADX is the study that makes
+it compound, so here is the measured statement and a recommendation. **Nothing
+was changed** — both kernels ship as they were.
+
+_The two behaviours._ `wilderValues` propagates an interior `NaN` to the end
+of the series: its recursion carries state forward, and there is no state to
+carry across a hole. `emaValues` **skips** the gap bar and carries on from the
+value before it, which is what lets `macd` and the K2 `ema` family run over
+another study's output without emptying. Both kernels already step over a
+_leading_ run of gaps, so the asymmetry is purely about interior ones.
+
+_What the new studies do, measured_ (an 80-bar series, one missing cell at bar
+40, `period 14`): a gap in **`high`** or **`low`** blanks `dmiPlusDi`, `dmiMinusDi`,
+`dmiDx`, `dmiAdx` and `dmiAdxr` from bar **40** to the end — the `DM` split needs
+both bars, and the Wilder smooth then carries it. A gap in **`close`** blanks
+the same five from bar **41**: the true range reads only the _previous_ close,
+so it is the next bar that has no denominator (`dmiAdxr` emits at bar 40, its
+first possible bar, and nothing after). `aroon` and `vortex`, being windows,
+lose a bounded run and recover — `aroon` `period + 1` bars, `vortex` up to
+`period + 1`, with the two legs losing _different_ rows.
+
+_What TA-Lib does with a `NaN`, measured._ Its behaviour is not a policy at
+all; it is an artifact of C comparison semantics, and it goes both ways. A
+`NaN` **high** or **low** propagates to the end of `ADX` exactly as ours does
+(40 of the 40 remaining bars missing). A `NaN` **close** produces **no missing
+value whatsoever**: every `max` comparison against `NaN` is false, so the true
+range silently falls back to the bar's own range and the study carries on with
+a wrong number. `AROON` fed a `NaN` high does the same — it skips the bar
+silently and its output is bit-identical to the clean run (measured; the
+builder's earlier "`aroonUp = 100` forever" claim was false and is corrected
+in PR #702), so a hole leaves no trace at all.
+So on this axis pond is already strictly better defined than the vendor, in
+both directions.
+
+_The options._
+
+- **(a) Keep the asymmetry, document it per study** — the status quo.
+  Blast radius: none. The two kernels differ because their _seeds_ differ in
+  kind: `emaValues` is defined over a stream of samples (its seed is the first
+  sample, so "skip" is just "do not consume that one"), while Wilder's is
+  defined over a fixed _count_ of bars whose mean seeds it — skipping a hole
+  silently redefines the time base, making a "14-bar RMA" span 20 calendar
+  bars without saying so. It is also the conservative answer: a bar with no
+  close leaves the _next_ bar's true range unknown too, so there is no honest
+  value to resume from.
+- **(b) A `gaps: 'propagate' | 'skip'` option on `wilderValues`.** Blast
+  radius: none by default, but the option has to surface on every study that
+  smooths — `rsi`, `atr`, `keltner`, `atrBands`, `directionalMovement`, and
+  the K2 `smma` type wherever a `maType` is exposed (ten studies) — or it is a
+  kernel knob no caller can reach. That is the `smoothing: 'wilder' | 'none'`
+  shape the CMO write-up rejected: two indicators behind a flag.
+- **(c) Make `wilderValues` skip, like `ema`.** Blast radius: every Wilder
+  consumer changes on gapped input — `rsi`, `atr` and everything on
+  `atrValues` (`keltner`, `atrBands`, the new `directionalMovement`), plus
+  `movingAverage({ type: 'smma' })` and the ten `maType` studies that can
+  select it. No **oracle** case moves (the fixture is gap-free), which is
+  precisely why this would be a silent behaviour change: nothing in the value
+  suite would flag it, only the missing-cell tests.
+
+_Recommendation: **(a)**._ The asymmetry is not an inconsistency to reconcile
+but a difference in what the two recursions are defined over, and every study
+that hits it now says so in its docstring. Revisit only on a real friction
+signal — an experiment whose bars genuinely have interior holes (a halted
+session) and whose Wilder studies therefore read empty from the halt onward.
+The answer today is "fill before smoothing", and if that turns out to be
+unreasonable in practice, **(c)** is the honest fix rather than **(b)** — one
+behaviour, not a flag — and it should land as a deliberate, changelogged
+behaviour change with missing-cell tests updated in the same pass.
+
+_Decision (Peter, 2026-09-06): **keep** — option (a)._ The asymmetry stands
+and is documented per study; (b) is rejected as a flag in front of two
+indicators, and (c) is reserved for a real consumer with gapped bars in hand,
+to land as a changelogged behaviour change, never silently.
 
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches

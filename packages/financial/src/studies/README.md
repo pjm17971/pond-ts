@@ -42,13 +42,20 @@ and a doc note, not a second study that differs invisibly.
     like percent-change / the z-score numerator).
   - `emaValues(series, column, period)` — a span-EMA as an array.
   - `wilderValues(values, period, start)` (`kernels/wilder.ts`) — Wilder's
-    SMA-seeded recursion over a raw array (RSI, ATR; ADX next).
+    SMA-seeded recursion over a raw array (RSI, ATR, the DMS' three smooths).
   - `trueRangeValues(high, low, close)` (`kernels/true-range.ts`) — the
     true-range array (ATR; Keltner, SuperTrend next).
   - `highestLowestValues(series, high, low, period)` and
     `percentOfRangeValues(close, hh, ll)` (`kernels/highest-lowest.ts`) —
     HH/LL from **one** scan, and `100·(c−LL)/(HH−LL)` (stochastics, %R,
-    Donchian; Aroon, Keltner-style channels next).
+    Donchian; Keltner-style channels next).
+  - `barsSinceExtremeValues(values, period, 'max' | 'min')` (same file) — the
+    **age** of the window's extreme rather than its value, via a monotonic
+    deque (O(N), flat in `period`), ties to the newest bar, over a window of
+    `period + 1` bars (Aroon).
+  - `directionalMovementValues(high, low)`
+    (`kernels/directional-movement.ts`) — Wilder's `+DM`/`−DM` split, with the
+    vortex's crossing legs beside it (the DMS, Vortex).
   - `movingAverageValues(values, period, type)` (`kernels/moving-average.ts`)
     — the **K2 MA-type engine** over a raw array (`sma`/`ema`/`wma`/`smma`/
     `dema`/`tema`/`trima`/`hull`/`kama`/`zlema`), and `movingAverageColumn`

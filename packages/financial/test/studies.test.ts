@@ -47,6 +47,9 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  directionalMovement,
+  aroon,
+  vortex,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -4604,5 +4607,408 @@ describe('psychologicalLine', () => {
     const v = col(psychologicalLine(bars([10, 12, 11]), { period: 5 }), 'psy');
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The Wilder directional group (corpus §6.4).                                 */
+/* -------------------------------------------------------------------------- */
+
+/** High/low/close bars at 1ms spacing. */
+const hlcBars = (rows: Array<[number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+    ] as const,
+    rows: rows.map(([h, l, c], i) => [i, h, l, c]) as Array<
+      [number, number, number, number]
+    >,
+  });
+
+/** Non-degenerate OHLC bars: never monotonic, varying range, close never on
+ *  an extreme. Long enough for the default ADXR warm-up (3·14 − 2 = 40). */
+const wavyOhlc = (length = 60) =>
+  ohlcBars(
+    Array.from({ length }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3.5) + 0.3 * i;
+      const o = c - 0.9 * Math.cos(i / 2.1);
+      return [
+        o,
+        Math.max(o, c) + 0.5 + 0.8 * Math.abs(Math.sin(i / 2.3)),
+        Math.min(o, c) - 0.5 - 0.8 * Math.abs(Math.cos(i / 1.9)),
+        c,
+      ] as [number, number, number, number];
+    }),
+  );
+
+/** The worked fixture `directionalMovement` and `vortex` are hand-computed
+ *  on. Per bar (h, l, c), with the derivations spelled out:
+ *
+ *  i  h     l     c    +DM  −DM  TR   +VM  −VM
+ *  0  10    8     9     –    –    –    –    –
+ *  1  12    9     11    2    0    3    4    1
+ *  2  11    7     8     0    2    4    2    5
+ *  3  13    10    12    2    0    5    6    1
+ *  4  13.5  10.5  13    0.5  0    3    3.5  2.5
+ */
+const workedBars = () =>
+  hlcBars([
+    [10, 8, 9],
+    [12, 9, 11],
+    [11, 7, 8],
+    [13, 10, 12],
+    [13.5, 10.5, 13],
+  ]);
+
+describe('directionalMovement', () => {
+  it('is Wilder’s DMS hand-computed, with a per-column warm-up', () => {
+    const r = directionalMovement(workedBars(), { period: 2 });
+    const plus = col(r, 'dmiPlusDi');
+    const minus = col(r, 'dmiMinusDi');
+    const dx = col(r, 'dmiDx');
+    const adx = col(r, 'dmiAdx');
+    const adxr = col(r, 'dmiAdxr');
+    expect(plus).toHaveLength(5);
+
+    // Wilder(+DM) seeds on the mean of bars 1..2: (2+0)/2 = 1, then
+    // (1·1 + 2)/2 = 1.5 and (1.5·1 + 0.5)/2 = 1.
+    // Wilder(−DM): (0+2)/2 = 1, then 0.5, then 0.25.
+    // Wilder(TR) — this is `atr()`: (3+4)/2 = 3.5, then 4.25, then 3.625.
+    expect(plus[0]).toBeUndefined();
+    expect(plus[1]).toBeUndefined();
+    expect(plus[2]).toBeCloseTo((100 * 1) / 3.5, 12);
+    expect(plus[3]).toBeCloseTo((100 * 1.5) / 4.25, 12);
+    expect(plus[4]).toBeCloseTo((100 * 1) / 3.625, 12);
+    expect(minus[2]).toBeCloseTo((100 * 1) / 3.5, 12);
+    expect(minus[3]).toBeCloseTo((100 * 0.5) / 4.25, 12);
+    expect(minus[4]).toBeCloseTo((100 * 0.25) / 3.625, 12);
+
+    // DX = 100·|+DI − −DI| / (+DI + −DI): the ranges cancel, so it is
+    // 100·|1 − 1|/2 = 0, then 100·1/2 = 50, then 100·0.75/1.25 = 60.
+    expect(dx[1]).toBeUndefined();
+    expect(dx[2]).toBeCloseTo(0, 12);
+    expect(dx[3]).toBeCloseTo(50, 12);
+    expect(dx[4]).toBeCloseTo(60, 12);
+
+    // ADX seeds on the mean of the first `period` DXs — bar 2·2 − 1 = 3.
+    expect(adx[2]).toBeUndefined();
+    expect(adx[3]).toBeCloseTo((0 + 50) / 2, 12);
+    expect(adx[4]).toBeCloseTo((25 * 1 + 60) / 2, 12);
+
+    // ADXR averages ADX with the ADX `period − 1` bars back — bar 3·2 − 2.
+    expect(adxr[3]).toBeUndefined();
+    expect(adxr[4]).toBeCloseTo((42.5 + 25) / 2, 12);
+  });
+
+  it('warms up at period / 2·period − 1 / 3·period − 2 at the defaults', () => {
+    const r = directionalMovement(wavyOhlc());
+    for (const [name, first] of [
+      ['dmiPlusDi', 14],
+      ['dmiMinusDi', 14],
+      ['dmiDx', 14],
+      ['dmiAdx', 27],
+      ['dmiAdxr', 40],
+    ] as const) {
+      const v = col(r, name);
+      expect(
+        v.slice(0, first).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(v[first], name).toBeDefined();
+    }
+  });
+
+  it('the DI denominator is `atr()`’s own array', () => {
+    // Bars that step up by 2 with a 2-wide range and a 3-wide TRUE range
+    // (the previous close sits below the low): +DM = 2 and TR = 3 on every
+    // bar, so the Wilder smooths are constants and +DI is exactly 200/3.
+    // A denominator that used the bar range instead would read 100.
+    const stepping = hlcBars(
+      Array.from({ length: 8 }, (_, i) => [10 + 2 * i, 8 + 2 * i, 9 + 2 * i]),
+    );
+    const r = directionalMovement(atr(stepping, { period: 3 }), { period: 3 });
+    const plus = col(r, 'dmiPlusDi');
+    const a = col(atr(stepping, { period: 3 }), 'atr');
+    for (let i = 3; i < 8; i += 1) {
+      expect(a[i], `atr[${i}]`).toBeCloseTo(3, 12);
+      expect(plus[i], `dmiPlusDi[${i}]`).toBeCloseTo(200 / 3, 12);
+      expect(col(r, 'dmiMinusDi')[i], `dmiMinusDi[${i}]`).toBeCloseTo(0, 12);
+      expect(col(r, 'dmiDx')[i], `dmiDx[${i}]`).toBeCloseTo(100, 12);
+    }
+    // …and the DI pair starts exactly where `atr` does — the shared seed.
+    expect(plus.findIndex((x) => x !== undefined)).toBe(
+      a.findIndex((x) => x !== undefined),
+    );
+  });
+
+  it('a run of inside bars gives DX = 0, not undefined', () => {
+    // Each bar is strictly inside its predecessor, so both DM legs are zero
+    // on every bar while the true range is not. `+DI + −DI = 0` then forces
+    // the numerator to zero as well — a value, not a missing cell.
+    const inside = hlcBars([
+      [20, 10, 15],
+      [19, 11, 15],
+      [18, 12, 15],
+      [17, 13, 15],
+    ]);
+    const r = directionalMovement(inside, { period: 2 });
+    expect(col(r, 'dmiPlusDi')[2]).toBe(0);
+    expect(col(r, 'dmiMinusDi')[2]).toBe(0);
+    expect(col(r, 'dmiDx')[2]).toBe(0);
+    expect(col(r, 'dmiDx')[3]).toBe(0);
+    expect(col(r, 'dmiAdx')[3]).toBe(0);
+  });
+
+  it('a zero true range is undefined, not zero — the 0/0 is genuine', () => {
+    // Every bar identical: no range, no movement, so the DI ratio is 0/0 and
+    // there is no honest reading. (Contrast the inside-bar case above.)
+    const frozen = hlcBars([
+      [10, 10, 10],
+      [10, 10, 10],
+      [10, 10, 10],
+      [10, 10, 10],
+    ]);
+    const r = directionalMovement(frozen, { period: 2 });
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ])
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+  });
+
+  it('honours the prefix and the three input names; a misnamed input reads empty', () => {
+    const named = directionalMovement(wavyOhlc(), {
+      period: 5,
+      prefix: 'wilder',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    for (const name of [
+      'wilderPlusDi',
+      'wilderMinusDi',
+      'wilderDx',
+      'wilderAdx',
+    ])
+      expect(col(named, name)[30], name).toBeDefined();
+    expect(
+      col(
+        directionalMovement(wavyOhlc(), { period: 5, high: 'nope' as never }),
+        'dmiPlusDi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding prefix column', () => {
+    const b = workedBars();
+    expect(() => directionalMovement(b, { period: 0 })).toThrow(TypeError);
+    expect(() => directionalMovement(b, { period: 2.5 })).toThrow(TypeError);
+    const once = directionalMovement(b, { period: 2 });
+    expect(() => directionalMovement(once as never, { period: 2 })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = directionalMovement(workedBars(), { period: 9 });
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ]) {
+      expect(col(r, name), name).toHaveLength(5);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('aroon', () => {
+  it('is 100·(period − age)/period over a period + 1 bar window, hand-computed', () => {
+    // Highs 10, 12, 11, 12, 10.5, 10.2, 10.1 at period 4. The window at bar 4
+    // is [10, 12, 11, 12, 10.5]: the newest 12 is 1 bar back, so 100·3/4 = 75.
+    const r = aroon(
+      hlcBars([
+        [10, 9, 9.5],
+        [12, 9.5, 11],
+        [11, 9.2, 10],
+        [12, 9.5, 11.5],
+        [10.5, 9.8, 10],
+        [10.2, 9.9, 10],
+        [10.1, 9.7, 9.9],
+      ]),
+      { period: 4 },
+    );
+    const up = col(r, 'aroonUp');
+    const down = col(r, 'aroonDown');
+    const osc = col(r, 'aroonOsc');
+    expect(up).toHaveLength(7);
+    // Warm-up is `period` rows: the window holds period + 1 bars.
+    expect(up.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(up[4]).toBe(75); // tie on 12 — the NEWEST bar wins (else 25)
+    expect(up[5]).toBe(50);
+    expect(up[6]).toBe(25);
+    // Lows 9, 9.5, 9.2, 9.5, 9.8, 9.9, 9.7: the low at bar 0 is the oldest
+    // bar in bar 4's window, so aroonDown is 0 there.
+    expect(down[4]).toBe(0);
+    expect(down[5]).toBe(25);
+    expect(down[6]).toBe(0);
+    expect(osc[4]).toBe(75);
+    expect(osc[5]).toBe(25);
+    expect(osc[6]).toBe(25);
+  });
+
+  it('reaches 100 on a fresh extreme and 0 on the oldest bar', () => {
+    const rising = aroon(
+      hlcBars(
+        Array.from({ length: 8 }, (_, i) => [10 + i, 8 + i, 9 + i]) as Array<
+          [number, number, number]
+        >,
+      ),
+      { period: 3 },
+    );
+    // Every bar makes a new high AND a new low: up pinned at 100, down at 0.
+    expect(col(rising, 'aroonUp').slice(3)).toEqual([100, 100, 100, 100, 100]);
+    expect(col(rising, 'aroonDown').slice(3)).toEqual([0, 0, 0, 0, 0]);
+    expect(col(rising, 'aroonOsc')[7]).toBe(100);
+  });
+
+  it('defaults to period 25 and the `aroon` prefix', () => {
+    const r = aroon(wavyOhlc());
+    const up = col(r, 'aroonUp');
+    expect(up.slice(0, 25).every((x) => x === undefined)).toBe(true);
+    expect(up[25]).toBeDefined();
+    expect(up).toEqual(col(aroon(wavyOhlc(), { period: 25 }), 'aroonUp'));
+  });
+
+  it('honours the prefix and input names; a misnamed input reads empty', () => {
+    const named = aroon(wavyOhlc(), {
+      period: 5,
+      prefix: 'ar',
+      high: 'high',
+      low: 'low',
+    });
+    expect(col(named, 'arUp')[10]).toBeDefined();
+    expect(col(named, 'arDown')[10]).toBeDefined();
+    expect(col(named, 'arOsc')[10]).toBeDefined();
+    const badHigh = aroon(wavyOhlc(), { period: 5, high: 'nope' as never });
+    // Only the leg reading the missing column goes empty — the other still
+    // reports, and the oscillator (which needs both) does not.
+    expect(col(badHigh, 'aroonUp').every((x) => x === undefined)).toBe(true);
+    expect(col(badHigh, 'aroonDown')[10]).toBeDefined();
+    expect(col(badHigh, 'aroonOsc').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding prefix column', () => {
+    const b = workedBars();
+    expect(() => aroon(b, { period: 0 })).toThrow(TypeError);
+    expect(() => aroon(b, { period: 3.5 })).toThrow(TypeError);
+    const once = aroon(b, { period: 2 });
+    expect(() => aroon(once as never, { period: 2 })).toThrow(/collides/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = aroon(workedBars(), { period: 9 });
+    for (const name of ['aroonUp', 'aroonDown', 'aroonOsc']) {
+      expect(col(r, name), name).toHaveLength(5);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('vortex', () => {
+  it('is Σ|H − prevL| / ΣTR and Σ|L − prevH| / ΣTR, hand-computed', () => {
+    // On the worked fixture at period 2 (see the table above):
+    //   bar 2: Σ+VM = 4+2 = 6, Σ−VM = 1+5 = 6, ΣTR = 3+4 = 7
+    //   bar 3: Σ+VM = 2+6 = 8, Σ−VM = 5+1 = 6, ΣTR = 4+5 = 9
+    //   bar 4: Σ+VM = 6+3.5 = 9.5, Σ−VM = 1+2.5 = 3.5, ΣTR = 5+3 = 8
+    const r = vortex(workedBars(), { period: 2 });
+    const plus = col(r, 'viPlus');
+    const minus = col(r, 'viMinus');
+    expect(plus).toHaveLength(5);
+    expect(plus[0]).toBeUndefined();
+    expect(plus[1]).toBeUndefined(); // both legs read the previous bar
+    expect(plus[2]).toBeCloseTo(6 / 7, 12);
+    expect(plus[3]).toBeCloseTo(8 / 9, 12);
+    expect(plus[4]).toBeCloseTo(9.5 / 8, 12);
+    expect(minus[2]).toBeCloseTo(6 / 7, 12);
+    expect(minus[3]).toBeCloseTo(6 / 9, 12);
+    expect(minus[4]).toBeCloseTo(3.5 / 8, 12);
+  });
+
+  it('a zero total true range is undefined, not ±Infinity', () => {
+    // Bars 1 and 2 sit entirely on the previous close, so their true range is
+    // exactly 0 — while +VM on bar 1 is |10 − 8| = 2, a NON-zero numerator
+    // over a zero denominator. This is the case `dmiDx`'s forced-zero
+    // reasoning does NOT cover, which is why the guard is here and not there.
+    const halted = hlcBars([
+      [12, 8, 10],
+      [10, 10, 10],
+      [10, 10, 10],
+    ]);
+    const r = vortex(halted, { period: 2 });
+    expect(col(r, 'viPlus')[2]).toBeUndefined();
+    expect(col(r, 'viMinus')[2]).toBeUndefined();
+  });
+
+  it('defaults to period 14 and the `vi` prefix; honours the input names', () => {
+    const r = vortex(wavyOhlc());
+    expect(
+      col(r, 'viPlus')
+        .slice(0, 14)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(r, 'viPlus')[14]).toBeDefined();
+    const named = vortex(wavyOhlc(), {
+      period: 5,
+      prefix: 'vtx',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    expect(col(named, 'vtxPlus')[20]).toBeDefined();
+    expect(col(named, 'vtxMinus')[20]).toBeDefined();
+    expect(
+      col(
+        vortex(wavyOhlc(), { period: 5, low: 'nope' as never }),
+        'viPlus',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding prefix column', () => {
+    const b = workedBars();
+    expect(() => vortex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => vortex(b, { period: 1.5 })).toThrow(TypeError);
+    const once = vortex(b, { period: 2 });
+    expect(() => vortex(once as never, { period: 2 })).toThrow(/collides/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = vortex(workedBars(), { period: 9 });
+    for (const name of ['viPlus', 'viMinus']) {
+      expect(col(r, name), name).toHaveLength(5);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
   });
 });

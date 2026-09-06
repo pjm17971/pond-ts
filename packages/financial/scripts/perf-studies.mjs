@@ -10,6 +10,10 @@ import { TimeSeries } from 'pond-ts';
 import {
   MA_TYPES,
   accumulationDistribution,
+  aroon,
+  barsSinceExtremeValues,
+  directionalMovement,
+  vortex,
   atrBands,
   awesomeOscillator,
   chaikinMoneyFlow,
@@ -125,6 +129,30 @@ function handRolledEma(close) {
   for (let i = 1; i < close.length; i += 1) {
     prev = alpha * close[i] + (1 - alpha) * prev;
     if (i >= PERIOD - 1) out[i] = prev;
+  }
+  return out;
+}
+
+/** The O(N·period) argmax the `barsSinceExtremeValues` deque replaces —
+ *  kept here, not in `src/`, purely as the benchmark's control. */
+function naiveBarsSinceMax(values, period) {
+  const out = new Float64Array(values.length).fill(NaN);
+  for (let i = period; i < values.length; i += 1) {
+    let best = -Infinity;
+    let at = -1;
+    let missing = false;
+    for (let j = i - period; j <= i; j += 1) {
+      const v = values[j];
+      if (!Number.isFinite(v)) {
+        missing = true;
+        break;
+      }
+      if (v >= best) {
+        best = v;
+        at = j;
+      }
+    }
+    if (!missing) out[i] = i - at;
   }
   return out;
 }
@@ -247,6 +275,30 @@ function scaleResults(length) {
       ),
       benchmark('psychologicalLine({ period: 12 })', () =>
         psychologicalLine(series, { period: 12 }),
+      ),
+      // The Wilder directional group (corpus 6.4). `directionalMovement` is
+      // three Wilder smooths over two kernel derivations plus a fourth over
+      // DX, so it should read as a small multiple of `atr`/`rsi`; `vortex`
+      // is three rolling means. `aroon` is the interesting one: its argmax
+      // kernel is a monotonic deque, so its cost must be FLAT in `period` —
+      // the two entries plus the naive control below are what show that.
+      benchmark('directionalMovement({ period: 14 })', () =>
+        directionalMovement(series, { period: 14 }),
+      ),
+      benchmark('aroon({ period: 25 })', () => aroon(series, { period: 25 })),
+      benchmark('aroon({ period: 200 })', () => aroon(series, { period: 200 })),
+      benchmark('vortex({ period: 14 })', () => vortex(series, { period: 14 })),
+      benchmark('barsSinceExtremeValues(25) [deque]', () =>
+        barsSinceExtremeValues(close, 25, 'max'),
+      ),
+      benchmark('barsSinceExtremeValues(200) [deque]', () =>
+        barsSinceExtremeValues(close, 200, 'max'),
+      ),
+      benchmark('naive bars-since-max(25) [control]', () =>
+        naiveBarsSinceMax(close, 25),
+      ),
+      benchmark('naive bars-since-max(200) [control]', () =>
+        naiveBarsSinceMax(close, 200),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

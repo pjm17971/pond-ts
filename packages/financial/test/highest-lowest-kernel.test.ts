@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
+  barsSinceExtremeValues,
   highestLowestValues,
   percentOfRangeValues,
 } from '../src/kernels/highest-lowest.js';
@@ -130,5 +131,109 @@ describe('percentOfRangeValues', () => {
     const p = read(percentOfRangeValues(arr(15, 15), arr(8, 8), arr(22, 1)));
     expect(p[0]).toBeCloseTo(200, 12);
     expect(p[1]).toBeCloseTo(-100, 12);
+  });
+});
+
+describe('barsSinceExtremeValues', () => {
+  /** The naive O(N·period) reference the deque has to agree with, written
+   *  out so the two are independent implementations rather than one. */
+  const naive = (values: Float64Array, period: number, mode: 'max' | 'min') =>
+    Array.from(values, (_, i) => {
+      if (i < period) return undefined;
+      const w = Array.from(values.slice(i - period, i + 1));
+      if (w.some((x) => !Number.isFinite(x))) return undefined;
+      const best = mode === 'max' ? Math.max(...w) : Math.min(...w);
+      let at = 0;
+      for (let k = 0; k < w.length; k += 1) if (w[k] === best) at = k;
+      return period - at;
+    });
+
+  it('counts back from the reported bar, 0 for today', () => {
+    // Window of period + 1 = 4 bars. At bar 3 the max (14) is today's.
+    const v = read(barsSinceExtremeValues(arr(10, 13, 11, 14, 12), 3, 'max'));
+    expect(v[0]).toBeUndefined();
+    expect(v[2]).toBeUndefined(); // warm-up is `period` rows, not period - 1
+    expect(v[3]).toBe(0);
+    expect(v[4]).toBe(1);
+  });
+
+  it('finds an extreme in the MIDDLE of the window, not at an edge', () => {
+    // The failure mode the file header names: reading an edge instead of
+    // scanning. The max (20) sits two in from the newest bar at bar 4.
+    const v = read(barsSinceExtremeValues(arr(9, 12, 20, 15, 11), 4, 'max'));
+    expect(v[4]).toBe(2);
+    const w = read(barsSinceExtremeValues(arr(9, 12, 3, 15, 11), 4, 'min'));
+    expect(w[4]).toBe(2);
+  });
+
+  it('gives a tie to the MOST RECENT bar', () => {
+    // TA-Lib's rule (measured in the oracle generator). An implementation
+    // that queued equal values behind the older one would say 3 here.
+    const v = read(barsSinceExtremeValues(arr(10, 12, 11, 12, 10.5), 4, 'max'));
+    expect(v[4]).toBe(1);
+    const w = read(barsSinceExtremeValues(arr(10, 8, 11, 8, 10.5), 4, 'min'));
+    expect(w[4]).toBe(1);
+  });
+
+  it('ages an extreme out of the window rather than holding it forever', () => {
+    // 30 is the max until it leaves; the deque's front eviction is what makes
+    // the later bars report the smaller, newer high.
+    const v = read(
+      barsSinceExtremeValues(arr(30, 10, 11, 12, 13, 14), 2, 'max'),
+    );
+    expect(v[2]).toBe(2); // 30 still in the 3-bar window
+    expect(v[3]).toBe(0); // 30 gone; 12 is today's max
+    expect(v[5]).toBe(0);
+  });
+
+  it('blanks a window holding a gap, then recovers exactly period + 1 later', () => {
+    const v = read(
+      barsSinceExtremeValues(arr(10, 11, NaN, 13, 14, 15, 16), 2, 'max'),
+    );
+    expect(v[1]).toBeUndefined(); // warm-up
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined();
+    expect(v[4]).toBeUndefined(); // last window containing the gap
+    expect(v[5]).toBe(0);
+    expect(v[6]).toBe(0);
+  });
+
+  it('never picks a non-finite cell as the extreme', () => {
+    // Once the gap has aged out, the standing extreme must still be right —
+    // the deque must not have queued the NaN as a candidate.
+    const v = read(barsSinceExtremeValues(arr(NaN, 50, 10, 11, 12), 2, 'max'));
+    expect(v[2]).toBeUndefined(); // the window still holds the gap
+    expect(v[3]).toBe(2); // window [50, 10, 11]
+    expect(v[4]).toBe(0); // window [10, 11, 12]
+  });
+
+  it('agrees with the naive scan on a wavy series, both modes, with and without gaps', () => {
+    const wavy = Float64Array.from({ length: 60 }, (_, i) =>
+      Math.round((100 + 8 * Math.sin(i / 3.5) + 0.3 * i) * 4),
+    );
+    for (const period of [1, 2, 5, 13]) {
+      for (const mode of ['max', 'min'] as const) {
+        expect(
+          read(barsSinceExtremeValues(wavy, period, mode)),
+          `${mode} ${period}`,
+        ).toEqual(naive(wavy, period, mode));
+      }
+    }
+    const holed = Float64Array.from(wavy);
+    holed[7] = NaN;
+    holed[31] = NaN;
+    for (const period of [2, 5, 13])
+      expect(
+        read(barsSinceExtremeValues(holed, period, 'max')),
+        `holed ${period}`,
+      ).toEqual(naive(holed, period, 'max'));
+  });
+
+  it('is all-missing when the window is longer than the input', () => {
+    const v = read(barsSinceExtremeValues(arr(10, 11, 12), 5, 'max'));
+    expect(v).toEqual([undefined, undefined, undefined]);
+    expect(
+      barsSinceExtremeValues(Float64Array.from([]), 3, 'min'),
+    ).toHaveLength(0);
   });
 });

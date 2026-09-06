@@ -42,6 +42,9 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  directionalMovement,
+  aroon,
+  vortex,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -1282,6 +1285,144 @@ describe('[PND-STUDYBOX] the momentum tail: where the missing rows are', () => {
     const flat = momBars([12, 12, 12, 12, 12, 12]);
     expect(nullCountOf(commodityChannelIndex(flat, { period: 3 }), 'cci')).toBe(
       6,
+    );
+  });
+});
+
+describe('[PND-STUDYBOX] the directional group: which input kills which column', () => {
+  // The group's three studies split on the WINDOW-vs-RECURSION line, and this
+  // is where that shows: `aroon` and `vortex` lose a bounded run of rows and
+  // recover, `directionalMovement` stacks two Wilder smooths and carries an
+  // interior gap to the end of the series. And because each study reads three
+  // (or two) inputs that enter at different points, WHICH column dies depends
+  // on WHICH input has the hole — the thing no single "it goes missing" count
+  // would pin.
+  const hlcSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+
+  /** Twelve non-degenerate bars, optionally holing one input at bar 4. */
+  const dirBars = (holeIn?: 'high' | 'low' | 'close') =>
+    new TimeSeries({
+      name: 'bars',
+      schema: hlcSchema,
+      rows: Array.from({ length: 12 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 2.2) + 0.4 * i;
+        const h = c + 0.5 + 0.7 * Math.abs(Math.sin(i / 1.7));
+        const l = c - 0.5 - 0.7 * Math.abs(Math.cos(i / 1.3));
+        return [
+          i * MINUTE,
+          holeIn === 'high' && i === 4 ? undefined : h,
+          holeIn === 'low' && i === 4 ? undefined : l,
+          holeIn === 'close' && i === 4 ? undefined : c,
+        ];
+      }) as never,
+    });
+
+  /** The first index at or after `from` with no value. */
+  const firstMissingFrom = (s: unknown, name: string, from: number) =>
+    cells(s, name).findIndex((x, i) => i >= from && x === undefined);
+
+  it('directionalMovement carries a gap in high or low to the end of the series', () => {
+    for (const holeIn of ['high', 'low'] as const) {
+      const out = directionalMovement(dirBars(holeIn), { period: 2 });
+      for (const name of [
+        'dmiPlusDi',
+        'dmiMinusDi',
+        'dmiDx',
+        'dmiAdx',
+        'dmiAdxr',
+      ]) {
+        const v = cells(out, name);
+        // The DM split needs both bars, so the hole lands on bar 4 itself…
+        expect(firstMissingFrom(out, name, 4), `${holeIn}/${name}`).toBe(4);
+        // …and a recursion has no state to carry across it.
+        expect(
+          v.slice(4).every((x) => x === undefined),
+          `${holeIn}/${name}`,
+        ).toBe(true);
+      }
+      // Everything before the hole is intact — the gap costs the tail, not
+      // the whole column.
+      expect(
+        cells(directionalMovement(dirBars(holeIn), { period: 2 }), 'dmiDx')[3],
+      ).toBeDefined();
+    }
+  });
+
+  it('directionalMovement loses a gap in CLOSE one bar later — the true range reads prevClose', () => {
+    const out = directionalMovement(dirBars('close'), { period: 2 });
+    for (const name of ['dmiPlusDi', 'dmiMinusDi', 'dmiDx']) {
+      expect(cells(out, name)[4], name).toBeDefined();
+      expect(firstMissingFrom(out, name, 4), name).toBe(5);
+      expect(
+        cells(out, name)
+          .slice(5)
+          .every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+    // ADX's own smooth is over DX, so it dies with it; ADXR reads ADX two
+    // bars apart and so keeps the one bar where both ends exist.
+    expect(cells(out, 'dmiAdx')[4]).toBeDefined();
+    expect(firstMissingFrom(out, 'dmiAdx', 4)).toBe(5);
+    expect(cells(out, 'dmiAdxr')[4]).toBeDefined();
+  });
+
+  it('aroon loses period + 1 bars of the leg whose input is holed, then recovers', () => {
+    const holedHigh = aroon(dirBars('high'), { period: 2 });
+    expect(nullCountOf(aroon(dirBars(), { period: 2 }), 'aroonUp')).toBe(2);
+    // The window is period + 1 bars, so bars 4, 5 and 6 all contain the hole.
+    expect(
+      cells(holedHigh, 'aroonUp')
+        .slice(4, 7)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(cells(holedHigh, 'aroonUp')[7]).toBeDefined();
+    // The low leg never reads the high, so it is untouched — and the
+    // oscillator, which needs both, follows the dead one.
+    expect(nullCountOf(holedHigh, 'aroonDown')).toBe(2);
+    expect(nullCountOf(holedHigh, 'aroonUp')).toBe(5);
+    expect(nullCountOf(holedHigh, 'aroonOsc')).toBe(5);
+    // A missing close is invisible to Aroon: it reads high and low only.
+    expect(nullCountOf(aroon(dirBars('close'), { period: 2 }), 'aroonUp')).toBe(
+      2,
+    );
+  });
+
+  it('vortex loses the windows over the gap — and the two legs lose DIFFERENT ones', () => {
+    expect(nullCountOf(vortex(dirBars(), { period: 2 }), 'viPlus')).toBe(2);
+    const out = vortex(dirBars('high'), { period: 2 });
+    // +VM reads its own high (bar 4) and the true range dies with it, so the
+    // windows at 4 and 5 go. −VM reads the PREVIOUS high, so bar 5's leg is
+    // gone too and its windows reach bar 6.
+    expect(
+      cells(out, 'viPlus')
+        .slice(4, 6)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(cells(out, 'viPlus')[6]).toBeDefined();
+    expect(
+      cells(out, 'viMinus')
+        .slice(4, 7)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(cells(out, 'viMinus')[7]).toBeDefined();
+    // A missing close costs only the true range, one bar later, and both legs
+    // then lose the same rows.
+    const holedClose = vortex(dirBars('close'), { period: 2 });
+    expect(cells(holedClose, 'viPlus')[4]).toBeDefined();
+    expect(
+      cells(holedClose, 'viPlus')
+        .slice(5, 7)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(cells(holedClose, 'viPlus')[7]).toBeDefined();
+    expect(nullCountOf(holedClose, 'viMinus')).toBe(
+      nullCountOf(holedClose, 'viPlus'),
     );
   });
 });

@@ -1262,8 +1262,10 @@ pandas-oracle-verified) have shipped. Plan:
   `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine now proves
   every EMA-family formula on TA-Lib's seed and bounds the transient, so
   the convention is settled by precedent unless a consumer asks); the
-  Wilder-vs-`ema` interior-gap asymmetry (decide before ADX); a
-  monotonic-deque fast path for core's rolling min/max.
+  Wilder-vs-`ema` interior-gap asymmetry (decided with ADX: kept, per
+  study documentation — record in the financial plan); a monotonic-deque
+  fast path for core's rolling min/max, for which `aroon`'s deque kernel is
+  now the measured evidence.
 - **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
   (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the

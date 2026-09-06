@@ -108,3 +108,110 @@ export function percentOfRangeValues(
   }
   return out;
 }
+
+/**
+ * **Bars since the window's extreme** — how many bars ago, counting back from
+ * the bar being reported, the highest (or lowest) value in a window of
+ * `period + 1` bars occurred. `0` means the extreme is today's value,
+ * `period` means it is the oldest bar still in the window.
+ *
+ * This is the **argmax** the range studies never needed: stochastics, `%R`
+ * and Donchian all want the extreme's *value*, and Aroon wants its *age*.
+ * That one difference is why it could not be another
+ * {@link highestLowestValues} reducer — core's `max` returns the value and
+ * has nowhere to carry the index — and it is the G3 gap the corpus
+ * assessment flagged (§5) as the one small reducer the ChartIQ set needs and
+ * pond does not ship.
+ *
+ * ## The window is `period + 1` bars, not `period`
+ *
+ * Aroon's `period` counts the **age** the oscillator can report, and an age
+ * of `period` bars ago is still a reading, so the window has to hold
+ * `period + 1` bars for the count `0 … period` to be reachable. That is
+ * TA-Lib's `AROON` too — its lookback is exactly `period`, so the first bar
+ * with a value is bar `period` — and it is the one place in this package
+ * where a `period` does not equal its window's bar count. It is stated here
+ * rather than in the study so a second consumer cannot get it wrong.
+ *
+ * ## Ties go to the most recent bar
+ *
+ * When several bars in the window share the extreme, the **newest** wins, so
+ * a fresh high that merely equals the old one still resets Aroon to 100.
+ * Measured against TA-Lib on a window carrying a repeated high (`12, 11, 12,
+ * 10.5` at `period 4`): TA-Lib reports `aroonUp = 75`, which is the newest
+ * bar's age, not the oldest's `25`. The monotonic deque below gets this from
+ * its **non-strict** eviction (`<=` for a max): an incoming equal value
+ * evicts the older one rather than queueing behind it.
+ *
+ * ## Missing cells
+ *
+ * `NaN` marks a gap ([PND-STUDYBOX]), and this is the **strict** rule —
+ * every one of the `period + 1` cells must be finite or the bar reads `NaN`,
+ * so an interior gap costs `period + 1` bars and then recovers. That is
+ * {@link rollingMeanValues}' rule rather than {@link highestLowestValues}'
+ * skip-and-carry-on, and deliberately: an extreme taken over the cells you
+ * *do* have is still an honest extreme, but its **age** is not — a hole
+ * could be hiding the very bar the answer is asking about, and a
+ * confidently-reported "12 bars ago" that is really "unknown" is worse than
+ * no reading. (TA-Lib's own answer here is the argument: fed a `NaN` high it
+ * silently skips that bar — a comparison against `NaN` is false — and its
+ * output is bit-identical to the clean run, measured, so the hole leaves no
+ * trace and every age counted across it is confidently wrong.)
+ *
+ * ## Cost — O(N), one pass, via a monotonic deque
+ *
+ * The naive form re-scans the window per bar, O(N·period). This keeps a
+ * deque of candidate indices whose values are strictly decreasing (for a
+ * max), so the front is always the current extreme: each index is pushed and
+ * popped at most once, giving **O(N) amortised, independent of `period`**.
+ * The ring buffer is `period + 1` entries, so the whole kernel is two
+ * allocations regardless of input length. Measured at 1M bars (see
+ * `scripts/perf-studies.mjs`), that is the difference between a flat cost
+ * and one that grows with the look-back — the same structure a monotonic-
+ * deque fast path for core's rolling min/max would use, which is why it is
+ * written here as a general kernel rather than inside `aroon`.
+ */
+export function barsSinceExtremeValues(
+  values: Float64Array,
+  period: number,
+  mode: 'max' | 'min',
+): Float64Array {
+  const length = values.length;
+  const out = new Float64Array(length).fill(NaN);
+  const capacity = period + 1;
+  const ring = new Int32Array(capacity);
+  const wantMax = mode === 'max';
+  let head = 0;
+  let count = 0;
+  let missing = 0;
+
+  for (let i = 0; i < length; i += 1) {
+    const value = values[i]!;
+    // Maintain the count of non-finite cells inside the window [i-period, i].
+    const leaving = i - capacity;
+    if (leaving >= 0 && !Number.isFinite(values[leaving]!)) missing -= 1;
+    if (!Number.isFinite(value)) missing += 1;
+
+    // Drop candidates that have aged out of the window.
+    while (count > 0 && ring[head]! < i - period) {
+      head = (head + 1) % capacity;
+      count -= 1;
+    }
+    // A non-finite cell is never a candidate; the `missing` count above is
+    // what makes the window it sits in report nothing at all.
+    if (Number.isFinite(value)) {
+      // Non-strict eviction: an equal value displaces the older candidate,
+      // which is what puts a tie on the most recent bar (see above).
+      while (count > 0) {
+        const back = values[ring[(head + count - 1) % capacity]!]!;
+        if (wantMax ? back <= value : back >= value) count -= 1;
+        else break;
+      }
+      ring[(head + count) % capacity] = i;
+      count += 1;
+    }
+
+    if (i >= period && missing === 0) out[i] = i - ring[head]!;
+  }
+  return out;
+}
