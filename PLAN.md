@@ -1244,13 +1244,19 @@ pandas-oracle-verified) have shipped. Plan:
   ten consumers — `keltner`, `atrBands`, `qstick`, `trix`, `coppock` (#696)
   and `priceOscillator`, `disparityIndex`, `detrendedPriceOscillator`,
   `elderRay`, `awesomeOscillator` (#697) — have landed on top of it, which
-  closes the Phase-1 **ATR bands** leftover. Thirty studies shipped; the
-  next Phase-2 batches by kernel family are the volume / money-flow tail
-  (A/D, PVT, CMF, MFI, Force Index, EOM, volume oscillator, VROC), the
-  momentum tail (CMO, Ultimate, CCI, IMI, RVI, psychological line), the
-  volatility tail (Chaikin, Mass, Choppiness, Ulcer, VHF, Vortex), then K7
-  regression (five projections from one kernel) and K8 two-series (Beta,
-  correlation, relative strength). Left open here: the **anchored /
+  closes the Phase-1 **ATR bands** leftover; batch two added the volume /
+  money-flow group (`accumulationDistribution`, `chaikinOscillator`,
+  `priceVolumeTrend`, `chaikinMoneyFlow`, `moneyFlowIndex`, `forceIndex`,
+  `easeOfMovement`, `volumeOscillator`, #699; VROC is a recipe on
+  `percentChange`) and the momentum tail (`chandeMomentum`,
+  `ultimateOscillator`, `commodityChannelIndex`, `intradayMomentumIndex`,
+  `relativeVigorIndex`, `psychologicalLine`, #700). **Forty-four studies
+  shipped.** Next Phase-2 batches by kernel family: the volatility tail
+  (Chaikin volatility, Mass, Choppiness, Ulcer, VHF, Vortex, Gopalakrishnan,
+  relative volatility), the trend / directional group that needs Wilder's
+  +DM/−DM (ADX/DMS, Aroon — the G3 argmax), then K7 regression (five
+  projections from one kernel) and K8 two-series (Beta, correlation, relative
+  strength). Left open here: the **anchored /
   session VWAP**, which needs a reset and belongs with the session-anchored
   studies. Package-wide questions surfaced by the wave, none blocking:
   `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine now proves
