@@ -166,8 +166,9 @@ describe('movingAverageValues — one type at a time, period 4', () => {
 
   it('trima (even period): SMA(3) then SMA(2) — lengths summing to period+1', () => {
     // bar 3 = (SMA3[2] + SMA3[3]) / 2 = (34/3 + 13) / 2 = 12.1666…
-    // The other even split (SMA(2) then SMA(3)) would put the peak weight on
-    // a different bar and give 12.4166… here.
+    // The order of the two lengths is immaterial (convolution commutes:
+    // SMA(2) then SMA(3) gives the same 12.1666…); what this pins is that
+    // the lengths sum to period + 1 — SMA(2)∘SMA(2) would be 12.75 here.
     expectSeries(movingAverageValues(values(), 4, 'trima'), [
       _,
       _,
@@ -424,7 +425,6 @@ describe('movingAverageValues — gaps', () => {
     // the `rsi(sma(...))` failure mode, where a leading NaN in a recursion's
     // seed window returned an entirely empty column.
     for (const type of MA_TYPES) {
-      if (type === 'sma') continue; // see below
       const clean = firstValid(movingAverageValues(long(), 4, type));
       expect(firstValid(movingAverageValues(leading(), 4, type)), type).toBe(
         clean + 3,
@@ -432,23 +432,41 @@ describe('movingAverageValues — gaps', () => {
     }
   });
 
-  it('sma alone does not shift — its window counts rows, not contributors', () => {
-    // Deliberate, and the one place the engine is not uniform. `sma` is
-    // `sma()`, whose count window emits once it SPANS `period` rows and
-    // averages whichever of them are finite — the contract `sma∘sma` pins in
-    // study-missing-cells.test.ts. Giving the engine's `sma` the step-over
-    // would make `movingAverage({ type: 'sma' })` a second, differing SMA.
-    const out = read(movingAverageValues(leading(), 4, 'sma'));
-    expect(out[2]).toBeUndefined();
-    expect(out[3]).toBeCloseTo(15, 10); // the one finite cell in rows 0–3
+  it("the array door's sma waits for contributors; the column door keeps sma()'s rows window", () => {
+    // Two doors, one rule each. On a raw array (a derived input, whose
+    // leading NaN is another study's warm-up) `sma` steps over the gap like
+    // every other type — a Layer-2 review of #695 held the engine to the
+    // studies README's rule for derived arrays. On a COLUMN,
+    // `movingAverageColumn` routes `'sma'` to `rollingValues(…, 'avg')`, so
+    // `movingAverage({ type: 'sma' })` and `sma()` stay one SMA (a window
+    // that spans `period` rows, averaging the finite ones).
+    const arr = read(movingAverageValues(leading(), 4, 'sma'));
+    expect(arr[3]).toBeUndefined(); // rows 0–3 hold one finite value
+    expect(arr[5]).toBeUndefined(); // rows 2–5 hold three
+    expect(arr[6]).toBeCloseTo((15 + 12 + 16 + 14) / 4, 10); // rows 3–6
+
+    const series = new TimeSeries({
+      name: 'lead',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from(LONG, (v, i) => [i, i < 3 ? undefined : v]) as Array<
+        [number, number | undefined]
+      >,
+    });
+    const col = read(movingAverageColumn(series, 'close', 4, 'sma'));
+    const rows = read(rollingValues(series, 'close', 'avg', 4));
+    expect(col).toEqual(rows);
+    expect(col[3]).toBeCloseTo(15, 10); // the one finite cell in rows 0–3
   });
 
   it('window types recover once the gap leaves the window', () => {
-    // `sma` averages the finite cells of a window that still spans `period`
-    // rows (its documented contract), so it never goes missing; `wma`,
-    // `trima` and `hull` are pinned by where their missing rows are.
+    // Every window type is missing while the gap is inside its window and
+    // returns once it has left — pinned by WHERE the missing rows are.
     const smaGap = read(movingAverageValues(gapped(), 4, 'sma'));
-    expect(smaGap[5]).toBeCloseTo((11 + 15 + 12) / 3, 10);
+    expect(smaGap.slice(5, 9).every((v) => v === undefined)).toBe(true);
+    expect(smaGap[9]).not.toBeUndefined();
     const wmaGap = read(movingAverageValues(gapped(), 4, 'wma'));
     expect(wmaGap.slice(5, 9).every((v) => v === undefined)).toBe(true);
     expect(wmaGap[9]).not.toBeUndefined();

@@ -119,7 +119,9 @@ type)`** for studies whose input is derived rather than a column (Keltner's
   the full `MaType` menu** and routes through the shared engine. Strictly
   additive for existing callers — the `sma` and `ema` centre lines are the
   same kernel calls as before, pinned bit-for-bit — and an unknown `maType`
-  now throws instead of silently falling back to SMA.
+  now throws instead of silently falling back to SMA. (On the raw-array door,
+  `movingAverageValues(…, 'sma')` waits for `period` finite values like every
+  other type; the column door keeps `sma()`'s rows window.)
 - `pond-ts`: `partitionBy(column, options)` now throws a `TypeError` on an
   unknown option key (e.g. `maxPartitions`, which was never implemented)
   instead of silently ignoring it. Only JS callers passing a key the type

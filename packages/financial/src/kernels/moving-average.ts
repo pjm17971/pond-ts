@@ -1,5 +1,4 @@
 import type { SeriesSchema, TimeSeries } from 'pond-ts';
-import { rollingMeanSdInto } from './ranged.js';
 import { rollingMeanValues } from './rolling-mean.js';
 import {
   assertPeriod,
@@ -40,20 +39,28 @@ export type MaType =
   | 'kama'
   | 'zlema';
 
+/** The menu as an object so the compiler checks it is exhaustive: add a
+ *  member to {@link MaType} without adding it here and this line fails to
+ *  type-check, rather than silently leaving the new type unvalidated and
+ *  outside every fan-out test. */
+const MA_TYPE_MENU = {
+  sma: true,
+  ema: true,
+  wma: true,
+  smma: true,
+  dema: true,
+  tema: true,
+  trima: true,
+  hull: true,
+  kama: true,
+  zlema: true,
+} as const satisfies Record<MaType, true>;
+
 /** Every {@link MaType}, in menu order — the vocabulary a study's `type`
  *  option accepts, and what {@link assertMaType} validates against. */
-export const MA_TYPES: readonly MaType[] = [
-  'sma',
-  'ema',
-  'wma',
-  'smma',
-  'dema',
-  'tema',
-  'trima',
-  'hull',
-  'kama',
-  'zlema',
-];
+export const MA_TYPES: readonly MaType[] = Object.keys(
+  MA_TYPE_MENU,
+) as MaType[];
 
 /** Throw if `type` is not one of {@link MA_TYPES} — a study that took an
  *  unknown type would otherwise fall through to a silent default. */
@@ -80,7 +87,7 @@ export function assertMaType(type: string): asserts type is MaType {
  *
  * | type | definition |
  * | --- | --- |
- * | `sma` | mean of the last `period` bars — the range-exact `rollingMeanSdInto`, so it is bit-for-bit what `sma()` gives |
+ * | `sma` | mean of the last `period` finite values (`rollingMeanValues`) — the same arithmetic as `sma()`, bit-for-bit on gap-free input; on this array door the window waits for contributors, like every other type |
  * | `ema` | `α = 2/(period+1)`, seeded on the **first sample** — pond's convention, bit-for-bit what `ema()` / `smooth('ema')` gives |
  * | `wma` | linear weights `1…period`, newest heaviest, over `period(period+1)/2` |
  * | `smma` | Wilder's `(prev·(period−1) + x)/period`, SMA-seeded — the `wilderValues` kernel RSI and ATR already run on |
@@ -225,12 +232,20 @@ export function movingAverageColumn(
   return movingAverageValues(columnValues(series, column), period, type);
 }
 
-/** SMA of a raw array on the range-exact kernel — the same arithmetic
- *  `rollingValues(…, 'avg', …)` runs, so the two agree bit-for-bit. */
+/**
+ * SMA of a raw array — `rollingMeanValues`: the same range-exact arithmetic
+ * `sma()` runs, but the window waits for `period` **finite** values, like
+ * every other type on this door. That is the rule for derived inputs (the
+ * studies README): a derived array's leading `NaN` warm-up steps the window
+ * over rather than being averaged as if it were data, which is exactly how
+ * core's row-counting window put slow `%K` one bar early. The **column**
+ * door ({@link movingAverageColumn}) keeps `sma()`'s rows-not-contributors
+ * contract for `'sma'`, so `movingAverage({ type: 'sma' })` over a column
+ * and `sma()` remain one SMA; the two doors differ only on a column with
+ * missing cells, and a test pins both sides.
+ */
 function smaValues(values: Float64Array, period: number): Float64Array {
-  const out = new Float64Array(values.length);
-  rollingMeanSdInto(values, period, 0, values.length, out, undefined);
-  return out;
+  return rollingMeanValues(values, period);
 }
 
 /**

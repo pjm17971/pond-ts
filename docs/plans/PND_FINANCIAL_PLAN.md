@@ -217,9 +217,13 @@ at the first shared bar and 0.0008% / 0.0155% / 0.0144% by bar 79. `sma`,
 `0`). (3) **Interior gaps are stated per type rather than reconciled** — the
 Wilder asymmetry the plan flagged before ADX, now written down: window types
 recover, the `ema` family skips the gap bar and carries on, `smma` and `kama`
-propagate to the end. `sma` is additionally the one type a **leading** gap
-does not shift, because it keeps `sma()`'s rows-not-contributors window;
-everything else steps over. (4) **WMA got the O(N) running weighted sum**
+propagate to the end. On the **array door** every type, `sma` included,
+steps over a leading gap (waits for `period` finite values — the studies
+README's rule for derived inputs; the builder had kept `sma()`'s
+rows-not-contributors window there and the Layer-2 review held the engine
+to the rule). The **column door** routes `'sma'` to `rollingValues`, so
+`movingAverage({ type: 'sma' })` over a column and `sma()` stay one SMA; the
+doors differ only on a column with missing cells, pinned both ways. (4) **WMA got the O(N) running weighted sum**
 (`W(i) = W(i−1) − S(i−1) + period·x(i)`, rebuilt on `i % period === 0` like
 `ranged.ts` so the cancellation cannot accumulate): 57.0 → 30.7 ms at period
 20 over 1M bars, 262.1 → 29.4 ms at period 100 — the point being that the

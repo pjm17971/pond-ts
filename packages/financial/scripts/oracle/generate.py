@@ -185,6 +185,23 @@ _MA_NO_TALIB_FIRST = {
 }
 
 
+def _ema_sma_seed(values, n: int) -> np.ndarray:
+    """TA-Lib's span-EMA: seed = mean of the first n finite samples, placed at
+    the n-th, then the recursion. Used to prove the DEMA/TEMA FORMULAS against
+    TA-Lib exactly, separately from the seed convention (see moving_average)."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    alpha = 2.0 / (n + 1.0)
+    finite = np.flatnonzero(~np.isnan(x))
+    if len(finite) < n:
+        return out
+    first = int(finite[0])
+    out[first + n - 1] = float(np.mean(x[first : first + n]))
+    for i in range(first + n, len(x)):
+        out[i] = alpha * x[i] + (1.0 - alpha) * out[i - 1]
+    return out
+
+
 def _ema_first_seed(values, n: int) -> pd.Series:
     """Pond's span-EMA over an ARRAY: first-sample seed, missing cells skipped,
     emitted once `n` samples have been consumed -- so a leading run of NaN
@@ -307,17 +324,48 @@ def moving_average(n: int, kind: str) -> dict:
             np.asarray(v, dtype=float)[both] - np.asarray(ref, dtype=float)[both]
         )
         if kind in _MA_SEED_DELTA:
+            # Two separate questions, asserted separately (a Layer-2 review
+            # of #695 showed the last-bar check alone lets a wrong DEMA
+            # coefficient through, because every EMA-family formula converges
+            # to the tail):
+            #
+            # (a) THE FORMULA, exactly: rebuild the same type on TA-Lib's own
+            #     SMA seed and require bit-level agreement with TA-Lib. A
+            #     swapped coefficient or a dropped stage fails here at 1e-9.
+            e1 = _ema_sma_seed(closes, n)
+            if kind == "ema":
+                formula = e1
+            elif kind == "dema":
+                e2 = _ema_sma_seed(e1, n)
+                formula = 2 * e1 - e2
+            else:
+                e2 = _ema_sma_seed(e1, n)
+                e3 = _ema_sma_seed(e2, n)
+                formula = 3 * e1 - 3 * e2 + e3
+            refa = np.asarray(ref, dtype=float)
+            assert (np.isnan(formula) == np.isnan(refa)).all(), (
+                f"{label}: SMA-seeded replication's warm-up differs from TA-Lib"
+            )
+            fm = ~np.isnan(refa)
+            fd = float(np.max(np.abs(formula[fm] - refa[fm])))
+            assert fd < 1e-9, (
+                f"{label}: SMA-seeded replication disagrees with TA-Lib by {fd} "
+                "- the formula, not the seed, is wrong"
+            )
+            # (b) THE SEED, bounded: pond's first-sample seed differs from
+            #     TA-Lib's SMA seed by a transient that must have decayed over
+            #     the last 20 shared bars, not merely at the last one.
             scale = float(np.nanmax(np.abs(ref)))
-            worst, tail = float(d.max()), float(d[-1])
+            worst, tail = float(d.max()), float(d[-20:].max())
             assert tail / scale < 0.005, (
-                f"{label} is {tail / scale:.3%} from TA-Lib at the last bar - "
-                "too far to be the seed transient, which points at the "
-                "recursion rather than the seed"
+                f"{label} is {tail / scale:.3%} from TA-Lib over the last 20 "
+                "shared bars - too far to be the seed transient"
             )
             print(
-                f"  {label}: pond seed vs TA-Lib's SMA seed - {worst / scale:.3%} "
-                f"at the first shared bar, decayed to {tail / scale:.4%} by the "
-                "last (warm-up masks identical)"
+                f"  {label}: formula matches TA-Lib on its SMA seed to {fd:.2g}; "
+                f"pond seed vs TA-Lib's SMA seed - {worst / scale:.3%} at the "
+                f"first shared bar, {tail / scale:.4%} worst over the last 20 "
+                "(warm-up masks identical)"
             )
         else:
             assert float(d.max()) < 1e-9, (

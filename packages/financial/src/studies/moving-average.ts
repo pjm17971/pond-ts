@@ -26,8 +26,9 @@ export interface MovingAverageOptions<
   period: number;
   /** Source column to average. **Default `'close'`.** */
   column?: NumericColumnNameForSchema<S>;
-  /** Name of the appended column. **Default the study name** (`'sma'` / `'ema'`);
-   *  pass an explicit name to stack several (e.g. `sma20`, `sma50`). */
+  /** Name of the appended column. **Default the study name** (`'sma'` /
+   *  `'ema'`, and `'ma'` for `movingAverage`); pass an explicit name to stack
+   *  several (e.g. `sma20`, `sma50`). */
   output?: Output;
 }
 
