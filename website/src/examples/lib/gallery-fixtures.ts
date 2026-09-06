@@ -9,7 +9,6 @@ import { TimeSeries } from 'pond-ts';
 
 const BASE = Date.UTC(2026, 0, 12, 9, 0, 0);
 const MINUTE = 60_000;
-const DAY = 86_400_000;
 
 /** A tiny deterministic PRNG (mulberry32) — no external dependency. */
 function mulberry32(seed: number): () => number {
@@ -49,38 +48,6 @@ export function requestMetrics(n = 90) {
     ]);
   }
   return new TimeSeries({ name: 'requests', schema: requestsSchema, rows });
-}
-
-// ---------------------------------------------------------------------------
-// Financial terminal — daily OHLCV candles
-// ---------------------------------------------------------------------------
-
-const ohlcSchema = [
-  { name: 'time', kind: 'time' },
-  { name: 'open', kind: 'number' },
-  { name: 'high', kind: 'number' },
-  { name: 'low', kind: 'number' },
-  { name: 'close', kind: 'number' },
-] as const;
-
-export function dailyCandles(n = 42) {
-  const rand = mulberry32(23);
-  const rows: Array<[number, number, number, number, number]> = [];
-  let close = 148;
-  for (let i = 0; i < n; i += 1) {
-    const open = close;
-    const drift = 3.4 * Math.sin(i / 7) + 1.6 * (rand() - 0.5);
-    close = Math.max(60, open + drift);
-    const wick = 0.8 + 1.4 * Math.abs(rand());
-    const high = Math.max(open, close) + wick;
-    const low = Math.min(open, close) - wick;
-    rows.push([BASE + i * DAY, open, high, low, close]);
-  }
-  return new TimeSeries({ name: 'daily', schema: ohlcSchema, rows });
-}
-
-export function dailyCandlesRange(n = 42): [number, number] {
-  return [BASE - DAY / 2, BASE + (n - 1) * DAY + DAY / 2];
 }
 
 // ---------------------------------------------------------------------------

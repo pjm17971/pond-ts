@@ -15,6 +15,11 @@ First-class OHLC candles. Pairs with the
   <GalleryFinancial width={560} />
 </ChartExample>
 
+The prices are **modelled, not measured** — the last 60 sessions of the
+Gallery's generated year, on its real NYSE calendar; see the
+[fixture header](https://github.com/pond-ts/pond/blob/main/website/src/examples/lib/financial-fixtures.ts)
+for the process and why no market feed is redistributed here.
+
 ## Data contract
 
 Takes a `TimeSeries` (only — no `ValueSeries`) with four OHLC columns, default
