@@ -2297,7 +2297,7 @@ describe('priceOscillator', () => {
     const line = col(macd(bars(wavy)), 'macdLine');
     for (let i = 0; i < wavy.length; i += 1) {
       if (line[i] === undefined) expect(osc[i], `bar ${i}`).toBeUndefined();
-      else expect(osc[i], `bar ${i}`).toBeCloseTo(line[i]!, 12);
+      else expect(osc[i], `bar ${i}`).toBe(line[i]!); // the same kernel calls: bit-exact
     }
     // …and the default (percent) is NOT that column, or the default call
     // would be a rename of macdLine.

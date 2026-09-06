@@ -70,8 +70,9 @@ export interface AwesomeOscillatorOptions<
  *
  * - **Warm-up**: the slow leg's — first value on bar `slowPeriod − 1` (bar
  *   33 at the default 34). Length-preserving; earlier rows `undefined`.
- * - **Both SMAs wait for `slowPeriod` / `fastPeriod` finite *values***, not
- *   rows ({@link rollingMeanValues}), because the median price is a
+ * - **Both SMAs emit only once their last `slowPeriod` / `fastPeriod` rows
+ *   are all finite** ({@link rollingMeanValues}) — a leading gap steps the
+ *   window over rather than being averaged — because the median price is a
  *   **derived array**: that is the studies README's rule for derived inputs,
  *   and it is what keeps a leading gap from being averaged as if it were
  *   data. It also means an interior gap masks the windows that contain it
