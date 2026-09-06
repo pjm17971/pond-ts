@@ -28,6 +28,14 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  accumulationDistribution,
+  chaikinOscillator,
+  priceVolumeTrend,
+  chaikinMoneyFlow,
+  moneyFlowIndex,
+  forceIndex,
+  easeOfMovement,
+  volumeOscillator,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -932,5 +940,183 @@ describe('[PND-STUDYBOX] the K2 oscillators: where the missing rows are', () => 
     });
     expect(nullCountOf(abs, 'abs')).toBe(2);
     expect(cells(abs, 'abs')[5]).toBe(0);
+  });
+});
+
+describe('[PND-STUDYBOX] the volume & money-flow studies: where the missing rows are', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is pinned is WHERE the missing
+  // rows are, and the split that matters for this group: the two CUMULATIVE
+  // studies (A/D, PVT) stop at a gap forever, while the WINDOW ones (CMF,
+  // MFI, EOM, volume oscillator) and the EMA one (force index) recover.
+  const flowSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+    { name: 'volume', kind: 'number', required: false },
+  ] as const;
+  // The close must sit OFF the midpoint of its bar and at a VARYING place,
+  // or the close location value is a constant (zero, at the midpoint) and
+  // every A/D and CMF assertion below would hold for a study that read the
+  // range and nothing else.
+  const hiOf = (c: number, i: number) => c + 0.6 + 0.4 * (i % 3);
+  const loOf = (c: number, i: number) => c - 0.9 - 0.2 * (i % 2);
+  /** Bars from a close and a volume, either of which may be missing. `flat`
+   *  names a bar to give a zero range (h === l === c). */
+  const flowBars = (
+    closes: Array<number | undefined>,
+    volumes: Array<number | undefined>,
+    flat = -1,
+  ) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: flowSchema,
+      rows: closes.map((c, i) => [
+        i * MINUTE,
+        c === undefined ? undefined : i === flat ? c : hiOf(c, i),
+        c === undefined ? undefined : i === flat ? c : loOf(c, i),
+        c,
+        volumes[i],
+      ]) as never,
+    });
+  const closes = [10, 12, 11, 13, 12, 14, 15, 16];
+  const volumes = [100, 200, 300, 400, 500, 600, 700, 800];
+  const clean = flowBars(closes, volumes);
+  /** The gap is on bar 2 — early enough that a cumulative study loses the
+   *  rest of the series. */
+  const holed = flowBars([10, 12, undefined, 13, 12, 14, 15, 16], volumes);
+  /** The same gap at bar 5, past every warm-up, so a study that RECOVERS
+   *  shows a hole rather than a longer head. */
+  const holedLate = flowBars([10, 12, 11, 13, 12, undefined, 15, 16], volumes);
+
+  it('accumulationDistribution: no warm-up, and a gap ends the line', () => {
+    expect(nullCountOf(accumulationDistribution(clean), 'ad')).toBe(0);
+    const out = accumulationDistribution(holed);
+    const v = cells(out, 'ad');
+    expect(typeof v[1]).toBe('number');
+    expect(v[2]).toBeUndefined();
+    expect(nullCountOf(out, 'ad')).toBe(6); // bars 2..7 — never recovers
+  });
+
+  it('accumulationDistribution: a FLAT bar is a gap, where TA-Lib carries on', () => {
+    const out = accumulationDistribution(flowBars(closes, volumes, 3));
+    expect(typeof cells(out, 'ad')[2]).toBe('number');
+    expect(cells(out, 'ad')[3]).toBeUndefined();
+    expect(nullCountOf(out, 'ad')).toBe(5); // bars 3..7
+  });
+
+  it('chaikinOscillator: the slow EMA’s warm-up, then the A/D line’s gap rule', () => {
+    const out = chaikinOscillator(clean, { fastPeriod: 2, slowPeriod: 3 });
+    expect(nullCountOf(out, 'chaikinOsc')).toBe(2); // slowPeriod − 1
+    // The A/D line dies at bar 2, so every average of it dies with it.
+    const gapped = chaikinOscillator(holed, { fastPeriod: 2, slowPeriod: 3 });
+    expect(nullCountOf(gapped, 'chaikinOsc')).toBe(8);
+  });
+
+  it('priceVolumeTrend: bar 0 has no term, and a gap ends the line', () => {
+    const out = priceVolumeTrend(clean);
+    expect(cells(out, 'pvt')[0]).toBeUndefined();
+    expect(nullCountOf(out, 'pvt')).toBe(1);
+    const gapped = priceVolumeTrend(
+      flowBars(closes, [100, 200, undefined, ...volumes.slice(3)]),
+    );
+    expect(typeof cells(gapped, 'pvt')[1]).toBe('number');
+    expect(nullCountOf(gapped, 'pvt')).toBe(7); // bar 0 + bars 2..7
+  });
+
+  it('chaikinMoneyFlow: a `period − 1` head, and a gap changes windows without blanking them', () => {
+    const out = chaikinMoneyFlow(clean, { period: 3 });
+    expect(nullCountOf(out, 'cmf')).toBe(2);
+    // A count window is emitted once it SPANS `period` rows and is computed
+    // from whichever are present, so the gap costs no whole bar here — the
+    // gap bar simply leaves both sums. What must not happen is a run of
+    // missing rows, and the numbers must actually move.
+    const gapped = chaikinMoneyFlow(holed, { period: 3 });
+    expect(nullCountOf(gapped, 'cmf')).toBe(2);
+    expect(cells(gapped, 'cmf')[2]).not.toBe(cells(out, 'cmf')[2]);
+    // Bar 5's window is bars 3–5, past the gap: the same answer again.
+    expect(cells(gapped, 'cmf')[5]).toBeCloseTo(
+      cells(out, 'cmf')[5] as number,
+      10,
+    );
+  });
+
+  it('chaikinMoneyFlow: a window with no volume at all is missing', () => {
+    const dead = flowBars(closes, [0, 0, 0, ...volumes.slice(3)]);
+    const out = chaikinMoneyFlow(dead, { period: 3 });
+    expect(cells(out, 'cmf')[2]).toBeUndefined(); // Σ volume = 0
+    expect(typeof cells(out, 'cmf')[3]).toBe('number');
+    expect(nullCountOf(out, 'cmf')).toBe(3); // two warm-up + the dead window
+  });
+
+  it('moneyFlowIndex: a `period` head (not `period − 1`), gap costs two bars’ windows', () => {
+    const out = moneyFlowIndex(clean, { period: 3 });
+    expect(nullCountOf(out, 'mfi')).toBe(3);
+    expect(typeof cells(out, 'mfi')[3]).toBe('number');
+    // The gap bar has no typical price, and neither has the DIRECTION of the
+    // bar after it, so every window holding either is blank: bars 5, 6, 7.
+    const gapped = moneyFlowIndex(holedLate, { period: 3 });
+    const v = cells(gapped, 'mfi');
+    expect(typeof v[4]).toBe('number');
+    expect(v.slice(5).every((x) => x === undefined)).toBe(true);
+    expect(nullCountOf(gapped, 'mfi')).toBe(6); // 3 warm-up + bars 5..7
+  });
+
+  it('moneyFlowIndex: a window with no flow in either direction is missing', () => {
+    // A CONSTANT typical price: the ranges have to be constant too, or the
+    // bars' typical prices move even though their closes do not.
+    const flat = new TimeSeries({
+      name: 'bars',
+      schema: flowSchema,
+      rows: closes.map((_, i) => [i * MINUTE, 11, 9, 10, volumes[i]]) as never,
+    });
+    expect(nullCountOf(moneyFlowIndex(flat, { period: 3 }), 'mfi')).toBe(8);
+  });
+
+  it('forceIndex: a `period` head, and a gap costs two bars before the EMA resumes', () => {
+    const out = forceIndex(clean, { period: 2 });
+    expect(nullCountOf(out, 'force')).toBe(2); // bars 0 and 1
+    const gapped = forceIndex(holedLate, { period: 2 });
+    const v = cells(gapped, 'force');
+    expect(typeof v[4]).toBe('number');
+    expect(v[5]).toBeUndefined(); // the gap bar
+    expect(v[6]).toBeUndefined(); // its change reads the missing close
+    expect(typeof v[7]).toBe('number'); // the recursion skipped, not stopped
+    expect(nullCountOf(gapped, 'force')).toBe(4);
+  });
+
+  it('easeOfMovement: a `period` head; a flat bar and a zero-volume bar blank their windows', () => {
+    const out = easeOfMovement(clean, { period: 2, scale: 1 });
+    expect(nullCountOf(out, 'eom')).toBe(2); // bars 0 and 1
+    // Bar 3 flat: its own 1-bar value is missing, and the sma windows
+    // holding it (bars 3 and 4) go with it — then it recovers.
+    const flatOut = easeOfMovement(flowBars(closes, volumes, 3), {
+      period: 2,
+      scale: 1,
+    });
+    expect(cells(flatOut, 'eom')[3]).toBeUndefined();
+    expect(cells(flatOut, 'eom')[4]).toBeUndefined();
+    expect(typeof cells(flatOut, 'eom')[5]).toBe('number');
+
+    const dead = flowBars(closes, [100, 200, 300, 0, ...volumes.slice(4)]);
+    const deadOut = easeOfMovement(dead, { period: 2, scale: 1 });
+    expect(cells(deadOut, 'eom')[3]).toBeUndefined(); // not ±Infinity
+    expect(typeof cells(deadOut, 'eom')[5]).toBe('number');
+  });
+
+  it('volumeOscillator: the slow average’s warm-up, and no value on a dead window', () => {
+    const out = volumeOscillator(clean, { fastPeriod: 2, slowPeriod: 3 });
+    expect(nullCountOf(out, 'volOsc')).toBe(2);
+    const dead = flowBars(
+      closes,
+      closes.map(() => 0),
+    );
+    expect(
+      nullCountOf(
+        volumeOscillator(dead, { fastPeriod: 2, slowPeriod: 3 }),
+        'volOsc',
+      ),
+    ).toBe(8); // 0/0 on every bar — missing, not Infinity
   });
 });

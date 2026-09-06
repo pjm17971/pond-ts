@@ -104,6 +104,22 @@ import type { ElderRayOptions } from './studies/elder-ray.js';
 import { elderRay as elderRayStudy } from './studies/elder-ray.js';
 import type { AwesomeOscillatorOptions } from './studies/awesome-oscillator.js';
 import { awesomeOscillator as awesomeOscillatorStudy } from './studies/awesome-oscillator.js';
+import type { AccumulationDistributionOptions } from './studies/accumulation-distribution.js';
+import { accumulationDistribution as accumulationDistributionStudy } from './studies/accumulation-distribution.js';
+import type { ChaikinOscillatorOptions } from './studies/chaikin-oscillator.js';
+import { chaikinOscillator as chaikinOscillatorStudy } from './studies/chaikin-oscillator.js';
+import type { PriceVolumeTrendOptions } from './studies/price-volume-trend.js';
+import { priceVolumeTrend as priceVolumeTrendStudy } from './studies/price-volume-trend.js';
+import type { ChaikinMoneyFlowOptions } from './studies/chaikin-money-flow.js';
+import { chaikinMoneyFlow as chaikinMoneyFlowStudy } from './studies/chaikin-money-flow.js';
+import type { MoneyFlowIndexOptions } from './studies/money-flow-index.js';
+import { moneyFlowIndex as moneyFlowIndexStudy } from './studies/money-flow-index.js';
+import type { ForceIndexOptions } from './studies/force-index.js';
+import { forceIndex as forceIndexStudy } from './studies/force-index.js';
+import type { EaseOfMovementOptions } from './studies/ease-of-movement.js';
+import { easeOfMovement as easeOfMovementStudy } from './studies/ease-of-movement.js';
+import type { VolumeOscillatorOptions } from './studies/volume-oscillator.js';
+import { volumeOscillator as volumeOscillatorStudy } from './studies/volume-oscillator.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -264,6 +280,38 @@ declare module 'pond-ts' {
     /** Fluent Awesome Oscillator. */
     awesomeOscillator<const Output extends string = 'ao'>(
       options?: AwesomeOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Accumulation/Distribution line. */
+    accumulationDistribution<const Output extends string = 'ad'>(
+      options?: AccumulationDistributionOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Chaikin Oscillator (EMA 3 − EMA 10 of the A/D line). */
+    chaikinOscillator<const Output extends string = 'chaikinOsc'>(
+      options?: ChaikinOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Price-Volume Trend. */
+    priceVolumeTrend<const Output extends string = 'pvt'>(
+      options?: PriceVolumeTrendOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Chaikin Money Flow. */
+    chaikinMoneyFlow<const Output extends string = 'cmf'>(
+      options?: ChaikinMoneyFlowOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Money Flow Index. */
+    moneyFlowIndex<const Output extends string = 'mfi'>(
+      options?: MoneyFlowIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Elder Force Index. */
+    forceIndex<const Output extends string = 'force'>(
+      options?: ForceIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Ease of Movement. */
+    easeOfMovement<const Output extends string = 'eom'>(
+      options?: EaseOfMovementOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Volume Oscillator. */
+    volumeOscillator<const Output extends string = 'volOsc'>(
+      options?: VolumeOscillatorOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -456,4 +504,52 @@ proto.awesomeOscillator = function (
   options?: AwesomeOscillatorOptions<SeriesSchema, string>,
 ) {
   return awesomeOscillatorStudy(this, options);
+};
+proto.accumulationDistribution = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AccumulationDistributionOptions<SeriesSchema, string>,
+) {
+  return accumulationDistributionStudy(this, options);
+};
+proto.chaikinOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChaikinOscillatorOptions<SeriesSchema, string>,
+) {
+  return chaikinOscillatorStudy(this, options);
+};
+proto.priceVolumeTrend = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceVolumeTrendOptions<SeriesSchema, string>,
+) {
+  return priceVolumeTrendStudy(this, options);
+};
+proto.chaikinMoneyFlow = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChaikinMoneyFlowOptions<SeriesSchema, string>,
+) {
+  return chaikinMoneyFlowStudy(this, options);
+};
+proto.moneyFlowIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: MoneyFlowIndexOptions<SeriesSchema, string>,
+) {
+  return moneyFlowIndexStudy(this, options);
+};
+proto.forceIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ForceIndexOptions<SeriesSchema, string>,
+) {
+  return forceIndexStudy(this, options);
+};
+proto.easeOfMovement = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: EaseOfMovementOptions<SeriesSchema, string>,
+) {
+  return easeOfMovementStudy(this, options);
+};
+proto.volumeOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: VolumeOscillatorOptions<SeriesSchema, string>,
+) {
+  return volumeOscillatorStudy(this, options);
 };

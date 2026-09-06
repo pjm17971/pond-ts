@@ -70,6 +70,14 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  accumulationDistribution,
+  chaikinOscillator,
+  priceVolumeTrend,
+  chaikinMoneyFlow,
+  moneyFlowIndex,
+  forceIndex,
+  easeOfMovement,
+  volumeOscillator,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -1484,5 +1492,314 @@ describe('[talib] all-missing input yields all-missing K2 oscillators', () => {
         'ao',
       ),
     );
+  });
+});
+
+/*
+ * The volume & money-flow group (corpus §6.6). Its scale behaviour is the
+ * least uniform in the package, which is exactly why it is worth pinning:
+ * three of the eight are invariant in price, two are linear in it, and one
+ * (ease of movement) is QUADRATIC in it — the distance and the range both
+ * scale. Getting that wrong is a plausible bug that no value oracle on one
+ * fixture would catch.
+ */
+/** {@link sameShape} with a RELATIVE tolerance. The shift-invariance and
+ *  quadratic-scale checks below compare quantities in the 1e5 range whose
+ *  operands round differently once every price moves, so agreement is exact
+ *  to ~1e-15 relative and not to 1e-9 absolute; asserting the absolute form
+ *  would be asserting the rounding, not the property. */
+const sameShapeRelative = (
+  base: Array<number | undefined>,
+  scaled: Array<number | undefined>,
+  factor: number,
+) => {
+  expect(scaled).toHaveLength(base.length);
+  expect(base.some((x) => x !== undefined)).toBe(true);
+  for (let i = 0; i < base.length; i += 1) {
+    if (base[i] === undefined) {
+      expect(scaled[i], `bar ${i}`).toBeUndefined();
+      continue;
+    }
+    const expected = base[i]!;
+    const actual = scaled[i]! / factor;
+    expect(
+      Math.abs(actual - expected) <= 1e-9 * Math.max(1, Math.abs(expected)),
+      `bar ${i}: ${actual} vs ${expected}`,
+    ).toBe(true);
+  }
+};
+
+/** The same 40 wavy bars as {@link volumeBars}, with every PRICE shifted by
+ *  `delta` and volume untouched — for the affine-invariance half. */
+const shiftedVolumeBars = (delta: number, n = 40) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: ohlcvSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      const v = 1000 + 700 * Math.sin(i / 2.3) + (i % 7 === 3 ? 5000 : 0);
+      return [i, c + 1.1 + delta, c - 0.8 + delta, c + delta, v];
+    }) as Array<[number, number, number, number, number]>,
+  });
+
+describe('[talib] the money-flow studies: scale and shift behaviour', () => {
+  it('accumulationDistribution scales LINEARLY with volume', () => {
+    sameShape(
+      col(accumulationDistribution(volumeBars(1, 1)), 'ad'),
+      col(accumulationDistribution(volumeBars(1, 7)), 'ad'),
+      7,
+    );
+  });
+
+  it('accumulationDistribution is invariant under ANY affine change of price', () => {
+    // The close location is a ratio of differences: both a scale and a shift
+    // cancel. (Scaling would survive a study that forgot to divide by the
+    // range; shifting would not.)
+    sameShape(
+      col(accumulationDistribution(volumeBars(1, 1)), 'ad'),
+      col(accumulationDistribution(volumeBars(1000, 1)), 'ad'),
+      1,
+    );
+    sameShapeRelative(
+      col(accumulationDistribution(volumeBars(1, 1)), 'ad'),
+      col(accumulationDistribution(shiftedVolumeBars(500)), 'ad'),
+      1,
+    );
+  });
+
+  it('chaikinOscillator inherits both — linear in volume, invariant in price', () => {
+    sameShape(
+      col(chaikinOscillator(volumeBars(1, 1)), 'chaikinOsc'),
+      col(chaikinOscillator(volumeBars(1, 7)), 'chaikinOsc'),
+      7,
+    );
+    sameShapeRelative(
+      col(chaikinOscillator(volumeBars(1, 1)), 'chaikinOsc'),
+      col(chaikinOscillator(shiftedVolumeBars(500)), 'chaikinOsc'),
+      1,
+    );
+  });
+
+  it('priceVolumeTrend is linear in volume and scale-invariant in price', () => {
+    sameShape(
+      col(priceVolumeTrend(volumeBars(1, 1)), 'pvt'),
+      col(priceVolumeTrend(volumeBars(1, 7)), 'pvt'),
+      7,
+    );
+    sameShapeRelative(
+      col(priceVolumeTrend(volumeBars(1, 1)), 'pvt'),
+      col(priceVolumeTrend(volumeBars(1000, 1)), 'pvt'),
+      1,
+    );
+  });
+
+  it('priceVolumeTrend is NOT shift-invariant — the fraction has a base', () => {
+    // Unlike A/D: a shift changes the denominator of every rate of change.
+    // Asserted rather than left implicit, because "invariant in price" is
+    // the wrong summary for this one.
+    const base = col(priceVolumeTrend(volumeBars(1, 1)), 'pvt');
+    const shifted = col(priceVolumeTrend(shiftedVolumeBars(500)), 'pvt');
+    expect(shifted[39]).not.toBeCloseTo(base[39]!, 6);
+  });
+
+  it('chaikinMoneyFlow is invariant in volume AND in any affine price change', () => {
+    sameShape(
+      col(chaikinMoneyFlow(volumeBars(1, 1), { period: 10 }), 'cmf'),
+      col(chaikinMoneyFlow(volumeBars(1, 7), { period: 10 }), 'cmf'),
+      1,
+    );
+    sameShape(
+      col(chaikinMoneyFlow(volumeBars(1, 1), { period: 10 }), 'cmf'),
+      col(chaikinMoneyFlow(shiftedVolumeBars(500), { period: 10 }), 'cmf'),
+      1,
+    );
+    for (const x of col(
+      chaikinMoneyFlow(volumeBars(1, 1), { period: 10 }),
+      'cmf',
+    ))
+      if (x !== undefined) expect(Math.abs(x)).toBeLessThanOrEqual(1);
+  });
+
+  it('moneyFlowIndex is invariant in price scale and in volume scale', () => {
+    // A ratio of flows: both factors cancel. It is the `rsi` side of the
+    // scale pair, and it stays inside 0..100.
+    sameShape(
+      col(moneyFlowIndex(volumeBars(1, 1), { period: 10 }), 'mfi'),
+      col(moneyFlowIndex(volumeBars(1000, 1), { period: 10 }), 'mfi'),
+      1,
+    );
+    sameShape(
+      col(moneyFlowIndex(volumeBars(1, 1), { period: 10 }), 'mfi'),
+      col(moneyFlowIndex(volumeBars(1, 7), { period: 10 }), 'mfi'),
+      1,
+    );
+    for (const x of col(
+      moneyFlowIndex(volumeBars(1, 1), { period: 10 }),
+      'mfi',
+    ))
+      if (x !== undefined) {
+        expect(x).toBeGreaterThanOrEqual(0);
+        expect(x).toBeLessThanOrEqual(100);
+      }
+  });
+
+  it('forceIndex is linear in price, linear in volume, and shift-invariant', () => {
+    sameShapeRelative(
+      col(forceIndex(volumeBars(1, 1), { period: 5 }), 'force'),
+      col(forceIndex(volumeBars(1000, 1), { period: 5 }), 'force'),
+      1000,
+    );
+    sameShape(
+      col(forceIndex(volumeBars(1, 1), { period: 5 }), 'force'),
+      col(forceIndex(volumeBars(1, 7), { period: 5 }), 'force'),
+      7,
+    );
+    sameShapeRelative(
+      col(forceIndex(volumeBars(1, 1), { period: 5 }), 'force'),
+      col(forceIndex(shiftedVolumeBars(500), { period: 5 }), 'force'),
+      1,
+    );
+  });
+
+  it('easeOfMovement is QUADRATIC in price, inverse in volume, linear in scale', () => {
+    // The distance moved scales with price and so does the bar's range, so
+    // the reading scales with the SQUARE — the one study here that does.
+    sameShapeRelative(
+      col(easeOfMovement(volumeBars(1, 1), { period: 5 }), 'eom'),
+      col(easeOfMovement(volumeBars(10, 1), { period: 5 }), 'eom'),
+      100,
+    );
+    sameShapeRelative(
+      col(easeOfMovement(volumeBars(1, 1), { period: 5 }), 'eom'),
+      col(easeOfMovement(volumeBars(1, 7), { period: 5 }), 'eom'),
+      1 / 7,
+    );
+    sameShapeRelative(
+      col(easeOfMovement(volumeBars(1, 1), { period: 5 }), 'eom'),
+      col(
+        easeOfMovement(volumeBars(1, 1), { period: 5, scale: 300_000_000 }),
+        'eom',
+      ),
+      3,
+    );
+    // Shifting every price leaves both the distance and the range alone.
+    sameShapeRelative(
+      col(easeOfMovement(volumeBars(1, 1), { period: 5 }), 'eom'),
+      col(easeOfMovement(shiftedVolumeBars(500), { period: 5 }), 'eom'),
+      1,
+    );
+  });
+
+  it('volumeOscillator is invariant in volume and blind to price', () => {
+    sameShape(
+      col(volumeOscillator(volumeBars(1, 1)), 'volOsc'),
+      col(volumeOscillator(volumeBars(1, 7)), 'volOsc'),
+      1,
+    );
+    sameShape(
+      col(volumeOscillator(volumeBars(1, 1)), 'volOsc'),
+      col(volumeOscillator(volumeBars(1000, 1)), 'volOsc'),
+      1,
+    );
+  });
+});
+
+describe('[talib] the money-flow studies over another study compose their warm-up', () => {
+  it('priceVolumeTrend over a smoothed close starts at its first value, not empty', () => {
+    // The running-sum seed shift — the rsi(sma(...)) regression shape. A
+    // leading NaN in a cumulative study must move the seed, not empty it.
+    const smoothed = sma(volumeBars(1, 1), { period: 3, output: 'sc' });
+    const v = col(
+      priceVolumeTrend(smoothed, { close: 'sc', output: 'p' }),
+      'p',
+    );
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(3); // sma(3) valid at 2; its first CHANGE at 3
+    expect(v.slice(3).every((x) => x !== undefined)).toBe(true);
+    expect(new Set(v.slice(3)).size).toBeGreaterThan(1);
+  });
+
+  it('forceIndex over a smoothed close composes rather than emptying', () => {
+    const smoothed = sma(volumeBars(1, 1), { period: 3, output: 'sc' });
+    const v = col(
+      forceIndex(smoothed, { period: 4, close: 'sc', output: 'f' }),
+      'f',
+    );
+    expect(v).toHaveLength(40);
+    // The EMA array door steps over the NaN head and waits for 4 finite raw
+    // forces: the first is at bar 3, so the fourth is at bar 6.
+    expect(firstValid(v)).toBe(6);
+    expect(v.slice(6).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('chaikinMoneyFlow over a smoothed close is a count window', () => {
+    // The same contract sma(sma(...)) pins: a count window emits once it
+    // spans `period` ROWS, computed from whichever are present.
+    const smoothed = sma(volumeBars(1, 1), { period: 3, output: 'sc' });
+    const v = col(
+      chaikinMoneyFlow(smoothed, { period: 4, close: 'sc', output: 'c' }),
+      'c',
+    );
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(3);
+    expect(v.slice(3).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing money-flow studies', () => {
+  const allMissingBars = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [
+        number,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+      ]
+    >,
+  });
+  const allMissing = (result: unknown, name: string) => {
+    const v = col(result, name);
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  };
+
+  it('accumulationDistribution', () => {
+    allMissing(accumulationDistribution(allMissingBars as never), 'ad');
+  });
+  it('chaikinOscillator', () => {
+    allMissing(chaikinOscillator(allMissingBars as never), 'chaikinOsc');
+  });
+  it('priceVolumeTrend', () => {
+    allMissing(priceVolumeTrend(allMissingBars as never), 'pvt');
+  });
+  it('chaikinMoneyFlow', () => {
+    allMissing(chaikinMoneyFlow(allMissingBars as never, { period: 5 }), 'cmf');
+  });
+  it('moneyFlowIndex', () => {
+    allMissing(moneyFlowIndex(allMissingBars as never, { period: 5 }), 'mfi');
+  });
+  it('forceIndex', () => {
+    allMissing(forceIndex(allMissingBars as never, { period: 5 }), 'force');
+  });
+  it('easeOfMovement', () => {
+    allMissing(easeOfMovement(allMissingBars as never, { period: 5 }), 'eom');
+  });
+  it('volumeOscillator', () => {
+    allMissing(volumeOscillator(allMissingBars as never), 'volOsc');
   });
 });

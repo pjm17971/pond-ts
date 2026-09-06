@@ -9,8 +9,16 @@ import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
 import {
   MA_TYPES,
+  accumulationDistribution,
   atrBands,
   awesomeOscillator,
+  chaikinMoneyFlow,
+  chaikinOscillator,
+  easeOfMovement,
+  forceIndex,
+  moneyFlowIndex,
+  priceVolumeTrend,
+  volumeOscillator,
   bollinger,
   coppock,
   detrendedPriceOscillator,
@@ -179,6 +187,34 @@ function scaleResults(length) {
       ),
       benchmark('awesomeOscillator({ 5, 34 })', () =>
         awesomeOscillator(series),
+      ),
+      // The volume & money-flow group (corpus 6.6). Two are running sums
+      // over a per-bar term (A/D, PVT), one is that line smoothed twice
+      // (Chaikin oscillator), two are windows over a derived array (CMF on
+      // the weighted-mean kernel, MFI on two rolling means), and two are an
+      // MA over a per-bar derivation (force index, ease of movement). The
+      // cumulative pair should sit near obv(); the window pair near vwap().
+      benchmark('accumulationDistribution()', () =>
+        accumulationDistribution(series),
+      ),
+      benchmark('chaikinOscillator({ 3, 10 })', () =>
+        chaikinOscillator(series),
+      ),
+      benchmark('priceVolumeTrend()', () => priceVolumeTrend(series)),
+      benchmark('chaikinMoneyFlow({ period: 20 })', () =>
+        chaikinMoneyFlow(series, { period: PERIOD }),
+      ),
+      benchmark('moneyFlowIndex({ period: 14 })', () =>
+        moneyFlowIndex(series, { period: 14 }),
+      ),
+      benchmark('forceIndex({ period: 13 })', () =>
+        forceIndex(series, { period: 13 }),
+      ),
+      benchmark('easeOfMovement({ 14, sma })', () =>
+        easeOfMovement(series, { period: 14 }),
+      ),
+      benchmark('volumeOscillator({ 5, 10, sma })', () =>
+        volumeOscillator(series),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

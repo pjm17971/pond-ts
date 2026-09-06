@@ -30,6 +30,14 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  accumulationDistribution,
+  chaikinOscillator,
+  priceVolumeTrend,
+  chaikinMoneyFlow,
+  moneyFlowIndex,
+  forceIndex,
+  easeOfMovement,
+  volumeOscillator,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -375,5 +383,93 @@ describe('fluent K2 oscillators', () => {
       output: 'd2',
     });
     expect(col(smaD, 'disparity')[20]).not.toBeCloseTo(col(emaD, 'd2')[20]!, 6);
+  });
+});
+
+describe('fluent volume & money-flow studies', () => {
+  const flowBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.4 - 0.6 * Math.abs(Math.cos(i / 2.4)),
+          c,
+          1000 + 500 * Math.sin(i / 2.3) + (i % 7 === 3 ? 6000 : 0),
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('chains all eight and matches the standalone functions bar for bar', () => {
+    const fluent = flowBars()
+      .accumulationDistribution()
+      .chaikinOscillator({ fastPeriod: 3, slowPeriod: 8 })
+      .priceVolumeTrend()
+      .chaikinMoneyFlow({ period: 5 })
+      .moneyFlowIndex({ period: 6 })
+      .forceIndex({ period: 4 })
+      .easeOfMovement({ period: 5 })
+      .volumeOscillator({ fastPeriod: 3, slowPeriod: 7 });
+    const functional = volumeOscillator(
+      easeOfMovement(
+        forceIndex(
+          moneyFlowIndex(
+            chaikinMoneyFlow(
+              priceVolumeTrend(
+                chaikinOscillator(accumulationDistribution(flowBars()), {
+                  fastPeriod: 3,
+                  slowPeriod: 8,
+                }),
+              ),
+              { period: 5 },
+            ),
+            { period: 6 },
+          ),
+          { period: 4 },
+        ),
+        { period: 5 },
+      ),
+      { fastPeriod: 3, slowPeriod: 7 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'ad',
+      'chaikinOsc',
+      'pvt',
+      'cmf',
+      'mfi',
+      'force',
+      'eom',
+      'volOsc',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('passes the options through, not just the periods', () => {
+    // A mount that dropped the options object would still produce numbers;
+    // `maType` and `scale` are knobs that change the answer.
+    const bySma = flowBars().easeOfMovement({ period: 4, maType: 'sma' });
+    const byEma = flowBars().easeOfMovement({
+      period: 4,
+      maType: 'ema',
+      output: 'e2',
+    });
+    expect(col(bySma, 'eom')[29]).not.toBeCloseTo(col(byEma, 'e2')[29]!, 6);
+    const scaled = flowBars().easeOfMovement({ period: 4, scale: 1 });
+    expect(col(scaled, 'eom')[29]).toBeCloseTo(
+      col(bySma, 'eom')[29]! / 100_000_000,
+      12,
+    );
   });
 });

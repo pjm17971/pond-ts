@@ -44,6 +44,14 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  accumulationDistribution,
+  chaikinOscillator,
+  priceVolumeTrend,
+  chaikinMoneyFlow,
+  moneyFlowIndex,
+  forceIndex,
+  easeOfMovement,
+  volumeOscillator,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -242,6 +250,31 @@ function run(c: OracleCase): unknown {
       return awesomeOscillator(
         ohlcSeries(),
         p as { fastPeriod?: number; slowPeriod?: number },
+      );
+    case 'accumulationDistribution':
+      return accumulationDistribution(ohlcSeries());
+    case 'chaikinOscillator':
+      return chaikinOscillator(
+        ohlcSeries(),
+        p as { fastPeriod?: number; slowPeriod?: number },
+      );
+    case 'priceVolumeTrend':
+      return priceVolumeTrend(ohlcSeries());
+    case 'chaikinMoneyFlow':
+      return chaikinMoneyFlow(ohlcSeries(), p as { period?: number });
+    case 'moneyFlowIndex':
+      return moneyFlowIndex(ohlcSeries(), p as { period?: number });
+    case 'forceIndex':
+      return forceIndex(ohlcSeries(), p as { period?: number });
+    case 'easeOfMovement':
+      return easeOfMovement(
+        ohlcSeries(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'volumeOscillator':
+      return volumeOscillator(
+        ohlcSeries(),
+        p as { fastPeriod?: number; slowPeriod?: number; maType?: MaType },
       );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not

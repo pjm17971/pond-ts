@@ -399,6 +399,107 @@ Disparity) — it is arithmetic anyone can write and the comparable form is the
 one worth naming; and a `centered` flag on DPO, which would be a second series
 behind a boolean rather than a knob on one.
 
+**Landed — the volume & money-flow group (corpus §6.6).**
+`accumulationDistribution`, `chaikinOscillator`, `priceVolumeTrend`,
+`chaikinMoneyFlow`, `moneyFlowIndex`, `forceIndex`, `easeOfMovement` and
+`volumeOscillator`, over **one** new kernel. Decisions:
+
+(1) **The close location value is a kernel, and a flat bar has none.**
+`clvValues` / `accumulationDistributionValues` (`kernels/close-location.ts`)
+are shared by three studies, which is what earned the file. `CLV` is the
+stochastic's "position in a range" at a different arity — `clv = 2·%K/100 − 1`
+over the bar's own high and low — so `high === low` is the same `0/0`
+`percentOfRangeValues` already reports as missing, and it reports missing here.
+**Deliberate delta from TA-Lib's `AD`**, which guards `if (h − l > 0)` and folds
+a flat bar in as a zero contribution: measured (0.7.1) on twelve bars with bar 3
+flattened, TA-Lib gives `[0, 100, 100, 100, 100, 400, …, 1900]`. Two reasons to
+diverge: `0` is a _reading_ ("buyers and sellers exactly balanced") for a bar
+that reported none, and a zero-range bar is usually a halt. The **cost is
+asymmetric and is stated per study** rather than averaged into a slogan — it
+ends the cumulative A/D line, and costs CMF only the `period` windows holding
+it. Considered and rejected: an explicit "flat bar contributes 0" special case
+in `accumulationDistribution` alone, which would have matched TA-Lib outright at
+the price of A/D and CMF disagreeing about the same bar.
+
+(2) **The Chaikin oscillator is the one EMA-family study with no seed delta —
+measured, not assumed.** Every other EMA study here carries the `macd`
+precedent (pond seeds on the first sample, TA-Lib on the SMA of the first `n`),
+and the brief expected the same treatment. It does not apply: TA-Lib's own
+`ADOSC` seeds **both** EMAs with the first A/D value, which is pond's
+convention, so the oracle asserts **exact** equality (delta `0`, identical
+masks) at `{3,10}` and `{4,12}` instead of bounding a transient. The generator
+also rebuilds the SMA-seeded version and asserts it is _far_ from `ADOSC`
+(423.0 and 350.4 on the fixture), so the case pins which seed ships rather than
+being blind to the difference.
+
+(3) **`priceVolumeTrend` composes on the ROC kernel and divides by 100**, and
+its **bar 0 is `undefined`, not `0`**. The kernel returns TA-Lib's percent; PVT's
+published definition (ChartIQ's) is the fraction, so the constant appears in one
+visible place rather than in a re-derived ratio — and the zero-base guard comes
+with it. On the seed: unlike `obv`, whose `volume[0]` convention is TA-Lib's and
+is matched for exactness, PVT has no vendor function to defer to, and the term
+needs a previous close. Every level from bar 1 on is identical either way, so
+declining to invent the seed costs nothing (a test pins that).
+
+(4) **CMF is `rollingWeightedMeanValues`, MFI is two `rollingMeanValues`
+passes, and `volumeOscillator` is `priceOscillator`.** No new window loops. CMF
+is `Σ x·w / Σ w` with the close location for `x` — literally VWAP's kernel — so
+it inherits the "a gap in either input leaves both sums" and "`Σ w = 0` →
+missing" rules rather than growing a second set. MFI's ratio cancels the
+`1/period`, so _means_ serve for its two sums. And `volumeOscillator` **is**
+`priceOscillator`'s percent mode over the volume column; it delegates, a test
+pins the identity, and what the wrapper adds is the name and the 5/10/sma
+defaults (against 12/26/ema) — a thin alias being the honest answer when only
+the vocabulary is new. Its `'absolute'` mode is deliberately not re-exposed: a
+difference of two volume averages is a share count, which is what the percent
+form exists to normalise away.
+
+(5) **Volume Rate of Change is not a study.** `percentChange({ column:
+'volume' })` _is_ the corpus definition, and `percentChange` is already
+cross-checked against TA-Lib's `ROC`. What shipped is a recipe note in API.md
+and a test that pins it — step 0 of the studies README, the `roc` precedent.
+
+(6) **MFI's TA-Lib deltas, measured.** Values agree to `2.8e-14` with identical
+masks, and the warm-up is `period` rows (not `period − 1`) on both sides. Two
+divergences: a window with **zero total flow** (a flat typical price, or no
+volume) is `undefined` here and `0` in TA-Lib — the `rsi` flat-window rule, and
+`0` is MFI's most bearish reading for a window that showed no direction. More
+sharply, **TA-Lib returns `0` for any window whose total flow is merely below
+`1.0`** (a magnitude threshold in its C source, not a definition): measured on a
+strictly rising 20-bar series at `1e-9` volume it returns `0` where the answer
+is `100`. This study has no threshold.
+
+(7) **`easeOfMovement` exposes `scale`, and is quadratic in price.** `100_000_000`
+is StockCharts'/ChartIQ's constant and is a pure linear multiplier, so the knob
+cannot change a sign or a crossing — it is exposed because the right constant
+depends on the instrument's volume units (a crypto pair quoting fractional
+volume reads as zeros at 1e8), and a caller forced to rescale the output column
+by hand would be silently incomparable with the chart package beside them. The
+alternative (fix it, tell callers to multiply) was considered and rejected on
+that ground. Its **scale behaviour is the odd one in the package** and is pinned
+because the plausible assumption is wrong: the distance moved _and_ the bar's
+range both scale with price, so EOM scales with **k²**, is inversely
+proportional to volume, and is linear in `scale`.
+
+(8) **Lesson from the mutation matrix: a "redundant" guard that is
+load-bearing on exactly one MA type.** Removing the `volume === 0` guard in
+`easeOfMovement` killed **zero** tests — the window MA types mask a non-finite
+cell, so the resulting `±Infinity` read back as missing anyway. It is not dead
+code, though: `smma` is Wilder's recursion and _carries_ what it is given, so an
+unguarded infinity would reach `withColumn`, which rejects an infinity loudly.
+The fix was the missing test (`maType: 'smma'` over a zero-volume bar), not the
+`rollingWeightedMeanValues` answer of deleting the guard — the difference from
+that case is that this one has a reachable failure and that one had none.
+Measured on the ten K2 types with an `Infinity` in the input: only `smma`
+propagates it to the output.
+
+**Perf at 1M bars** (all in their expected bands; nothing owns a data loop):
+`accumulationDistribution` 53.4 ms, `chaikinOscillator` 70.1 ms,
+`priceVolumeTrend` 33.0 ms, `chaikinMoneyFlow` 103.7 ms, `moneyFlowIndex`
+110.6 ms, `forceIndex` 32.4 ms, `easeOfMovement` 74.8 ms, `volumeOscillator`
+84.2 ms — against `obv()` 27.5 ms, `vwap(20)` 99.6 ms (CMF's own kernel) and
+`sma(20)` 43.1 ms (volume oscillator is two of them).
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

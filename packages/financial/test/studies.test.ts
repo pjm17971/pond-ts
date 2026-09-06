@@ -32,6 +32,14 @@ import {
   detrendedPriceOscillator,
   elderRay,
   awesomeOscillator,
+  accumulationDistribution,
+  chaikinOscillator,
+  priceVolumeTrend,
+  chaikinMoneyFlow,
+  moneyFlowIndex,
+  forceIndex,
+  easeOfMovement,
+  volumeOscillator,
   MA_TYPES,
 } from '../src/index.js';
 
@@ -2783,5 +2791,1109 @@ describe('awesomeOscillator', () => {
     const v = col(awesomeOscillator(hlc(src), { slowPeriod: 9 }), 'ao');
     expect(v).toHaveLength(5);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Volume & money flow (corpus §6.6).                                          */
+/*                                                                             */
+/* Hand-computed values on four-bar fixtures. The bars are deliberately         */
+/* non-degenerate: the close sits at 0.5 / −0.5 / 1 / 0 of the range across     */
+/* the four, so a study that read the close's SIGN rather than its LOCATION,    */
+/* or dropped the volume weighting, gets different numbers on every bar.        */
+/* -------------------------------------------------------------------------- */
+
+/** Bars whose high/low/close/volume may each be missing — the gap cases for
+ *  the four-input volume studies. Row = [h, l, c, v]. */
+const ohlcvGappy = (
+  rows: Array<
+    [
+      number | undefined,
+      number | undefined,
+      number | undefined,
+      number | undefined,
+    ]
+  >,
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: rows.map(([h, l, c, v], i) => [i, h, l, c, v]) as Array<
+      [
+        number,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+      ]
+    >,
+  });
+
+/** Four bars whose close locations are +0.5, −0.5, +1 and 0 of the range.
+ *  CLV·volume = 50, −100, 300, 0, so the A/D line is 50, −50, 250, 250. */
+const adBars: Array<[number, number, number, number]> = [
+  [12, 10, 11.5, 100],
+  [14, 12, 12.5, 200],
+  [16, 14, 16, 300],
+  [18, 16, 17, 400],
+];
+
+describe('accumulationDistribution', () => {
+  it('accumulates CLV × volume, hand-computed', () => {
+    const v = col(accumulationDistribution(ohlcv(adBars)), 'ad');
+    expect(v).toEqual([50, -50, 250, 250]);
+  });
+
+  it('has no warm-up and no period: defined from bar 0', () => {
+    expect(
+      col(accumulationDistribution(ohlcv([[2, 0, 1.5, 8]])), 'ad'),
+    ).toEqual([4]); // clv = ((1.5 − 0) − (2 − 1.5)) / 2 = 0.5, on 8 lots
+  });
+
+  it('reads the close’s LOCATION, not the sign of its change', () => {
+    // Bar 2 closes ON its high after an up move, bar 3 mid-range after
+    // another. OBV would add the whole volume to both; A/D adds all of bar
+    // 2's and none of bar 3's.
+    const v = col(accumulationDistribution(ohlcv(adBars)), 'ad');
+    expect(v[2]! - v[1]!).toBe(300); // clv = +1 → the whole 300
+    expect(v[3]! - v[2]!).toBe(0); // clv = 0 → nothing, on an up close
+  });
+
+  it('defaults to the `ad` output name, and honours a custom one', () => {
+    const named = accumulationDistribution(ohlcv(adBars), { output: 'accum' });
+    expect(col(named, 'accum')).toEqual([50, -50, 250, 250]);
+    expect(col(named, 'ad').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('reads redirected high/low/close/volume columns', () => {
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'hi', kind: 'number' },
+        { name: 'lo', kind: 'number' },
+        { name: 'px', kind: 'number' },
+        { name: 'qty', kind: 'number' },
+      ] as const,
+      rows: adBars.map(([h, l, c, v], i) => [i, h, l, c, v]) as Array<
+        [number, number, number, number, number]
+      >,
+    });
+    expect(
+      col(
+        accumulationDistribution(s, {
+          high: 'hi',
+          low: 'lo',
+          close: 'px',
+          volume: 'qty',
+        }),
+        'ad',
+      ),
+    ).toEqual([50, -50, 250, 250]);
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const v = col(
+      accumulationDistribution(ohlcv(adBars), { volume: 'nope' as never }),
+      'ad',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('shifts the seed past a leading gap, and propagates an interior one', () => {
+    const lead = col(
+      accumulationDistribution(
+        ohlcvGappy([
+          [12, 10, undefined, 100],
+          [14, 12, 12.5, 200],
+          [16, 14, 16, 300],
+          [18, 16, 17, 400],
+        ]),
+      ),
+      'ad',
+    );
+    expect(lead).toEqual([undefined, -100, 200, 200]);
+
+    const hole = col(
+      accumulationDistribution(
+        ohlcvGappy([
+          [12, 10, 11.5, 100],
+          [14, 12, 12.5, 200],
+          [16, 14, 16, undefined],
+          [18, 16, 17, 400],
+        ]),
+      ),
+      'ad',
+    );
+    expect(hole.slice(0, 2)).toEqual([50, -50]);
+    expect(hole.slice(2)).toEqual([undefined, undefined]);
+  });
+
+  it('treats a flat bar as a gap — the documented delta from TA-Lib', () => {
+    // TA-Lib's AD folds a zero-range bar in as a ZERO contribution and
+    // carries on (measured 0.7.1). A bar with no range has no close
+    // location, so this reports no level from there on.
+    const v = col(
+      accumulationDistribution(
+        ohlcv([
+          [12, 10, 11.5, 100],
+          [14, 12, 12.5, 200],
+          [15, 15, 15, 300],
+          [18, 16, 17, 400],
+        ]),
+      ),
+      'ad',
+    );
+    expect(v.slice(0, 2)).toEqual([50, -50]);
+    expect(v.slice(2)).toEqual([undefined, undefined]);
+  });
+
+  it('rejects a colliding output', () => {
+    expect(() =>
+      accumulationDistribution(ohlcv(adBars), { output: 'close' }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('chaikinOscillator', () => {
+  it('is the difference of two EMAs of the A/D line, hand-computed', () => {
+    // A/D = [50, −50, 250, 250]. fast 1 is the line itself (α = 1); slow 2
+    // is α = 2/3 seeded on the first sample, emitted from its second.
+    const v = col(
+      chaikinOscillator(ohlcv(adBars), { fastPeriod: 1, slowPeriod: 2 }),
+      'chaikinOsc',
+    );
+    const slow1 = (2 / 3) * -50 + (1 / 3) * 50;
+    const slow2 = (2 / 3) * 250 + (1 / 3) * slow1;
+    const slow3 = (2 / 3) * 250 + (1 / 3) * slow2;
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(-50 - slow1, 12);
+    expect(v[2]).toBeCloseTo(250 - slow2, 12);
+    expect(v[3]).toBeCloseTo(250 - slow3, 12);
+  });
+
+  it('smooths the SAME A/D array the standalone study appends', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 6 * Math.sin(i / 3);
+      return [
+        c + 1.2,
+        c - 0.9,
+        c + 0.3 * Math.cos(i / 2),
+        900 + 300 * (i % 5),
+      ] as [number, number, number, number];
+    });
+    const line = col(accumulationDistribution(ohlcv(rows)), 'ad');
+    const osc = col(
+      chaikinOscillator(ohlcv(rows), { fastPeriod: 3, slowPeriod: 10 }),
+      'chaikinOsc',
+    );
+    // Rebuild the oscillator from the appended line via the shipped `ema`
+    // study, which is the same first-sample-seeded average.
+    const asSeries = new TimeSeries({
+      name: 'ad',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'ad', kind: 'number' },
+      ] as const,
+      rows: line.map((x, i) => [i, x!]) as Array<[number, number]>,
+    });
+    const fast = col(
+      ema(asSeries, { period: 3, column: 'ad', output: 'f' }),
+      'f',
+    );
+    const slow = col(
+      ema(asSeries, { period: 10, column: 'ad', output: 's' }),
+      's',
+    );
+    for (let i = 0; i < rows.length; i += 1) {
+      if (slow[i] === undefined) expect(osc[i], `bar ${i}`).toBeUndefined();
+      else expect(osc[i]!, `bar ${i}`).toBeCloseTo(fast[i]! - slow[i]!, 9);
+    }
+  });
+
+  it('defaults to 3 / 10 and the `chaikinOsc` column', () => {
+    const rows = Array.from({ length: 24 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 4);
+      return [c + 1, c - 1, c + 0.4 * Math.cos(i), 1000 + 200 * (i % 7)] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const v = col(chaikinOscillator(ohlcv(rows)), 'chaikinOsc');
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+    // The warm-up pins only `slowPeriod`; the values have to pin `fastPeriod`.
+    expect(v).toEqual(
+      col(
+        chaikinOscillator(ohlcv(rows), { fastPeriod: 3, slowPeriod: 10 }),
+        'chaikinOsc',
+      ),
+    );
+    expect(v[23]).not.toBeCloseTo(
+      col(chaikinOscillator(ohlcv(rows), { fastPeriod: 4 }), 'chaikinOsc')[23]!,
+      6,
+    );
+  });
+
+  it('honours output and the redirected columns', () => {
+    const r = chaikinOscillator(ohlcv(adBars), {
+      fastPeriod: 1,
+      slowPeriod: 2,
+      high: 'high',
+      volume: 'volume',
+      output: 'co',
+    });
+    expect(col(r, 'co')[1]).toBeCloseTo(
+      -50 - ((2 / 3) * -50 + (1 / 3) * 50),
+      12,
+    );
+  });
+
+  it('reads all-missing when an input column is misnamed', () => {
+    const v = col(
+      chaikinOscillator(ohlcv(adBars), {
+        fastPeriod: 1,
+        slowPeriod: 2,
+        low: 'nope' as never,
+      }),
+      'chaikinOsc',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects bad periods, a swapped pair, and a colliding output', () => {
+    expect(() => chaikinOscillator(ohlcv(adBars), { fastPeriod: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => chaikinOscillator(ohlcv(adBars), { slowPeriod: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      chaikinOscillator(ohlcv(adBars), { fastPeriod: 10, slowPeriod: 3 }),
+    ).toThrow(/shorter/);
+    expect(() =>
+      chaikinOscillator(ohlcv(adBars), { fastPeriod: 5, slowPeriod: 5 }),
+    ).toThrow(/shorter/);
+    expect(() => chaikinOscillator(ohlcv(adBars), { output: 'low' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the slow period exceeds the series, length kept', () => {
+    const v = col(
+      chaikinOscillator(ohlcv(adBars), { fastPeriod: 2, slowPeriod: 9 }),
+      'chaikinOsc',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('priceVolumeTrend', () => {
+  const closes = [10, 11, 11, 9];
+  const volumes = [100, 200, 300, 400];
+
+  it('accumulates the FRACTIONAL change times volume, hand-computed', () => {
+    const v = col(priceVolumeTrend(cv(closes, volumes)), 'pvt');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(20, 12); // 0.1 × 200
+    expect(v[2]).toBeCloseTo(20, 12); // unchanged close adds nothing
+    expect(v[3]).toBeCloseTo(20 + (-2 / 11) * 400, 12);
+  });
+
+  it('is not the percent form: a 10% bar on 200 lots adds 20, not 2000', () => {
+    // The kernel it composes on returns a PERCENT; PVT's definition is the
+    // fraction, and the /100 is what this pins.
+    const v = col(priceVolumeTrend(cv([10, 11], [100, 200])), 'pvt');
+    expect(v[1]).toBeCloseTo(20, 12);
+  });
+
+  it('bar 0 is undefined, not 0 — and the later levels are unchanged by that', () => {
+    const v = col(priceVolumeTrend(cv(closes, volumes)), 'pvt');
+    expect(v[0]).toBeUndefined();
+    // A seed-at-zero implementation would agree from bar 1 on; that is why
+    // declining to invent the seed costs nothing.
+    expect(v[1]).toBeCloseTo(20, 12);
+  });
+
+  it('defaults to `pvt`, honours output and redirected columns', () => {
+    const named = priceVolumeTrend(cv(closes, volumes), {
+      close: 'close',
+      volume: 'volume',
+      output: 'trend',
+    });
+    expect(col(named, 'trend')[1]).toBeCloseTo(20, 12);
+    expect(col(named, 'pvt').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const v = col(
+      priceVolumeTrend(cv(closes, volumes), { close: 'nope' as never }),
+      'pvt',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('shifts the seed past a leading gap and propagates an interior one', () => {
+    const lead = col(
+      priceVolumeTrend(cvGappy([undefined, 10, 11, 11], volumes)),
+      'pvt',
+    );
+    expect(lead[0]).toBeUndefined();
+    expect(lead[1]).toBeUndefined(); // no base for bar 1's change either
+    expect(lead[2]).toBeCloseTo(30, 12); // 0.1 × 300
+    expect(lead[3]).toBeCloseTo(30, 12);
+
+    const hole = col(
+      priceVolumeTrend(cvGappy(closes, [100, 200, undefined, 400])),
+      'pvt',
+    );
+    expect(hole[1]).toBeCloseTo(20, 12);
+    expect(hole.slice(2)).toEqual([undefined, undefined]);
+  });
+
+  it('stops at a zero base rather than reporting Infinity', () => {
+    const v = col(priceVolumeTrend(cv([1, 0, 5, 6], volumes)), 'pvt');
+    expect(v[1]).toBeCloseTo(-200, 12); // (0/1 − 1) × 200
+    expect(v.slice(2)).toEqual([undefined, undefined]);
+  });
+
+  it('rejects a colliding output', () => {
+    expect(() =>
+      priceVolumeTrend(cv(closes, volumes), { output: 'volume' }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('chaikinMoneyFlow', () => {
+  it('is Σ(CLV × volume) / Σ volume over the window, hand-computed', () => {
+    const v = col(chaikinMoneyFlow(ohlcv(adBars), { period: 2 }), 'cmf');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(-50 / 300, 12);
+    expect(v[2]).toBeCloseTo(200 / 500, 12);
+    expect(v[3]).toBeCloseTo(300 / 700, 12);
+  });
+
+  it('is the volume-WEIGHTED mean of CLV, not the plain one', () => {
+    // Both bars close at the same two locations; only the weights differ.
+    const weighted = col(
+      chaikinMoneyFlow(
+        ohlcv([
+          [12, 10, 12, 1],
+          [14, 12, 12, 99],
+        ]),
+        { period: 2 },
+      ),
+      'cmf',
+    );
+    // clv = +1 on one lot, −1 on ninety-nine: (1 − 99)/100.
+    expect(weighted[1]).toBeCloseTo(-0.98, 12);
+  });
+
+  it('emits missing on a window with no volume, and recovers after it', () => {
+    const v = col(
+      chaikinMoneyFlow(
+        ohlcv([
+          [12, 10, 11.5, 0],
+          [14, 12, 12.5, 0],
+          [16, 14, 16, 300],
+          [18, 16, 17, 400],
+        ]),
+        { period: 2 },
+      ),
+      'cmf',
+    );
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo(1, 12); // only bar 2 has weight; clv = +1
+    expect(v[3]).toBeCloseTo(300 / 700, 12);
+  });
+
+  it('drops a flat bar from BOTH sums and recovers once it leaves', () => {
+    // A window study, unlike the A/D line: the same flat bar costs only the
+    // windows that contain it.
+    const v = col(
+      chaikinMoneyFlow(
+        ohlcv([
+          [12, 10, 11.5, 100],
+          [15, 15, 15, 200],
+          [16, 14, 16, 300],
+          [18, 16, 17, 400],
+        ]),
+        { period: 2 },
+      ),
+      'cmf',
+    );
+    expect(v[1]).toBeCloseTo(0.5, 12); // bar 0 alone: 50/100
+    expect(v[2]).toBeCloseTo(1, 12); // bar 2 alone: 300/300
+    expect(v[3]).toBeCloseTo(300 / 700, 12);
+  });
+
+  it('defaults to period 20 and the `cmf` column', () => {
+    const rows = Array.from({ length: 25 }, (_, i) => {
+      const c = 100 + 4 * Math.sin(i / 3);
+      return [c + 1, c - 1, c + 0.5 * Math.cos(i), 800 + 100 * (i % 6)] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const v = col(chaikinMoneyFlow(ohlcv(rows)), 'cmf');
+    expect(v.slice(0, 19).every((x) => x === undefined)).toBe(true);
+    expect(v[19]).toBeDefined();
+    expect(v).toEqual(
+      col(chaikinMoneyFlow(ohlcv(rows), { period: 20 }), 'cmf'),
+    );
+  });
+
+  it('stays inside [−1, +1] — a weighted mean of a bounded quantity', () => {
+    // Bars at both extremes of the range, on wildly different volumes: the
+    // mean can reach the bounds but must never pass them.
+    const extremes: Array<[number, number, number, number]> = [
+      [12, 10, 12, 5000],
+      [14, 12, 12, 10],
+      [16, 14, 16, 7000],
+      [18, 16, 16, 3],
+    ];
+    const w = col(chaikinMoneyFlow(ohlcv(extremes), { period: 3 }), 'cmf');
+    expect(w.filter((x) => x !== undefined)).not.toHaveLength(0);
+    for (const x of w)
+      if (x !== undefined) expect(Math.abs(x)).toBeLessThanOrEqual(1);
+  });
+
+  it('honours output and redirected columns; reads all-missing when misnamed', () => {
+    const named = chaikinMoneyFlow(ohlcv(adBars), {
+      period: 2,
+      close: 'close',
+      output: 'flow',
+    });
+    expect(col(named, 'flow')[1]).toBeCloseTo(-50 / 300, 12);
+    const v = col(
+      chaikinMoneyFlow(ohlcv(adBars), { period: 2, high: 'nope' as never }),
+      'cmf',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding output', () => {
+    expect(() => chaikinMoneyFlow(ohlcv(adBars), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => chaikinMoneyFlow(ohlcv(adBars), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => chaikinMoneyFlow(ohlcv(adBars), { output: 'high' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(chaikinMoneyFlow(ohlcv(adBars), { period: 9 }), 'cmf');
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('moneyFlowIndex', () => {
+  // h = c + 1, l = c − 1 makes the typical price exactly the close, so the
+  // flows are hand-computable: 10, 12, 11, 13 on 100, 200, 300, 400.
+  const mfiBars: Array<[number, number, number, number]> = [
+    [11, 9, 10, 100],
+    [13, 11, 12, 200],
+    [12, 10, 11, 300],
+    [14, 12, 13, 400],
+  ];
+
+  it('is the RSI form on raw money flow, hand-computed', () => {
+    const v = col(moneyFlowIndex(ohlcv(mfiBars), { period: 2 }), 'mfi');
+    expect(v.slice(0, 2)).toEqual([undefined, undefined]);
+    // window {1,2}: up 12·200 = 2400, down 11·300 = 3300
+    expect(v[2]).toBeCloseTo((100 * 2400) / 5700, 12);
+    // window {2,3}: up 13·400 = 5200, down 3300
+    expect(v[3]).toBeCloseTo((100 * 5200) / 8500, 12);
+  });
+
+  it('warms up over `period` rows — the first bar has no previous typical price', () => {
+    const rows = Array.from(
+      { length: 12 },
+      (_, i) =>
+        [102 + i, 98 + i, 100 + i, 500 + 10 * i] as [
+          number,
+          number,
+          number,
+          number,
+        ],
+    );
+    const v = col(moneyFlowIndex(ohlcv(rows), { period: 5 }), 'mfi');
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBeCloseTo(100, 12); // every bar up
+  });
+
+  it('is 100 on an all-up window and 0 on an all-down one', () => {
+    const up = Array.from(
+      { length: 6 },
+      (_, i) => [i + 2, i, i + 1, 100] as [number, number, number, number],
+    );
+    const down = [...up].reverse();
+    expect(col(moneyFlowIndex(ohlcv(up), { period: 3 }), 'mfi')[5]).toBeCloseTo(
+      100,
+      12,
+    );
+    expect(
+      col(moneyFlowIndex(ohlcv(down), { period: 3 }), 'mfi')[5],
+    ).toBeCloseTo(0, 12);
+  });
+
+  it('emits missing on a window with no flow — where TA-Lib emits 0', () => {
+    // Flat typical price: nothing rose and nothing fell. TA-Lib reports 0,
+    // its most bearish reading, for a window that showed no direction
+    // (measured 0.7.1). This reports no value, the `rsi` flat-window rule.
+    const flat = Array.from(
+      { length: 6 },
+      () => [11, 9, 10, 100] as [number, number, number, number],
+    );
+    const v = col(moneyFlowIndex(ohlcv(flat), { period: 3 }), 'mfi');
+    expect(v.every((x) => x === undefined)).toBe(true);
+
+    // Zero volume is the other way to reach it.
+    const noVolume = Array.from(
+      { length: 6 },
+      (_, i) => [i + 2, i, i + 1, 0] as [number, number, number, number],
+    );
+    expect(
+      col(moneyFlowIndex(ohlcv(noVolume), { period: 3 }), 'mfi').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('an unchanged typical price counts for neither side', () => {
+    // Bar 2 repeats bar 1's typical price on a big volume; it must not move
+    // the reading, which stays the two-sided answer of bars 1 and 3.
+    const v = col(
+      moneyFlowIndex(
+        ohlcv([
+          [11, 9, 10, 100],
+          [13, 11, 12, 200],
+          [13, 11, 12, 9000],
+          [12, 10, 11, 300],
+        ]),
+        { period: 3 },
+      ),
+      'mfi',
+    );
+    expect(v[3]).toBeCloseTo((100 * 2400) / (2400 + 3300), 12);
+  });
+
+  it('weights by volume: the same price path on different volume differs', () => {
+    const light: Array<[number, number, number, number]> = [
+      [11, 9, 10, 100],
+      [13, 11, 12, 100],
+      [12, 10, 11, 100],
+    ];
+    const heavyDown: Array<[number, number, number, number]> = [
+      [11, 9, 10, 100],
+      [13, 11, 12, 100],
+      [12, 10, 11, 900],
+    ];
+    const a = col(moneyFlowIndex(ohlcv(light), { period: 2 }), 'mfi')[2]!;
+    const b = col(moneyFlowIndex(ohlcv(heavyDown), { period: 2 }), 'mfi')[2]!;
+    expect(b).toBeLessThan(a);
+  });
+
+  it('defaults to period 14 and the `mfi` column; honours output', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      return [c + 1, c - 1, c, 900 + 100 * (i % 4)] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const v = col(moneyFlowIndex(ohlcv(rows)), 'mfi');
+    expect(v.slice(0, 14).every((x) => x === undefined)).toBe(true);
+    expect(v[14]).toBeDefined();
+    expect(v).toEqual(col(moneyFlowIndex(ohlcv(rows), { period: 14 }), 'mfi'));
+    expect(
+      col(moneyFlowIndex(ohlcv(rows), { period: 14, output: 'flow' }), 'flow'),
+    ).toEqual(v);
+  });
+
+  it('reads all-missing when an input column is misnamed', () => {
+    const v = col(
+      moneyFlowIndex(ohlcv(mfiBars), { period: 2, low: 'nope' as never }),
+      'mfi',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding output', () => {
+    expect(() => moneyFlowIndex(ohlcv(mfiBars), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => moneyFlowIndex(ohlcv(mfiBars), { period: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => moneyFlowIndex(ohlcv(mfiBars), { output: 'volume' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(moneyFlowIndex(ohlcv(mfiBars), { period: 9 }), 'mfi');
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('forceIndex', () => {
+  const closes = [10, 12, 11, 13];
+  const volumes = [100, 200, 300, 400];
+
+  it('at period 1 is the raw force, Δclose × volume', () => {
+    const v = col(forceIndex(cv(closes, volumes), { period: 1 }), 'force');
+    expect(v).toEqual([undefined, 400, -300, 800]);
+  });
+
+  it('at period 2 is the EMA of that raw force, hand-computed', () => {
+    const v = col(forceIndex(cv(closes, volumes), { period: 2 }), 'force');
+    const e2 = (2 / 3) * -300 + (1 / 3) * 400;
+    const e3 = (2 / 3) * 800 + (1 / 3) * e2;
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined(); // one raw value so far
+    expect(v[2]).toBeCloseTo(e2, 12);
+    expect(v[3]).toBeCloseTo(e3, 12);
+  });
+
+  it('warms up over `period` rows, not `period − 1`', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => 100 + i);
+    const v = col(
+      forceIndex(
+        cv(
+          rows,
+          rows.map(() => 500),
+        ),
+        { period: 4 },
+      ),
+      'force',
+    );
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBeDefined();
+  });
+
+  it('uses the SAME EMA the package ships', () => {
+    const closesLong = Array.from(
+      { length: 20 },
+      (_, i) => 100 + 5 * Math.sin(i / 3),
+    );
+    const vols = closesLong.map((_, i) => 800 + 90 * (i % 5));
+    const force = col(forceIndex(cv(closesLong, vols), { period: 4 }), 'force');
+    const raw = closesLong.map((c, i) =>
+      i === 0 ? undefined : (c - closesLong[i - 1]!) * vols[i]!,
+    );
+    const rawSeries = new TimeSeries({
+      name: 'raw',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'raw', kind: 'number', required: false },
+      ] as const,
+      rows: raw.map((x, i) => [i, x]) as Array<[number, number | undefined]>,
+    });
+    const reference = col(
+      ema(rawSeries, { period: 4, column: 'raw', output: 'e' }),
+      'e',
+    );
+    for (let i = 0; i < closesLong.length; i += 1) {
+      if (reference[i] === undefined)
+        expect(force[i], `bar ${i}`).toBeUndefined();
+      else expect(force[i]!, `bar ${i}`).toBeCloseTo(reference[i]!, 9);
+    }
+  });
+
+  it('defaults to Elder’s 13 and the `force` column; honours output', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => 100 + i * 0.5);
+    const vols = rows.map(() => 700);
+    const v = col(forceIndex(cv(rows, vols)), 'force');
+    expect(v.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(v[13]).toBeDefined();
+    expect(v).toEqual(col(forceIndex(cv(rows, vols), { period: 13 }), 'force'));
+    expect(
+      col(forceIndex(cv(rows, vols), { output: 'elderForce' }), 'elderForce'),
+    ).toEqual(v);
+  });
+
+  it('a gap costs two bars, then the EMA carries on', () => {
+    const v = col(
+      forceIndex(
+        cvGappy(
+          [10, 12, undefined, 13, 14, 15, 16],
+          volumes.concat([500, 600, 700]),
+        ),
+        {
+          period: 2,
+        },
+      ),
+      'force',
+    );
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined(); // its change reads the missing close
+    expect(v[4]).toBeDefined();
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const v = col(
+      forceIndex(cv(closes, volumes), { volume: 'nope' as never, period: 2 }),
+      'force',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding output', () => {
+    expect(() => forceIndex(cv(closes, volumes), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => forceIndex(cv(closes, volumes), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => forceIndex(cv(closes, volumes), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(forceIndex(cv(closes, volumes), { period: 9 }), 'force');
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('easeOfMovement', () => {
+  // mid = 11, 13, 14; range = 2, 2, 4; volume = 100, 200, 400.
+  const eomBars: Array<[number, number, number, number]> = [
+    [12, 10, 11, 100],
+    [14, 12, 13, 200],
+    [16, 12, 14, 400],
+  ];
+
+  it('is the midpoint move divided by the box ratio, hand-computed', () => {
+    const v = col(
+      easeOfMovement(ohlcv(eomBars), { period: 1, scale: 1 }),
+      'eom',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo((2 * 2) / 200, 12); // 0.02
+    expect(v[2]).toBeCloseTo((1 * 4) / 400, 12); // 0.01
+  });
+
+  it('defaults the scale to 100,000,000 (StockCharts / ChartIQ)', () => {
+    const v = col(easeOfMovement(ohlcv(eomBars), { period: 1 }), 'eom');
+    expect(v[1]).toBeCloseTo(0.02 * 100_000_000, 6);
+    expect(v[2]).toBeCloseTo(0.01 * 100_000_000, 6);
+  });
+
+  it('smooths with the chosen MA over `period` bars', () => {
+    const v = col(
+      easeOfMovement(ohlcv(eomBars), { period: 2, scale: 1 }),
+      'eom',
+    );
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo((0.02 + 0.01) / 2, 12);
+  });
+
+  it('takes any MaType and routes to the shared engine', () => {
+    const rows = Array.from({ length: 16 }, (_, i) => {
+      const c = 100 + 4 * Math.sin(i / 2);
+      return [c + 1 + 0.3 * (i % 3), c - 1, c, 900 + 200 * (i % 5)] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const bySma = col(
+      easeOfMovement(ohlcv(rows), { period: 4, maType: 'sma' }),
+      'eom',
+    );
+    const byEma = col(
+      easeOfMovement(ohlcv(rows), { period: 4, maType: 'ema' }),
+      'eom',
+    );
+    expect(bySma[15]).not.toBeCloseTo(byEma[15]!, 6);
+    expect(() =>
+      easeOfMovement(ohlcv(rows), { maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+  });
+
+  it('emits missing for a flat bar and for a bar with no volume', () => {
+    const flat = col(
+      easeOfMovement(
+        ohlcv([
+          [12, 10, 11, 100],
+          [13, 13, 13, 200],
+          [16, 12, 14, 400],
+        ]),
+        { period: 1, scale: 1 },
+      ),
+      'eom',
+    );
+    expect(flat[1]).toBeUndefined(); // the box ratio divides by the range
+    expect(flat[2]).toBeDefined();
+
+    const noVolume = col(
+      easeOfMovement(
+        ohlcv([
+          [12, 10, 11, 100],
+          [14, 12, 13, 0],
+          [16, 12, 14, 400],
+        ]),
+        { period: 1, scale: 1 },
+      ),
+      'eom',
+    );
+    expect(noVolume[1]).toBeUndefined(); // and not ±Infinity
+    expect(noVolume[2]).toBeDefined();
+  });
+
+  it('guards the zero-volume bar BEFORE the smoother — `smma` would carry an Infinity', () => {
+    // Every window MA type masks a non-finite cell, so on `sma` the guard is
+    // invisible. `smma` is Wilder's recursion: it CARRIES what it is given,
+    // and an unguarded x/0 would reach `withColumn` as ±Infinity, which it
+    // rejects loudly. Measured: with the guard, the zero-volume bar poisons
+    // the smma seed and the column is empty (the documented smma gap rule);
+    // the `sma` and `ema` columns over the same bars recover.
+    const rows: Array<[number, number, number, number]> = [
+      [12, 10, 11, 100],
+      [14, 12, 13, 200],
+      [16, 12, 14, 0],
+      [18, 14, 16, 400],
+      [20, 16, 18, 500],
+      [22, 18, 20, 600],
+    ];
+    const bySmma = col(
+      easeOfMovement(ohlcv(rows), { period: 2, maType: 'smma', scale: 1 }),
+      'eom',
+    );
+    expect(bySmma).toHaveLength(6);
+    expect(bySmma.every((x) => x === undefined)).toBe(true);
+    const bySma = col(
+      easeOfMovement(ohlcv(rows), { period: 2, maType: 'sma', scale: 1 }),
+      'eom',
+    );
+    expect(bySma[4]).toBeCloseTo(0.018, 12);
+  });
+
+  it('defaults to period 14 / sma and the `eom` column; honours output', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => {
+      const c = 100 + i;
+      return [c + 1, c - 1, c, 1000] as [number, number, number, number];
+    });
+    const v = col(easeOfMovement(ohlcv(rows)), 'eom');
+    expect(v.slice(0, 14).every((x) => x === undefined)).toBe(true);
+    expect(v[14]).toBeDefined();
+    expect(v).toEqual(
+      col(easeOfMovement(ohlcv(rows), { period: 14, maType: 'sma' }), 'eom'),
+    );
+    expect(col(easeOfMovement(ohlcv(rows), { output: 'emv' }), 'emv')).toEqual(
+      v,
+    );
+  });
+
+  it('reads all-missing when an input column is misnamed', () => {
+    const v = col(
+      easeOfMovement(ohlcv(eomBars), { period: 1, volume: 'nope' as never }),
+      'eom',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period, a bad scale, and a colliding output', () => {
+    expect(() => easeOfMovement(ohlcv(eomBars), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => easeOfMovement(ohlcv(eomBars), { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => easeOfMovement(ohlcv(eomBars), { scale: 0 })).toThrow(
+      /scale must be a positive/,
+    );
+    expect(() => easeOfMovement(ohlcv(eomBars), { scale: -1 })).toThrow(
+      /scale must be a positive/,
+    );
+    expect(() =>
+      easeOfMovement(ohlcv(eomBars), { scale: Number.POSITIVE_INFINITY }),
+    ).toThrow(/scale must be a positive/);
+    expect(() => easeOfMovement(ohlcv(eomBars), { output: 'high' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(easeOfMovement(ohlcv(eomBars), { period: 9 }), 'eom');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('volumeOscillator', () => {
+  const volumes = [10, 20, 30, 40, 50];
+  const bars5 = volumes.map(
+    (v, i) => [102 + i, 98 + i, 100 + i, v] as [number, number, number, number],
+  );
+
+  it('is the percent spread of two volume MAs, hand-computed', () => {
+    const v = col(
+      volumeOscillator(ohlcv(bars5), { fastPeriod: 1, slowPeriod: 2 }),
+      'volOsc',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo((100 * (20 - 15)) / 15, 12);
+    expect(v[2]).toBeCloseTo((100 * (30 - 25)) / 25, 12);
+    expect(v[4]).toBeCloseTo((100 * (50 - 45)) / 45, 12);
+  });
+
+  it('IS priceOscillator over the volume column — the alias, pinned', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      return [
+        c + 1,
+        c - 1,
+        c,
+        900 + 400 * Math.sin(i / 2.2) + (i % 7 === 3 ? 4000 : 0),
+      ] as [number, number, number, number];
+    });
+    const alias = col(volumeOscillator(ohlcv(rows)), 'volOsc');
+    const explicit = col(
+      priceOscillator(ohlcv(rows), {
+        column: 'volume',
+        mode: 'percent',
+        maType: 'sma',
+        fastPeriod: 5,
+        slowPeriod: 10,
+        output: 'volOsc',
+      }),
+      'volOsc',
+    );
+    expect(alias).toEqual(explicit);
+  });
+
+  it('defaults to 5 / 10 / sma — not priceOscillator’s 12 / 26 / ema', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + i * 0.3;
+      return [c + 1, c - 1, c, 1000 + 300 * Math.sin(i / 2)] as [
+        number,
+        number,
+        number,
+        number,
+      ];
+    });
+    const v = col(volumeOscillator(ohlcv(rows)), 'volOsc');
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+    expect(v[29]).not.toBeCloseTo(
+      col(volumeOscillator(ohlcv(rows), { fastPeriod: 4 }), 'volOsc')[29]!,
+      6,
+    );
+    expect(v[29]).not.toBeCloseTo(
+      col(volumeOscillator(ohlcv(rows), { maType: 'ema' }), 'volOsc')[29]!,
+      6,
+    );
+  });
+
+  it('reads the volume column, and a redirected one', () => {
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number' },
+        { name: 'qty', kind: 'number' },
+      ] as const,
+      rows: volumes.map((v, i) => [i, 100 + i, v]) as Array<
+        [number, number, number]
+      >,
+    });
+    const v = col(
+      volumeOscillator(s, { fastPeriod: 1, slowPeriod: 2, volume: 'qty' }),
+      'volOsc',
+    );
+    expect(v[1]).toBeCloseTo((100 * (20 - 15)) / 15, 12);
+  });
+
+  it('emits missing, not Infinity, on a window of zero-volume bars', () => {
+    const dead = Array.from(
+      { length: 4 },
+      (_, i) =>
+        [102 + i, 98 + i, 100 + i, 0] as [number, number, number, number],
+    );
+    const v = col(
+      volumeOscillator(ohlcv(dead), { fastPeriod: 1, slowPeriod: 2 }),
+      'volOsc',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('honours output; rejects a swapped pair and a colliding output', () => {
+    expect(
+      col(
+        volumeOscillator(ohlcv(bars5), {
+          fastPeriod: 1,
+          slowPeriod: 2,
+          output: 'vo',
+        }),
+        'vo',
+      )[1],
+    ).toBeCloseTo((100 * (20 - 15)) / 15, 12);
+    expect(() =>
+      volumeOscillator(ohlcv(bars5), { fastPeriod: 10, slowPeriod: 5 }),
+    ).toThrow(/shorter/);
+    expect(() => volumeOscillator(ohlcv(bars5), { fastPeriod: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => volumeOscillator(ohlcv(bars5), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the slow period exceeds the series, length kept', () => {
+    const v = col(
+      volumeOscillator(ohlcv(bars5), { fastPeriod: 2, slowPeriod: 9 }),
+      'volOsc',
+    );
+    expect(v).toHaveLength(5);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('volumeRateOfChange is percentChange over volume — no second study', () => {
+  it('percentChange({ column: volume }) IS the VROC definition', () => {
+    // Corpus §6.6 lists "Volume Rate of Change" as `(V / V[−n] − 1) × 100`,
+    // which is exactly `percentChange`'s formula (itself cross-checked
+    // against TA-Lib's ROC). Shipping a `volumeRateOfChange` study would be
+    // a rename with a different default column — step 0 of the studies
+    // README. This test is the recipe, and the guard that it stays true.
+    const volumes = [100, 120, 90, 150, 200];
+    const s = ohlcv(
+      volumes.map(
+        (v, i) =>
+          [102 + i, 98 + i, 100 + i, v] as [number, number, number, number],
+      ),
+    );
+    const vroc = col(
+      percentChange(s, { column: 'volume', periods: 2, output: 'vroc' }),
+      'vroc',
+    );
+    expect(vroc.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(vroc[2]).toBeCloseTo(-10, 12); // 90 / 100 − 1
+    expect(vroc[3]).toBeCloseTo(25, 12); // 150 / 120 − 1
+    expect(vroc[4]).toBeCloseTo((200 / 90 - 1) * 100, 12);
   });
 });
