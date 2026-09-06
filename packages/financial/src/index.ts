@@ -25,6 +25,8 @@ export type { RollingReducer } from './kernels/rolling.js';
 export type { MaType } from './kernels/moving-average.js';
 export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
 export { percentChangeValues } from './kernels/rate-of-change.js';
+export { directionalMovementValues } from './kernels/directional-movement.js';
+export { barsSinceExtremeValues } from './kernels/highest-lowest.js';
 export type {
   MovingAverageOptions,
   MovingAverageTypeOptions,
@@ -119,3 +121,9 @@ export type { RelativeVigorIndexOptions } from './studies/relative-vigor-index.j
 export { relativeVigorIndex } from './studies/relative-vigor-index.js';
 export type { PsychologicalLineOptions } from './studies/psychological-line.js';
 export { psychologicalLine } from './studies/psychological-line.js';
+export type { DirectionalMovementOptions } from './studies/directional-movement.js';
+export { directionalMovement } from './studies/directional-movement.js';
+export type { AroonOptions } from './studies/aroon.js';
+export { aroon } from './studies/aroon.js';
+export type { VortexOptions } from './studies/vortex.js';
+export { vortex } from './studies/vortex.js';

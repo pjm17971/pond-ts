@@ -70,6 +70,63 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the Wilder directional group** (corpus §6.4) — three
+  studies and two new public kernels, in the uniform shape (redirectable bar
+  inputs, bar-count periods, length-preserving warm-up, a fluent method), each
+  with oracle cases at two periods.
+  - **`directionalMovement({ period = 14, high?, low?, close?, prefix = 'dm' })`**
+    → `dmPlus`, `dmMinus`, `dmDx`, `dmAdx`, `dmAdxr`. Wilder's Directional
+    Movement System — `+DI`, `−DI`, `DX`, `ADX` and `ADXR` in **one** study
+    with a **per-column warm-up** (bars 14 / 14 / 14 / 27 / 40 at the default),
+    the `macd` precedent rather than five studies re-running the same pipeline.
+    The `DI` denominator **is** `atr()`'s array, so the two measure range
+    identically by construction.
+    - **Seeding is Wilder's, not TA-Lib's**, and this is the one delta.
+      Wilder's worksheet seeds `+DM`/`−DM`/`TR` on the mean of the first
+      `period` values (what `wilderValues` runs, and what TA-Lib's own `ATR`
+      uses); TA-Lib's `ADX` family instead seeds on the first `period − 1` and
+      takes one decayed step, so TA-Lib's `+DI` denominator disagrees with
+      TA-Lib's own `ATR` (measured on the oracle input: `1.515450` vs
+      `1.411787` at `period 14`). Warm-up masks are identical to TA-Lib's on
+      all five columns; the oracle proves the **formula** exactly by replaying
+      our pipeline on TA-Lib's seed (`≤ 2.9e-14`) and bounds the pond-seed
+      transient separately — at `period 14`, `+DI` 0.117 points at the first
+      shared bar decaying to 0.0092 by bar 79, `ADX` 0.421 → 0.0046.
+    - **`ADXR` looks back `period − 1` bars**, TA-Lib's reading and the
+      package's own bar-count convention (a `period`-bar window spans
+      `i − period + 1 … i`). The literal "`period` bars ago" reading differs
+      by up to 2.64 points at `period 14`.
+    - **`+DI + −DI = 0` → `DX = 0`**, not `undefined`: both legs are
+      non-negative, so a zero sum forces a zero numerator (the `clvValues`
+      flat-bar rule, not the `percentOfRangeValues` flat-window one). A zero
+      **true range** is a genuine `0/0` and does read `undefined`.
+  - **`aroon({ period = 25, high?, low?, prefix = 'aroon' })`** → `aroonUp`,
+    `aroonDown`, `aroonOsc`. `100 · (period − bars since the extreme) / period`
+    on each side, and their difference. **Matches TA-Lib `AROON` and
+    `AROONOSC` exactly** (delta `0`, identical masks). The window is
+    **`period + 1` bars** — `period` counts the oldest _age_ reportable, and
+    "`period` bars ago" is itself a reading — so the warm-up is `period` rows;
+    **ties go to the most recent bar** (measured against TA-Lib). Invariant to
+    any monotonic rescaling of price, not merely to scale and shift.
+  - **`vortex({ period = 14, high?, low?, close?, prefix = 'vi' })`** →
+    `viPlus`, `viMinus`. Botes & Siepman's `Σ|high − prevLow| / Σ TR` and
+    `Σ|low − prevHigh| / Σ TR`. No TA-Lib function; pandas replication, with
+    the plain-bar-range denominator asserted as a visible separation. Both
+    legs are positive and **not bounded by 1**; `Σ TR = 0` → `undefined`
+    (unlike `DX`, the numerator is not forced to zero with it).
+  - **`directionalMovementValues(high, low)`** (`kernels/directional-movement.ts`)
+    — Wilder's `+DM`/`−DM` split in one pass, with the tie and sign rules and
+    an explicit `NaN` guard (an unknown move must not read as a flat one).
+  - **`barsSinceExtremeValues(values, period, 'max' | 'min')`**
+    (`kernels/highest-lowest.ts`) — the corpus's **G3 argmax gap**: bars since
+    the window's extreme, via a **monotonic deque**, so it is O(N) and _flat in
+    `period`_. Measured at 1M bars: 26.7 ms at `period 25` and 26.5 ms at
+    `period 200`, against a naive re-scan's 78 ms and 545 ms. `aroon` costs
+    102 ms at 1M bars against `donchian`'s 247 ms — the first measured
+    evidence for the monotonic-deque fast path core's rolling min/max wants.
+
+### Added
+
 - `@pond-ts/financial`: **the volume & money-flow group** (corpus §6.6) — eight
   studies over one new kernel, all in the uniform shape (redirectable bar
   inputs, bar-count periods, length-preserving warm-up, a fluent method) and

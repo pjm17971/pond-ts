@@ -58,6 +58,9 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  directionalMovement,
+  aroon,
+  vortex,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -302,6 +305,12 @@ function run(c: OracleCase): unknown {
       return relativeVigorIndex(ohlcSeries(), p as { period?: number });
     case 'psychologicalLine':
       return psychologicalLine(series(), p as { period?: number });
+    case 'directionalMovement':
+      return directionalMovement(ohlcSeries(), p as { period?: number });
+    case 'aroon':
+      return aroon(ohlcSeries(), p as { period?: number });
+    case 'vortex':
+      return vortex(ohlcSeries(), p as { period?: number });
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

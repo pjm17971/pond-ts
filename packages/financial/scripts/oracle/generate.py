@@ -2100,6 +2100,278 @@ def psychological_line(n: int) -> dict:
     return {"psy": col(v)}
 
 
+
+# --------------------------------------------------------------------------
+# The Wilder directional group (corpus 6.4): the Directional Movement System,
+# Aroon and the Vortex Indicator.
+#
+# THE SEED, again. TA-Lib's ADX family accumulates +DM / -DM / TR over the
+# first `n-1` bars and then takes one decayed step, so its first smoothed
+# value is NOT the mean of the first n. Wilder's own worksheet sums the first
+# n and then decays, which is `n x` the mean-form recursion `wilderValues`
+# runs -- and is what TA-Lib's own ATR uses. So ours seeds Wilder's way (its
+# DI denominator IS `atrValues`), and the proof splits in two, exactly as
+# `moving_average` splits the EMA family: replay OUR pipeline on TA-LIB's
+# seed and assert the FORMULA exactly, then bound the pond-seed transient.
+# --------------------------------------------------------------------------
+
+
+def _dms():
+    """+DM / -DM (Wilder): the part of this bar's move that lies outside the
+    previous bar's range, on whichever side moved further. At most one leg is
+    non-zero; a tie (including an inside bar's 0 == 0) makes both zero. Bar 0
+    is undefined -- no previous bar."""
+    up = h.diff()
+    dn = low_s.shift(1) - low_s
+    p = pd.Series(np.where((up > dn) & (up > 0), up, 0.0))
+    m = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0))
+    p.iloc[0] = math.nan
+    m.iloc[0] = math.nan
+    return p, m
+
+
+def _talib_dm_seed(x, n: int) -> pd.Series:
+    """TA-Lib's ADX-family accumulator, in SUM form: total the first n-1
+    values (bars 1..n-1), then one decayed step `S - S/n + x` for bar n, and
+    the same step onward. First value at bar n."""
+    v = np.asarray(x, dtype=float)
+    out = np.full(len(v), np.nan)
+    acc = float(np.sum(v[1:n]))
+    for i in range(n, len(v)):
+        acc = acc - acc / n + v[i]
+        out[i] = acc
+    return pd.Series(out)
+
+
+def _dx_from(pdi: pd.Series, mdi: pd.Series) -> pd.Series:
+    """100*|+DI - -DI| / (+DI + -DI), with a zero sum reading 0.
+
+    Both legs are non-negative, so a zero sum forces a zero numerator -- the
+    clvValues flat-BAR case, not the percentOfRangeValues flat-WINDOW one.
+    TA-Lib agrees (its ADX seed loop adds nothing to sumDX there)."""
+    total = pdi + mdi
+    out = pd.Series(np.full(len(pdi), math.nan))
+    zero = total == 0
+    live = (total != 0) & total.notna()
+    out[zero] = 0.0
+    out[live] = 100 * (pdi[live] - mdi[live]).abs() / total[live]
+    return out
+
+
+def _dm_pipeline(n: int, seed: str):
+    """The five columns, on either seeding convention. `seed='wilder'` is
+    ours (mean of the first n, i.e. `wilderValues` / `atrValues`);
+    `seed='talib'` replays TA-Lib's (n-1)-value accumulator."""
+    p, m = _dms()
+    tr = _true_range()
+    if seed == "wilder":
+        sp, sm, st = _wilder(p, n), _wilder(m, n), _atr_series(n)
+    else:
+        sp, sm, st = (_talib_dm_seed(x, n) for x in (p, m, tr))
+    pdi, mdi = 100 * sp / st, 100 * sm / st
+    dx = _dx_from(pdi, mdi)
+    adx = _wilder(dx, n)  # BOTH conventions seed ADX on the mean of n DXs
+    adxr = (adx + adx.shift(n - 1)) / 2
+    return pdi, mdi, dx, adx, adxr
+
+
+def directional_movement(n: int) -> dict:
+    """Wilder's DMS: +DI / -DI / DX / ADX / ADXR, on Wilder's seeding."""
+    pdi, mdi, dx, adx, adxr = _dm_pipeline(n, "wilder")
+    label = f"directionalMovement({n})"
+
+    # Warm-ups are analytic and must hold with or without TA-Lib installed.
+    for name, series_, want in (
+        ("dmPlus", pdi, n),
+        ("dmMinus", mdi, n),
+        ("dmDx", dx, n),
+        ("dmAdx", adx, 2 * n - 1),
+        ("dmAdxr", adxr, 3 * n - 2),
+    ):
+        assert series_.first_valid_index() == want, (
+            f"{label} {name} first valid at {series_.first_valid_index()}, "
+            f"expected {want}"
+        )
+
+    if talib is not None:
+        args = (
+            np.asarray(highs, dtype=float),
+            np.asarray(lows, dtype=float),
+            np.asarray(closes, dtype=float),
+        )
+        refs = {
+            "dmPlus": pd.Series(talib.PLUS_DI(*args, timeperiod=n)),
+            "dmMinus": pd.Series(talib.MINUS_DI(*args, timeperiod=n)),
+            "dmDx": pd.Series(talib.DX(*args, timeperiod=n)),
+            "dmAdx": pd.Series(talib.ADX(*args, timeperiod=n)),
+            "dmAdxr": pd.Series(talib.ADXR(*args, timeperiod=n)),
+        }
+        ours = dict(zip(refs, (pdi, mdi, dx, adx, adxr)))
+
+        # (1) MASKS FIRST -- nanmax is blind to a one-sided NaN. Ours must be
+        # TA-Lib's exactly on all five: the seed moves values, never lookback.
+        for name, ref in refs.items():
+            assert list(ours[name].isna()) == list(ref.isna()), (
+                f"{label} {name} warm-up differs from TA-Lib: ours first valid "
+                f"{ours[name].first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+            )
+
+        # (2) THE FORMULA, proved exactly on TA-Lib's own seed. If the DM
+        # split, the true range, the DX guard, the ADX smooth or the ADXR
+        # offset were wrong, this fails -- which is what separates "we chose a
+        # different seed" from "we got the indicator wrong".
+        replay = dict(zip(refs, _dm_pipeline(n, "talib")))
+        worst = 0.0
+        for name, ref in refs.items():
+            assert list(replay[name].isna()) == list(ref.isna()), (
+                f"{label} {name}: TA-Lib-seed replay mask differs from TA-Lib's"
+            )
+            d = float(np.nanmax(np.abs(replay[name] - ref)))
+            assert d < 1e-9, f"{label} {name} on TA-Lib's seed disagrees by {d}"
+            worst = max(worst, d)
+
+        # (3) The pond-seed transient, bounded rather than asserted away.
+        report = []
+        for name, ref in refs.items():
+            d = (ours[name] - ref).abs()
+            first = int(ours[name].first_valid_index())
+            d_first, d_last, d_max = float(d[first]), float(d.iloc[-1]), float(np.nanmax(d))
+            assert d_last <= d_max / 10, (
+                f"{label} {name}: the seed delta is not decaying (max {d_max}, "
+                f"last {d_last}) -- that would be a wrong RATE, not a seed"
+            )
+            report.append(f"{name} {d_first:.4f}->{d_last:.2e} (max {d_max:.4f})")
+        print(
+            f"  {label}: formula exact on TA-Lib's seed ({worst:.3g}, all five "
+            f"masks identical); pond-seed transient " + ", ".join(report)
+        )
+
+        # (4) ADXR's look-back is period-1 (TA-Lib's, and the package's own
+        # bar-count reading). Pin the separation from the literal `period`
+        # reading so the fixture cannot stop telling the two apart.
+        literal = (adx + adx.shift(n)) / 2
+        gap = float(np.nanmax(np.abs(literal - adxr)))
+        assert gap > 1.0, (
+            f"{label} ADXR: the two look-back readings differ by only {gap} on "
+            "this fixture - it cannot tell them apart"
+        )
+        print(f"  {label}: ADXR shift n-1 vs the literal n reading differ by {gap:.2f} points")
+
+    return {
+        "dmPlus": col(pdi),
+        "dmMinus": col(mdi),
+        "dmDx": col(dx),
+        "dmAdx": col(adx),
+        "dmAdxr": col(adxr),
+    }
+
+
+def _bars_since_extreme(values, n: int, mode: str) -> pd.Series:
+    """Bars since the extreme of the (n+1)-bar window ending at i, ties to the
+    MOST RECENT bar. The naive O(N*n) reference the deque kernel must match."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    for i in range(n, len(x)):
+        w = x[i - n : i + 1]
+        best = np.max(w) if mode == "max" else np.min(w)
+        out[i] = n - int(np.max(np.flatnonzero(w == best)))
+    return pd.Series(out)
+
+
+def aroon(n: int) -> dict:
+    """Aroon up / down / oscillator, as TA-Lib's AROON and AROONOSC.
+
+    100*(n - barsSinceExtreme)/n over a window of n+1 BARS -- `n` counts the
+    oldest AGE the study can report, and "n bars ago" is itself a reading, so
+    the warm-up is n rows.
+    """
+    up = 100 * (n - _bars_since_extreme(highs, n, "max")) / n
+    down = 100 * (n - _bars_since_extreme(lows, n, "min")) / n
+    osc = up - down
+    label = f"aroon({n})"
+
+    assert up.first_valid_index() == n, (
+        f"{label} first valid at {up.first_valid_index()}, expected {n} "
+        "(the window is n+1 bars)"
+    )
+
+    if talib is not None:
+        ref_down, ref_up = talib.AROON(
+            np.asarray(highs, dtype=float), np.asarray(lows, dtype=float), timeperiod=n
+        )
+        ref_osc = talib.AROONOSC(
+            np.asarray(highs, dtype=float), np.asarray(lows, dtype=float), timeperiod=n
+        )
+        worst = 0.0
+        for name, ours, ref in (
+            ("aroonUp", up, pd.Series(ref_up)),
+            ("aroonDown", down, pd.Series(ref_down)),
+            ("aroonOsc", osc, pd.Series(ref_osc)),
+        ):
+            assert list(ours.isna()) == list(ref.isna()), (
+                f"{label} {name} warm-up differs from TA-Lib: ours first valid "
+                f"{ours.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+            )
+            d = float(np.nanmax(np.abs(ours - ref)))
+            assert d < 1e-9, f"{label} {name} disagrees with TA-Lib by {d}"
+            worst = max(worst, d)
+        print(f"  {label}: matches TA-Lib AROON/AROONOSC to {worst:.3g} (warm-ups identical)")
+
+        # The TIE rule, measured rather than assumed: a repeated high in the
+        # window. TA-Lib's comparisons are non-strict, so the NEWEST bar wins.
+        tie_h = np.array([10, 12, 11, 12, 10.5, 10.2, 10.1], dtype=float)
+        tie_l = np.array([9, 9.5, 9.2, 9.5, 9.8, 9.9, 9.7], dtype=float)
+        _, tie_up = talib.AROON(tie_h, tie_l, timeperiod=4)
+        newest = 100 * (4 - _bars_since_extreme(tie_h, 4, "max")) / 4
+        assert list(np.round(tie_up[4:], 9)) == list(np.round(newest[4:], 9)), (
+            f"TA-Lib's AROON tie rule is not most-recent-wins: {tie_up[4:]}"
+        )
+        assert tie_up[4] == 75.0, (
+            f"the tie fixture stopped exercising a tie (aroonUp[4] = {tie_up[4]})"
+        )
+        print("  aroon: ties go to the MOST RECENT bar (TA-Lib gives 75, not 25, on a repeated high)")
+
+    return {"aroonUp": col(up), "aroonDown": col(down), "aroonOsc": col(osc)}
+
+
+def vortex(n: int) -> dict:
+    """Vortex Indicator (Botes & Siepman 2010): +VI = sum|H-prevL| / sum TR,
+    -VI = sum|L-prevH| / sum TR, over n bars.
+
+    pandas replication -- TA-Lib has no vortex function. Both legs read the
+    previous bar, as does TR, so the first valid bar is n.
+    """
+    vp = (h - low_s.shift(1)).abs()
+    vm = (low_s - h.shift(1)).abs()
+    tr = _true_range()
+    total = tr.rolling(n).sum()
+    plus = vp.rolling(n).sum() / total
+    minus = vm.rolling(n).sum() / total
+    label = f"vortex({n})"
+
+    assert plus.first_valid_index() == n, (
+        f"{label} first valid at {plus.first_valid_index()}, expected {n}"
+    )
+    assert bool((plus.dropna() > 0).all()) and bool((minus.dropna() > 0).all()), (
+        f"{label} both legs must be strictly positive - they are sums of "
+        "absolute distances over a positive range"
+    )
+    # Separate the true-range denominator from the plain bar range: a study
+    # that dropped the prevClose terms would otherwise pass this fixture.
+    plain = vp.rolling(n).sum() / (h - low_s).rolling(n).sum()
+    sep = float(np.nanmax(np.abs(plain - plus)))
+    assert sep > 0.05, (
+        f"{label} the plain-range denominator differs by only {sep} on this "
+        "fixture - it cannot tell true range from bar range"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib vortex); first valid at {n}, "
+        f"+VI in {plus.min():.4f}..{plus.max():.4f}; the plain-range "
+        f"denominator would differ by up to {sep:.4f}"
+    )
+    return {"viPlus": col(plus), "viMinus": col(minus)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -2422,6 +2694,20 @@ cases = [
         "params": {"period": 5},
         "expected": psychological_line(5),
     },
+    {
+        "study": "directionalMovement",
+        "params": {"period": 14},
+        "expected": directional_movement(14),
+    },
+    {
+        "study": "directionalMovement",
+        "params": {"period": 5},
+        "expected": directional_movement(5),
+    },
+    {"study": "aroon", "params": {"period": 25}, "expected": aroon(25)},
+    {"study": "aroon", "params": {"period": 5}, "expected": aroon(5)},
+    {"study": "vortex", "params": {"period": 14}, "expected": vortex(14)},
+    {"study": "vortex", "params": {"period": 6}, "expected": vortex(6)},
 ]
 
 out = {
@@ -2650,6 +2936,37 @@ out = {
                 "sum(den,n); signal = swma(rvi) - TradingView's definition. "
                 "pandas replication (no TA-Lib RVI), first valid at n+2 and "
                 "n+5, separated from the linear-WMA(4) version"
+            ),
+            "directionalMovement": (
+                "Wilder's DMS. +DM/-DM = the part of the bar's move outside "
+                "the previous bar's range on the side that moved further (at "
+                "most one leg non-zero; a tie is zero for both); +DI = "
+                "100*Wilder(+DM,n)/Wilder(TR,n) with the denominator the SAME "
+                "array `atr` uses; DX = 100*|+DI - -DI|/(+DI + -DI) with a "
+                "zero sum reading 0 (the numerator is forced to zero with "
+                "it); ADX = Wilder(DX,n); ADXR = (ADX[i] + ADX[i-n+1])/2, "
+                "TA-Lib's n-1 look-back and the package's own bar-count "
+                "reading (the literal `n` reading differs by up to 2.64 "
+                "points at n=14). SEED: Wilder's own - the mean of the first "
+                "n values, i.e. `wilderValues`. TA-Lib instead seeds +DM/-DM/"
+                "TR on the first n-1 and takes one decayed step, which its "
+                "own ATR does not do; masks are identical either way, the "
+                "FORMULA is asserted exactly by replaying our pipeline on "
+                "TA-Lib's seed (<=2.9e-14 on all five columns), and the "
+                "pond-seed transient is bounded and asserted to decay"
+            ),
+            "aroon": (
+                "100*(n - barsSinceExtreme)/n over a window of n+1 BARS (n "
+                "counts the oldest AGE reportable), ties to the MOST RECENT "
+                "bar - both measured against TA-Lib AROON/AROONOSC, exact, "
+                "identical masks, first valid at n"
+            ),
+            "vortex": (
+                "+VI = sum|high - prevLow| / sum TR, -VI = sum|low - prevHigh| "
+                "/ sum TR over n bars (Botes & Siepman 2010); pandas "
+                "replication (no TA-Lib vortex), first valid at n, separated "
+                "from the plain-bar-range denominator. sum TR = 0 -> undefined "
+                "(unlike DX, the numerator is NOT forced to zero with it)"
             ),
             "psychologicalLine": (
                 "100 * count(close > prevClose) / n, strictly greater (an "

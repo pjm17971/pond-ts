@@ -84,6 +84,9 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  directionalMovement,
+  aroon,
+  vortex,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -2115,5 +2118,233 @@ describe('[talib] all-missing input yields all-missing momentum-tail studies', (
     const r = relativeVigorIndex(allMissing as never, { period: 3 });
     empty(col(r, 'rvi'));
     empty(col(r, 'rviSignal'));
+  });
+});
+
+describe('[talib] the directional group is scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const cases: Array<[string, string, (s: never) => unknown]> = [
+    [
+      'directionalMovement',
+      'dmPlus',
+      (s) => directionalMovement(s, { period: 5 }),
+    ],
+    [
+      'directionalMovement',
+      'dmMinus',
+      (s) => directionalMovement(s, { period: 5 }),
+    ],
+    [
+      'directionalMovement',
+      'dmDx',
+      (s) => directionalMovement(s, { period: 5 }),
+    ],
+    [
+      'directionalMovement',
+      'dmAdx',
+      (s) => directionalMovement(s, { period: 5 }),
+    ],
+    [
+      'directionalMovement',
+      'dmAdxr',
+      (s) => directionalMovement(s, { period: 5 }),
+    ],
+    ['aroon', 'aroonUp', (s) => aroon(s, { period: 5 })],
+    ['aroon', 'aroonDown', (s) => aroon(s, { period: 5 })],
+    ['aroon', 'aroonOsc', (s) => aroon(s, { period: 5 })],
+    ['vortex', 'viPlus', (s) => vortex(s, { period: 5 })],
+    ['vortex', 'viMinus', (s) => vortex(s, { period: 5 })],
+  ];
+
+  for (const [name, column, run] of cases) {
+    it(`${name} (${column}) is unchanged by scaling and by shifting`, () => {
+      const base = col(run(momBars(momRows()) as never), column);
+      expect(base.some((x) => x !== undefined)).toBe(true);
+      expectSame(base, col(run(momBars(momRows(K)) as never), column));
+      expectSame(base, col(run(momBars(momRows(1, SHIFT)) as never), column));
+    });
+  }
+
+  it('aroon is invariant to ANY monotonic rescaling, exactly — it reads positions', () => {
+    // Stronger than the scale/shift invariance above, and asserted as
+    // equality rather than a tolerance: the study never touches the SIZE of
+    // an extreme, only where it sits, so a strictly increasing map of every
+    // price leaves all three columns bit-identical.
+    const base = aroon(momBars(momRows()) as never, { period: 5 });
+    const warped = aroon(
+      momBars(
+        momRows().map(
+          ([o, h, l, c]) =>
+            [o ** 1.5, h ** 1.5, l ** 1.5, c ** 1.5] as [
+              number,
+              number,
+              number,
+              number,
+            ],
+        ),
+      ) as never,
+      { period: 5 },
+    );
+    for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])
+      expect(col(warped, name), name).toEqual(col(base, name));
+  });
+
+  it('the readings are not constant — the invariance above is not vacuous', () => {
+    const s = momBars(momRows()) as never;
+    const spread = (v: Array<number | undefined>) => {
+      const seen = v.filter((x) => x !== undefined) as number[];
+      return Math.max(...seen) - Math.min(...seen);
+    };
+    const dm = directionalMovement(s, { period: 5 });
+    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+      expect(spread(col(dm, name)), name).toBeGreaterThan(10);
+    const ar = aroon(s, { period: 5 });
+    for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])
+      expect(spread(col(ar, name)), name).toBeGreaterThan(20);
+    const vi = vortex(s, { period: 5 });
+    for (const name of ['viPlus', 'viMinus'])
+      expect(spread(col(vi, name)), name).toBeGreaterThan(0.2);
+  });
+
+  it('the bounded ones stay in their bands, and vortex stays positive', () => {
+    const s = momBars(momRows()) as never;
+    const within = (
+      v: Array<number | undefined>,
+      lo: number,
+      hi: number,
+      label: string,
+    ) => {
+      expect(
+        v.some((x) => x !== undefined),
+        label,
+      ).toBe(true);
+      for (const x of v) {
+        if (x === undefined) continue;
+        expect(x, label).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(x, label).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    };
+    // On CONSISTENT bars (prevClose inside the previous bar's range) each DM
+    // leg is bounded by the true range, so both DI lines are — and DX, ADX
+    // and ADXR are then bounded by construction.
+    const dm = directionalMovement(s, { period: 5 });
+    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+      within(col(dm, name), 0, 100, name);
+    const ar = aroon(s, { period: 5 });
+    within(col(ar, 'aroonUp'), 0, 100, 'aroonUp');
+    within(col(ar, 'aroonDown'), 0, 100, 'aroonDown');
+    within(col(ar, 'aroonOsc'), -100, 100, 'aroonOsc');
+    // The vortex is NOT bounded by 1 — only positive. Assert the sign, and
+    // assert the fixture actually reaches past 1 so "bounded" cannot creep
+    // in as an unstated assumption.
+    const vi = vortex(s, { period: 5 });
+    for (const name of ['viPlus', 'viMinus']) {
+      const v = col(vi, name);
+      within(v, 0, Number.POSITIVE_INFINITY, name);
+      expect(
+        v.some((x) => x !== undefined && x > 1),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('aroonOsc is exactly aroonUp − aroonDown', () => {
+    const r = aroon(momBars(momRows()) as never, { period: 7 });
+    const up = col(r, 'aroonUp');
+    const down = col(r, 'aroonDown');
+    const osc = col(r, 'aroonOsc');
+    for (let i = 0; i < osc.length; i += 1) {
+      if (up[i] === undefined) expect(osc[i], `bar ${i}`).toBeUndefined();
+      else expect(osc[i], `bar ${i}`).toBeCloseTo(up[i]! - down[i]!, 12);
+    }
+  });
+});
+
+describe('[talib] the directional group over another study’s output', () => {
+  it('directionalMovement over smoothed bars starts late rather than empty', () => {
+    const rows = momRows().slice(0, 40);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const sc = sma(sl, { period: 3, column: 'close', output: 'sc' });
+    const r = directionalMovement(sc, {
+      period: 3,
+      high: 'sh',
+      low: 'sl',
+      close: 'sc',
+    });
+    const plus = col(r, 'dmPlus');
+    expect(plus).toHaveLength(40);
+    // The inputs are first defined at 2; DM and TR at 3; the Wilder seed
+    // steps over the leading gap and lands `period − 1` later, at 5.
+    expect(firstValid(plus)).toBe(5);
+    expect(plus.slice(5).every((x) => x !== undefined)).toBe(true);
+    // ADX is a second Wilder smooth on top: 3 − 1 bars later again.
+    expect(firstValid(col(r, 'dmAdx'))).toBe(7);
+    expect(firstValid(col(r, 'dmAdxr'))).toBe(9);
+  });
+
+  it('aroon over a smoothed high/low composes its warm-up', () => {
+    const rows = momRows().slice(0, 30);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const v = col(aroon(sl, { period: 4, high: 'sh', low: 'sl' }), 'aroonUp');
+    expect(v).toHaveLength(30);
+    // Inputs first defined at 2; the window needs period + 1 = 5 of them.
+    expect(firstValid(v)).toBe(6);
+    expect(v.slice(6).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('vortex over smoothed bars composes its warm-up', () => {
+    const rows = momRows().slice(0, 30);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const sc = sma(sl, { period: 3, column: 'close', output: 'sc' });
+    const v = col(
+      vortex(sc, { period: 4, high: 'sh', low: 'sl', close: 'sc' }),
+      'viPlus',
+    );
+    expect(v).toHaveLength(30);
+    // Inputs at 2, the movement legs and TR at 3, a 4-bar sum of them at 6.
+    expect(firstValid(v)).toBe(6);
+    expect(v.slice(6).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing directional studies', () => {
+  const allMissing = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [number, number | undefined, number | undefined, number | undefined]
+    >,
+  });
+  const empty = (v: Array<number | undefined>, label: string) => {
+    expect(v, label).toHaveLength(20);
+    expect(
+      v.every((x) => x === undefined),
+      label,
+    ).toBe(true);
+  };
+
+  it('directionalMovement, aroon and vortex', () => {
+    const dm = directionalMovement(allMissing as never, { period: 5 });
+    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+      empty(col(dm, name), name);
+    const ar = aroon(allMissing as never, { period: 5 });
+    for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])
+      empty(col(ar, name), name);
+    const vi = vortex(allMissing as never, { period: 5 });
+    for (const name of ['viPlus', 'viMinus']) empty(col(vi, name), name);
   });
 });

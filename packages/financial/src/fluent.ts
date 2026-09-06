@@ -132,6 +132,12 @@ import type { RelativeVigorIndexOptions } from './studies/relative-vigor-index.j
 import { relativeVigorIndex as relativeVigorIndexStudy } from './studies/relative-vigor-index.js';
 import type { PsychologicalLineOptions } from './studies/psychological-line.js';
 import { psychologicalLine as psychologicalLineStudy } from './studies/psychological-line.js';
+import type { DirectionalMovementOptions } from './studies/directional-movement.js';
+import { directionalMovement as directionalMovementStudy } from './studies/directional-movement.js';
+import type { AroonOptions } from './studies/aroon.js';
+import { aroon as aroonStudy } from './studies/aroon.js';
+import type { VortexOptions } from './studies/vortex.js';
+import { vortex as vortexStudy } from './studies/vortex.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -349,6 +355,35 @@ declare module 'pond-ts' {
     psychologicalLine<const Output extends string = 'psy'>(
       options?: PsychologicalLineOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Directional Movement System (`+DI` / `−DI` / `DX` / `ADX` /
+     *  `ADXR`). */
+    directionalMovement<const Prefix extends string = 'dm'>(
+      options?: DirectionalMovementOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<
+          AppendOpt<
+            AppendOpt<AppendOpt<S, `${Prefix}Plus`>, `${Prefix}Minus`>,
+            `${Prefix}Dx`
+          >,
+          `${Prefix}Adx`
+        >,
+        `${Prefix}Adxr`
+      >
+    >;
+    /** Fluent Aroon (up / down / oscillator). */
+    aroon<const Prefix extends string = 'aroon'>(
+      options?: AroonOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, `${Prefix}Up`>, `${Prefix}Down`>,
+        `${Prefix}Osc`
+      >
+    >;
+    /** Fluent Vortex Indicator (`+VI` / `−VI`). */
+    vortex<const Prefix extends string = 'vi'>(
+      options?: VortexOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Plus`>, `${Prefix}Minus`>>;
   }
 }
 
@@ -624,4 +659,22 @@ proto.psychologicalLine = function (
   options?: PsychologicalLineOptions<SeriesSchema, string>,
 ) {
   return psychologicalLineStudy(this, options);
+};
+proto.directionalMovement = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: DirectionalMovementOptions<SeriesSchema, string>,
+) {
+  return directionalMovementStudy(this, options);
+};
+proto.aroon = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AroonOptions<SeriesSchema, string>,
+) {
+  return aroonStudy(this, options);
+};
+proto.vortex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: VortexOptions<SeriesSchema, string>,
+) {
+  return vortexStudy(this, options);
 };
