@@ -20,6 +20,11 @@ import {
   stochastic,
   williamsR,
   donchian,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -219,5 +224,81 @@ describe('fluent volume studies', () => {
     for (const c of ['obv', 'w']) {
       expect(col(fluent, c)).toEqual(col(functional, c));
     }
+  });
+});
+
+describe('fluent K2 oscillators', () => {
+  const oscBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 24 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.4 - 0.6 * Math.abs(Math.cos(i / 2.4)),
+          c,
+        ];
+      }) as Array<[number, number, number, number]>,
+    });
+
+  it('chains all five and matches the standalone functions bar for bar', () => {
+    const fluent = oscBars()
+      .priceOscillator({ fastPeriod: 3, slowPeriod: 7 })
+      .disparityIndex({ period: 5 })
+      .detrendedPriceOscillator({ period: 5 })
+      .elderRay({ period: 4 })
+      .awesomeOscillator({ fastPeriod: 3, slowPeriod: 8 });
+    const functional = awesomeOscillator(
+      elderRay(
+        detrendedPriceOscillator(
+          disparityIndex(
+            priceOscillator(oscBars(), { fastPeriod: 3, slowPeriod: 7 }),
+            { period: 5 },
+          ),
+          { period: 5 },
+        ),
+        { period: 4 },
+      ),
+      { fastPeriod: 3, slowPeriod: 8 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'priceOsc',
+      'disparity',
+      'dpo',
+      'elderBull',
+      'elderBear',
+      'ao',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('passes `mode` and `maType` through, not just the periods', () => {
+    // A mount that dropped the options object entirely would still produce
+    // numbers; these two knobs are the ones that change the answer.
+    const pct = oscBars().priceOscillator({ fastPeriod: 3, slowPeriod: 7 });
+    const abs = oscBars().priceOscillator({
+      fastPeriod: 3,
+      slowPeriod: 7,
+      mode: 'absolute',
+      output: 'abs',
+    });
+    expect(col(pct, 'priceOsc')[20]).not.toBeCloseTo(col(abs, 'abs')[20]!, 6);
+    const smaD = oscBars().disparityIndex({ period: 5, maType: 'sma' });
+    const emaD = oscBars().disparityIndex({
+      period: 5,
+      maType: 'ema',
+      output: 'd2',
+    });
+    expect(col(smaD, 'disparity')[20]).not.toBeCloseTo(col(emaD, 'd2')[20]!, 6);
   });
 });

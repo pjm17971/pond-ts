@@ -18,6 +18,11 @@ import {
   stochastic,
   williamsR,
   donchian,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -528,5 +533,178 @@ describe('[PND-STUDYBOX] the moving-average engine: where each type is missing',
       // values between the warm-up and bar 10.
       expect(nullCountOf(out, 'ma'), type).toBe(24 - (10 - firstBar[type]!));
     }
+  });
+});
+
+describe('[PND-STUDYBOX] the K2 oscillators: where the missing rows are', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is worth pinning is WHERE the
+  // missing rows are, which for these five is a warm-up plus whatever the
+  // chosen `maType`'s interior-gap rule costs.
+  const gapSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+  /** Bars whose close (and therefore high/low) is missing on bar 2. */
+  const gappy = (closes: Array<number | undefined>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: gapSchema,
+      rows: closes.map((c, i) => [
+        i * MINUTE,
+        c === undefined ? undefined : c + 1,
+        c === undefined ? undefined : c - 1,
+        c,
+      ]) as never,
+    });
+  const holed = gappy([10, 12, undefined, 20, 22, 24, 26, 28]);
+  const clean = gappy([10, 12, 14, 20, 22, 24, 26, 28]);
+
+  it('priceOscillator warms up on the SLOW average and inherits its maType’s gap rule', () => {
+    // `sma` on the column door keeps `sma()`'s row-counting window, so the
+    // gap costs it nothing: the warm-up is the only missing run, and it is
+    // the SLOW leg's (2 rows at period 3), not the fast one's.
+    const smaOut = priceOscillator(holed, {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      maType: 'sma',
+      mode: 'absolute',
+    });
+    expect(
+      cells(smaOut, 'priceOsc')
+        .slice(0, 2)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(nullCountOf(smaOut, 'priceOsc')).toBe(2);
+
+    // `ema` waits for `period` finite samples, so the gap pushes the slow
+    // leg's first value one bar later — 3 missing rows, not 2, and the gap
+    // bar itself has no value.
+    const emaOut = priceOscillator(holed, {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      maType: 'ema',
+      mode: 'absolute',
+    });
+    expect(nullCountOf(emaOut, 'priceOsc')).toBe(3);
+    expect(cells(emaOut, 'priceOsc')[2]).toBeUndefined();
+    expect(typeof cells(emaOut, 'priceOsc')[3]).toBe('number');
+    // Without the hole the same call starts a bar earlier — the gap, not the
+    // period, is what moved it.
+    expect(
+      nullCountOf(
+        priceOscillator(clean, {
+          fastPeriod: 2,
+          slowPeriod: 3,
+          maType: 'ema',
+          mode: 'absolute',
+        }),
+        'priceOsc',
+      ),
+    ).toBe(2);
+
+    // `wma` masks every window containing the gap (a positional weight
+    // cannot skip a cell), so bars 2–4 go too: 5 missing rows.
+    expect(
+      nullCountOf(
+        priceOscillator(holed, {
+          fastPeriod: 2,
+          slowPeriod: 3,
+          maType: 'wma',
+          mode: 'absolute',
+        }),
+        'priceOsc',
+      ),
+    ).toBe(5);
+  });
+
+  it('disparityIndex loses the gap bar itself even when the average survives it', () => {
+    // `sma` averages around the hole, but the NUMERATOR reads the price on
+    // that bar, so the reading is missing there regardless of the maType.
+    const out = disparityIndex(holed, { period: 3, maType: 'sma' });
+    const v = cells(out, 'disparity');
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeUndefined();
+    expect(typeof v[3]).toBe('number');
+    expect(nullCountOf(out, 'disparity')).toBe(3);
+  });
+
+  it('detrendedPriceOscillator warms up over period − 1 + shift rows', () => {
+    // period 3 → shift 2, so the first value lands on bar 4 even with no
+    // gap; the sma leg then averages around the hole and nothing else is
+    // lost.
+    expect(
+      nullCountOf(detrendedPriceOscillator(clean, { period: 3 }), 'dpo'),
+    ).toBe(4);
+    const out = detrendedPriceOscillator(holed, { period: 3 });
+    expect(
+      cells(out, 'dpo')
+        .slice(0, 4)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'dpo')[4]).toBe('number');
+    expect(nullCountOf(out, 'dpo')).toBe(4);
+
+    // With `wma` the masked windows shift the average's first value from bar
+    // 2 to bar 5, and the displacement carries that to bar 7.
+    const wmaOut = detrendedPriceOscillator(holed, {
+      period: 3,
+      maType: 'wma',
+    });
+    expect(nullCountOf(wmaOut, 'dpo')).toBe(7);
+    expect(typeof cells(wmaOut, 'dpo')[7]).toBe('number');
+  });
+
+  it('elderRay loses only the gap bar, then the EMA carries on', () => {
+    const out = elderRay(holed, { period: 2 });
+    for (const name of ['elderBull', 'elderBear']) {
+      const v = cells(out, name);
+      expect(v[0], name).toBeUndefined(); // the EMA's own warm-up row
+      expect(typeof v[1], name).toBe('number');
+      expect(v[2], name).toBeUndefined(); // the gap bar
+      expect(typeof v[3], name).toBe('number'); // the recursion skipped it
+      expect(nullCountOf(out, name), name).toBe(2);
+    }
+  });
+
+  it('awesomeOscillator masks every window containing the gap', () => {
+    // The median price is a DERIVED array, so both legs wait for that many
+    // finite VALUES: the slow leg's windows over bars 2, 3 and 4 all contain
+    // the hole, and the first value lands on bar 5 instead of bar 2.
+    const out = awesomeOscillator(holed, { fastPeriod: 2, slowPeriod: 3 });
+    const v = cells(out, 'ao');
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[5]).toBe('number');
+    expect(nullCountOf(out, 'ao')).toBe(5);
+    // Without the hole the same call starts on bar 2.
+    expect(
+      nullCountOf(
+        awesomeOscillator(clean, { fastPeriod: 2, slowPeriod: 3 }),
+        'ao',
+      ),
+    ).toBe(2);
+  });
+
+  it('the percent forms report missing, not Infinity, on a zero average', () => {
+    // A flat ZERO series: the denominators of both percent forms are 0 on
+    // every bar they would otherwise emit, so the columns are entirely
+    // missing rather than carrying ±Infinity into a chart's y-domain.
+    const zeros = gappy([0, 0, 0, 0, 0, 0]);
+    const osc = priceOscillator(zeros, { fastPeriod: 2, slowPeriod: 3 });
+    expect(nullCountOf(osc, 'priceOsc')).toBe(6);
+    const disp = disparityIndex(zeros, { period: 3 });
+    expect(nullCountOf(disp, 'disparity')).toBe(6);
+    // The absolute form has no denominator: it emits 0 from bar 2 on.
+    const abs = priceOscillator(zeros, {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      mode: 'absolute',
+      maType: 'sma',
+      output: 'abs',
+    });
+    expect(nullCountOf(abs, 'abs')).toBe(2);
+    expect(cells(abs, 'abs')[5]).toBe(0);
   });
 });

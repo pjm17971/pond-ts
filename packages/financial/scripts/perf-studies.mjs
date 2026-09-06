@@ -9,12 +9,17 @@ import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
 import {
   MA_TYPES,
+  awesomeOscillator,
   bollinger,
+  detrendedPriceOscillator,
+  disparityIndex,
   donchian,
+  elderRay,
   ema,
   macd,
   movingAverage,
   obv,
+  priceOscillator,
   rsi,
   sma,
   stochastic,
@@ -131,6 +136,25 @@ function scaleResults(length) {
       ),
       benchmark('donchian({ period: 20 })', () =>
         donchian(series, { period: PERIOD }),
+      ),
+      // The K2 consumers. Each is two engine calls (or one, plus a column
+      // read) and a per-cell pass, so their cost should read as the sum of
+      // their parts — a number far above that means the study grew a loop
+      // of its own.
+      benchmark("priceOscillator({ 12, 26, 'ema', percent })", () =>
+        priceOscillator(series),
+      ),
+      benchmark('disparityIndex({ period: 14 })', () =>
+        disparityIndex(series, { period: 14 }),
+      ),
+      benchmark('detrendedPriceOscillator({ period: 20 })', () =>
+        detrendedPriceOscillator(series, { period: PERIOD }),
+      ),
+      benchmark('elderRay({ period: 13 })', () =>
+        elderRay(series, { period: 13 }),
+      ),
+      benchmark('awesomeOscillator({ 5, 34 })', () =>
+        awesomeOscillator(series),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

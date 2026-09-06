@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
+  MA_TYPES,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
   sma,
   ema,
   bollinger,
@@ -1520,6 +1526,565 @@ describe('vwap', () => {
   it('is all-undefined when the period exceeds the bars available', () => {
     const v = col(vwap(cv([10, 11, 12], [1, 2, 3]), { period: 9 }), 'vwap');
     expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/* The K2 consumers: price-vs-moving-average oscillators.                     */
+/* ========================================================================== */
+
+/** High/low/close bars for the studies that read a whole bar. */
+const hlc = (rows: Array<[number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+    ] as const,
+    rows: rows.map(([h, l, c], i) => [i, h, l, c]) as Array<
+      [number, number, number, number]
+    >,
+  });
+
+describe('priceOscillator', () => {
+  // sma(2) = [_, 11, 13, 17, 21]; sma(3) = [_, _, 12, 46/3, 56/3].
+  const src = [10, 12, 14, 20, 22];
+
+  it('absolute mode is MA(fast) − MA(slow), hand-computed', () => {
+    const v = col(
+      priceOscillator(bars(src), {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        maType: 'sma',
+        mode: 'absolute',
+      }),
+      'priceOsc',
+    );
+    expect(v).toHaveLength(5);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined(); // the SLOW average's warm-up, not the fast one
+    expect(v[2]).toBeCloseTo(13 - 12, 12);
+    expect(v[3]).toBeCloseTo(17 - 46 / 3, 12);
+    expect(v[4]).toBeCloseTo(21 - 56 / 3, 12);
+  });
+
+  it('percent mode is 100·(fast − slow)/slow, hand-computed, and is the default', () => {
+    const v = col(
+      priceOscillator(bars(src), {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        maType: 'sma',
+      }),
+      'priceOsc',
+    );
+    // `mode` omitted here: percent is the default (see the docstring for why).
+    expect(v[2]).toBeCloseTo((100 * (13 - 12)) / 12, 12);
+    expect(v[3]).toBeCloseTo((100 * (17 - 46 / 3)) / (46 / 3), 12);
+    expect(v[4]).toBeCloseTo(12.5, 12); // (21 − 56/3) / (56/3) = 0.125
+  });
+
+  it('at the defaults with mode absolute it IS macd’s line, bar for bar', () => {
+    // The step-0 cross-check, and the reason the default mode is `percent`:
+    // the absolute form at 12/26/ema is a column this package already ships.
+    const wavy = Array.from(
+      { length: 60 },
+      (_, i) => 100 + 9 * Math.sin(i / 5) + 0.2 * i,
+    );
+    const osc = col(
+      priceOscillator(bars(wavy), { mode: 'absolute' }),
+      'priceOsc',
+    );
+    const line = col(macd(bars(wavy)), 'macdLine');
+    for (let i = 0; i < wavy.length; i += 1) {
+      if (line[i] === undefined) expect(osc[i], `bar ${i}`).toBeUndefined();
+      else expect(osc[i], `bar ${i}`).toBeCloseTo(line[i]!, 12);
+    }
+    // …and the default (percent) is NOT that column, or the default call
+    // would be a rename of macdLine.
+    expect(col(priceOscillator(bars(wavy)), 'priceOsc')[40]).not.toBeCloseTo(
+      line[40]!,
+      3,
+    );
+  });
+
+  it('reports no value rather than Infinity when the slow average is zero', () => {
+    // sma(3) is exactly 0 on bar 2 here; the percent form is a division by
+    // zero there and the absolute form is unaffected.
+    const zeroed = [-1, 0, 1, 2, 3];
+    const pct = col(
+      priceOscillator(bars(zeroed), {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        maType: 'sma',
+      }),
+      'priceOsc',
+    );
+    expect(pct[2]).toBeUndefined();
+    expect(pct[3]).toBeCloseTo(50, 12); // 100·(1.5 − 1)/1
+    expect(pct[4]).toBeCloseTo(25, 12); // 100·(2.5 − 2)/2
+    const abs = col(
+      priceOscillator(bars(zeroed), {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        maType: 'sma',
+        mode: 'absolute',
+      }),
+      'priceOsc',
+    );
+    expect(abs[2]).toBeCloseTo(0.5, 12);
+  });
+
+  it('honours output, column, and every maType in the menu', () => {
+    const withSma = sma(bars(src), { period: 2 });
+    const r = priceOscillator(withSma, {
+      column: 'sma',
+      fastPeriod: 2,
+      slowPeriod: 3,
+      maType: 'wma',
+      output: 'osc',
+    });
+    expect(col(r, 'osc')).toHaveLength(5);
+    for (const maType of MA_TYPES) {
+      expect(() =>
+        priceOscillator(bars(src), { maType, fastPeriod: 2, slowPeriod: 3 }),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects bad periods, a swapped fast/slow pair, a bad mode or maType, and a colliding output', () => {
+    expect(() => priceOscillator(bars(src), { fastPeriod: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => priceOscillator(bars(src), { slowPeriod: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      priceOscillator(bars(src), { fastPeriod: 26, slowPeriod: 26 }),
+    ).toThrow(/shorter/);
+    expect(() =>
+      priceOscillator(bars(src), { fastPeriod: 30, slowPeriod: 26 }),
+    ).toThrow(/shorter/);
+    expect(() =>
+      priceOscillator(bars(src), { maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    expect(() => priceOscillator(bars(src), { mode: 'pct' as never })).toThrow(
+      /mode must be/,
+    );
+    expect(() => priceOscillator(bars(src), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the slow period exceeds the series, length kept', () => {
+    const v = col(
+      priceOscillator(bars([1, 2, 3]), { fastPeriod: 2, slowPeriod: 9 }),
+      'priceOsc',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('disparityIndex', () => {
+  const src = [10, 12, 14, 20, 22]; // sma(3) = [_, _, 12, 46/3, 56/3]
+
+  it('is 100·(price − MA)/MA, hand-computed', () => {
+    const v = col(
+      disparityIndex(bars(src), { period: 3, maType: 'sma' }),
+      'disparity',
+    );
+    expect(v).toHaveLength(5);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo((100 * (14 - 12)) / 12, 12);
+    expect(v[3]).toBeCloseTo((100 * (20 - 46 / 3)) / (46 / 3), 12);
+    expect(v[4]).toBeCloseTo((100 * (22 - 56 / 3)) / (56 / 3), 12);
+  });
+
+  it('is zero exactly where price sits on its own average', () => {
+    // A flat series is its own SMA, so every reading is 0 — not `undefined`
+    // (there is no division by zero here) and not a missing row.
+    const v = col(
+      disparityIndex(bars([7, 7, 7, 7]), { period: 3 }),
+      'disparity',
+    );
+    expect(v[2]).toBe(0);
+    expect(v[3]).toBe(0);
+  });
+
+  it('reports no value rather than Infinity when the average is zero', () => {
+    const v = col(
+      disparityIndex(bars([-1, 0, 1, 2, 3]), { period: 3, maType: 'sma' }),
+      'disparity',
+    );
+    expect(v[2]).toBeUndefined(); // sma(3) = 0 on this bar
+    expect(v[3]).toBeCloseTo(100, 12); // 100·(2 − 1)/1
+    expect(v[4]).toBeCloseTo(50, 12); // 100·(3 − 2)/2
+  });
+
+  it('defaults to period 14 / sma, and honours column, maType and output', () => {
+    // The warm-up alone does NOT pin the default maType — sma and ema share
+    // it — so the VALUES are compared both ways. (A mutation flipping the
+    // default from 'sma' to 'ema' survived the warm-up-only version.)
+    const long = Array.from(
+      { length: 20 },
+      (_, i) => 100 + 5 * Math.sin(i / 2) + i,
+    );
+    const d = col(disparityIndex(bars(long)), 'disparity');
+    expect(d.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(d[13]).toBeDefined();
+    expect(d).toEqual(
+      col(
+        disparityIndex(bars(long), { period: 14, maType: 'sma' }),
+        'disparity',
+      ),
+    );
+    expect(d[19]).not.toBeCloseTo(
+      col(
+        disparityIndex(bars(long), { period: 14, maType: 'ema' }),
+        'disparity',
+      )[19]!,
+      6,
+    );
+    const r = disparityIndex(sma(bars(long), { period: 2 }), {
+      column: 'sma',
+      period: 3,
+      maType: 'ema',
+      output: 'dev',
+    });
+    expect(col(r, 'dev')).toHaveLength(20);
+  });
+
+  it('rejects a bad period, an unknown maType, and a colliding output', () => {
+    expect(() => disparityIndex(bars(src), { period: 0 })).toThrow(TypeError);
+    expect(() => disparityIndex(bars(src), { period: 1.5 })).toThrow(TypeError);
+    expect(() =>
+      disparityIndex(bars(src), { maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    expect(() => disparityIndex(bars(src), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(disparityIndex(bars([1, 2, 3]), { period: 9 }), 'disparity');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('detrendedPriceOscillator', () => {
+  // period 3 → shift = ⌊3/2⌋ + 1 = 2; sma(3) = [_, _, 12, 46/3, 56/3, 22].
+  const src = [10, 12, 14, 20, 22, 24];
+
+  it('is price − MA displaced ⌊period/2⌋+1 bars back, hand-computed', () => {
+    const v = col(
+      detrendedPriceOscillator(bars(src), { period: 3, maType: 'sma' }),
+      'dpo',
+    );
+    expect(v).toHaveLength(6);
+    // Warm-up is the MA's (2 rows) plus the 2-bar displacement.
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBeCloseTo(22 - 12, 12); // close[4] − sma[2]
+    expect(v[5]).toBeCloseTo(24 - 46 / 3, 12); // close[5] − sma[3]
+  });
+
+  it('the displacement floors on an odd period', () => {
+    // period 5 → shift 3, first valid at 4 + 3 = 7; period 6 → shift 4,
+    // first valid at 5 + 4 = 9. Flooring is what makes the odd case land a
+    // bar earlier than the even one above it rather than half-way between.
+    const long = Array.from({ length: 20 }, (_, i) => 100 + i * i * 0.05);
+    const odd = col(detrendedPriceOscillator(bars(long), { period: 5 }), 'dpo');
+    expect(odd.slice(0, 7).every((x) => x === undefined)).toBe(true);
+    expect(odd[7]).toBeDefined();
+    const even = col(
+      detrendedPriceOscillator(bars(long), { period: 6 }),
+      'dpo',
+    );
+    expect(even.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(even[9]).toBeDefined();
+  });
+
+  it('is the displaced average, not the current one', () => {
+    // The bug this study can have. `close − MA[i]` and `close − MA[i−shift]`
+    // are different series; on a series that turns, they differ in SIGN on
+    // at least one bar, which no tolerance can explain away.
+    const long = Array.from(
+      { length: 30 },
+      (_, i) => 100 + 6 * Math.sin(i / 4),
+    );
+    const dpo = col(detrendedPriceOscillator(bars(long), { period: 5 }), 'dpo');
+    const withMa = sma(bars(long), { period: 5, output: 'm' });
+    const undisplaced = col(withMa, 'm').map((m, i) =>
+      m === undefined ? undefined : long[i]! - m,
+    );
+    const disagrees = dpo.some(
+      (x, i) =>
+        x !== undefined &&
+        undisplaced[i] !== undefined &&
+        Math.sign(x) !== Math.sign(undisplaced[i]!),
+    );
+    expect(disagrees).toBe(true);
+  });
+
+  it('defaults to period 20 / sma, and honours column, maType and output', () => {
+    const long = Array.from({ length: 40 }, (_, i) => 100 + i);
+    const v = col(detrendedPriceOscillator(bars(long)), 'dpo');
+    expect(v.slice(0, 30).every((x) => x === undefined)).toBe(true); // 19 + 11
+    expect(v[30]).toBeDefined();
+    const r = detrendedPriceOscillator(sma(bars(long), { period: 2 }), {
+      column: 'sma',
+      period: 4,
+      maType: 'ema',
+      output: 'detrended',
+    });
+    expect(col(r, 'detrended')).toHaveLength(40);
+  });
+
+  it('rejects a bad period, an unknown maType, and a colliding output', () => {
+    expect(() => detrendedPriceOscillator(bars(src), { period: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => detrendedPriceOscillator(bars(src), { period: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      detrendedPriceOscillator(bars(src), { maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    expect(() =>
+      detrendedPriceOscillator(bars(src), { output: 'close' }),
+    ).toThrow(/collides/);
+  });
+
+  it('is all-undefined when period − 1 + shift exceeds the series', () => {
+    const v = col(
+      detrendedPriceOscillator(bars([1, 2, 3, 4]), { period: 3 }),
+      'dpo',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true); // first valid would be 4
+  });
+});
+
+describe('elderRay', () => {
+  // period 2 → α = 2/3. ema = [10 (masked), 34/3, …].
+  const src: Array<[number, number, number]> = [
+    [11, 9, 10],
+    [13, 11, 12],
+    [15, 13, 14],
+  ];
+
+  it('is high − EMA(close) and low − EMA(close), hand-computed', () => {
+    const r = elderRay(hlc(src), { period: 2 });
+    const bull = col(r, 'elderBull');
+    const bear = col(r, 'elderBear');
+    expect(bull).toHaveLength(3);
+    expect(bull[0]).toBeUndefined();
+    expect(bear[0]).toBeUndefined();
+    const ema1 = (2 / 3) * 12 + (1 / 3) * 10;
+    const ema2 = (2 / 3) * 14 + (1 / 3) * ema1;
+    expect(bull[1]).toBeCloseTo(13 - ema1, 12);
+    expect(bear[1]).toBeCloseTo(11 - ema1, 12);
+    expect(bull[2]).toBeCloseTo(15 - ema2, 12);
+    expect(bear[2]).toBeCloseTo(13 - ema2, 12);
+  });
+
+  it('the two legs differ by exactly the bar’s range', () => {
+    const r = elderRay(hlc(src), { period: 2 });
+    const bull = col(r, 'elderBull');
+    const bear = col(r, 'elderBear');
+    for (let i = 1; i < 3; i += 1) {
+      expect(bull[i]! - bear[i]!).toBeCloseTo(src[i]![0] - src[i]![1], 12);
+    }
+  });
+
+  it('uses the SAME EMA the package ships, not a private one', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      return [c + 1.5, c - 1.2, c] as [number, number, number];
+    });
+    const bull = col(elderRay(hlc(rows), { period: 4 }), 'elderBull');
+    const reference = col(ema(hlc(rows), { period: 4, output: 'e' }), 'e');
+    for (let i = 0; i < rows.length; i += 1) {
+      if (reference[i] === undefined) expect(bull[i]).toBeUndefined();
+      else
+        expect(bull[i], `bar ${i}`).toBeCloseTo(
+          rows[i]![0] - reference[i]!,
+          12,
+        );
+    }
+  });
+
+  it('defaults to period 13 and the `elder` prefix; honours a custom prefix', () => {
+    const rows = Array.from(
+      { length: 20 },
+      (_, i) => [100 + i + 1, 100 + i - 1, 100 + i] as [number, number, number],
+    );
+    const d = elderRay(hlc(rows));
+    expect(
+      col(d, 'elderBull')
+        .slice(0, 12)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(d, 'elderBull')[12]).toBeDefined();
+    const named = elderRay(hlc(rows), {
+      period: 3,
+      prefix: 'ray',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    expect(col(named, 'rayBull')[5]).toBeDefined();
+    expect(col(named, 'rayBear')[5]).toBeDefined();
+  });
+
+  it('reads all-missing when an input column is misnamed', () => {
+    const v = col(
+      elderRay(hlc(src), { period: 2, high: 'nope' as never }),
+      'elderBull',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding prefix', () => {
+    expect(() => elderRay(hlc(src), { period: 0 })).toThrow(TypeError);
+    expect(() => elderRay(hlc(src), { period: 1.5 })).toThrow(TypeError);
+    const once = elderRay(hlc(src), { period: 2 });
+    expect(() => elderRay(once as never, { period: 2 })).toThrow(/collides/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = elderRay(hlc(src), { period: 9 });
+    for (const name of ['elderBull', 'elderBear']) {
+      expect(col(r, name), name).toHaveLength(3);
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('awesomeOscillator', () => {
+  // Median prices 4, 6, 8, 14, 18 → sma(2) = [_, 5, 7, 11, 16];
+  // sma(3) = [_, _, 6, 28/3, 40/3].
+  const medians = [4, 6, 8, 14, 18];
+  const src = medians.map(
+    (m) => [m + 2, m - 2, m - 2] as [number, number, number],
+  );
+
+  it('is SMA(fast) − SMA(slow) of the median price, hand-computed', () => {
+    const v = col(
+      awesomeOscillator(hlc(src), { fastPeriod: 2, slowPeriod: 3 }),
+      'ao',
+    );
+    expect(v).toHaveLength(5);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined(); // the slow leg's warm-up
+    expect(v[2]).toBeCloseTo(7 - 6, 12);
+    expect(v[3]).toBeCloseTo(11 - 28 / 3, 12);
+    expect(v[4]).toBeCloseTo(16 - 40 / 3, 12);
+  });
+
+  it('reads the median price, not the close', () => {
+    // The closes sit on each bar's LOW and the half-range VARIES, so a study
+    // reading the close differs from this one by more than a constant (which
+    // would cancel in the difference of the two legs).
+    const rows: Array<[number, number, number]> = Array.from(
+      { length: 12 },
+      (_, i) => {
+        const m = 100 + 3 * Math.sin(i / 2) + i * 0.4;
+        const halfRange = 1 + 0.8 * Math.abs(Math.cos(i / 1.7));
+        return [m + halfRange, m - halfRange, m - halfRange];
+      },
+    );
+    const ao = col(
+      awesomeOscillator(hlc(rows), { fastPeriod: 2, slowPeriod: 4 }),
+      'ao',
+    );
+    const onClose = col(
+      priceOscillator(hlc(rows), {
+        fastPeriod: 2,
+        slowPeriod: 4,
+        maType: 'sma',
+        mode: 'absolute',
+        output: 'osc',
+      }),
+      'osc',
+    );
+    expect(ao[11]).not.toBeCloseTo(onClose[11]!, 6);
+  });
+
+  it('defaults to 5/34 and the `ao` column', () => {
+    const rows = Array.from({ length: 40 }, (_, i) => {
+      const c = 100 + 7 * Math.sin(i / 4) + 0.3 * i;
+      return [c + 1, c - 1, c] as [number, number, number];
+    });
+    const v = col(awesomeOscillator(hlc(rows)), 'ao');
+    expect(v.slice(0, 33).every((x) => x === undefined)).toBe(true);
+    expect(v[33]).toBeDefined();
+    // The warm-up is the SLOW leg's, so it pins `slowPeriod` and says nothing
+    // about `fastPeriod` — the values have to (a mutation moving the default
+    // fast period from 5 to 4 survived the warm-up-only version).
+    expect(v).toEqual(
+      col(
+        awesomeOscillator(hlc(rows), { fastPeriod: 5, slowPeriod: 34 }),
+        'ao',
+      ),
+    );
+    expect(v[39]).not.toBeCloseTo(
+      col(awesomeOscillator(hlc(rows), { fastPeriod: 4 }), 'ao')[39]!,
+      6,
+    );
+  });
+
+  it('honours output and the high/low column names', () => {
+    const r = awesomeOscillator(hlc(src), {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      high: 'high',
+      low: 'low',
+      output: 'awesome',
+    });
+    expect(col(r, 'awesome')[4]).toBeCloseTo(16 - 40 / 3, 12);
+  });
+
+  it('reads all-missing when an input column is misnamed', () => {
+    const v = col(
+      awesomeOscillator(hlc(src), {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        low: 'nope' as never,
+      }),
+      'ao',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects bad periods, a swapped fast/slow pair, and a colliding output', () => {
+    expect(() => awesomeOscillator(hlc(src), { fastPeriod: 0 })).toThrow(
+      TypeError,
+    );
+    expect(() => awesomeOscillator(hlc(src), { slowPeriod: 2.5 })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      awesomeOscillator(hlc(src), { fastPeriod: 5, slowPeriod: 5 }),
+    ).toThrow(/shorter/);
+    expect(() =>
+      awesomeOscillator(hlc(src), { fastPeriod: 34, slowPeriod: 5 }),
+    ).toThrow(/shorter/);
+    expect(() => awesomeOscillator(hlc(src), { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the slow period exceeds the series, length kept', () => {
+    const v = col(awesomeOscillator(hlc(src), { slowPeriod: 9 }), 'ao');
+    expect(v).toHaveLength(5);
     expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

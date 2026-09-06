@@ -34,7 +34,13 @@ import {
   donchian,
   obv,
   vwap,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
 } from '../src/index.js';
+import type { PriceOscillatorMode } from '../src/index.js';
 
 interface OracleCase {
   study: string;
@@ -53,6 +59,7 @@ interface OracleCase {
     kPeriod?: number;
     slowing?: number;
     dPeriod?: number;
+    mode?: PriceOscillatorMode;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -171,6 +178,33 @@ function run(c: OracleCase): unknown {
       return williamsR(ohlcSeries(), p as { period?: number });
     case 'donchian':
       return donchian(ohlcSeries(), p as { period?: number });
+    case 'priceOscillator':
+      return priceOscillator(
+        series(),
+        p as {
+          fastPeriod?: number;
+          slowPeriod?: number;
+          maType?: MaType;
+          mode?: PriceOscillatorMode;
+        },
+      );
+    case 'disparityIndex':
+      return disparityIndex(
+        series(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'detrendedPriceOscillator':
+      return detrendedPriceOscillator(
+        series(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'elderRay':
+      return elderRay(ohlcSeries(), p as { period?: number });
+    case 'awesomeOscillator':
+      return awesomeOscillator(
+        ohlcSeries(),
+        p as { fastPeriod?: number; slowPeriod?: number },
+      );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

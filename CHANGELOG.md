@@ -70,6 +70,46 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **five price-vs-moving-average oscillators** — the
+  first consumers of the K2 moving-average engine. All five ship with fluent
+  methods, oracle cases at two parameterisations each, and property tests.
+  - **`priceOscillator({ fastPeriod = 12, slowPeriod = 26, maType = 'ema',
+mode = 'percent', column = 'close', output = 'priceOsc' })`** — the
+    spread between two moving averages, as a percent of the slow one
+    (TA-Lib's **PPO**) or in price units (`mode: 'absolute'`, TA-Lib's
+    **APO**). **Percent is the default** for two reasons: the absolute form
+    at the default parameters is `macd()`'s line bar-for-bar (a test pins the
+    identity), and the percent form is the scale-invariant, cross-instrument
+    comparable one. `{ maType: 'sma', mode: 'absolute' }` matches TA-Lib's
+    `APO(matype=0)` to `7.1e-14` with an identical mask; on `'ema'` pond's
+    first-sample EMA seed is kept (the `macd` precedent), so the generator
+    proves the **formula** on TA-Lib's own SMA seed (`2.8e-14`) and bounds
+    the **seed transient** separately — 6.61% of scale at the first shared
+    bar, 0.41% at its worst over the last 20.
+  - **`disparityIndex({ period = 14, maType = 'sma', column, output =
+'disparity' })`** — `100·(price − MA)/MA`, scale-invariant. No TA-Lib
+    function; pandas replication with the analytic first-valid bar asserted.
+  - **`detrendedPriceOscillator({ period = 20, maType = 'sma', column,
+output = 'dpo' })`** — `price[i] − MA[i − shift]` with
+    `shift = ⌊period/2⌋ + 1` (it **floors** on odd periods). This is the
+    **non-centered** alignment (TradingView's default); StockCharts'
+    centered `price[i − shift] − MA[i]` is a different series, not a
+    re-plotting of this one, and is documented as such on the study. First
+    value on bar `period − 1 + shift` (bar 30 at the defaults).
+  - **`elderRay({ period = 13, high, low, close, prefix = 'elder' })`** —
+    appends `elderBull` = `high − EMA(close)` and `elderBear` =
+    `low − EMA(close)`. Elder's definition names the EMA, so there is no
+    `maType` knob. No TA-Lib function; pandas replication on pond's EMA seed.
+  - **`awesomeOscillator({ fastPeriod = 5, slowPeriod = 34, high, low,
+output = 'ao' })`** — `SMA(5) − SMA(34)` of the median price
+    `(high + low)/2`. Both legs wait for that many finite **values** (the
+    derived-array rule), so a gap masks the windows containing it. No TA-Lib
+    function; pandas replication.
+
+  Internally this adds one kernel helper, `medianPriceValues(high, low)`,
+  beside `typicalPriceValues` — 7.6 ms at 1M bars, and named consumers next
+  (Alligator, Gator, High-Low Bands). It is not a public export.
+
 - `@pond-ts/financial`: **the K2 moving-average engine** — one **MA-type
   vocabulary** shared by every study that exposes a "MA Type" input (~25 of
   them in the corpus assessment). New study **`movingAverage({ period, type =

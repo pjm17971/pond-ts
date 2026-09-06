@@ -67,3 +67,16 @@ export type { ObvOptions } from './studies/obv.js';
 export { obv } from './studies/obv.js';
 export type { VwapOptions } from './studies/vwap.js';
 export { vwap } from './studies/vwap.js';
+export type {
+  PriceOscillatorOptions,
+  PriceOscillatorMode,
+} from './studies/price-oscillator.js';
+export { priceOscillator } from './studies/price-oscillator.js';
+export type { DisparityIndexOptions } from './studies/disparity-index.js';
+export { disparityIndex } from './studies/disparity-index.js';
+export type { DetrendedPriceOscillatorOptions } from './studies/detrended-price-oscillator.js';
+export { detrendedPriceOscillator } from './studies/detrended-price-oscillator.js';
+export type { ElderRayOptions } from './studies/elder-ray.js';
+export { elderRay } from './studies/elder-ray.js';
+export type { AwesomeOscillatorOptions } from './studies/awesome-oscillator.js';
+export { awesomeOscillator } from './studies/awesome-oscillator.js';
