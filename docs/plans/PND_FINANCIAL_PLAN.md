@@ -342,6 +342,63 @@ same run, so all five sit in the cheap half of the corpus. Every one is
 options-validation plus kernel calls, so these are the kernels' numbers: no
 new data loop was written, and nothing here rescans a window.
 
+**Landed — the K2 consumers (price-vs-moving-average oscillators).**
+`priceOscillator`, `disparityIndex`, `detrendedPriceOscillator`, `elderRay`
+and `awesomeOscillator` — the first five studies built _on_ the K2 engine
+rather than beside it; all four with an "MA type" in the corpus take `maType`
+and call `movingAverageColumn`, so no sixth smoother exists. Decisions:
+
+(1) **`priceOscillator`'s `mode` defaults to `'percent'`, and the default
+matters.** TA-Lib ships the two forms as two functions (`APO` absolute, `PPO`
+percent), so the name settles nothing. What settled it was step 0 of the
+studies README: `priceOscillator({ mode: 'absolute', maType: 'ema',
+fastPeriod: 12, slowPeriod: 26 })` **is `macd()`'s line bar-for-bar** — a
+test pins that identity — so defaulting to absolute would have made the
+headline call of a new study a rename of a shipped column. Percent is also
+the scale-invariant, cross-instrument form. Rejected: a `percent: boolean`
+(reads worse at the call site, doesn't extend), and two exported functions
+`apo`/`ppo` (one study with one knob is the `stochastic({ slowing: 1 })`
+precedent). (2) **The EMA seed was not reopened**, per `macd`: on `'ema'`
+pond keeps its first-sample seed, so the generator proves the **formula** on
+TA-Lib's own SMA seed (`2.8e-14`) and bounds the **seed transient**
+separately — 6.61% of scale at the first shared bar, 0.41% worst over the
+last 20, where a wrong rate is 5.09% (`2/(n+2)`), 5.99% (`2/n`) or 44.4%
+(`1/n`). On a seedless type the parity is outright: `{sma, absolute}` matches
+`APO(matype=0)` to `7.1e-14`, masks identical. The generator also rebuilds
+`APO`/`PPO` from `talib.MA` first and confirms they _are_ the MA difference
+(`8.9e-16`) before using them as a reference. (3) **DPO's alignment is a real
+fork and is named.** We ship `price[i] − MA[i − shift]` (TradingView's
+non-centered default); StockCharts' `price[i − shift] − MA[i]` is a
+**different series**, not a re-plotting of ours, and the reason to reject it
+is that a study here appends a column aligned to the source's time axis — a
+value on bar `i` that describes a price `shift` bars earlier silently
+misaligns with everything else on that row. `shift = ⌊period/2⌋ + 1` **floors**
+on odd periods (the only rule that keeps the study a pure re-indexing of the
+average; the same call `zlema`'s lag makes), so the warm-up is
+`period − 1 + shift` and an odd `period` lands a bar before the even one above
+it. (4) **`elderRay` and `awesomeOscillator` deliberately take no `maType`.**
+Elder names the 13-bar EMA and Williams names the 5/34 SMA pair; an option
+whose other nine settings nobody publishes is a speculative knob, and it would
+let `awesomeOscillator` return something nobody calls an Awesome Oscillator.
+(5) **The percent forms report `undefined`, not `Infinity`, on a zero
+denominator** — reachable only on a column that can be zero or negative (a
+return series, another oscillator), and a `±Infinity` in a chart's y-domain is
+worse than a gap. Pinned both ways: the absolute form keeps emitting there.
+(6) **One new kernel helper: `medianPriceValues(high, low)`**, added beside
+`typicalPriceValues` rather than in a file of its own. The alternative was a
+`(h + l) / 2` loop inside `awesomeOscillator`, which the "studies contain no
+data loop" rule forbids; one consumer ships today and three more are named
+(Alligator, Gator, High-Low Bands). Not a public export. Measured 7.6 ms at
+1M bars against `typicalPriceValues`' 10.8 ms, and `awesomeOscillator`'s
+77.8 ms is exactly its parts (7.6 + 36.9 + 33.4). Perf at 1M bars:
+`priceOscillator` 61.0 ms, `elderRay` 55.3 ms, `disparityIndex` 55.3 ms,
+`detrendedPriceOscillator` 47.5 ms — all in the two-engine-calls-plus-a-pass
+band, none of them near the range studies' 240–310 ms. (7) **Considered and
+not built**: "moving average deviation" (`price − MA`, the absolute sibling of
+Disparity) — it is arithmetic anyone can write and the comparable form is the
+one worth naming; and a `centered` flag on DPO, which would be a second series
+behind a boolean rather than a knob on one.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

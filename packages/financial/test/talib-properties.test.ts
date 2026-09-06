@@ -65,6 +65,11 @@ import {
   qstick,
   trix,
   coppock,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -1156,6 +1161,328 @@ describe('[talib] all-missing input yields all-missing K2 consumers', () => {
     allBlank(
       coppock(allMissing, { longPeriod: 4, shortPeriod: 2, wmaPeriod: 2 }),
       ['coppock'],
+    );
+  });
+});
+
+/* ==========================================================================
+ * The K2 oscillators: scale, shift, composition, all-missing.
+ *
+ * Two families with opposite scale behaviour, which is what makes either
+ * assertion worth writing: the PERCENT forms (`priceOscillator`'s default
+ * mode, `disparityIndex`) normalise by their own denominator and are
+ * INVARIANT; the difference forms (`priceOscillator({ mode: 'absolute' })`,
+ * `detrendedPriceOscillator`, `elderRay`, `awesomeOscillator`) are in price
+ * units and are LINEAR. An implementation that normalised where it should
+ * not — or forgot to — passes one of these and fails the other.
+ * ========================================================================== */
+
+const oscBars = (rows: Array<[number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+    ] as const,
+    rows: rows.map(([h, l, c], i) => [i, h, l, c]) as Array<
+      [number, number, number, number]
+    >,
+  });
+
+/** Non-degenerate bars: never monotonic, varying range, close never on an
+ *  extreme. `a` scales every price, `b` shifts every price. */
+const oscRows = (a = 1, b = 0): Array<[number, number, number]> =>
+  Array.from({ length: 40 }, (_, i) => {
+    const c = 100 + 8 * Math.sin(i / 3.5) + 0.3 * i;
+    const up = 0.4 + 0.7 * Math.abs(Math.sin(i / 2.3));
+    const down = 0.4 + 0.7 * Math.abs(Math.cos(i / 1.9));
+    return [(c + up) * a + b, (c - down) * a + b, c * a + b];
+  });
+
+/** Assert `f(scaled)` is `k ×` `f(base)` wherever base has a value, and
+ *  missing on exactly the same rows. */
+const expectLinear = (
+  base: Array<number | undefined>,
+  scaled: Array<number | undefined>,
+  k: number,
+) => {
+  for (let i = 0; i < base.length; i += 1) {
+    if (base[i] === undefined) expect(scaled[i], `bar ${i}`).toBeUndefined();
+    else expect(scaled[i]! / k, `bar ${i}`).toBeCloseTo(base[i]!, 8);
+  }
+};
+
+/** Assert two runs agree bar for bar (invariance). */
+const expectSame = (
+  base: Array<number | undefined>,
+  other: Array<number | undefined>,
+) => {
+  for (let i = 0; i < base.length; i += 1) {
+    if (base[i] === undefined) expect(other[i], `bar ${i}`).toBeUndefined();
+    else expect(other[i], `bar ${i}`).toBeCloseTo(base[i]!, 8);
+  }
+};
+
+describe('[talib] the K2 oscillators: scale and shift behaviour', () => {
+  const K = 1000;
+
+  it('priceOscillator PERCENT is unchanged by scaling the input', () => {
+    const opts = { fastPeriod: 3, slowPeriod: 7, maType: 'ema' } as const;
+    const base = col(priceOscillator(oscBars(oscRows()), opts), 'priceOsc');
+    const scaled = col(priceOscillator(oscBars(oscRows(K)), opts), 'priceOsc');
+    expectSame(base, scaled);
+    expect(base.some((x) => x !== undefined && x !== 0)).toBe(true);
+  });
+
+  it('priceOscillator PERCENT is NOT shift-invariant (its denominator moves)', () => {
+    // The companion assertion: adding a constant to every price changes the
+    // denominator without changing the numerator, so a percent-of-price
+    // reading must move. A study that quietly dropped the division would
+    // pass the scale test above and fail this one.
+    const opts = { fastPeriod: 3, slowPeriod: 7, maType: 'ema' } as const;
+    const base = col(priceOscillator(oscBars(oscRows()), opts), 'priceOsc');
+    const shifted = col(
+      priceOscillator(oscBars(oscRows(1, 500)), opts),
+      'priceOsc',
+    );
+    const bar = 30;
+    expect(base[bar]).toBeDefined();
+    expect(Math.abs(shifted[bar]! - base[bar]!)).toBeGreaterThan(1e-6);
+  });
+
+  it('priceOscillator ABSOLUTE scales LINEARLY and is shift-invariant', () => {
+    const opts = {
+      fastPeriod: 3,
+      slowPeriod: 7,
+      maType: 'ema',
+      mode: 'absolute',
+    } as const;
+    const base = col(priceOscillator(oscBars(oscRows()), opts), 'priceOsc');
+    expectLinear(
+      base,
+      col(priceOscillator(oscBars(oscRows(K)), opts), 'priceOsc'),
+      K,
+    );
+    expectSame(
+      base,
+      col(priceOscillator(oscBars(oscRows(1, 500)), opts), 'priceOsc'),
+    );
+  });
+
+  it('disparityIndex is unchanged by scaling, and is NOT shift-invariant', () => {
+    const opts = { period: 5, maType: 'sma' } as const;
+    const base = col(disparityIndex(oscBars(oscRows()), opts), 'disparity');
+    expectSame(
+      base,
+      col(disparityIndex(oscBars(oscRows(K)), opts), 'disparity'),
+    );
+    const shifted = col(
+      disparityIndex(oscBars(oscRows(1, 500)), opts),
+      'disparity',
+    );
+    expect(base[30]).toBeDefined();
+    expect(Math.abs(shifted[30]! - base[30]!)).toBeGreaterThan(1e-6);
+  });
+
+  it('detrendedPriceOscillator scales LINEARLY and is shift-invariant', () => {
+    const opts = { period: 5, maType: 'sma' } as const;
+    const base = col(detrendedPriceOscillator(oscBars(oscRows()), opts), 'dpo');
+    expectLinear(
+      base,
+      col(detrendedPriceOscillator(oscBars(oscRows(K)), opts), 'dpo'),
+      K,
+    );
+    expectSame(
+      base,
+      col(detrendedPriceOscillator(oscBars(oscRows(1, 500)), opts), 'dpo'),
+    );
+  });
+
+  it('elderRay scales LINEARLY and is shift-invariant on both legs', () => {
+    const opts = { period: 5 } as const;
+    for (const name of ['elderBull', 'elderBear']) {
+      const base = col(elderRay(oscBars(oscRows()), opts), name);
+      expectLinear(base, col(elderRay(oscBars(oscRows(K)), opts), name), K);
+      expectSame(base, col(elderRay(oscBars(oscRows(1, 500)), opts), name));
+    }
+  });
+
+  it('awesomeOscillator scales LINEARLY and is shift-invariant', () => {
+    const opts = { fastPeriod: 3, slowPeriod: 8 } as const;
+    const base = col(awesomeOscillator(oscBars(oscRows()), opts), 'ao');
+    expectLinear(
+      base,
+      col(awesomeOscillator(oscBars(oscRows(K)), opts), 'ao'),
+      K,
+    );
+    expectSame(
+      base,
+      col(awesomeOscillator(oscBars(oscRows(1, 500)), opts), 'ao'),
+    );
+  });
+});
+
+describe('[talib] the K2 oscillators over another study compose their warm-up', () => {
+  const wavy = Array.from(
+    { length: 30 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + i * 0.1,
+  );
+
+  it('priceOscillator over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(
+      priceOscillator(src, {
+        column: 'sma',
+        fastPeriod: 2,
+        slowPeriod: 3,
+        maType: 'ema',
+      }),
+      'priceOsc',
+    );
+    expect(v).toHaveLength(wavy.length);
+    // sma(3) first valid at 2; the slow EMA then needs 3 finite samples.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('disparityIndex over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(
+      disparityIndex(src, { column: 'sma', period: 3, maType: 'ema' }),
+      'disparity',
+    );
+    expect(v).toHaveLength(wavy.length);
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('detrendedPriceOscillator over sma composes the warm-up AND the shift', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(
+      detrendedPriceOscillator(src, {
+        column: 'sma',
+        period: 3,
+        maType: 'ema',
+      }),
+      'dpo',
+    );
+    expect(v).toHaveLength(wavy.length);
+    // sma(3) at 2, the EMA 2 more, then the 2-bar displacement.
+    expect(firstValid(v)).toBe(6);
+    expect(v.slice(6).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('elderRay over a smoothed close starts late rather than coming back empty', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      return [c + 1.2, c - 0.9, c] as [number, number, number];
+    });
+    const smoothed = sma(oscBars(rows), { period: 3, output: 'sc' });
+    const v = col(
+      elderRay(smoothed, { period: 3, close: 'sc', prefix: 'e' }),
+      'eBull',
+    );
+    expect(v).toHaveLength(30);
+    // sma(3) first valid at 2, then the EMA needs 3 finite samples: 4.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('awesomeOscillator over smoothed high/low starts late rather than empty', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 3);
+      return [c + 1.2, c - 0.9, c] as [number, number, number];
+    });
+    const sh = sma(oscBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const v = col(
+      awesomeOscillator(sl, {
+        fastPeriod: 2,
+        slowPeriod: 3,
+        high: 'sh',
+        low: 'sl',
+      }),
+      'ao',
+    );
+    expect(v).toHaveLength(30);
+    // The smoothed inputs are first valid at 2, so the derived median is
+    // too; the slow leg then needs 3 finite values of it.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing K2 oscillators', () => {
+  const allMissingBars = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [number, number | undefined, number | undefined, number | undefined]
+    >,
+  });
+  const empty = (v: Array<number | undefined>) => {
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  };
+
+  it('priceOscillator, in both modes', () => {
+    empty(
+      col(
+        priceOscillator(allMissingBars as never, {
+          fastPeriod: 2,
+          slowPeriod: 5,
+        }),
+        'priceOsc',
+      ),
+    );
+    empty(
+      col(
+        priceOscillator(allMissingBars as never, {
+          fastPeriod: 2,
+          slowPeriod: 5,
+          mode: 'absolute',
+        }),
+        'priceOsc',
+      ),
+    );
+  });
+
+  it('disparityIndex and detrendedPriceOscillator', () => {
+    empty(
+      col(disparityIndex(allMissingBars as never, { period: 5 }), 'disparity'),
+    );
+    empty(
+      col(
+        detrendedPriceOscillator(allMissingBars as never, { period: 5 }),
+        'dpo',
+      ),
+    );
+  });
+
+  it('elderRay and awesomeOscillator', () => {
+    const r = elderRay(allMissingBars as never, { period: 5 });
+    empty(col(r, 'elderBull'));
+    empty(col(r, 'elderBear'));
+    empty(
+      col(
+        awesomeOscillator(allMissingBars as never, {
+          fastPeriod: 2,
+          slowPeriod: 5,
+        }),
+        'ao',
+      ),
     );
   });
 });

@@ -39,7 +39,13 @@ import {
   qstick,
   trix,
   coppock,
+  priceOscillator,
+  disparityIndex,
+  detrendedPriceOscillator,
+  elderRay,
+  awesomeOscillator,
 } from '../src/index.js';
+import type { PriceOscillatorMode } from '../src/index.js';
 
 interface OracleCase {
   study: string;
@@ -63,6 +69,7 @@ interface OracleCase {
     longPeriod?: number;
     shortPeriod?: number;
     wmaPeriod?: number;
+    mode?: PriceOscillatorMode;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -208,6 +215,33 @@ function run(c: OracleCase): unknown {
       return coppock(
         series(),
         p as { longPeriod?: number; shortPeriod?: number; wmaPeriod?: number },
+      );
+    case 'priceOscillator':
+      return priceOscillator(
+        series(),
+        p as {
+          fastPeriod?: number;
+          slowPeriod?: number;
+          maType?: MaType;
+          mode?: PriceOscillatorMode;
+        },
+      );
+    case 'disparityIndex':
+      return disparityIndex(
+        series(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'detrendedPriceOscillator':
+      return detrendedPriceOscillator(
+        series(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'elderRay':
+      return elderRay(ohlcSeries(), p as { period?: number });
+    case 'awesomeOscillator':
+      return awesomeOscillator(
+        ohlcSeries(),
+        p as { fastPeriod?: number; slowPeriod?: number },
       );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not

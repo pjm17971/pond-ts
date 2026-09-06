@@ -94,6 +94,16 @@ import type { TrixOptions } from './studies/trix.js';
 import { trix as trixStudy } from './studies/trix.js';
 import type { CoppockOptions } from './studies/coppock.js';
 import { coppock as coppockStudy } from './studies/coppock.js';
+import type { PriceOscillatorOptions } from './studies/price-oscillator.js';
+import { priceOscillator as priceOscillatorStudy } from './studies/price-oscillator.js';
+import type { DisparityIndexOptions } from './studies/disparity-index.js';
+import { disparityIndex as disparityIndexStudy } from './studies/disparity-index.js';
+import type { DetrendedPriceOscillatorOptions } from './studies/detrended-price-oscillator.js';
+import { detrendedPriceOscillator as detrendedPriceOscillatorStudy } from './studies/detrended-price-oscillator.js';
+import type { ElderRayOptions } from './studies/elder-ray.js';
+import { elderRay as elderRayStudy } from './studies/elder-ray.js';
+import type { AwesomeOscillatorOptions } from './studies/awesome-oscillator.js';
+import { awesomeOscillator as awesomeOscillatorStudy } from './studies/awesome-oscillator.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -233,6 +243,27 @@ declare module 'pond-ts' {
     /** Fluent Coppock Curve. */
     coppock<const Output extends string = 'coppock'>(
       options?: CoppockOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Price Oscillator (percent by default; `mode: 'absolute'` for
+     *  the points form). */
+    priceOscillator<const Output extends string = 'priceOsc'>(
+      options?: PriceOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Disparity Index. */
+    disparityIndex<const Output extends string = 'disparity'>(
+      options?: DisparityIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Detrended Price Oscillator. */
+    detrendedPriceOscillator<const Output extends string = 'dpo'>(
+      options?: DetrendedPriceOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Elder Ray Index (bull / bear power). */
+    elderRay<const Prefix extends string = 'elder'>(
+      options?: ElderRayOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Bull`>, `${Prefix}Bear`>>;
+    /** Fluent Awesome Oscillator. */
+    awesomeOscillator<const Output extends string = 'ao'>(
+      options?: AwesomeOscillatorOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -395,4 +426,34 @@ proto.coppock = function (
   options?: CoppockOptions<SeriesSchema, string>,
 ) {
   return coppockStudy(this, options);
+};
+proto.priceOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceOscillatorOptions<SeriesSchema, string>,
+) {
+  return priceOscillatorStudy(this, options);
+};
+proto.disparityIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: DisparityIndexOptions<SeriesSchema, string>,
+) {
+  return disparityIndexStudy(this, options);
+};
+proto.detrendedPriceOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: DetrendedPriceOscillatorOptions<SeriesSchema, string>,
+) {
+  return detrendedPriceOscillatorStudy(this, options);
+};
+proto.elderRay = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ElderRayOptions<SeriesSchema, string>,
+) {
+  return elderRayStudy(this, options);
+};
+proto.awesomeOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AwesomeOscillatorOptions<SeriesSchema, string>,
+) {
+  return awesomeOscillatorStudy(this, options);
 };

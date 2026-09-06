@@ -78,3 +78,16 @@ export type { TrixOptions } from './studies/trix.js';
 export { trix } from './studies/trix.js';
 export type { CoppockOptions } from './studies/coppock.js';
 export { coppock } from './studies/coppock.js';
+export type {
+  PriceOscillatorOptions,
+  PriceOscillatorMode,
+} from './studies/price-oscillator.js';
+export { priceOscillator } from './studies/price-oscillator.js';
+export type { DisparityIndexOptions } from './studies/disparity-index.js';
+export { disparityIndex } from './studies/disparity-index.js';
+export type { DetrendedPriceOscillatorOptions } from './studies/detrended-price-oscillator.js';
+export { detrendedPriceOscillator } from './studies/detrended-price-oscillator.js';
+export type { ElderRayOptions } from './studies/elder-ray.js';
+export { elderRay } from './studies/elder-ray.js';
+export type { AwesomeOscillatorOptions } from './studies/awesome-oscillator.js';
+export { awesomeOscillator } from './studies/awesome-oscillator.js';
