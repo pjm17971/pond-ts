@@ -9,7 +9,6 @@ import { TimeSeries } from 'pond-ts';
 
 const BASE = Date.UTC(2026, 0, 12, 9, 0, 0);
 const MINUTE = 60_000;
-const DAY = 86_400_000;
 
 /** A tiny deterministic PRNG (mulberry32) — no external dependency. */
 function mulberry32(seed: number): () => number {
