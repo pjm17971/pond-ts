@@ -57,8 +57,11 @@ export function rollingWeightedMeanValues(
   for (let i = 0; i < length; i += 1) {
     const p = values[i]! * weights[i]!;
     product[i] = p;
-    // A gap in either input drops the row from BOTH sums (see above).
-    masked[i] = Number.isNaN(p) ? NaN : weights[i]!;
+    // A gap in either input drops the row from BOTH sums (see above). The
+    // test is `isFinite`, the same one `rollingMeanSdInto` counts by, so a
+    // product that overflows to ±Infinity leaves both sums too rather than
+    // desynchronising their counts.
+    masked[i] = Number.isFinite(p) ? weights[i]! : NaN;
   }
 
   const numerator = new Float64Array(length);

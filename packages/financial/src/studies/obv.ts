@@ -83,11 +83,12 @@ export interface ObvOptions<S extends SeriesSchema, Output extends string> {
  * the end (agreeing with this), but a `NaN` close makes both comparisons
  * false, so TA-Lib silently adds nothing for that bar *and* the one after
  * it, then carries on at a level off by whatever those two bars would have
- * contributed. Measured on a seven-bar series with one missing close: TA-Lib
- * reports `[100, 300, 300, 300, 800, 800, 100]` where the gap-free answer is
- * `[100, 300, 300, −100, 400, 400, −300]` — a level 400 out, never
- * recovered, presented as a value. This study reports `undefined` from the
- * gap on.
+ * contributed. Measured (TA-Lib 0.7.1) on closes `[10, 11, 11, NaN, 12, 12,
+ * 8]` with volumes `[100 … 700]`: TA-Lib reports
+ * `[100, 300, 300, 300, 300, 300, −400]` where the gap-free answer (close 9
+ * at the gap) is `[100, 300, 300, −100, 400, 400, −300]` — 400 out at the
+ * gap bar, 100 out from then on, never recovered, presented as a value.
+ * This study reports `undefined` from the gap on.
  */
 export function obv<
   S extends SeriesSchema,

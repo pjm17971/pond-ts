@@ -26,6 +26,13 @@
  * a recursion carries state forward forever, and a running sum is the
  * simplest recursion there is.
  *
+ * **Not core's `TimeSeries.cumulative('sum')`**, which shares the name and
+ * makes the opposite call: there a missing cell *carries* the accumulator
+ * (a general reducer over whatever is present). That is right for a count
+ * or a running max; for a volume *level* it is the silent-offset failure
+ * described above, which is why the studies use this kernel and not that
+ * operator.
+ *
  * O(N), one pass, one allocation. The interior-gap rule costs nothing — it
  * is IEEE arithmetic doing what it does.
  */

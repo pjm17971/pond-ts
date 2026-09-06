@@ -1367,8 +1367,10 @@ describe('obv', () => {
 
   it('propagates an interior gap in close to the end', () => {
     // A running sum has no local answer for a gap: the level is unknown
-    // from the unknown term on. TA-Lib would report 300, 300, 800, 800, 100
-    // here — a level 400 out, never recovered.
+    // from the unknown term on. TA-Lib (0.7.1, measured) reports
+    // 300, 300, 300, 300, -400 from bar 2 on — 400 out at the gap bar and
+    // 100 out thereafter against the gap-free -100, 400, 400, -300 — never
+    // recovered, presented as a value.
     const v = col(
       obv(cvGappy([10, 11, 11, undefined, 12, 12, 8], volumes)),
       'obv',

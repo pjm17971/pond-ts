@@ -176,7 +176,8 @@ once a gap leaves it, a cumulative quantity cannot. A leading gap in either
 input shifts the seed to the first bar where both are present (what TA-Lib's
 wrapper does by stripping leading NaNs). Deliberate delta from TA-Lib, whose
 NaN close makes both comparisons false and silently carries on at a level
-that is wrong forever (measured: 400 out of level on seven bars). (3)
+that is wrong forever (measured on seven bars: 400 out at the gap bar, 100
+out thereafter). (3)
 **`vwap` is ROLLING** — `Σ tp·v / Σ v` over `period` bars, `tp = (h+l+c)/3`,
 `period` required (no conventional length). Anchored / session VWAP is NOT a
 special case of it (a count window emits once it spans `period` rows) and

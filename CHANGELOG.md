@@ -118,8 +118,8 @@ include new features and type-level changes; patch bumps are strictly additive.
   answer for a missing term, so a missing close or volume leaves the level
   `undefined` from that bar on (the same asymmetry the Wilder recursion has —
   a leading gap shifts the seed, an interior one propagates). TA-Lib has no
-  gap semantics; measured on a seven-bar series it carries on 400 out of
-  level and presents that as a value.
+  gap semantics; measured on a seven-bar series it is 400 out of level at
+  the gap bar and 100 out from then on, presented as a value.
 
   **`vwap`** is a **rolling** Volume-Weighted Average Price:
   `Σ typicalPrice · volume / Σ volume` over `period` bars, typical price
