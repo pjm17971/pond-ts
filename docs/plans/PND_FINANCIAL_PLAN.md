@@ -207,7 +207,12 @@ tests, oracle generator, fixture) — budget for a hand merge, regenerate the
 oracle fixture rather than resolving it textually, and never run a shell
 heredoc inside an `&&` chain during that merge (it breaks the chain and the
 following steps run on a conflicted tree); (4) three ~230k-token builders in
-parallel exhaust the session rate limit — two at a time.
+parallel exhaust the session rate limit — two at a time. (5) A builder's "measured"
+claim is re-measured against the oracle venv before it is repeated
+anywhere: #688's OBV write-up quoted a TA-Lib gap output that was actually
+the fill-with-previous-close answer, and it reached the docstring, a test
+comment, the CHANGELOG, this plan and the PR body before the Layer-2
+reviewer re-ran TA-Lib.
 
 ### [PND-SFOLD] — K6 stateful-fold kernel (studies Phase 3)
 
