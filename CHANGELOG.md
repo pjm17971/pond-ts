@@ -69,6 +69,40 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **`stochastic(...)`**, **`williamsR(...)`** and
+  **`donchian(...)`** — the three range-position studies, built on one new
+  kernel (`highestLowestValues`: the trailing highest high / lowest low in a
+  single `rolling` scan) plus fluent `.stochastic()` / `.williamsR()` /
+  `.donchian()`. All name their bar inputs per column (`high` / `low` /
+  `close`, defaulting to `DEFAULT_OHLCV`), the `atr` shape.
+
+  **`stochastic`** — `{ kPeriod = 14, slowing = 3, dPeriod = 3, prefix =
+'stoch' }` appending `stochK` / `stochD`: the slow stochastic, with
+  `slowing: 1` giving the fast one (TA-Lib's `STOCHF`) from the same
+  function. Values match TA-Lib's `STOCH`/`STOCHF` to `5.7e-14` on every bar
+  TA-Lib emits, `%D` with an identical warm-up. Two deliberate deltas,
+  both documented on the study: **`%K` starts when it can** (bar 15 at the
+  defaults) where TA-Lib masks it back to `%D`'s first bar (17), discarding
+  `dPeriod − 1` real values — the `macd` precedent; and **a flat window
+  (`HH === LL`) is `undefined`** where TA-Lib reports `0`, which is also its
+  value for "close at the very bottom of a real range" — the `rsi` precedent.
+  The smoothing uses a new raw-array kernel, `rollingMeanValues`, that waits
+  for `slowing` _values_ rather than rows: a scratch-column SMA would have
+  put a "3-bar" `%K` on bar 13 with one value in it.
+
+  **`williamsR`** — `{ period = 14, output = 'williamsR' }`, bounded
+  `−100..0`. Matches TA-Lib's `WILLR` bar-for-bar to `1.4e-14` with an
+  identical warm-up; the only delta is the same flat-window `undefined`.
+  It is fast `%K − 100`, computed on the same kernel, and a test pins that
+  identity against `stochastic({ slowing: 1 })`.
+
+  **`donchian`** — `{ period = 20, prefix = 'dc' }` appending `dcUpper` /
+  `dcLower` / `dcMiddle`. `upper` is exactly `rollingMax(high)` and `lower`
+  exactly `rollingMin(low)` (pinned), in one scan plus the midpoint; pandas
+  oracle only (TA-Lib has no Donchian). Scales linearly with price, like
+  `atr`; a missing `high`/`low` is skipped (core's reducer policy), not
+  propagated.
+
 - `@pond-ts/financial`: **`atr(...)`** — Wilder's Average True Range, the third
   [PND-STUDY] named indicator, plus a fluent `.atr()`. `{ period = 14,
 high = 'high', low = 'low', close = 'close', output = 'atr' }`. Verified

@@ -437,22 +437,25 @@ names each input instead of taking one `column`, each defaulting to its
 `DEFAULT_OHLCV` name — the same "never hard-code a column" rule applied
 per input.
 
-| Study                       | Output column(s)                     | Options gist                                                              | Source                                             |
-| --------------------------- | ------------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------- |
-| `sma`                       | `sma`                                | `{ period, column?, output? }`                                            | `packages/financial/src/studies/moving-average.ts` |
-| `ema`                       | `ema`                                | `{ period, column?, output? }` (α = 2/(period+1))                         | `packages/financial/src/studies/moving-average.ts` |
-| `bollinger`                 | `bbMiddle`, `bbUpper`, `bbLower`     | `{ period, stdDev?, column?, prefix? }`                                   | `packages/financial/src/studies/bollinger.ts`      |
-| `envelope`                  | `envMiddle`, `envUpper`, `envLower`  | `{ period, percent?, maType?, column?, prefix? }`                         | `packages/financial/src/studies/envelope.ts`       |
-| `rollingStdev`              | `stdev`                              | `{ period, column?, output? }` (population, ddof=0)                       | `packages/financial/src/studies/rolling-stat.ts`   |
-| `rollingMin` / `rollingMax` | `min` / `max`                        | `{ period, column?, output? }` (Donchian edges)                           | `packages/financial/src/studies/rolling-stat.ts`   |
-| `rollingPercentile`         | `p{q}` (e.g. `p90`)                  | `{ period, q, column?, output? }`                                         | `packages/financial/src/studies/rolling-stat.ts`   |
-| `zScore`                    | `zscore`                             | `{ period, column?, output? }`                                            | `packages/financial/src/studies/z-score.ts`        |
-| `percentChange`             | `pctChange`                          | `{ periods?, column?, output? }` (= ROC; TA-Lib-verified)                 | `packages/financial/src/studies/percent-change.ts` |
-| `rsi`                       | `rsi`                                | `{ period?, column?, output? }` (Wilder, default 14)                      | `packages/financial/src/studies/rsi.ts`            |
-| `macd`                      | `macdLine`, `macdSignal`, `macdHist` | `{ fastPeriod?, slowPeriod?, signalPeriod?, column?, prefix? }` (12/26/9) | `packages/financial/src/studies/macd.ts`           |
-| `atr`                       | `atr`                                | `{ period?, high?, low?, close?, output? }` (Wilder, default 14)          | `packages/financial/src/studies/atr.ts`            |
-| `momentum`                  | `momentum`                           | `{ period?, column?, output? }` (`v − v[−period]`, default 10)            | `packages/financial/src/studies/momentum.ts`       |
-| `historicalVolatility`      | `hv`                                 | `{ period?, annualize?, column?, output? }` (σ of log returns, ×√252)     | `packages/financial/src/studies/volatility.ts`     |
+| Study                       | Output column(s)                     | Options gist                                                                                   | Source                                             |
+| --------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `sma`                       | `sma`                                | `{ period, column?, output? }`                                                                 | `packages/financial/src/studies/moving-average.ts` |
+| `ema`                       | `ema`                                | `{ period, column?, output? }` (α = 2/(period+1))                                              | `packages/financial/src/studies/moving-average.ts` |
+| `bollinger`                 | `bbMiddle`, `bbUpper`, `bbLower`     | `{ period, stdDev?, column?, prefix? }`                                                        | `packages/financial/src/studies/bollinger.ts`      |
+| `envelope`                  | `envMiddle`, `envUpper`, `envLower`  | `{ period, percent?, maType?, column?, prefix? }`                                              | `packages/financial/src/studies/envelope.ts`       |
+| `rollingStdev`              | `stdev`                              | `{ period, column?, output? }` (population, ddof=0)                                            | `packages/financial/src/studies/rolling-stat.ts`   |
+| `rollingMin` / `rollingMax` | `min` / `max`                        | `{ period, column?, output? }` (Donchian edges)                                                | `packages/financial/src/studies/rolling-stat.ts`   |
+| `rollingPercentile`         | `p{q}` (e.g. `p90`)                  | `{ period, q, column?, output? }`                                                              | `packages/financial/src/studies/rolling-stat.ts`   |
+| `zScore`                    | `zscore`                             | `{ period, column?, output? }`                                                                 | `packages/financial/src/studies/z-score.ts`        |
+| `percentChange`             | `pctChange`                          | `{ periods?, column?, output? }` (= ROC; TA-Lib-verified)                                      | `packages/financial/src/studies/percent-change.ts` |
+| `rsi`                       | `rsi`                                | `{ period?, column?, output? }` (Wilder, default 14)                                           | `packages/financial/src/studies/rsi.ts`            |
+| `macd`                      | `macdLine`, `macdSignal`, `macdHist` | `{ fastPeriod?, slowPeriod?, signalPeriod?, column?, prefix? }` (12/26/9)                      | `packages/financial/src/studies/macd.ts`           |
+| `atr`                       | `atr`                                | `{ period?, high?, low?, close?, output? }` (Wilder, default 14)                               | `packages/financial/src/studies/atr.ts`            |
+| `momentum`                  | `momentum`                           | `{ period?, column?, output? }` (`v − v[−period]`, default 10)                                 | `packages/financial/src/studies/momentum.ts`       |
+| `historicalVolatility`      | `hv`                                 | `{ period?, annualize?, column?, output? }` (σ of log returns, ×√252)                          | `packages/financial/src/studies/volatility.ts`     |
+| `stochastic`                | `stochK`, `stochD`                   | `{ kPeriod?, slowing?, dPeriod?, high?, low?, close?, prefix? }` (14/3/3; `slowing: 1` = fast) | `packages/financial/src/studies/stochastic.ts`     |
+| `williamsR`                 | `williamsR`                          | `{ period?, high?, low?, close?, output? }` (default 14, bounded −100..0)                      | `packages/financial/src/studies/williams-r.ts`     |
+| `donchian`                  | `dcUpper`, `dcLower`, `dcMiddle`     | `{ period?, high?, low?, prefix? }` (default 20)                                               | `packages/financial/src/studies/donchian.ts`       |
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).
