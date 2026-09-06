@@ -10,6 +10,11 @@ import {
   assertPeriod,
   rollingValues,
 } from '../kernels/rolling.js';
+import {
+  assertMaType,
+  movingAverageColumn,
+} from '../kernels/moving-average.js';
+import type { MaType } from '../kernels/moving-average.js';
 
 /** Options shared by the single-line moving averages. `column` is the source
  *  field (default `close`); `output` names the appended column. */
@@ -70,4 +75,45 @@ export function ema<
     minSamples: options.period,
     output,
   }) as unknown as TimeSeries<SmoothAppendSchema<S, Output>>;
+}
+
+/** Options for {@link movingAverage} — {@link MovingAverageOptions} plus the
+ *  shared **MA type** vocabulary the corpus's ~25 "MA Type" studies expose. */
+export interface MovingAverageTypeOptions<
+  S extends SeriesSchema,
+  Output extends string,
+> extends MovingAverageOptions<S, Output> {
+  /** Which moving average. **Default `'sma'`.** */
+  type?: MaType;
+}
+
+/**
+ * **Moving average, by type** — the K2 engine as one study: `type` picks from
+ * the shared {@link MaType} menu (`sma`, `ema`, `wma`, `smma`, `dema`, `tema`,
+ * `trima`, `hull`, `kama`, `zlema`), everything else is the package's uniform
+ * shape (bar-count `period`, any numeric `column`, length-preserving warm-up,
+ * `output` names the appended column, default `'ma'`).
+ *
+ * `type: 'sma'` and `type: 'ema'` are the same calls {@link sma} and
+ * {@link ema} make, so they produce identical values — this is one more name
+ * for them, not a second implementation. `sma()` / `ema()` stay as the
+ * shorthand for the two everyone reaches for.
+ *
+ * Per-type definitions, warm-up lengths, the TA-Lib deltas and the
+ * interior-gap rule (window types recover; `smma` and `kama` propagate) are
+ * documented on `movingAverageValues`.
+ */
+export function movingAverage<
+  S extends SeriesSchema,
+  const Output extends string = 'ma',
+>(series: TimeSeries<S>, options: MovingAverageTypeOptions<S, Output>) {
+  assertPeriod(options.period);
+  const type = options.type ?? 'sma';
+  assertMaType(type);
+  const column = (options.column ?? DEFAULT_SOURCE) as string;
+  const output = (options.output ?? 'ma') as Output;
+  const wide = series as unknown as TimeSeries<SeriesSchema>;
+  assertNoColumn(wide, output);
+  const values = movingAverageColumn(wide, column, options.period, type);
+  return series.withColumn(output, values);
 }

@@ -11,9 +11,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { TimeSeries } from 'pond-ts';
+import type { MaType } from '../src/index.js';
 import {
   sma,
   ema,
+  movingAverage,
   bollinger,
   rollingStdev,
   rollingMin,
@@ -42,7 +44,8 @@ interface OracleCase {
     q?: number;
     percent?: number;
     periods?: number;
-    maType?: 'sma' | 'ema';
+    type?: MaType;
+    maType?: MaType;
     fastPeriod?: number;
     slowPeriod?: number;
     signalPeriod?: number;
@@ -114,6 +117,8 @@ function run(c: OracleCase): unknown {
       return sma(series(), p as { period: number });
     case 'ema':
       return ema(series(), p as { period: number });
+    case 'movingAverage':
+      return movingAverage(series(), p as { period: number; type?: MaType });
     case 'bollinger':
       return bollinger(series(), p as { period: number; stdDev?: number });
     case 'rollingStdev':
@@ -129,7 +134,7 @@ function run(c: OracleCase): unknown {
     case 'envelope':
       return envelope(
         series(),
-        p as { period: number; percent?: number; maType?: 'sma' | 'ema' },
+        p as { period: number; percent?: number; maType?: MaType },
       );
     case 'percentChange':
       return percentChange(series(), p as { periods?: number });

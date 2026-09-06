@@ -49,6 +49,11 @@ and a doc note, not a second study that differs invisibly.
     `percentOfRangeValues(close, hh, ll)` (`kernels/highest-lowest.ts`) —
     HH/LL from **one** scan, and `100·(c−LL)/(HH−LL)` (stochastics, %R,
     Donchian; Aroon, Keltner-style channels next).
+  - `movingAverageValues(values, period, type)` (`kernels/moving-average.ts`)
+    — the **K2 MA-type engine** over a raw array (`sma`/`ema`/`wma`/`smma`/
+    `dema`/`tema`/`trima`/`hull`/`kama`/`zlema`), and `movingAverageColumn`
+    for the series-column case. Any study exposing a "MA type" option takes
+    `MaType` and calls this — do not add an eleventh private smoother.
   - `rollingMeanValues(values, period)` (`kernels/rolling-mean.ts`) — SMA of
     a **derived** array that waits for `period` finite _values_ (not rows —
     the scratch-column route warms up one bar early over a NaN head).
