@@ -7,12 +7,12 @@ import {
   LineChart,
   YAxis,
 } from '@pond-ts/charts';
-import { macd, rsi } from '@pond-ts/financial';
+import '@pond-ts/financial/fluent';
 import { useSiteChartTheme } from '@site/src/theme/useSiteChartTheme';
 import { marketBars, sessionWindow } from './lib/financial-fixtures';
 
-/** Oscillators live in their own rows. `rsi` and `macd` append columns to the
- *  same bar series the candles read, so each `<ChartRow>` below is just a
+/** Oscillators live in their own rows. `.rsi()` and `.macd()` append columns
+ *  to the same bar series the candles read, so each `<ChartRow>` below is just a
  *  different column of one `TimeSeries` on its own y-axis — RSI on a fixed
  *  0–100 axis with its 30/70 baselines, MACD line + signal on an auto-scaled
  *  one. The warm-up rows are `undefined`, which the line renders as a clean
@@ -32,11 +32,9 @@ export default function ChartsFinancialOscillators({
   const theme = useSiteChartTheme();
   const set = marketBars();
   const { range, bars } = sessionWindow(set, 160, 40);
-  const study = macd(rsi(bars, { period: 14 }), {
-    fastPeriod: 12,
-    slowPeriod: 26,
-    signalPeriod: 9,
-  });
+  const study = bars
+    .rsi({ period: 14 })
+    .macd({ fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 });
 
   return (
     <ChartContainer

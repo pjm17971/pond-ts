@@ -54,15 +54,18 @@ Three conventions make the corpus uniform and composable:
   cost one more — see the warm-up note under the tables.
 
 ```ts
-import { bollinger, ema } from '@pond-ts/financial';
+import '@pond-ts/financial/fluent';
 
-// each study appends columns; they compose left to right
-const bars = ema(bollinger(candles, { period: 20 }), { period: 10 });
+// each study appends its columns and returns the widened series, so they chain
+const bars = candles.bollinger({ period: 20 }).ema({ period: 10 });
 // bars now has bbUpper / bbMiddle / bbLower (from bollinger) + ema (from ema)
 ```
 
-Every study is also a **fluent method** on `TimeSeries` once you opt in with
-`import '@pond-ts/financial/fluent'` — `candles.bollinger({ period: 20 }).ema({ period: 10 })`.
+That is the **fluent** form — one `import '@pond-ts/financial/fluent'` mounts
+every study as a method on `TimeSeries`, and it is what the examples on this
+page use. Each study is also a plain function, `(series, options) => series`,
+for code that would rather not augment the prototype:
+`ema(bollinger(candles, { period: 20 }), { period: 10 })` is the same series.
 
 ### What's here today
 
