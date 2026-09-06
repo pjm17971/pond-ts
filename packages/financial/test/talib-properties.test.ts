@@ -46,12 +46,14 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
+  MA_TYPES,
   atr,
   donchian,
   ema,
   historicalVolatility,
   macd,
   momentum,
+  movingAverage,
   obv,
   vwap,
   rsi,
@@ -771,5 +773,95 @@ describe('[talib] all-missing input yields all-missing output (volume studies)',
     const v = col(vwap(allMissingBars as never, { period: 5 }), 'vwap');
     expect(v).toHaveLength(20);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/*
+ * The K2 moving-average engine. The oracle pins the ten types' VALUES against
+ * TA-Lib and pandas on one clean input; what it cannot see is whether each is
+ * the affine map a moving average is supposed to be. Every type here is
+ * LINEAR — `MA(a·x + b) = a·MA(x) + b` — which is a real assertion and not a
+ * tautology: a squared efficiency ratio (KAMA), a difference of EMAs
+ * (DEMA/TEMA) or a de-lagged input (ZLEMA) each have a plausible wrong form
+ * that breaks it.
+ */
+describe('[talib] the moving-average engine is linear in its input', () => {
+  const wavy = [
+    10, 13, 11, 15, 12, 16, 14, 18, 15, 19, 16, 20, 17, 21, 18, 22, 19, 23,
+  ];
+  const scale = 2.5;
+  const offset = -40;
+
+  for (const type of MA_TYPES) {
+    it(`${type}: MA(a·x + b) = a·MA(x) + b`, () => {
+      const base = col(movingAverage(bars(wavy), { period: 5, type }), 'ma');
+      const mapped = col(
+        movingAverage(bars(wavy.map((x) => x * scale + offset)), {
+          period: 5,
+          type,
+        }),
+        'ma',
+      );
+      expect(firstValid(mapped), `${type} warm-up`).toBe(firstValid(base));
+      for (let i = 0; i < base.length; i += 1) {
+        if (base[i] === undefined) {
+          expect(mapped[i], `${type} bar ${i}`).toBeUndefined();
+        } else {
+          expect(mapped[i], `${type} bar ${i}`).toBeCloseTo(
+            base[i]! * scale + offset,
+            9,
+          );
+        }
+      }
+    });
+  }
+
+  it('every type returns the constant on a constant input', () => {
+    // The degenerate case of linearity (a = 0), and the one place a weighting
+    // bug hides: on a flat line every weighting scheme agrees, so this is a
+    // NECESSARY condition and never a sufficient one. It is here because a
+    // normaliser that did not match its weights fails it — a WMA divided by
+    // `period` instead of `period(period+1)/2` reads 7.35 on a constant 21.
+    const flat = Array.from({ length: 30 }, () => 21);
+    for (const type of MA_TYPES) {
+      const v = col(movingAverage(bars(flat), { period: 5, type }), 'ma');
+      const seen = v.filter((x) => x !== undefined);
+      expect(seen.length, type).toBeGreaterThan(0);
+      for (const x of seen) expect(x, type).toBeCloseTo(21, 9);
+    }
+  });
+
+  it('every type composes over another study’s output', () => {
+    // The `rsi(sma(...))` shape: a study run over a column with a warm-up
+    // head must start LATE, not come back empty.
+    for (const type of MA_TYPES) {
+      const stacked = movingAverage(
+        sma(bars(wavy), { period: 3, output: 'sma3' }),
+        { period: 4, type, column: 'sma3' as never, output: 'stacked' },
+      );
+      const v = col(stacked, 'stacked');
+      expect(v, type).toHaveLength(wavy.length);
+      expect(firstValid(v), type).toBeGreaterThan(0);
+      expect(v.at(-1), type).not.toBeUndefined();
+    }
+  });
+
+  it('every type reads all-missing over an all-missing input', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 20 }, (_, i) => [i, undefined]) as never,
+    });
+    for (const type of MA_TYPES) {
+      const v = col(movingAverage(empty as never, { period: 5, type }), 'ma');
+      expect(v, type).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        type,
+      ).toBe(true);
+    }
   });
 });

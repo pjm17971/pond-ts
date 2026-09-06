@@ -8,10 +8,12 @@
 import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
 import {
+  MA_TYPES,
   bollinger,
   donchian,
   ema,
   macd,
+  movingAverage,
   obv,
   rsi,
   sma,
@@ -107,6 +109,15 @@ function scaleResults(length) {
       benchmark('hand-rolled ema floor', () => handRolledEma(close)),
       benchmark('sma({ period: 20 })', () => sma(series, { period: PERIOD })),
       benchmark('ema({ period: 20 })', () => ema(series, { period: PERIOD })),
+      // The K2 MA-type menu, one entry per type. Every one is O(N) and
+      // independent of `period`; `sma` and `ema` here are the same calls the
+      // two entries above make, so a gap between them would be dispatch
+      // overhead and nothing else.
+      ...MA_TYPES.map((type) =>
+        benchmark(`movingAverage({ 20, '${type}' })`, () =>
+          movingAverage(series, { period: PERIOD, type }),
+        ),
+      ),
       benchmark('rsi({ period: 14 })', () => rsi(series, { period: 14 })),
       benchmark('macd({ 12, 26, 9 })', () => macd(series)),
       benchmark('obv()', () => obv(series)),

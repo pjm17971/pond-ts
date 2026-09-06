@@ -37,8 +37,15 @@ import type {
   SmoothAppendSchema,
   ValueColumnsForSchema,
 } from 'pond-ts';
-import { sma as smaStudy, ema as emaStudy } from './studies/moving-average.js';
-import type { MovingAverageOptions } from './studies/moving-average.js';
+import {
+  sma as smaStudy,
+  ema as emaStudy,
+  movingAverage as movingAverageStudy,
+} from './studies/moving-average.js';
+import type {
+  MovingAverageOptions,
+  MovingAverageTypeOptions,
+} from './studies/moving-average.js';
 import { bollinger as bollingerStudy } from './studies/bollinger.js';
 import type { BollingerOptions } from './studies/bollinger.js';
 import {
@@ -96,6 +103,10 @@ declare module 'pond-ts' {
     ema<const Output extends string = 'ema'>(
       options: MovingAverageOptions<S, Output>,
     ): TimeSeries<SmoothAppendSchema<S, Output>>;
+    /** Fluent {@link movingAverage} — the shared MA-type engine. */
+    movingAverage<const Output extends string = 'ma'>(
+      options: MovingAverageTypeOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
     /** Fluent {@link bollinger} — requires `import '@pond-ts/financial/fluent'`. */
     bollinger<const Prefix extends string = 'bb'>(
       options: BollingerOptions<S, Prefix>,
@@ -205,6 +216,12 @@ proto.ema = function (
   options: MovingAverageOptions<SeriesSchema, string>,
 ) {
   return emaStudy(this, options);
+};
+proto.movingAverage = function (
+  this: TimeSeries<SeriesSchema>,
+  options: MovingAverageTypeOptions<SeriesSchema, string>,
+) {
+  return movingAverageStudy(this, options);
 };
 proto.bollinger = function (
   this: TimeSeries<SeriesSchema>,

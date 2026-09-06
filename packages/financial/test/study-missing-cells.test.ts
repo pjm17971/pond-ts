@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
+  MA_TYPES,
+  movingAverage,
   sma,
   ema,
   bollinger,
@@ -436,5 +438,95 @@ describe('[PND-STUDYBOX] the volume studies', () => {
     expect(v[2]).toBeUndefined(); // volumes 0, 0, 0
     expect(v[3]).toBeCloseTo(9, 10); // 0, 0, 400 — all the weight on bar 3
     expect(nullCountOf(out, 'vwap')).toBe(3); // two warm-up + one no-volume
+  });
+});
+
+describe('[PND-STUDYBOX] the moving-average engine: where each type is missing', () => {
+  // A wavy series, because a monotonic one makes every MA type agree — the
+  // warm-up positions would still be pinned, but nothing else would be.
+  const wavy = Array.from(
+    { length: 24 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5),
+  );
+
+  // Each type's first defined bar at period 4, from its definition:
+  // n−1 for the window types, 2n−2 / 3n−3 for the double / triple EMA,
+  // n−2+round(√n) for Hull, n for KAMA (it needs n differences), and
+  // ⌊(n−1)/2⌋+n−1 for ZLEMA.
+  const firstBar: Record<string, number> = {
+    sma: 3,
+    ema: 3,
+    wma: 3,
+    smma: 3,
+    trima: 3,
+    dema: 6,
+    tema: 9,
+    hull: 4,
+    kama: 4,
+    zlema: 4,
+  };
+
+  const gappy = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: wavy.map((c, i) => [i * MINUTE, i === 10 ? undefined : c]) as never,
+    });
+
+  it('warms up exactly `firstBar` rows, per type, length-preservingly', () => {
+    for (const type of MA_TYPES) {
+      const out = movingAverage(bars(wavy), { period: 4, type });
+      const v = cells(out, 'ma');
+      expect(out.length, type).toBe(24);
+      expect(nullCountOf(out, 'ma'), type).toBe(firstBar[type]!);
+      expect(
+        v.slice(0, firstBar[type]!).every((x) => x === undefined),
+        type,
+      ).toBe(true);
+      expect(typeof v[firstBar[type]!], type).toBe('number');
+    }
+  });
+
+  it('a gap at bar 10: the window types blank a run and come back', () => {
+    // `wma` cannot skip a cell without reweighting the rest, so the windows
+    // CONTAINING bar 10 read missing — bars 10–13 for a 4-bar WMA — and bar
+    // 14 is a value again.
+    const wma = cells(movingAverage(gappy(), { period: 4, type: 'wma' }), 'ma');
+    expect(wma.slice(10, 14).every((x) => x === undefined)).toBe(true);
+    expect(typeof wma[14]).toBe('number');
+
+    // `sma` keeps `sma()`'s contract instead: the window still spans four
+    // ROWS, so it averages the three finite ones and never goes missing.
+    const sma4 = cells(
+      movingAverage(gappy(), { period: 4, type: 'sma' }),
+      'ma',
+    );
+    expect(typeof sma4[10]).toBe('number');
+
+    // The ema family emits nothing on the gap bar itself and resumes.
+    const emaCells = cells(
+      movingAverage(gappy(), { period: 4, type: 'ema' }),
+      'ma',
+    );
+    expect(emaCells[10]).toBeUndefined();
+    expect(typeof emaCells[11]).toBe('number');
+  });
+
+  it('a gap at bar 10: smma and kama propagate it to the end', () => {
+    for (const type of ['smma', 'kama'] as const) {
+      const out = movingAverage(gappy(), { period: 4, type });
+      const v = cells(out, 'ma');
+      expect(typeof v[9], type).toBe('number');
+      expect(
+        v.slice(10).every((x) => x === undefined),
+        type,
+      ).toBe(true);
+      // The head plus everything from the gap on: 24 rows less the run of
+      // values between the warm-up and bar 10.
+      expect(nullCountOf(out, 'ma'), type).toBe(24 - (10 - firstBar[type]!));
+    }
   });
 });

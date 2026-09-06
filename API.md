@@ -441,6 +441,7 @@ per input.
 | --------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `sma`                       | `sma`                                | `{ period, column?, output? }`                                                                 | `packages/financial/src/studies/moving-average.ts` |
 | `ema`                       | `ema`                                | `{ period, column?, output? }` (α = 2/(period+1))                                              | `packages/financial/src/studies/moving-average.ts` |
+| `movingAverage`             | `ma`                                 | `{ period, type?, column?, output? }` — the shared `MaType` menu (default `'sma'`)             | `packages/financial/src/studies/moving-average.ts` |
 | `bollinger`                 | `bbMiddle`, `bbUpper`, `bbLower`     | `{ period, stdDev?, column?, prefix? }`                                                        | `packages/financial/src/studies/bollinger.ts`      |
 | `envelope`                  | `envMiddle`, `envUpper`, `envLower`  | `{ period, percent?, maType?, column?, prefix? }`                                              | `packages/financial/src/studies/envelope.ts`       |
 | `rollingStdev`              | `stdev`                              | `{ period, column?, output? }` (population, ddof=0)                                            | `packages/financial/src/studies/rolling-stat.ts`   |
@@ -478,6 +479,18 @@ shape + pandas oracle case + fluent method are all REQUIRED).
 (`{ open, high, low, close, volume }`), `DEFAULT_SOURCE` (`'close'`) —
 `packages/financial/src/contract/`. `RollingReducer` (reducer-name union used
 by studies) — `packages/financial/src/kernels/rolling.ts`.
+
+### Moving-average engine (kernel K2)
+
+| Export                                 | Purpose                                                                                                                                      | Source                                             |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `MaType`                               | The MA-type vocabulary: `'sma' \| 'ema' \| 'wma' \| 'smma' \| 'dema' \| 'tema' \| 'trima' \| 'hull' \| 'kama' \| 'zlema'`                    | `packages/financial/src/kernels/moving-average.ts` |
+| `MA_TYPES`                             | The same menu as a readonly array (validation, fan-out over every type)                                                                      | `packages/financial/src/kernels/moving-average.ts` |
+| `movingAverageValues(v, period, type)` | One MA over a raw `Float64Array` — for studies whose input is derived (Keltner's typical price, Coppock's WMA of ROCs, the Price Oscillator) | `packages/financial/src/kernels/moving-average.ts` |
+
+`MovingAverageTypeOptions` (the `movingAverage` study's options: the shared
+`MovingAverageOptions` plus `type`) —
+`packages/financial/src/studies/moving-average.ts`.
 
 ---
 
