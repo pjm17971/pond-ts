@@ -27,7 +27,10 @@ export interface RelativeVigorIndexOptions<
   /** Close column. **Default `'close'`.** */
   close?: NumericColumnNameForSchema<S>;
   /** Column-family prefix — appends `${prefix}` and `${prefix}Signal`.
-   *  **Default `'rvi'`.** */
+   *  **Default `'rvi'`.** Note `rvi` is also the usual abbreviation of the
+   *  Relative *Volatility* Index (corpus §6.5, not yet shipped); that study
+   *  will take a different default prefix, so the two can coexist on one
+   *  series. */
   prefix?: Prefix;
 }
 
