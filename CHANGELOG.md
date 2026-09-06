@@ -124,8 +124,91 @@ include new features and type-level changes; patch bumps are strictly additive.
     `period 200`, against a naive re-scan's 78 ms and 545 ms. `aroon` costs
     102 ms at 1M bars against `donchian`'s 247 ms — the first measured
     evidence for the monotonic-deque fast path core's rolling min/max wants.
+- `@pond-ts/financial`: **the volatility tail** (assessment §6.5) — seven
+  studies of range and drawdown, **none of which TA-Lib implements**, so every
+  one is a pandas replication in the oracle with its analytic first-valid bar
+  asserted _and_ a measured separation from the plausible wrong turn. Each
+  ships with a fluent method, two oracle cases, hand-computed unit values,
+  missing-cell placement tests, property tests and a perf entry.
+  - **`chaikinVolatility({ period = 10, rocPeriod = 10, high?, low?, output = 'chaikinVol' })`**
+    → `chaikinVol`. The percent rate of change of `EMA(high − low, 10)` over
+    the last 10 bars — is the average bar getting wider? **Plain** range, not
+    true range (Chaikin's; 35.6 points from the true-range version on the
+    oracle input). Two separate periods, both defaulting to 10, because the
+    smoothing span and the look-back are different quantities. First valid at
+    `period − 1 + rocPeriod`.
+  - **`massIndex({ emaPeriod = 9, sumPeriod = 25, high?, low?, output = 'mass' })`**
+    → `mass`. Dorsey's `Σ EMA(range)/EMA(EMA(range))` — range expansion with no
+    direction at all, which is the point of it (the 27 → 26.5 "reversal bulge"
+    warns that a trend will turn without saying which way). A **sum**, so a
+    steady market reads ≈ `sumPeriod`, not 0 or 1; the mean version is 24.1
+    away and is asserted apart. The EMA∘EMA chain follows the `trix` rule, so
+    the first valid bar is `2·emaPeriod + sumPeriod − 3` (bar 40 at the
+    defaults).
+  - **`choppinessIndex({ period = 14, high?, low?, close?, output = 'chop' })`**
+    → `chop`, bounded `0..100`. Dreiss' `100·log10(ΣTR/(HH−LL))/log10(period)`:
+    path walked against ground covered, **high = choppy, low = trending**, and
+    silent about direction. **True** range, the package's own `trueRangeValues`
+    (asserted `== talib.TRANGE`), 7.7 points from the plain-range version. The
+    log base cancels, which the generator asserts rather than assumes.
+    `period` must be **≥ 2** — `log10(1)` is zero.
+  - **`ulcerIndex({ period = 14, column?, output = 'ulcer' })`** → `ulcer`.
+    Peter Martin's downside-only volatility: the RMS percentage drawdown from
+    the window's own highest close. Ships the **rolling (StockCharts) form**;
+    Martin's cumulative original is one number per portfolio, not a series, and
+    is a documented delta rather than an option — as is the mean-**absolute**
+    variant, which is the Pain Index (1.53 away, asserted apart). Warm-up is
+    **`2·period − 2`**: two chained windows.
+  - **`verticalHorizontalFilter({ period = 28, column?, output = 'vhf' })`** →
+    `vhf`, a **fraction** in `(0, 1]`. Adam White's `(HH−LL)/Σ|Δ|` — the
+    opposite polarity to `chop`. Both halves read the **same** column, which is
+    what makes it composable over another study's output. Warm-up is `period`,
+    not `period − 1`: `period` changes need `period + 1` values, and the
+    one-term-shorter version is asserted apart.
+  - **`gopalakrishnanRangeIndex({ period = 10, high?, low?, output = 'gapo' })`**
+    → `gapo`. `ln(HH − LL)/ln(period)` — which _is_ the log of the window's
+    range in base `period`, since the base cancels. The **one study in the
+    batch that is not scale-invariant**: scaling every price by `k` shifts the
+    reading by exactly `ln(k)/ln(period)`, pinned as an identity rather than an
+    invariance. `period` must be **≥ 2**.
+  - **`relativeVolatilityIndex({ period = 14, stdevPeriod = 10, column?, output = 'relVol' })`**
+    → `relVol`, bounded `0..100`. Dorsey's RSI form with the population σ of
+    the close in place of the price change, **Wilder-smoothed** (his
+    definition; TradingView's EMA-smoothed fork is 31.3 points away and
+    measured). **The column is `relVol`, not `rvi`** — that belongs to
+    `relativeVigorIndex`, a completely different study, and the two now sit on
+    one series without collision. An unchanged close counts as a **down** bar,
+    deliberately unlike `rsi`'s split, which gives a flat bar 0 on both legs.
 
-### Added
+  **One new kernel**, `barRangeValues` (`kernels/typical-price.ts`, not
+  public): the plain `high − low`, shared by `chaikinVolatility` and
+  `massIndex`. It is deliberately **not** `trueRangeValues` — the Wilder family
+  (ATR, Keltner, Choppiness) takes true range and the Chaikin/Dorsey family
+  takes plain range, because that is what each author defined, and neither
+  study exposes a knob to swap them.
+
+  **Two sharp edges worth knowing.** (1) `ulcerIndex` is the first study to
+  take a **square root** of a rolling mean, and an incremental accumulator's
+  `O(ε)` residue in the mean of squares becomes `1.6e-9` in the reading — right
+  where the answer should be exactly `0` (a window at new highs). The
+  contributing bars are counted so that reading is exact; the oracle case at
+  `period 5` is what caught it. (2) `rollingValues`' answer to a **misnamed
+  column** depends on the reducer: `stdev`/`avg` take the range-exact path and
+  read all-missing, `max`/`min` fall through to core's sweep and throw. So
+  `relativeVolatilityIndex` answers empty where `ulcerIndex` and
+  `verticalHorizontalFilter` throw. Both behaviours are pinned by tests and
+  documented on the studies; the fix belongs in the kernel.
+
+  **Zero-denominator guards, where they are and are not.** `choppinessIndex`
+  and `gopalakrishnanRangeIndex` divide (or take a logarithm) at their
+  **output**, so a non-finite result would reach `withColumn` — which throws on
+  `±Infinity` — and their guards are load-bearing. `massIndex` and `ulcerIndex`
+  divide **upstream of a rolling summation**, which counts a non-finite cell as
+  missing exactly as it counts a `NaN`, so their guards were unobservable and
+  were removed after mutation testing; the behaviour (`undefined`, never an
+  infinity) is unchanged and still unit-tested. `verticalHorizontalFilter` and
+  `relativeVolatilityIndex` need none at all — a zero denominator forces a zero
+  numerator in both.
 
 - `@pond-ts/financial`: **the volume & money-flow group** (corpus §6.6) — eight
   studies over one new kernel, all in the uniform shape (redirectable bar

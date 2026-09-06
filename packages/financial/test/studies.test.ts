@@ -47,6 +47,13 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  chaikinVolatility,
+  massIndex,
+  choppinessIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
+  gopalakrishnanRangeIndex,
+  relativeVolatilityIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -5010,5 +5017,698 @@ describe('vortex', () => {
         name,
       ).toBe(true);
     }
+  });
+});
+
+/* ========================================================================== */
+/* The volatility tail (assessment §6.5): Chaikin Volatility, Mass Index,     */
+/* Choppiness, Ulcer, VHF, GAPO and the Relative VOLATILITY Index.            */
+/*                                                                            */
+/* None of the seven has a TA-Lib function, so the oracle is a pandas         */
+/* replication in every case and it pins the VALUES. What is pinned here is   */
+/* what a smooth 80-bar fixture cannot show: hand-computed arithmetic on a    */
+/* handful of bars, the zero-denominator guards (every one of which would     */
+/* otherwise throw from `withColumn`, since ±Infinity is not a value a        */
+/* numeric column accepts), the definition forks, the defaults and validation.*/
+/* ========================================================================== */
+
+/** Non-degenerate OHLC bars for the volatility tail: 60 rows, never monotonic,
+ *  the range varying bar to bar, the close never sitting on an extreme, and
+ *  long enough for the batch's longest default (`verticalHorizontalFilter`'s
+ *  28 and `massIndex`'s 40-bar warm-up). */
+const volatilityRows = (): Array<[number, number, number, number]> =>
+  Array.from({ length: 60 }, (_, i) => {
+    const c = 100 + 7 * Math.sin(i / 4.1) + 0.25 * i;
+    const o = c - 0.6 * Math.cos(i / 2.7);
+    const up = 0.4 + 0.9 * Math.abs(Math.sin(i / 2.9));
+    const down = 0.4 + 0.9 * Math.abs(Math.cos(i / 2.2));
+    return [o, Math.max(o, c) + up, Math.min(o, c) - down, c];
+  });
+
+/** Bars whose plain range (`high − low`) is exactly `r`, with a flat close —
+ *  the input `chaikinVolatility` and `massIndex` reduce to. */
+const flatCloseRangeBars = (ranges: number[]) =>
+  ohlcBars(ranges.map((r) => [100, 100 + r, 100, 100]));
+
+describe('chaikinVolatility', () => {
+  it('is the percent rate of change of an EMA of the range, hand-computed', () => {
+    // `period: 1` makes α = 1, so the EMA is the identity and the arithmetic
+    // is visible: 100·(range[i]/range[i−2] − 1).
+    const v = col(
+      chaikinVolatility(flatCloseRangeBars([2, 4, 3, 6, 1]), {
+        period: 1,
+        rocPeriod: 2,
+      }),
+      'chaikinVol',
+    );
+    expect(v).toHaveLength(5);
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo(50, 12); // 3 / 2
+    expect(v[3]).toBeCloseTo(50, 12); // 6 / 4
+    expect(v[4]).toBeCloseTo((100 * (1 - 3)) / 3, 12); // 1 / 3
+  });
+
+  it('smooths with pond’s EMA seed and reads the SMOOTHED array’s warm-up', () => {
+    // period 3 → α = 1/2. Ranges 4,4,4,8 give E = 4,4,4,6, emitted from bar 2
+    // (the array door's `period` finite values), so a 1-bar rate of change
+    // first exists on bar 3 and is 100·(6/4 − 1).
+    const v = col(
+      chaikinVolatility(flatCloseRangeBars([4, 4, 4, 8]), {
+        period: 3,
+        rocPeriod: 1,
+      }),
+      'chaikinVol',
+    );
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    expect(v[3]).toBeCloseTo(50, 12);
+  });
+
+  it('a zero base is undefined, not ±Infinity (percentChange’s rule)', () => {
+    // A halted instrument: no range at all, then a jump. Without the kernel's
+    // `=== 0` guard the last bar would be Infinity, which `withColumn` rejects
+    // outright — so this asserts the study returns at all.
+    const v = col(
+      chaikinVolatility(flatCloseRangeBars([0, 0, 0, 4]), {
+        period: 1,
+        rocPeriod: 1,
+      }),
+      'chaikinVol',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('defaults to 10/10 and the `chaikinVol` column; honours the options', () => {
+    const b = ohlcBars(volatilityRows());
+    const v = col(chaikinVolatility(b), 'chaikinVol');
+    expect(v.slice(0, 19).every((x) => x === undefined)).toBe(true);
+    expect(v[19]).toBeDefined();
+    expect(v).toEqual(
+      col(chaikinVolatility(b, { period: 10, rocPeriod: 10 }), 'chaikinVol'),
+    );
+    const named = chaikinVolatility(b, {
+      period: 3,
+      rocPeriod: 2,
+      high: 'high',
+      low: 'low',
+      output: 'cv',
+    });
+    expect(col(named, 'cv')[4]).toBeDefined();
+  });
+
+  it('rejects bad periods and a colliding output; a misnamed input reads empty', () => {
+    const b = flatCloseRangeBars([1, 2, 3, 4, 5, 6]);
+    expect(() => chaikinVolatility(b, { period: 0 })).toThrow(TypeError);
+    expect(() => chaikinVolatility(b, { rocPeriod: 1.5 })).toThrow(TypeError);
+    expect(() => chaikinVolatility(b, { output: 'close' })).toThrow(/collides/);
+    expect(
+      col(
+        chaikinVolatility(b, {
+          period: 2,
+          rocPeriod: 1,
+          high: 'nope' as never,
+        }),
+        'chaikinVol',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the periods exceed the series, length kept', () => {
+    const v = col(
+      chaikinVolatility(flatCloseRangeBars([1, 2, 3]), {
+        period: 3,
+        rocPeriod: 5,
+      }),
+      'chaikinVol',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('massIndex', () => {
+  it('is Σ EMA(range)/EMA(EMA(range)), hand-computed on the TRIX warm-up', () => {
+    // emaPeriod 3 → α = 1/2. Ranges 4,4,4,8,8,8:
+    //   E1 = 4,4,4,6,7,7.5   (emitted from bar 2)
+    //   E2 = _,_,4,5,6,6.75  (seeded on E1's first emitted value, bar 2,
+    //                         emitted from bar 4 = 2·emaPeriod − 2)
+    // so the ratio starts at bar 4 and a 2-bar SUM of it at bar 5.
+    const v = col(
+      massIndex(flatCloseRangeBars([4, 4, 4, 8, 8, 8]), {
+        emaPeriod: 3,
+        sumPeriod: 2,
+      }),
+      'mass',
+    );
+    expect(v).toHaveLength(6);
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBeCloseTo(7 / 6 + 7.5 / 6.75, 12);
+  });
+
+  it('a SUM, not a mean — a steady market reads ≈ sumPeriod', () => {
+    // A constant range makes both EMAs equal, so every ratio is exactly 1 and
+    // the sum is exactly `sumPeriod`. The mean version would read 1.
+    const v = col(
+      massIndex(flatCloseRangeBars(Array.from({ length: 20 }, () => 5)), {
+        emaPeriod: 3,
+        sumPeriod: 4,
+      }),
+      'mass',
+    );
+    expect(v[19]).toBeCloseTo(4, 12);
+  });
+
+  it('a double EMA that lands on zero is undefined, not ±Infinity', () => {
+    // Reachable only on CROSSING inputs (high below low on some bars, above on
+    // others), which is what a redirected pair produces. At emaPeriod 3 the
+    // ranges −1,−1,−1,−1,3 drive E1 to −1,−1,−1,−1,1 and E2 to exactly 0 on
+    // bar 4 — a non-zero numerator over a zero denominator. Without the guard
+    // `withColumn` rejects the Infinity and the study throws.
+    const crossing = ohlcBars([
+      [100, 100, 101, 100],
+      [100, 100, 101, 100],
+      [100, 100, 101, 100],
+      [100, 100, 101, 100],
+      [100, 103, 100, 100],
+      [100, 100, 101, 100],
+    ]);
+    const v = col(massIndex(crossing, { emaPeriod: 3, sumPeriod: 1 }), 'mass');
+    expect(v).toHaveLength(6);
+    expect(v[4]).toBeUndefined();
+  });
+
+  it('defaults to 9/25 and the `mass` column; honours the options', () => {
+    const b = ohlcBars(volatilityRows());
+    const v = col(massIndex(b), 'mass');
+    expect(v.slice(0, 40).every((x) => x === undefined)).toBe(true);
+    expect(v[40]).toBeDefined();
+    expect(v).toEqual(
+      col(massIndex(b, { emaPeriod: 9, sumPeriod: 25 }), 'mass'),
+    );
+    const named = massIndex(b, {
+      emaPeriod: 3,
+      sumPeriod: 4,
+      high: 'high',
+      low: 'low',
+      output: 'mi',
+    });
+    expect(col(named, 'mi')[7]).toBeDefined();
+  });
+
+  it('rejects bad periods and a colliding output; a misnamed input reads empty', () => {
+    const b = flatCloseRangeBars([1, 2, 3, 4, 5, 6]);
+    expect(() => massIndex(b, { emaPeriod: 0 })).toThrow(TypeError);
+    expect(() => massIndex(b, { sumPeriod: 2.5 })).toThrow(TypeError);
+    expect(() => massIndex(b, { output: 'high' })).toThrow(/collides/);
+    expect(
+      col(
+        massIndex(b, { emaPeriod: 2, sumPeriod: 2, low: 'nope' as never }),
+        'mass',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the periods exceed the series, length kept', () => {
+    const v = col(
+      massIndex(flatCloseRangeBars([1, 2, 3]), { emaPeriod: 3, sumPeriod: 3 }),
+      'mass',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('choppinessIndex', () => {
+  it('is 100·log10(ΣTR/(HH−LL))/log10(period), hand-computed', () => {
+    // Bars (h,l,c): (10,8,9), (11,9,10), (12,10,11).
+    // TR[1] = max(2, |11−9|, |9−9|) = 2; TR[2] = max(2, |12−10|, |10−10|) = 2.
+    // At bar 2, period 2: ΣTR = 4, HH = 12, LL = 9 → 100·log10(4/3)/log10(2).
+    const v = col(
+      choppinessIndex(
+        ohlcBars([
+          [9, 10, 8, 9],
+          [10, 11, 9, 10],
+          [11, 12, 10, 11],
+        ]),
+        { period: 2 },
+      ),
+      'chop',
+    );
+    expect(v).toHaveLength(3);
+    // Warm-up is `period` rows, not period − 1: TR[0] does not exist.
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo((100 * Math.log10(4 / 3)) / Math.log10(2), 12);
+  });
+
+  it('a flat window is undefined — not 0 (“trending”) and not 100 (“choppy”)', () => {
+    const flat = ohlcBars(
+      Array.from(
+        { length: 6 },
+        () => [10, 10, 10, 10] as [number, number, number, number],
+      ),
+    );
+    const v = col(choppinessIndex(flat, { period: 3 }), 'chop');
+    expect(v).toHaveLength(6);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('a zero HH−LL span with a non-zero ΣTR is undefined, not ±Infinity', () => {
+    // A constant high and low with a moving close — an inconsistent bar, which
+    // is what a redirected `close` produces. True range is non-zero (it reads
+    // the close), the span is exactly zero. Without the guard the ratio is
+    // Infinity and `withColumn` rejects it.
+    const v = col(
+      choppinessIndex(
+        ohlcBars([
+          [5, 5, 5, 1],
+          [5, 5, 5, 2],
+          [5, 5, 5, 3],
+          [5, 5, 5, 4],
+        ]),
+        { period: 2 },
+      ),
+      'chop',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('a zero ΣTR with a non-zero span is undefined, not −Infinity', () => {
+    // The other half of the guard, and it needs its own input: bars whose high
+    // and low both sit on the PREVIOUS close have no true range at all, while
+    // their highs still differ from one another, so the span is positive.
+    // `log10(0)` would be −Infinity.
+    const v = col(
+      choppinessIndex(
+        ohlcBars([
+          [1, 1, 1, 1],
+          [1, 1, 1, 2],
+          [2, 2, 2, 3],
+          [3, 3, 3, 4],
+        ]),
+        { period: 2 },
+      ),
+      'chop',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects period 1 — log10(1) is zero, so there is no reading', () => {
+    const b = ohlcBars(volatilityRows());
+    expect(() => choppinessIndex(b, { period: 1 })).toThrow(/at least 2/);
+    expect(() => choppinessIndex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => choppinessIndex(b, { period: 2.5 })).toThrow(TypeError);
+  });
+
+  it('defaults to period 14 and the `chop` column; honours the options', () => {
+    const b = ohlcBars(volatilityRows());
+    const v = col(choppinessIndex(b), 'chop');
+    expect(v.slice(0, 14).every((x) => x === undefined)).toBe(true);
+    expect(v[14]).toBeDefined();
+    expect(v).toEqual(col(choppinessIndex(b, { period: 14 }), 'chop'));
+    const named = choppinessIndex(b, {
+      period: 4,
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      output: 'ci',
+    });
+    expect(col(named, 'ci')[4]).toBeDefined();
+    expect(() => choppinessIndex(b, { output: 'close' })).toThrow(/collides/);
+    expect(
+      col(
+        choppinessIndex(b, { period: 3, high: 'nope' as never }),
+        'chop',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(
+      choppinessIndex(ohlcBars(volatilityRows().slice(0, 4)), { period: 9 }),
+      'chop',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('ulcerIndex', () => {
+  it('is the RMS percent drawdown from the rolling peak, hand-computed', () => {
+    // Closes 10, 12, 9, 9 at period 2. Peaks: _, 12, 12, 9.
+    // Drawdowns: _, 0, 100·(9−12)/12 = −25, 0.
+    // Mean of squares over 2: bar 2 → (0 + 625)/2, bar 3 → (625 + 0)/2.
+    const v = col(ulcerIndex(bars([10, 12, 9, 9]), { period: 2 }), 'ulcer');
+    expect(v).toHaveLength(4);
+    // Warm-up is 2·period − 2: the peak costs one window, the mean another.
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo(Math.sqrt(625 / 2), 12);
+    expect(v[3]).toBeCloseTo(Math.sqrt(625 / 2), 12);
+  });
+
+  it('a window at new highs reads EXACTLY zero, not the accumulator’s residue', () => {
+    // The reading a caller looks for, and the one an incremental mean cannot
+    // produce on its own once the square root has amplified its residue — see
+    // the docstring's measured 1.6e-9. `toBe(0)` is the point of this test.
+    const v = col(ulcerIndex(bars([10, 11, 12, 13]), { period: 2 }), 'ulcer');
+    expect(v[2]).toBe(0);
+    expect(v[3]).toBe(0);
+  });
+
+  it('a zero rolling peak is undefined, not ±Infinity', () => {
+    // Reachable only over a column that crosses zero (another study's output).
+    // Bar 1's window peaks at 0 with a value of −5, so the numerator is NOT
+    // forced to zero and the guard is what stops an Infinity reaching
+    // `withColumn`.
+    const v = col(ulcerIndex(bars([0, -5, -5, -5]), { period: 2 }), 'ulcer');
+    expect(v).toHaveLength(4);
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBe(0); // the peak is −5 by then: a defined, if unusual, base
+  });
+
+  it('defaults to period 14 and the `ulcer` column; honours column and output', () => {
+    const b = bars(wavyCloses);
+    const v = col(ulcerIndex(b), 'ulcer');
+    expect(v.slice(0, 26).every((x) => x === undefined)).toBe(true);
+    expect(v[26]).toBeDefined();
+    expect(v).toEqual(col(ulcerIndex(b, { period: 14 }), 'ulcer'));
+    const renamed = ulcerIndex(sma(b, { period: 3, output: 'fast' }), {
+      period: 4,
+      column: 'fast',
+      output: 'ulcerFast',
+    });
+    expect(col(renamed, 'ulcerFast')[20]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding output; a misnamed column throws', () => {
+    const b = bars(wavyCloses);
+    expect(() => ulcerIndex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => ulcerIndex(b, { period: 1.5 })).toThrow(TypeError);
+    expect(() => ulcerIndex(b, { output: 'close' })).toThrow(/collides/);
+    // The `rollingStdev` door: a single-column study on `rollingValues`
+    // throws rather than reading empty (contrast the bar studies above).
+    expect(() => ulcerIndex(b, { period: 3, column: 'nope' as never })).toThrow(
+      /nope/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(ulcerIndex(bars([10, 12, 11]), { period: 5 }), 'ulcer');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('verticalHorizontalFilter', () => {
+  it('is (HH − LL) / Σ|Δ|, hand-computed, with the period-row warm-up', () => {
+    // Closes 10, 12, 11, 15 at period 2. |Δ| = _, 2, 1, 4.
+    // Bar 2: range over bars 1–2 = 12 − 11 = 1, path = 2 + 1 = 3.
+    // Bar 3: range = 15 − 11 = 4, path = 1 + 4 = 5.
+    const v = col(
+      verticalHorizontalFilter(bars([10, 12, 11, 15]), { period: 2 }),
+      'vhf',
+    );
+    expect(v).toHaveLength(4);
+    // `period` rows, not period − 1: 2 changes need 3 closes.
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo(1 / 3, 12);
+    expect(v[3]).toBeCloseTo(4 / 5, 12);
+  });
+
+  it('reaches 1 when the window has no retracement at all', () => {
+    // Closes 5, 5, 6, 7: at bar 2 the path is 0 + 1 and the range is 1.
+    const v = col(
+      verticalHorizontalFilter(bars([5, 5, 6, 7]), { period: 2 }),
+      'vhf',
+    );
+    expect(v[2]).toBe(1);
+    expect(v[3]).toBeCloseTo(0.5, 12); // range 1, path 1 + 1
+  });
+
+  it('a window with no movement is undefined (0/0), with no guard needed', () => {
+    // Both halves read the same column, so a zero path forces a zero range —
+    // there is no input that puts a non-zero numerator over a zero
+    // denominator, which is why this study has no explicit guard.
+    const v = col(
+      verticalHorizontalFilter(bars([5, 5, 5, 5]), { period: 2 }),
+      'vhf',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('defaults to period 28 and the `vhf` column; honours column and output', () => {
+    const b = bars(wavyCloses);
+    const v = col(verticalHorizontalFilter(b), 'vhf');
+    expect(v.slice(0, 28).every((x) => x === undefined)).toBe(true);
+    expect(v[28]).toBeDefined();
+    expect(v).toEqual(col(verticalHorizontalFilter(b, { period: 28 }), 'vhf'));
+    const renamed = verticalHorizontalFilter(
+      sma(b, { period: 3, output: 'fast' }),
+      { period: 4, column: 'fast', output: 'vhfFast' },
+    );
+    expect(col(renamed, 'vhfFast')[20]).toBeDefined();
+  });
+
+  it('rejects a bad period and a colliding output; a misnamed column throws', () => {
+    const b = bars(wavyCloses);
+    expect(() => verticalHorizontalFilter(b, { period: 0 })).toThrow(TypeError);
+    expect(() => verticalHorizontalFilter(b, { period: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => verticalHorizontalFilter(b, { output: 'close' })).toThrow(
+      /collides/,
+    );
+    expect(() =>
+      verticalHorizontalFilter(b, { period: 3, column: 'nope' as never }),
+    ).toThrow(/nope/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(
+      verticalHorizontalFilter(bars([10, 12, 11]), { period: 5 }),
+      'vhf',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('gopalakrishnanRangeIndex', () => {
+  it('is ln(HH − LL)/ln(period), hand-computed', () => {
+    // Highs 12, 14, 13; lows 10, 11, 9; period 2.
+    // Bar 1: HH 14, LL 10 → ln(4)/ln(2) = 2 exactly.
+    // Bar 2: HH 14, LL 9  → ln(5)/ln(2).
+    const v = col(
+      gopalakrishnanRangeIndex(
+        ohlcBars([
+          [11, 12, 10, 11],
+          [12, 14, 11, 12],
+          [11, 13, 9, 11],
+        ]),
+        { period: 2 },
+      ),
+      'gapo',
+    );
+    expect(v).toHaveLength(3);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBe(2);
+    expect(v[2]).toBeCloseTo(Math.log(5) / Math.log(2), 12);
+  });
+
+  it('is the same number in any log base — log10/log10 agrees with ln/ln', () => {
+    // `log_b(x)/log_b(n)` is `log_n(x)` for every base, which is why neither
+    // this study nor `choppinessIndex` takes a base option.
+    const rows = volatilityRows();
+    const period = 6;
+    const v = col(gopalakrishnanRangeIndex(ohlcBars(rows), { period }), 'gapo');
+    for (let i = period - 1; i < rows.length; i += 1) {
+      let hh = -Infinity;
+      let ll = Infinity;
+      for (let j = i - period + 1; j <= i; j += 1) {
+        hh = Math.max(hh, rows[j]![1]);
+        ll = Math.min(ll, rows[j]![2]);
+      }
+      expect(v[i]!, `bar ${i}`).toBeCloseTo(
+        Math.log10(hh - ll) / Math.log10(period),
+        12,
+      );
+    }
+  });
+
+  it('a flat window is undefined — ln(0) would be −Infinity', () => {
+    const flat = ohlcBars(
+      Array.from(
+        { length: 5 },
+        () => [7, 7, 7, 7] as [number, number, number, number],
+      ),
+    );
+    const v = col(gopalakrishnanRangeIndex(flat, { period: 2 }), 'gapo');
+    expect(v).toHaveLength(5);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects period 1 — ln(1) is zero, so there is no reading', () => {
+    const b = ohlcBars(volatilityRows());
+    expect(() => gopalakrishnanRangeIndex(b, { period: 1 })).toThrow(
+      /at least 2/,
+    );
+    expect(() => gopalakrishnanRangeIndex(b, { period: 0 })).toThrow(TypeError);
+  });
+
+  it('defaults to period 10 and the `gapo` column; honours the options', () => {
+    const b = ohlcBars(volatilityRows());
+    const v = col(gopalakrishnanRangeIndex(b), 'gapo');
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+    expect(v).toEqual(col(gopalakrishnanRangeIndex(b, { period: 10 }), 'gapo'));
+    const named = gopalakrishnanRangeIndex(b, {
+      period: 3,
+      high: 'high',
+      low: 'low',
+      output: 'gp',
+    });
+    expect(col(named, 'gp')[2]).toBeDefined();
+    expect(() => gopalakrishnanRangeIndex(b, { output: 'high' })).toThrow(
+      /collides/,
+    );
+    expect(
+      col(
+        gopalakrishnanRangeIndex(b, { period: 3, low: 'nope' as never }),
+        'gapo',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(
+      gopalakrishnanRangeIndex(ohlcBars(volatilityRows().slice(0, 3)), {
+        period: 9,
+      }),
+      'gapo',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('relativeVolatilityIndex', () => {
+  it('is RSI’s form on σ, Wilder-smoothed, hand-computed', () => {
+    // Closes 10, 12, 11, 13, 14 at stdevPeriod 2 / period 2.
+    // σ  = _, 1, 0.5, 1, 0.5     Δ = _, +2, −1, +2, +1
+    // up = _, 1, 0,   1, 0.5     dn = _, 0, 0.5, 0, 0
+    // Wilder seeds on bar 2 (the first σ is bar 1, plus period − 1):
+    //   U = 0.5, 0.75, 0.625     D = 0.25, 0.125, 0.0625
+    const v = col(
+      relativeVolatilityIndex(bars([10, 12, 11, 13, 14]), {
+        period: 2,
+        stdevPeriod: 2,
+      }),
+      'relVol',
+    );
+    expect(v).toHaveLength(5);
+    // Warm-up is stdevPeriod + period − 2.
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo((100 * 0.5) / 0.75, 12);
+    expect(v[3]).toBeCloseTo((100 * 0.75) / 0.875, 12);
+    expect(v[4]).toBeCloseTo((100 * 0.625) / 0.6875, 12);
+  });
+
+  it('an unchanged close counts as a DOWN bar (Dorsey), unlike rsi’s split', () => {
+    // Closes 10, 11, 12, 12, 13, 14: every move is up except one flat bar. If
+    // a flat bar counted for neither leg — the `upDownLegValues` rule `rsi`
+    // uses — the down leg would be zero throughout and every reading would be
+    // exactly 100. It is not, which is the whole of the delta.
+    const v = col(
+      relativeVolatilityIndex(bars([10, 11, 12, 12, 13, 14]), {
+        period: 2,
+        stdevPeriod: 3,
+      }),
+      'relVol',
+    );
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    expect(v[3]!).toBeLessThan(100);
+    expect(v[3]).toBeCloseTo(63.39745962155614, 9);
+    expect(v[5]!).toBeLessThan(100);
+  });
+
+  it('a flat window is undefined (0/0) — every σ in the smoother is zero', () => {
+    const v = col(
+      relativeVolatilityIndex(bars([5, 5, 5, 5, 5, 5]), {
+        period: 2,
+        stdevPeriod: 2,
+      }),
+      'relVol',
+    );
+    expect(v).toHaveLength(6);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('defaults to 14/10 and `relVol`; it coexists with relativeVigorIndex', () => {
+    const b = bars(wavyCloses);
+    const v = col(relativeVolatilityIndex(b), 'relVol');
+    expect(v.slice(0, 22).every((x) => x === undefined)).toBe(true);
+    expect(v[22]).toBeDefined();
+    expect(v).toEqual(
+      col(
+        relativeVolatilityIndex(b, { period: 14, stdevPeriod: 10 }),
+        'relVol',
+      ),
+    );
+    // The reason the default is not `rvi`: both studies on one series.
+    const both = relativeVolatilityIndex(
+      relativeVigorIndex(ohlcBars(volatilityRows()), { period: 4 }),
+      { period: 4, stdevPeriod: 3 },
+    );
+    expect(col(both, 'rvi')[10]).toBeDefined();
+    expect(col(both, 'relVol')[10]).toBeDefined();
+  });
+
+  it('rejects bad periods and a colliding output; a misnamed column throws', () => {
+    const b = bars(wavyCloses);
+    expect(() => relativeVolatilityIndex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => relativeVolatilityIndex(b, { stdevPeriod: 1.5 })).toThrow(
+      TypeError,
+    );
+    expect(() => relativeVolatilityIndex(b, { output: 'close' })).toThrow(
+      /collides/,
+    );
+    // A misnamed column reads EMPTY here, where `ulcerIndex` and
+    // `verticalHorizontalFilter` throw on the same `rollingValues` door — the
+    // kernel's answer depends on the reducer, not on the study. `stdev` (and
+    // `avg`) take the range-exact path, which reads a missing column as
+    // all-`NaN`; `max`/`min` fall through to core's sweep, which rejects the
+    // name. Pinned in both directions so the split is chosen, not incidental.
+    expect(
+      col(
+        relativeVolatilityIndex(b, { period: 3, column: 'nope' as never }),
+        'relVol',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('a stdevPeriod of 1 makes every σ zero, so the column is empty', () => {
+    const v = col(
+      relativeVolatilityIndex(bars(wavyCloses), {
+        period: 3,
+        stdevPeriod: 1,
+      }),
+      'relVol',
+    );
+    expect(v).toHaveLength(wavyCloses.length);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('is all-undefined when the periods exceed the series, length kept', () => {
+    const v = col(
+      relativeVolatilityIndex(bars([10, 12, 11]), {
+        period: 5,
+        stdevPeriod: 3,
+      }),
+      'relVol',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

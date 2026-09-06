@@ -132,6 +132,20 @@ import type { RelativeVigorIndexOptions } from './studies/relative-vigor-index.j
 import { relativeVigorIndex as relativeVigorIndexStudy } from './studies/relative-vigor-index.js';
 import type { PsychologicalLineOptions } from './studies/psychological-line.js';
 import { psychologicalLine as psychologicalLineStudy } from './studies/psychological-line.js';
+import type { ChaikinVolatilityOptions } from './studies/chaikin-volatility.js';
+import { chaikinVolatility as chaikinVolatilityStudy } from './studies/chaikin-volatility.js';
+import type { MassIndexOptions } from './studies/mass-index.js';
+import { massIndex as massIndexStudy } from './studies/mass-index.js';
+import type { ChoppinessIndexOptions } from './studies/choppiness-index.js';
+import { choppinessIndex as choppinessIndexStudy } from './studies/choppiness-index.js';
+import type { UlcerIndexOptions } from './studies/ulcer-index.js';
+import { ulcerIndex as ulcerIndexStudy } from './studies/ulcer-index.js';
+import type { VerticalHorizontalFilterOptions } from './studies/vertical-horizontal-filter.js';
+import { verticalHorizontalFilter as verticalHorizontalFilterStudy } from './studies/vertical-horizontal-filter.js';
+import type { GopalakrishnanRangeIndexOptions } from './studies/gopalakrishnan-range-index.js';
+import { gopalakrishnanRangeIndex as gopalakrishnanRangeIndexStudy } from './studies/gopalakrishnan-range-index.js';
+import type { RelativeVolatilityIndexOptions } from './studies/relative-volatility-index.js';
+import { relativeVolatilityIndex as relativeVolatilityIndexStudy } from './studies/relative-volatility-index.js';
 import type { DirectionalMovementOptions } from './studies/directional-movement.js';
 import { directionalMovement as directionalMovementStudy } from './studies/directional-movement.js';
 import type { AroonOptions } from './studies/aroon.js';
@@ -384,6 +398,34 @@ declare module 'pond-ts' {
     vortex<const Prefix extends string = 'vi'>(
       options?: VortexOptions<S, Prefix>,
     ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Plus`>, `${Prefix}Minus`>>;
+    /** Fluent Chaikin Volatility (percent ROC of an EMA of the bar range). */
+    chaikinVolatility<const Output extends string = 'chaikinVol'>(
+      options?: ChaikinVolatilityOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Mass Index (Σ of EMA(range)/EMA(EMA(range))). */
+    massIndex<const Output extends string = 'mass'>(
+      options?: MassIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Choppiness Index (ΣTR against the window's own range). */
+    choppinessIndex<const Output extends string = 'chop'>(
+      options?: ChoppinessIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Ulcer Index (RMS percentage drawdown from the rolling peak). */
+    ulcerIndex<const Output extends string = 'ulcer'>(
+      options?: UlcerIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Vertical Horizontal Filter (net range over path length). */
+    verticalHorizontalFilter<const Output extends string = 'vhf'>(
+      options?: VerticalHorizontalFilterOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Gopalakrishnan Range Index (`ln(HH − LL)/ln(period)`). */
+    gopalakrishnanRangeIndex<const Output extends string = 'gapo'>(
+      options?: GopalakrishnanRangeIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Relative Volatility Index (RSI's form on σ; column `relVol`). */
+    relativeVolatilityIndex<const Output extends string = 'relVol'>(
+      options?: RelativeVolatilityIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
 
@@ -677,4 +719,46 @@ proto.vortex = function (
   options?: VortexOptions<SeriesSchema, string>,
 ) {
   return vortexStudy(this, options);
+};
+proto.chaikinVolatility = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChaikinVolatilityOptions<SeriesSchema, string>,
+) {
+  return chaikinVolatilityStudy(this, options);
+};
+proto.massIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: MassIndexOptions<SeriesSchema, string>,
+) {
+  return massIndexStudy(this, options);
+};
+proto.choppinessIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChoppinessIndexOptions<SeriesSchema, string>,
+) {
+  return choppinessIndexStudy(this, options);
+};
+proto.ulcerIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: UlcerIndexOptions<SeriesSchema, string>,
+) {
+  return ulcerIndexStudy(this, options);
+};
+proto.verticalHorizontalFilter = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: VerticalHorizontalFilterOptions<SeriesSchema, string>,
+) {
+  return verticalHorizontalFilterStudy(this, options);
+};
+proto.gopalakrishnanRangeIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: GopalakrishnanRangeIndexOptions<SeriesSchema, string>,
+) {
+  return gopalakrishnanRangeIndexStudy(this, options);
+};
+proto.relativeVolatilityIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RelativeVolatilityIndexOptions<SeriesSchema, string>,
+) {
+  return relativeVolatilityIndexStudy(this, options);
 };

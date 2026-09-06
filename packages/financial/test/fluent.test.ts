@@ -44,6 +44,13 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  chaikinVolatility,
+  massIndex,
+  choppinessIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
+  gopalakrishnanRangeIndex,
+  relativeVolatilityIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -629,5 +636,115 @@ describe('fluent: the Wilder directional group', () => {
       col(slowVi, 'vi20Plus')[50]!,
       6,
     );
+  });
+});
+
+describe('fluent volatility tail', () => {
+  const volBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 4.1) + 0.25 * i;
+        return [
+          i,
+          c + 0.4 + 0.9 * Math.abs(Math.sin(i / 2.9)),
+          c - 0.4 - 0.9 * Math.abs(Math.cos(i / 2.2)),
+          c,
+        ];
+      }) as Array<[number, number, number, number]>,
+    });
+
+  it('chains all seven and matches the standalone functions bar for bar', () => {
+    const fluent = volBars()
+      .chaikinVolatility({ period: 4, rocPeriod: 3 })
+      .massIndex({ emaPeriod: 4, sumPeriod: 6 })
+      .choppinessIndex({ period: 5 })
+      .ulcerIndex({ period: 5 })
+      .verticalHorizontalFilter({ period: 6 })
+      .gopalakrishnanRangeIndex({ period: 5 })
+      .relativeVolatilityIndex({ period: 4, stdevPeriod: 3 });
+    const functional = relativeVolatilityIndex(
+      gopalakrishnanRangeIndex(
+        verticalHorizontalFilter(
+          ulcerIndex(
+            choppinessIndex(
+              massIndex(
+                chaikinVolatility(volBars(), { period: 4, rocPeriod: 3 }),
+                { emaPeriod: 4, sumPeriod: 6 },
+              ),
+              { period: 5 },
+            ),
+            { period: 5 },
+          ),
+          { period: 6 },
+        ),
+        { period: 5 },
+      ),
+      { period: 4, stdevPeriod: 3 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'chaikinVol',
+      'mass',
+      'chop',
+      'ulcer',
+      'vhf',
+      'gapo',
+      'relVol',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('passes the periods through, not just the defaults', () => {
+    // A mount that dropped the options object would still produce numbers;
+    // the periods are the knobs that change the answers.
+    const shortChop = volBars().choppinessIndex({ period: 5 });
+    const longChop = volBars().choppinessIndex({
+      period: 20,
+      output: 'chop20',
+    });
+    expect(col(shortChop, 'chop')[30]).not.toBeCloseTo(
+      col(longChop, 'chop20')[30]!,
+      6,
+    );
+    // Both of `chaikinVolatility`'s periods must matter independently.
+    const base = volBars().chaikinVolatility({ period: 4, rocPeriod: 3 });
+    const slower = volBars().chaikinVolatility({
+      period: 9,
+      rocPeriod: 3,
+      output: 'cv2',
+    });
+    const further = volBars().chaikinVolatility({
+      period: 4,
+      rocPeriod: 8,
+      output: 'cv3',
+    });
+    expect(col(base, 'chaikinVol')[30]).not.toBeCloseTo(
+      col(slower, 'cv2')[30]!,
+      6,
+    );
+    expect(col(base, 'chaikinVol')[30]).not.toBeCloseTo(
+      col(further, 'cv3')[30]!,
+      6,
+    );
+    // …and `relativeVolatilityIndex`'s two lengths likewise.
+    const rv = volBars().relativeVolatilityIndex({
+      period: 4,
+      stdevPeriod: 3,
+    });
+    const rv2 = volBars().relativeVolatilityIndex({
+      period: 10,
+      stdevPeriod: 3,
+      output: 'relVol2',
+    });
+    expect(col(rv, 'relVol')[35]).not.toBeCloseTo(col(rv2, 'relVol2')[35]!, 6);
   });
 });

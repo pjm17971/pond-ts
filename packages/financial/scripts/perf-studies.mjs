@@ -24,6 +24,13 @@ import {
   priceVolumeTrend,
   volumeOscillator,
   bollinger,
+  chaikinVolatility,
+  choppinessIndex,
+  gopalakrishnanRangeIndex,
+  massIndex,
+  relativeVolatilityIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
   chandeMomentum,
   commodityChannelIndex,
   coppock,
@@ -299,6 +306,30 @@ function scaleResults(length) {
       ),
       benchmark('naive bars-since-max(200) [control]', () =>
         naiveBarsSinceMax(close, 200),
+      ),
+      // The volatility tail. Six of the seven are options-validation plus
+      // O(N) kernel calls; `ulcerIndex` and `verticalHorizontalFilter` each
+      // add a rolling min/max pass, which is the dearest substrate in the
+      // package (see the range studies above), so they should read near
+      // `donchian` rather than near `ema`.
+      benchmark('chaikinVolatility({ 10, 10 })', () =>
+        chaikinVolatility(series),
+      ),
+      benchmark('massIndex({ 9, 25 })', () => massIndex(series)),
+      benchmark('choppinessIndex({ period: 14 })', () =>
+        choppinessIndex(series, { period: 14 }),
+      ),
+      benchmark('ulcerIndex({ period: 14 })', () =>
+        ulcerIndex(series, { period: 14 }),
+      ),
+      benchmark('verticalHorizontalFilter({ period: 28 })', () =>
+        verticalHorizontalFilter(series, { period: 28 }),
+      ),
+      benchmark('gopalakrishnanRangeIndex({ period: 10 })', () =>
+        gopalakrishnanRangeIndex(series, { period: 10 }),
+      ),
+      benchmark('relativeVolatilityIndex({ 14, 10 })', () =>
+        relativeVolatilityIndex(series),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

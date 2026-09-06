@@ -490,10 +490,21 @@ on the series.
 | `directionalMovement`       | `dmiPlusDi`, `dmiMinusDi`, `dmiDx`, `dmiAdx`, `dmiAdxr` | `{ period?, high?, low?, close?, prefix? }` (Wilder's DMS — `+DI`/`−DI`/`DX`/`ADX`/`ADXR`, default 14; per-column warm-up; Wilder's seed, so a decaying transient vs TA-Lib) | `packages/financial/src/studies/directional-movement.ts`       |
 | `aroon`                     | `aroonUp`, `aroonDown`, `aroonOsc`                      | `{ period?, high?, low?, prefix? }` (`100·(period − bars since extreme)/period` over a **`period + 1`**-bar window, default 25; = TA-Lib `AROON`/`AROONOSC`)                 | `packages/financial/src/studies/aroon.ts`                      |
 | `vortex`                    | `viPlus`, `viMinus`                                     | `{ period?, high?, low?, close?, prefix? }` (`Σ\|H − prevL\| / Σ TR` and `Σ\|L − prevH\| / Σ TR`, default 14; positive, not bounded by 1)                                    | `packages/financial/src/studies/vortex.ts`                     |
+| `chaikinVolatility`         | `chaikinVol`                                            | `{ period?, rocPeriod?, high?, low?, output? }` (percent ROC of EMA(`high − low`), 10/10; **plain** range)                                                                   | `packages/financial/src/studies/chaikin-volatility.ts`         |
+| `massIndex`                 | `mass`                                                  | `{ emaPeriod?, sumPeriod?, high?, low?, output? }` (Σ EMA(range)/EMA² over 25, Dorsey's 9/25; a **sum**, reads ≈ `sumPeriod`)                                                | `packages/financial/src/studies/mass-index.ts`                 |
+| `choppinessIndex`           | `chop`                                                  | `{ period?, high?, low?, close?, output? }` (`100·log10(ΣTR/(HH−LL))/log10(period)`, default 14, bounded 0..100; `period ≥ 2`)                                               | `packages/financial/src/studies/choppiness-index.ts`           |
+| `ulcerIndex`                | `ulcer`                                                 | `{ period?, column?, output? }` (RMS % drawdown from the rolling peak, StockCharts' rolling form, default 14; warm-up `2·period−2`)                                          | `packages/financial/src/studies/ulcer-index.ts`                |
+| `verticalHorizontalFilter`  | `vhf`                                                   | `{ period?, column?, output? }` ((HH−LL)/Σ\|Δcolumn\| over 28, Adam White's; a **fraction** in (0, 1], warm-up `period`)                                                     | `packages/financial/src/studies/vertical-horizontal-filter.ts` |
+| `gopalakrishnanRangeIndex`  | `gapo`                                                  | `{ period?, high?, low?, output? }` (`ln(HH−LL)/ln(period)` = log base `period` of the range, default 10; `period ≥ 2`)                                                      | `packages/financial/src/studies/gopalakrishnan-range-index.ts` |
+| `relativeVolatilityIndex`   | `relVol`                                                | `{ period?, stdevPeriod?, column?, output? }` (RSI's form on σ, Wilder-smoothed, Dorsey's 14/10 — **not** `rvi`, see below)                                                  | `packages/financial/src/studies/relative-volatility-index.ts`  |
 
 Every study also exports its options type (`SmaOptions`-style, named for the
 study). `PriceOscillatorMode` (`'percent' | 'absolute'`) is exported alongside
 `PriceOscillatorOptions` — `packages/financial/src/studies/price-oscillator.ts`.
+
+**Two studies are called "RVI".** `relativeVigorIndex` (Ehlers' body/range
+ratio) keeps the `rvi` prefix; `relativeVolatilityIndex` (Dorsey's RSI-on-σ)
+appends **`relVol`**, so both can sit on one series with no `output` juggling.
 
 **Volume Rate of Change is `percentChange({ column: 'volume' })`** — the corpus
 names it separately, but the formula is identical (and TA-Lib-verified through
