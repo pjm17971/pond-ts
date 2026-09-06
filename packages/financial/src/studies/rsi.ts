@@ -9,6 +9,7 @@ import {
   assertPeriod,
   columnValues,
 } from '../kernels/rolling.js';
+import { upDownLegValues } from '../kernels/up-down.js';
 import { wilderValues } from '../kernels/wilder.js';
 
 export interface RsiOptions<S extends SeriesSchema, Output extends string> {
@@ -82,13 +83,14 @@ export function rsi<
   // Split each bar-over-bar difference into its gain and loss legs. Missing
   // cells are `NaN` and propagate on their own ([PND-STUDYBOX]); index 0 has
   // no predecessor, and `start = 1` below is what tells the smoother so.
-  const gains = new Float64Array(length);
-  const losses = new Float64Array(length);
-  for (let i = 1; i < length; i += 1) {
-    const d = v[i]! - v[i - 1]!;
-    gains[i] = d > 0 ? d : Number.isNaN(d) ? NaN : 0;
-    losses[i] = d < 0 ? -d : Number.isNaN(d) ? NaN : 0;
+  // The split itself is {@link upDownLegValues} — the same one
+  // `chandeMomentum` and `intradayMomentumIndex` run, so the three cannot
+  // drift on how a flat bar or an unknown one is counted.
+  const deltas = new Float64Array(length);
+  for (let i = 0; i < length; i += 1) {
+    deltas[i] = i === 0 ? NaN : v[i]! - v[i - 1]!;
   }
+  const { up: gains, down: losses } = upDownLegValues(deltas);
 
   const avgGain = wilderValues(gains, period, 1);
   const avgLoss = wilderValues(losses, period, 1);

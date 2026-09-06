@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { TimeSeries } from 'pond-ts';
-import { rollingMeanValues } from '../src/kernels/rolling-mean.js';
+import {
+  rollingMeanAbsDevValues,
+  rollingMeanValues,
+} from '../src/kernels/rolling-mean.js';
 import { sma } from '../src/index.js';
 
 /*
@@ -84,6 +87,73 @@ describe('rollingMeanValues', () => {
 
   it('is all-undefined when the period exceeds the length', () => {
     expect(read(rollingMeanValues(arr(1, 2, 3), 5))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+});
+
+/*
+ * The mean ABSOLUTE deviation — CCI's denominator. It is not a moment, so
+ * nothing in core produces it and it cannot ride the mean's accumulator;
+ * what these pin is that it is the deviation about the window's own mean
+ * (not a median, not the standard deviation) and that it inherits
+ * `rollingMeanValues`' missing-cell rule exactly rather than carrying a
+ * second copy of it.
+ */
+describe('rollingMeanAbsDevValues', () => {
+  it('is the mean |x − windowMean|, hand-computed', () => {
+    // {1,2,3}: mean 2, deviations 1,0,1 → 2/3. {2,3,4}: the same by
+    // translation. {3,4,10}: mean 17/3, deviations 8/3, 5/3, 13/3 → 26/9.
+    const v = read(rollingMeanAbsDevValues(arr(1, 2, 3, 4, 10), 3));
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo(2 / 3, 12);
+    expect(v[3]).toBeCloseTo(2 / 3, 12);
+    expect(v[4]).toBeCloseTo(26 / 9, 12);
+  });
+
+  it('is NOT the standard deviation — it is smaller on a spread window', () => {
+    // {1,2,9}: mean 4, mean absolute deviation (3+2+5)/3 = 10/3 ≈ 3.33,
+    // population σ = √(38/3) ≈ 3.56. An implementation that squared would
+    // land on the second number.
+    const v = read(rollingMeanAbsDevValues(arr(1, 2, 9), 3));
+    expect(v[2]).toBeCloseTo(10 / 3, 12);
+    expect(v[2]).not.toBeCloseTo(Math.sqrt(38 / 3), 3);
+  });
+
+  it('is 0 on a flat window — a real 0, which is CCI’s guard case', () => {
+    expect(read(rollingMeanAbsDevValues(arr(5, 5, 5, 5), 3))).toEqual([
+      undefined,
+      undefined,
+      0,
+      0,
+    ]);
+  });
+
+  it('has no deviation for a window holding a missing value, and recovers', () => {
+    // The same mask `rollingMeanValues` gives, by construction: this kernel
+    // reads that mean and emits nothing wherever it is missing.
+    const values = arr(1, 2, NaN, 4, 5, 6);
+    const mad = read(rollingMeanAbsDevValues(values, 2));
+    const mean = read(rollingMeanValues(values, 2));
+    expect(mad.map((x) => x === undefined)).toEqual(
+      mean.map((x) => x === undefined),
+    );
+    expect(mad).toEqual([undefined, 0.5, undefined, undefined, 0.5, 0.5]);
+  });
+
+  it('is 0 at period 1 (a window of one is its own mean), gaps kept', () => {
+    expect(read(rollingMeanAbsDevValues(arr(3, NaN, 5), 1))).toEqual([
+      0,
+      undefined,
+      0,
+    ]);
+  });
+
+  it('is all-undefined when the period exceeds the length', () => {
+    expect(read(rollingMeanAbsDevValues(arr(1, 2, 3), 5))).toEqual([
       undefined,
       undefined,
       undefined,

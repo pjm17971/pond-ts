@@ -1790,6 +1790,316 @@ def volume_oscillator(fast: int, slow: int, kind: str) -> dict:
     return {"volOsc": col(v)}
 
 
+# --------------------------------------------------------------------------
+# The momentum tail (assessment 6.3): CMO, Ultimate, CCI, IMI, RVI, PSY.
+#
+# Two of the six have a TA-Lib function and are asserted bar-for-bar against
+# it (ULTOSC, CCI). One has a TA-Lib function we deliberately do NOT match
+# (CMO -- TA-Lib's is Wilder-smoothed and is exactly 2*RSI-100, which this
+# package already ships as `rsi`), so the generator asserts BOTH facts: that
+# our Chande form is what we say it is, and that TA-Lib's is the rsi
+# restatement, with the delta between them measured rather than asserted
+# away. The remaining three (IMI, RVI, PSY) have no TA-Lib function and are
+# pandas replications with the analytic first-valid bar asserted.
+# --------------------------------------------------------------------------
+
+
+def _up_down(delta: pd.Series):
+    """The two non-negative legs of a change -- `upDownLegValues`."""
+    return delta.clip(lower=0), (-delta).clip(lower=0)
+
+
+def chande_momentum(n: int) -> dict:
+    """Chande Momentum Oscillator, CHANDE's UNSMOOTHED window sums:
+
+        100 * (sum(up) - sum(down)) / (sum(up) + sum(down))
+
+    NOT TA-Lib's CMO, which Wilder-smooths the two legs and is therefore
+    exactly 2*RSI-100 -- an affine restatement of a study we already ship.
+    Both facts are asserted below, and the delta between the two definitions
+    is measured (it is large: this is a different indicator, not a warm-up
+    transient).
+    """
+    up, dn = _up_down(s.diff())
+    su, sd = up.rolling(n).sum(), dn.rolling(n).sum()
+    v = 100 * (su - sd) / (su + sd)
+    label = f"chandeMomentum({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(a period-bar sum of DIFFERENCES needs period+1 bars)"
+    )
+    # The band is exact in real arithmetic; an all-up window divides a sum by
+    # itself and can land 1.4e-14 over, so the tolerance is float noise only.
+    assert float(np.nanmax(np.abs(v))) <= 100.0 + 1e-9, (
+        f"{label} left the -100..100 band by {float(np.nanmax(np.abs(v))) - 100}"
+    )
+
+    if talib is not None:
+        ref = pd.Series(talib.CMO(np.asarray(closes, dtype=float), timeperiod=n))
+        rsi_ref = pd.Series(talib.RSI(np.asarray(closes, dtype=float), timeperiod=n))
+        # (a) TA-Lib's CMO IS 2*RSI-100 -- the reason we do not ship it.
+        affine = float(np.nanmax(np.abs(ref - (2 * rsi_ref - 100))))
+        assert affine < 1e-9, (
+            f"talib.CMO is not 2*RSI-100 (max {affine}) -- the premise of our "
+            "definition choice; re-check before trusting the docstring"
+        )
+        # (b) The warm-ups agree, so what is left is a DEFINITION delta.
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(v - ref)))
+        assert delta > 10, (
+            f"{label} sits within {delta} of TA-Lib's Wilder-smoothed CMO -- "
+            "the fixture cannot tell the two definitions apart"
+        )
+        print(
+            f"  {label}: Chande's unsmoothed sums, first valid at {n}. "
+            f"talib.CMO == 2*RSI-100 to {affine:.3g} (why we don't ship it); "
+            f"ours differs from talib.CMO by up to {delta:.2f} points, "
+            "warm-ups identical"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"cmo": col(v)}
+
+
+def ultimate_oscillator(short_n: int, med_n: int, long_n: int) -> dict:
+    """Williams' Ultimate Oscillator, as TA-Lib's ULTOSC:
+
+        BP  = close - min(low, prevClose)
+        TR  = max(high, prevClose) - min(low, prevClose)     [= TRANGE]
+        A_n = sum(BP, n) / sum(TR, n)
+        uo  = 100 * (4*A_short + 2*A_med + A_long) / 7
+    """
+    prev = s.shift(1)
+    bp = s - np.minimum(low_s, prev)
+    tr = np.maximum(h, prev) - np.minimum(low_s, prev)
+    label = f"ultimateOscillator({short_n},{med_n},{long_n})"
+
+    if talib is not None:
+        # Our TR kernel and TA-Lib's TRANGE must be the same array, so the
+        # ATR family and this study measure range identically by
+        # construction rather than by coincidence.
+        trange = pd.Series(
+            talib.TRANGE(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+            )
+        )
+        tr_delta = float(np.nanmax(np.abs(tr - trange)))
+        assert tr_delta == 0.0, f"{label}: our TR is not TRANGE ({tr_delta})"
+
+    def leg(n: int) -> pd.Series:
+        return bp.rolling(n).sum() / tr.rolling(n).sum()
+
+    v = 100 * (4 * leg(short_n) + 2 * leg(med_n) + leg(long_n)) / 7
+
+    assert v.first_valid_index() == long_n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {long_n}"
+    )
+    assert -1e-9 <= float(np.nanmin(v)) and float(np.nanmax(v)) <= 100.0 + 1e-9, (
+        f"{label} left the 0..100 band ({np.nanmin(v)}..{np.nanmax(v)})"
+    )
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.ULTOSC(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                timeperiod1=short_n,
+                timeperiod2=med_n,
+                timeperiod3=long_n,
+            )
+        )
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(v - ref)))
+        assert delta < 1e-9, f"{label} disagrees with TA-Lib by {delta}"
+        print(
+            f"  {label}: matches TA-Lib to {delta:.3g} (warm-ups identical; "
+            "our TR is TRANGE exactly)"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"uo": col(v)}
+
+
+def commodity_channel_index(n: int) -> dict:
+    """CCI, as TA-Lib's CCI: (tp - SMA(tp)) / (0.015 * meanAbsDev(tp)),
+    tp = (high + low + close) / 3.
+
+    The mean absolute deviation is taken about the WINDOW's OWN mean (not a
+    median, and not the standard deviation) -- the convention TA-Lib uses
+    and the one `rollingMeanAbsDevValues` implements.
+    """
+    tp = (h + low_s + s) / 3
+    mean = tp.rolling(n).mean()
+    mad = tp.rolling(n).apply(lambda x: float(np.mean(np.abs(x - x.mean()))), raw=True)
+    v = (tp - mean) / (0.015 * mad)
+    label = f"commodityChannelIndex({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    # A z-score on the same window is the obvious wrong turn (stdev instead
+    # of mean absolute deviation), and it must not be within rounding.
+    z = (tp - mean) / (0.015 * tp.rolling(n).std(ddof=0))
+    sep = float(np.nanmax(np.abs(v - z)))
+    assert sep > 5, (
+        f"{label} sits within {sep} of the stdev version - the fixture cannot "
+        "tell mean absolute deviation from standard deviation"
+    )
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.CCI(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                timeperiod=n,
+            )
+        )
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(v - ref)))
+        assert delta < 1e-9, f"{label} disagrees with TA-Lib by {delta}"
+        print(
+            f"  {label}: matches TA-Lib to {delta:.3g} (warm-ups identical); "
+            f"{sep:.1f} from the stdev version at its widest"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"cci": col(v)}
+
+
+def intraday_momentum_index(n: int) -> dict:
+    """Chande's Intraday Momentum Index: RSI's form over the candle BODY,
+    with PLAIN window sums (not Wilder smoothing):
+
+        100 * sum(max(close-open, 0)) / (sum(max(close-open,0)) + sum(max(open-close,0)))
+
+    No TA-Lib function; pandas replication with the analytic first valid bar
+    asserted. A body needs no previous bar, so the warm-up is n-1 (one row
+    shorter than RSI's or CMO's on the same n).
+    """
+    gains, losses = _up_down(s - o_s)
+    sg, sl = gains.rolling(n).sum(), losses.rolling(n).sum()
+    v = 100 * sg / (sg + sl)
+    label = f"intradayMomentumIndex({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    assert -1e-9 <= float(np.nanmin(v)) and float(np.nanmax(v)) <= 100.0 + 1e-9, (
+        f"{label} left the 0..100 band ({np.nanmin(v)}..{np.nanmax(v)})"
+    )
+    # The same form over CLOSE-TO-CLOSE changes is the obvious wrong turn.
+    cu, cd = _up_down(s.diff())
+    wrong = 100 * cu.rolling(n).sum() / (cu.rolling(n).sum() + cd.rolling(n).sum())
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 5, (
+        f"{label} sits within {sep} of the close-to-close version - the "
+        "fixture cannot tell the candle body apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no IMI), plain sums not "
+        f"Wilder; first valid at {n - 1}, {sep:.1f} points from the "
+        "close-to-close form"
+    )
+    return {"imi": col(v)}
+
+
+def _swma(x: pd.Series) -> pd.Series:
+    """Ehlers' symmetric 4-bar (1,2,2,1)/6 filter -- TradingView's `swma`."""
+    return (x + 2 * x.shift(1) + 2 * x.shift(2) + x.shift(3)) / 6
+
+
+def relative_vigor_index(n: int) -> dict:
+    """Relative Vigor Index, TradingView's definition:
+
+        num = swma(close - open); den = swma(high - low)
+        rvi = sum(num, n) / sum(den, n); signal = swma(rvi)
+
+    No TA-Lib function; pandas replication, both columns' analytic first
+    valid bars asserted (n+2 and n+5 -- the SWMA costs 3 rows, the summation
+    n-1 more, and the signal 3 more again).
+    """
+    num, den = _swma(s - o_s), _swma(h - low_s)
+    v = num.rolling(n).sum() / den.rolling(n).sum()
+    sig = _swma(v)
+    label = f"relativeVigorIndex({n})"
+
+    assert v.first_valid_index() == n + 2, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n + 2}"
+    )
+    assert sig.first_valid_index() == n + 5, (
+        f"{label} signal first valid at {sig.first_valid_index()}, expected {n + 5}"
+    )
+    # The linear WMA(4) (weights 1,2,3,4) is the obvious wrong smoother.
+    def _wma4(x: pd.Series) -> pd.Series:
+        return (4 * x + 3 * x.shift(1) + 2 * x.shift(2) + x.shift(3)) / 10
+
+    wrong = _wma4(s - o_s).rolling(n).sum() / _wma4(h - low_s).rolling(n).sum()
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.01, (
+        f"{label} sits within {sep} of the linear-WMA version - the fixture "
+        "cannot tell the symmetric weights apart"
+    )
+    assert float(np.nanmax(np.abs(v - sig))) > 0.02, (
+        f"{label}: the signal is within rounding of the line - a study "
+        "emitting the same column twice would pass"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no RVI); first valid at "
+        f"{n + 2} / {n + 5}, {sep:.4f} from the linear-WMA(4) version"
+    )
+    return {"rvi": col(v), "rviSignal": col(sig)}
+
+
+def psychological_line(n: int) -> dict:
+    """Percent of the last n bars that closed UP (strictly), 100*count/n.
+
+    No TA-Lib function; pandas replication. Bar 0 has no direction, so the
+    warm-up is n rows and not n-1. An unchanged close counts as NOT up (this
+    fixture has none, which the assert below records).
+    """
+    d = s.diff()
+    up = pd.Series(np.where(d.isna(), np.nan, (d > 0).astype(float)))
+    v = 100 * up.rolling(n).mean()
+    label = f"psychologicalLine({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(bar 0 has no direction)"
+    )
+    assert int((d == 0).sum()) == 0, (
+        "the oracle input has an unchanged close - psychologicalLine's "
+        "strict-`>` rule would then need its own fixture note"
+    )
+    levels = sorted(set(round(float(x), 9) for x in v.dropna()))
+    assert len(levels) > 3, (
+        f"{label} takes only {len(levels)} distinct values on this fixture - "
+        "too flat to catch an off-by-one in the count"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no PSY); first valid at "
+        f"{n}, {len(levels)} distinct levels, range "
+        f"{levels[0]:.2f}..{levels[-1]:.2f}"
+    )
+    return {"psy": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -2044,6 +2354,74 @@ cases = [
         "params": {"fastPeriod": 4, "slowPeriod": 12, "maType": "ema"},
         "expected": volume_oscillator(4, 12, "ema"),
     },
+    {
+        "study": "chandeMomentum",
+        "params": {"period": 14},
+        "expected": chande_momentum(14),
+    },
+    {
+        "study": "chandeMomentum",
+        "params": {"period": 5},
+        "expected": chande_momentum(5),
+    },
+    {
+        "study": "ultimateOscillator",
+        "params": {"shortPeriod": 7, "mediumPeriod": 14, "longPeriod": 28},
+        "expected": ultimate_oscillator(7, 14, 28),
+    },
+    {
+        # A short set, so the three legs' warm-ups sit close together and a
+        # study that used the wrong leg's mask would still be caught.
+        "study": "ultimateOscillator",
+        "params": {"shortPeriod": 3, "mediumPeriod": 5, "longPeriod": 9},
+        "expected": ultimate_oscillator(3, 5, 9),
+    },
+    {
+        "study": "commodityChannelIndex",
+        "params": {"period": 20},
+        "expected": commodity_channel_index(20),
+    },
+    {
+        "study": "commodityChannelIndex",
+        "params": {"period": 5},
+        "expected": commodity_channel_index(5),
+    },
+    {
+        "study": "intradayMomentumIndex",
+        "params": {"period": 14},
+        "expected": intraday_momentum_index(14),
+    },
+    {
+        # 8, not 4: this fixture's opens are the PREVIOUS CLOSE pulled inside
+        # the bar, so over a very short window the candle bodies and the
+        # close-to-close changes nearly agree (measured: max separation 0.0
+        # points at n=3, 0.07 at n=4, 6.2 at n=8, ~10 at n=12). A short case
+        # is still worth having for its warm-up; it just has to be long
+        # enough that the fixture can tell the two inputs apart.
+        "study": "intradayMomentumIndex",
+        "params": {"period": 8},
+        "expected": intraday_momentum_index(8),
+    },
+    {
+        "study": "relativeVigorIndex",
+        "params": {"period": 10},
+        "expected": relative_vigor_index(10),
+    },
+    {
+        "study": "relativeVigorIndex",
+        "params": {"period": 4},
+        "expected": relative_vigor_index(4),
+    },
+    {
+        "study": "psychologicalLine",
+        "params": {"period": 12},
+        "expected": psychological_line(12),
+    },
+    {
+        "study": "psychologicalLine",
+        "params": {"period": 5},
+        "expected": psychological_line(5),
+    },
 ]
 
 out = {
@@ -2234,6 +2612,49 @@ out = {
                 "replication (no TA-Lib function); first valid at slow-1, "
                 "separated from the close-based version so the column is "
                 "pinned"
+            ),
+            "chandeMomentum": (
+                "100*(sum(up)-sum(down))/(sum(up)+sum(down)) over n bars, "
+                "CHANDE's UNSMOOTHED sums, first valid at n. NOT TA-Lib's "
+                "CMO, which Wilder-smooths the legs and is therefore exactly "
+                "2*RSI-100 (asserted to 2.8e-14) - i.e. an affine "
+                "restatement of the shipped `rsi`. The two definitions have "
+                "identical warm-ups and differ by up to 68.28 points at n=14 "
+                "and 131.55 at n=5, which is asserted as a separation"
+            ),
+            "ultimateOscillator": (
+                "BP = close - min(low, prevClose), TR = TRANGE; "
+                "100*(4*sumBP/sumTR(7) + 2*(14) + (28))/7; cross-checked "
+                "against TA-Lib ULTOSC (7.1e-15, identical masks), with our "
+                "TR asserted equal to talib.TRANGE exactly. First valid at "
+                "the LONGEST period (both legs read prevClose)"
+            ),
+            "commodityChannelIndex": (
+                "(tp - SMA(tp,n)) / (0.015 * meanAbsDev(tp,n)), tp = "
+                "(h+l+c)/3, deviation taken about the window's own MEAN; "
+                "cross-checked against TA-Lib CCI (3.6e-12 at n=20, 1.5e-11 "
+                "at n=5 - float summation order), first valid at n-1, and "
+                "separated from the standard-deviation (z-score) version. "
+                "Default period 20 is ChartIQ's; TA-Lib's own default is 14"
+            ),
+            "intradayMomentumIndex": (
+                "100*sum(gains)/(sum(gains)+sum(losses)) over the candle "
+                "BODY (close-open), PLAIN sums not Wilder smoothing; pandas "
+                "replication (no TA-Lib IMI), first valid at n-1 (a body "
+                "needs no previous bar), separated from the close-to-close "
+                "form"
+            ),
+            "relativeVigorIndex": (
+                "num = swma(close-open), den = swma(high-low) with swma the "
+                "SYMMETRIC (1,2,2,1)/6 4-bar filter; rvi = sum(num,n)/"
+                "sum(den,n); signal = swma(rvi) - TradingView's definition. "
+                "pandas replication (no TA-Lib RVI), first valid at n+2 and "
+                "n+5, separated from the linear-WMA(4) version"
+            ),
+            "psychologicalLine": (
+                "100 * count(close > prevClose) / n, strictly greater (an "
+                "unchanged close is NOT up); pandas replication (no TA-Lib "
+                "PSY), first valid at n (bar 0 has no direction)"
             ),
         },
     },

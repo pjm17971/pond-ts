@@ -77,3 +77,61 @@ export function rollingWeightedMeanValues(
   }
   return numerator;
 }
+
+/** The 4-bar symmetric weights `(1, 2, 2, 1)`, and their total. Named so the
+ *  loop below reads as the definition rather than as four magic numbers. */
+const SWMA_WEIGHTS = [1, 2, 2, 1] as const;
+const SWMA_TOTAL = 6;
+
+/**
+ * **Symmetric weighted moving average (SWMA)** — the fixed 4-bar
+ * `(1, 2, 2, 1) / 6` smoother:
+ *
+ * ```
+ * swma[i] = (x[i] + 2·x[i−1] + 2·x[i−2] + x[i−3]) / 6
+ * ```
+ *
+ * A tiny, *symmetric* low-pass filter: unlike the K2 engine's `wma` (linear
+ * weights `1…n`, heaviest on the newest bar) it weights the two middle bars
+ * equally and the two outer bars equally, so it does not lean on the most
+ * recent bar. That is the whole reason it exists as its own thing — it is
+ * John Ehlers' smoother, and it is what TradingView's `swma()` and its
+ * Relative Vigor Index are defined in terms of.
+ *
+ * ## Why the width is fixed rather than a `period`
+ *
+ * Because the definition is. "SWMA" names *these* weights, not a family:
+ * TradingView's built-in takes no length, and the studies that cite it
+ * (RVI's numerator, denominator and signal line — three calls from one
+ * study) all mean the 4-bar form. A `period` parameter would need a weight
+ * *rule* to generalise, and there is no published one — a knob whose other
+ * settings nobody defines is a speculative parameter, not a feature. The K2
+ * engine is the answer for "smooth this over n bars"; this is the answer for
+ * "the SWMA".
+ *
+ * ## Edges
+ *
+ * - The first **three** rows are `NaN` — the window is not yet full,
+ *   length-preserving as everywhere else.
+ * - `NaN` marks a gap ([PND-STUDYBOX]) and propagates through the weighted
+ *   sum on its own, so the gap bar and the three after it are missing. A
+ *   positional weight cannot skip a cell without reweighting the rest — the
+ *   `wma` rule, for the same reason.
+ *
+ * O(N), one pass, one allocation.
+ */
+export function symmetricWeightedValues(values: Float64Array): Float64Array {
+  const length = values.length;
+  const out = new Float64Array(length);
+  const width = SWMA_WEIGHTS.length;
+  for (let i = 0; i < length; i += 1) {
+    if (i < width - 1) {
+      out[i] = NaN;
+      continue;
+    }
+    let sum = 0;
+    for (let k = 0; k < width; k += 1) sum += SWMA_WEIGHTS[k]! * values[i - k]!;
+    out[i] = sum / SWMA_TOTAL;
+  }
+  return out;
+}
