@@ -407,6 +407,155 @@ def historical_volatility(n: int, annualize: float) -> dict:
         f"expected {n} -- the fixture would pin the wrong warm-up"
     )
     return {"hv": col(hv)}
+# The range-position studies (stochastics, %R, Donchian) all read the highest
+# high / lowest low over a window. Two things the fixture must NOT be for them
+# to be checked honestly, both asserted rather than assumed:
+#
+#   - the window's extremes must not always sit at the window's EDGES, or an
+#     implementation reading `high[i]` / `high[i-n+1]` instead of the max
+#     would pass;
+#   - the close must never sit exactly ON an extreme, or %K would be an exact
+#     0 or 100 there and a swapped numerator (`HH - close` for `close - LL`)
+#     would be invisible on that bar.
+# Checked for EVERY window length a range-position case below uses, not just
+# the default 14 -- a Layer-2 review of #687 found the 5-bar cases unguarded.
+# "Not always at the edges" is made quantitative: at least ten windows must
+# have an interior extreme (the fixture has 17 at 5 bars, more at 14), so an
+# edge-reading bug differs from the oracle on at least ten bars per case.
+for _n in (5, 14):
+    _interior = 0
+    for _i in range(_n - 1, N):
+        _wh = highs[_i - _n + 1 : _i + 1]
+        _wl = lows[_i - _n + 1 : _i + 1]
+        if _wh.index(max(_wh)) not in (0, _n - 1) or _wl.index(min(_wl)) not in (
+            0,
+            _n - 1,
+        ):
+            _interior += 1
+    _windows = N - _n + 1
+    assert _interior >= 10, (
+        f"only {_interior}/{_windows} {_n}-bar windows have an interior extreme; "
+        "an edge-reading bug would be caught on too few bars to trust"
+    )
+    assert all(
+        min(lows[_i - _n + 1 : _i + 1]) < closes[_i] < max(highs[_i - _n + 1 : _i + 1])
+        for _i in range(_n - 1, N)
+    ), f"a close sits exactly on a {_n}-bar extreme; %K would read an exact 0/100"
+
+
+def _hh_ll(n: int):
+    return h.rolling(n).max(), low_s.rolling(n).min()
+
+
+def stochastic(k_period: int, slowing: int, d_period: int) -> dict:
+    """Slow stochastic, as TA-Lib's STOCH (SMA smoothing) defines it.
+
+    fast %K = 100 (close - LL) / (HH - LL) over k_period bars; %K = SMA of
+    that over `slowing`; %D = SMA of %K over d_period. `slowing = 1` is the
+    fast stochastic, which TA-Lib ships separately as STOCHF and is checked
+    against too.
+
+    ONE deliberate delta on the warm-up: TA-Lib masks %K back to %D's first
+    valid bar, discarding d_period - 1 real values (bars 15 and 16 at the
+    defaults). Ours emits %K where its definition makes it defined, as MACD
+    does with its line. So the mask assert here is in two parts -- %D's mask
+    must be IDENTICAL, and %K's must be identical from TA-Lib's first bar on
+    and start exactly d_period - 1 bars earlier -- rather than one blanket
+    equality that the documented delta would fail.
+    """
+    hh, ll = _hh_ll(k_period)
+    fast_k = 100 * (s - ll) / (hh - ll)
+    k = fast_k.rolling(slowing).mean()
+    d = k.rolling(d_period).mean()
+
+    if talib is not None:
+        args = (
+            np.asarray(highs, dtype=float),
+            np.asarray(lows, dtype=float),
+            np.asarray(closes, dtype=float),
+        )
+        ref_k, ref_d = talib.STOCH(
+            *args,
+            fastk_period=k_period,
+            slowk_period=slowing,
+            slowk_matype=0,
+            slowd_period=d_period,
+            slowd_matype=0,
+        )
+        ref_k, ref_d = pd.Series(ref_k), pd.Series(ref_d)
+        label = f"stochastic({k_period},{slowing},{d_period})"
+        assert list(d.isna()) == list(ref_d.isna()), (
+            f"{label} %D warm-up differs from TA-Lib: ours first valid "
+            f"{d.first_valid_index()}, TA-Lib {ref_d.first_valid_index()}"
+        )
+        ours_first, ref_first = k.first_valid_index(), ref_k.first_valid_index()
+        assert ours_first == k_period + slowing - 2, (
+            f"{label} %K first valid at {ours_first}, expected {k_period + slowing - 2}"
+        )
+        assert ref_first - ours_first == d_period - 1, (
+            f"{label} %K starts {ref_first - ours_first} bars before TA-Lib's; "
+            f"the documented delta is exactly {d_period - 1}"
+        )
+        assert list(k.isna())[ref_first:] == list(ref_k.isna())[ref_first:], (
+            f"{label} %K mask differs from TA-Lib's after bar {ref_first}"
+        )
+        delta_k = float(np.nanmax(np.abs(k - ref_k)))
+        delta_d = float(np.nanmax(np.abs(d - ref_d)))
+        assert delta_k < 1e-9, f"{label} %K disagrees with TA-Lib by {delta_k}"
+        assert delta_d < 1e-9, f"{label} %D disagrees with TA-Lib by {delta_d}"
+        print(
+            f"  {label}: %K matches TA-Lib to {delta_k:.3g} on every bar it emits "
+            f"(ours starts {d_period - 1} bar(s) earlier, at {ours_first}); "
+            f"%D to {delta_d:.3g} (warm-ups identical)"
+        )
+        if slowing == 1:
+            # Fast stochastic: the same numbers must also be STOCHF's.
+            fk, fd = talib.STOCHF(*args, fastk_period=k_period, fastd_period=d_period, fastd_matype=0)
+            assert list(d.isna()) == list(pd.Series(fd).isna()), f"{label} %D mask != STOCHF"
+            delta_fk = float(np.nanmax(np.abs(k - fk)))
+            delta_fd = float(np.nanmax(np.abs(d - fd)))
+            assert delta_fk < 1e-9 and delta_fd < 1e-9, f"{label} != STOCHF ({delta_fk}, {delta_fd})"
+            print(f"  {label}: also matches STOCHF to {max(delta_fk, delta_fd):.3g}")
+
+    return {"stochK": col(k), "stochD": col(d)}
+
+
+def williams_r(n: int) -> dict:
+    """Williams %R, as TA-Lib's WILLR: -100 (HH - close) / (HH - LL)."""
+    hh, ll = _hh_ll(n)
+    r = -100 * (hh - s) / (hh - ll)
+
+    if talib is not None:
+        ref = pd.Series(
+            talib.WILLR(
+                np.asarray(highs, dtype=float),
+                np.asarray(lows, dtype=float),
+                np.asarray(closes, dtype=float),
+                timeperiod=n,
+            )
+        )
+        assert list(r.isna()) == list(ref.isna()), (
+            f"williamsR({n}) warm-up differs from TA-Lib: ours first valid "
+            f"{r.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        delta = float(np.nanmax(np.abs(r - ref)))
+        assert delta < 1e-9, f"williamsR({n}) disagrees with TA-Lib by {delta}"
+        print(f"  williamsR({n}): matches TA-Lib to {delta:.3g} (warm-ups identical)")
+
+    return {"williamsR": col(r)}
+
+
+def donchian(n: int) -> dict:
+    """Donchian channel: rolling max of high, rolling min of low, midpoint.
+
+    pandas only -- TA-Lib has no Donchian function.
+    """
+    upper, lower = _hh_ll(n)
+    return {
+        "dcUpper": col(upper),
+        "dcLower": col(lower),
+        "dcMiddle": col((upper + lower) / 2),
+    }
 
 
 cases = [
@@ -474,6 +623,20 @@ cases = [
         "params": {"period": 10, "annualize": 1},
         "expected": historical_volatility(10, 1),
     },
+    {
+        "study": "stochastic",
+        "params": {"kPeriod": 14, "slowing": 3, "dPeriod": 3},
+        "expected": stochastic(14, 3, 3),
+    },
+    {
+        "study": "stochastic",
+        "params": {"kPeriod": 5, "slowing": 1, "dPeriod": 3},
+        "expected": stochastic(5, 1, 3),
+    },
+    {"study": "williamsR", "params": {"period": 14}, "expected": williams_r(14)},
+    {"study": "williamsR", "params": {"period": 5}, "expected": williams_r(5)},
+    {"study": "donchian", "params": {"period": 20}, "expected": donchian(20)},
+    {"study": "donchian", "params": {"period": 5}, "expected": donchian(5)},
 ]
 
 out = {
@@ -507,6 +670,18 @@ out = {
             "historicalVolatility": (
                 "log(close).diff().rolling(n).std(ddof=0) * sqrt(annualize) "
                 "[population, log returns, decimal]; no TA-Lib HV exists"
+            ),
+            "stochastic": (
+                "fast %K = 100(c-LL)/(HH-LL); %K = SMA(fast, slowing); "
+                "%D = SMA(%K, dPeriod); TA-Lib STOCH/STOCHF values, but %K "
+                "emitted from its own first valid bar (TA-Lib masks it to %D's)"
+            ),
+            "williamsR": (
+                "-100(HH-c)/(HH-LL) over n bars; cross-checked against TA-Lib"
+            ),
+            "donchian": (
+                "high.rolling(n).max(), low.rolling(n).min(), midpoint; "
+                "pandas only (TA-Lib has no Donchian)"
             ),
         },
     },
