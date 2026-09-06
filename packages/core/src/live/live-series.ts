@@ -75,6 +75,7 @@ import type {
 
 import type { DurationInput } from '../core/duration.js';
 import { parseDuration } from '../core/duration.js';
+import { ListenerSet } from './listener-set.js';
 
 // ── Single-row validation ───────────────────────────────────────
 
@@ -227,39 +228,6 @@ function rethrowFirst(errors: ReadonlyArray<unknown>): void {
   if (errors.length > 0) throw errors[0];
 }
 
-/**
- * [PND-LIVFIX] A listener set whose iteration snapshot is cached: `add` /
- * `delete` invalidate it, `snapshot()` rebuilds it lazily. Dispatch
- * iterates the snapshot, so a listener that subscribes or unsubscribes
- * mid-fan-out neither disturbs the others nor fires for the event it was
- * added during — without allocating an array per event on the hot path
- * (subscriptions change rarely; events arrive at kHz).
- */
-export class ListenerSet<F extends (...args: never[]) => void> {
-  readonly #set = new Set<F>();
-  #snapshot: readonly F[] | null = null;
-  get size(): number {
-    return this.#set.size;
-  }
-  add(fn: F): void {
-    this.#set.add(fn);
-    this.#snapshot = null;
-  }
-  delete(fn: F): void {
-    if (this.#set.delete(fn)) this.#snapshot = null;
-  }
-  clear(): void {
-    this.#set.clear();
-    this.#snapshot = null;
-  }
-  snapshot(): readonly F[] {
-    return (this.#snapshot ??= Array.from(this.#set));
-  }
-  [Symbol.iterator](): Iterator<F> {
-    return this.snapshot()[Symbol.iterator]();
-  }
-}
-
 export class LiveSeries<S extends SeriesSchema> {
   /** @internal */
   readonly [EMITS_EVICT] = true as const;
@@ -292,6 +260,8 @@ export class LiveSeries<S extends SeriesSchema> {
    */
   #dispatchDepth = 0;
   #pendingPushes: Array<() => void> = [];
+  /** `true` while the outermost guard is draining `#pendingPushes`. */
+  #draining = false;
   /**
    * Column-native delta subscribers (chunked backing only). Fires with
    * the appended `ColumnarStore` per `pushMany` — the internal hook the
@@ -592,12 +562,17 @@ export class LiveSeries<S extends SeriesSchema> {
 
   /**
    * [PND-LIVFIX] Run one push under the re-entrancy guard: bump
-   * `#dispatchDepth` for its duration, then drain any pushes that
-   * listeners queued while it ran. A queued push runs as its own guarded
-   * push (so its listeners can queue more), in arrival order. An error
-   * from the outer push is rethrown AFTER the queue has drained — the
-   * queued rows were accepted by `push()` and must not be lost to a
-   * listener's exception elsewhere.
+   * `#dispatchDepth` for its duration, then — from the OUTERMOST guard
+   * only — drain the pushes that listeners queued, strictly FIFO. A
+   * queued push runs as its own guarded push, so its listeners can queue
+   * more; those land at the tail of the same queue and run after every
+   * push queued before them. (Draining from every level, as the first
+   * cut did, let a grandchild jump a queued sibling — a review repro:
+   * listener on 1 queues 10 then 20, listener on 10 queues 30, and 30
+   * ran before 20, which strict ordering then rejected.) An error from
+   * the outer push is rethrown AFTER the queue has drained — queued rows
+   * were accepted by `push()` and must not be lost to a listener's
+   * exception elsewhere.
    */
   #guarded(run: () => void): void {
     let failure: { error: unknown } | undefined;
@@ -609,15 +584,19 @@ export class LiveSeries<S extends SeriesSchema> {
     } finally {
       this.#dispatchDepth -= 1;
     }
-    if (this.#dispatchDepth === 0 && this.#pendingPushes.length > 0) {
-      const queued = this.#pendingPushes;
-      this.#pendingPushes = [];
-      for (const push of queued) {
-        try {
-          push();
-        } catch (error) {
-          failure ??= { error };
+    if (this.#dispatchDepth === 0 && !this.#draining) {
+      this.#draining = true;
+      try {
+        while (this.#pendingPushes.length > 0) {
+          const push = this.#pendingPushes.shift()!;
+          try {
+            push();
+          } catch (error) {
+            failure ??= { error };
+          }
         }
+      } finally {
+        this.#draining = false;
       }
     }
     if (failure) throw failure.error;
@@ -830,20 +809,20 @@ export class LiveSeries<S extends SeriesSchema> {
     // chunked series. Reconstruct rows and reuse `#pushManyColumnar`
     // (re-validates — acceptable on this rare path; the strict
     // order-check still applies, matching the per-row trusted path).
-    if (this.#chunked) {
-      const rows: RowForSchema<S>[] = new Array(events.length);
-      for (let i = 0; i < events.length; i += 1) {
-        rows[i] = this.#eventToRow(events[i]!);
-      }
-      this.#pushManyColumnar(rows);
-      return;
-    }
-
     if (this.#dispatchDepth > 0) {
       this.#pendingPushes.push(() => this._pushTrustedEvents(events));
       return;
     }
     this.#guarded(() => {
+      if (this.#chunked) {
+        const rows: RowForSchema<S>[] = new Array(events.length);
+        for (let i = 0; i < events.length; i += 1) {
+          rows[i] = this.#eventToRow(events[i]!);
+        }
+        this.#pushManyColumnar(rows);
+        return;
+      }
+
       const added: EventForSchema<S>[] = [];
       const errors: unknown[] = [];
 
@@ -902,11 +881,17 @@ export class LiveSeries<S extends SeriesSchema> {
    * source's watermark advances, so a quiet partition ages out against
    * the time the source has actually reached. Emits `'evict'` exactly as
    * push-driven retention does, so `LiveReduce` and views stay in sync.
-   * No-op without `maxAge`, on an empty buffer, or while this series is
-   * mid-dispatch (the next sweep catches up).
+   * No-op without `maxAge` or on an empty buffer. Called while this
+   * series is mid-dispatch (a listener on it pushed re-entrantly), it is
+   * queued behind that push like any other re-entrant operation, so it
+   * cannot be starved.
    */
   _sweepAge(latestMs: number): void {
-    if (this.#maxAgeMs === Infinity || this.#dispatchDepth > 0) return;
+    if (this.#maxAgeMs === Infinity) return;
+    if (this.#dispatchDepth > 0) {
+      this.#pendingPushes.push(() => this._sweepAge(latestMs));
+      return;
+    }
     const len = this.#storage.length;
     if (len === 0) return;
     const cutoff = latestMs - this.#maxAgeMs;

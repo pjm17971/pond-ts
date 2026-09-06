@@ -111,16 +111,65 @@ describe.each<Backing>(['chunked', 'array'])(
 describe.each<Backing>(['chunked', 'array'])(
   '[PND-LIVFIX] re-entrancy (%s backing)',
   (backing) => {
-    it('a listener removing itself during dispatch does not disturb the others', () => {
+    it('a listener removing a LATER listener during dispatch does not rob it of the current event', () => {
+      // Set iteration skips an element deleted before it is visited, so
+      // on main `b` never saw event 0. The snapshot delivers the event to
+      // everyone who was subscribed when it arrived.
       const live = make(backing);
       const seen: string[] = [];
-      const offA = live.on('event', () => {
+      let offB: (() => void) | undefined;
+      live.on('event', () => {
         seen.push('a');
-        offA();
+        offB?.();
       });
-      live.on('event', () => seen.push('b'));
+      offB = live.on('event', () => seen.push('b'));
       live.pushMany(rows(0, 2));
-      expect(seen).toEqual(['a', 'b', 'b']);
+      expect(seen).toEqual(['a', 'b', 'a']);
+    });
+
+    it('queued pushes drain strictly FIFO, even when a queued push queues more', () => {
+      // Review repro: listener on 1 queues 10 then 20; listener on 10
+      // queues 30. Draining from every guard level ran 30 before 20 and
+      // strict ordering rejected 20. Only the outermost guard drains.
+      const live = make(backing);
+      const seen: number[] = [];
+      live.on('event', (e) => {
+        const v = e.get('value') as number;
+        seen.push(v);
+        if (v === 1) {
+          live.push([10, 10]);
+          live.push([20, 20]);
+        }
+        if (v === 10) live.push([30, 30]);
+      });
+      live.push([1, 1]);
+      expect(seen).toEqual([1, 10, 20, 30]);
+      expect(live.stats().rejected).toBe(0);
+      expect(live.length).toBe(4);
+    });
+
+    it('a re-entrant push on the trusted path is queued on the chunked backing too', () => {
+      // `_pushTrustedEvents` is the partition router's entry; its chunked
+      // branch used to bypass the guard.
+      const live = make(backing);
+      const seen: number[] = [];
+      live.on('event', (e) => {
+        const v = e.get('value') as number;
+        seen.push(v);
+        if (v === 0) {
+          // A schema-identical event built on a scratch series, as the
+          // partition router would hand one through.
+          const scratch = make(backing);
+          scratch.push([10, 10]);
+          (
+            live as unknown as {
+              _pushTrustedEvents(evs: readonly unknown[]): void;
+            }
+          )._pushTrustedEvents([scratch.at(0)!]);
+        }
+      });
+      live.pushMany(rows(0, 3));
+      expect(seen).toEqual([0, 1, 2, 10]);
     });
 
     it('a listener adding a listener during dispatch does not fire it for the current event', () => {
@@ -162,6 +211,40 @@ describe.each<Backing>(['chunked', 'array'])(
       expect(() => live.pushMany(rows(0, 3))).not.toThrow();
       expect(view.length).toBe(4);
       expect(view.last()!.get('value')).toBe(10);
+    });
+  },
+);
+
+describe.each<Backing>(['chunked', 'array'])(
+  '[PND-LIVFIX] isolation on the other fan-outs (%s backing)',
+  (backing) => {
+    it("a throwing view subscriber does not starve the view's other subscribers", () => {
+      const live = make(backing);
+      const view = live.filter(() => true);
+      const seen: number[] = [];
+      view.on('event', () => {
+        throw new Error('view boom');
+      });
+      view.on('event', (e) => seen.push(e.get('value') as number));
+      expect(() => live.pushMany(rows(0, 2))).toThrow('view boom');
+      expect(seen).toEqual([0, 1]);
+      expect(view.length).toBe(2);
+    });
+
+    it("clear(): a throwing 'evict' listener neither stops the clear nor the other listeners", () => {
+      const live = make(backing);
+      live.pushMany(rows(0, 3));
+      let seen = 0;
+      live.on('evict', () => {
+        throw new Error('evict boom');
+      });
+      live.on('evict', (e) => {
+        seen += e.length;
+      });
+      expect(() => live.clear()).toThrow('evict boom');
+      expect(live.length).toBe(0);
+      expect(seen).toBe(3);
+      expect(live.stats().evicted).toBe(3);
     });
   },
 );

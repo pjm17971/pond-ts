@@ -1110,9 +1110,19 @@ export class LivePartitionedSeries<
     if (beginMs > this.#watermarkMs) this.#watermarkMs = beginMs;
     if (this.#watermarkMs - this.#lastSweepMs < this.#sweepEveryMs) return;
     this.#lastSweepMs = this.#watermarkMs;
+    // A partition's `'evict'` listener may throw; the sweep must still
+    // reach every other partition (else a quiet partition waits another
+    // throttle window on someone else's bug). Isolate per partition and
+    // surface the first error after the loop, like a push does.
+    let first: { error: unknown } | undefined;
     for (const part of this.#partitions.values()) {
-      part._sweepAge(this.#watermarkMs);
+      try {
+        part._sweepAge(this.#watermarkMs);
+      } catch (error) {
+        first ??= { error };
+      }
     }
+    if (first) throw first.error;
   }
 
   /**

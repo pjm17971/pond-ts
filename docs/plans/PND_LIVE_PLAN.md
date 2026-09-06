@@ -29,7 +29,13 @@ fixed. Decisions worth keeping:
   Under strict ordering the nested rows are then order-checked against the
   buffer at their turn; the audit's "spurious out-of-order rejection" was
   the nested push racing the outer batch's own rows. Queueing gives
-  monotonic emission on both backings with one counter and one array.
+  monotonic emission on both backings with one counter, one array and one
+  flag: only the OUTERMOST guard drains the queue, strictly FIFO. The
+  first cut drained from every guard level, and the Layer-2 review showed
+  a grandchild push jumping a queued sibling (1 queues 10 then 20; 10
+  queues 30; 30 ran before 20 and strict ordering rejected it) — the
+  very defect being fixed, one level deeper. A sweep requested while a
+  partition is mid-dispatch is queued the same way rather than skipped.
 - **Quiet partitions age out against the source watermark**, via an
   internal `LiveSeries._sweepAge(latestMs)`, throttled so a sweep
   (O(partitions)) runs at most once per `maxAge / 8` of data time — the

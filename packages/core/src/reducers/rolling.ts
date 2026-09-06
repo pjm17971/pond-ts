@@ -72,7 +72,9 @@ export function rollingOrderedEntries(
  * `last` kept reporting an evicted value. Entries live in a `Map` keyed by
  * index (insertion order = arrival order) so any index removes in O(1);
  * `first` is the map's first value and `last` is a tracked tail index,
- * re-derived by a scan only when the tail itself is evicted (rare).
+ * re-derived by an O(n) scan when the tail itself is evicted — on a
+ * reorder source that is the headline case (the newest arrival being the
+ * sorted prefix), so `last` is O(n) per such eviction and O(1) otherwise.
  */
 export function rollingIndexedEntries(
   pick: 'first' | 'last',

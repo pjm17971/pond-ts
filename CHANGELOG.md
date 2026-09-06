@@ -68,6 +68,13 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Changed
+
+- `pond-ts`: `partitionBy(column, options)` now throws a `TypeError` on an
+  unknown option key (e.g. `maxPartitions`, which was never implemented)
+  instead of silently ignoring it. Only JS callers passing a key the type
+  rejects are affected; the error names the known keys ([PND-LIVFIX]).
+
 ### Fixed
 
 - `pond-ts` live layer, the [PND-LIVFIX] cluster — the five confirmed
@@ -92,8 +99,7 @@ include new features and type-level changes; patch bumps are strictly additive.
     push-driven, so a partition that stopped receiving events kept them
     forever. `partitionBy` now sweeps every partition against the source
     watermark as it advances (throttled to `maxAge / 8`), emitting
-    `'evict'` as push-driven retention does. `partitionBy` also throws on
-    an unknown option key (e.g. `maxPartitions`) instead of ignoring it.
+    `'evict'` as push-driven retention does.
   - **Chain-aware `LiveView.dispose()`.** Disposing the last view of
     `live.filter(p).map(f)` now disposes the unreachable intermediate too
     (a source view left with no subscribers is torn down; one with another

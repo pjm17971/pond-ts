@@ -59,6 +59,39 @@ describe('[PND-LIVFIX] quiet partitions evict by age', () => {
     expect(a.length).toBe(0);
   });
 
+  it('sweeps are throttled to maxAge / 8 of watermark advance', () => {
+    // maxAge 80 s → a sweep at most every 10 s of data time. The cost of
+    // the throttle is bounded overstay; the point of pinning it is that
+    // removing the throttle (sweeping every event) is O(partitions) per
+    // event on a high-cardinality source.
+    const live = new LiveSeries({ name: 'l', schema: SCHEMA });
+    const parts = live.partitionBy('host', { retention: { maxAge: '80s' } });
+    live.push([0, 'a', 1], [5 * S, 'c', 1], [6 * S, 'b', 1]);
+    live.push([85 * S, 'b', 2]); // sweep: a (0s) is 85s old → evicted; c (5s) is 80s old → not yet
+    expect(parts.toMap().get('a')!.length).toBe(0);
+    expect(parts.toMap().get('c')!.length).toBe(1);
+    live.push([90 * S, 'b', 3]); // c is now 85s old, but only 5s since the last sweep → deferred
+    expect(parts.toMap().get('c')!.length).toBe(1);
+    live.push([96 * S, 'b', 4]); // 11s since the last sweep → swept
+    expect(parts.toMap().get('c')!.length).toBe(0);
+  });
+
+  it("a throwing 'evict' listener on one partition does not starve the sweep of the others", () => {
+    const live = new LiveSeries({ name: 'l', schema: SCHEMA });
+    const parts = live.partitionBy('host', { retention: { maxAge: '10s' } });
+    live.push([0, 'a', 1], [0, 'b', 1], [0, 'c', 1]);
+    parts
+      .toMap()
+      .get('a')!
+      .on('evict', () => {
+        throw new Error('a boom');
+      });
+    expect(() => live.push([100 * S, 'd', 1])).toThrow('a boom');
+    for (const k of ['a', 'b', 'c']) {
+      expect(parts.toMap().get(k)!.length, k).toBe(0);
+    }
+  });
+
   it('a partition without maxAge is never swept', () => {
     const live = new LiveSeries({ name: 'l', schema: SCHEMA });
     const parts = live.partitionBy('host', { retention: { maxEvents: 5 } });
