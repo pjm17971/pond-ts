@@ -6,25 +6,29 @@ import {
   YAxis,
 } from '@pond-ts/charts';
 import { useSiteChartTheme } from '@site/src/theme/useSiteChartTheme';
-import { dailyCandles, dailyCandlesRange } from './lib/gallery-fixtures';
+import { marketBars, sessionWindow } from './lib/financial-fixtures';
 
-/** Financial terminal: daily OHLC candles with the crosshair cursor and the
- *  axis-pill OHLC readout — first-class support, not a bar-chart hack. */
+/** Financial terminal: daily OHLC candles on a session calendar, with the
+ *  crosshair cursor and the axis-pill OHLC readout — first-class support, not
+ *  a bar-chart hack. Prices are **modelled**, not measured — see
+ *  `lib/financial-fixtures.ts`. */
 export default function GalleryFinancial({ width }: { width: number }) {
   const theme = useSiteChartTheme();
-  const series = dailyCandles();
+  const set = marketBars();
+  const { range, bars } = sessionWindow(set, 60);
 
   return (
     <ChartContainer
-      range={dailyCandlesRange()}
+      range={range}
       width={width}
       theme={theme}
+      calendar={set.calendar}
       cursor="crosshair"
     >
       <ChartRow height={220}>
-        <YAxis id="price" side="right" format="$,.0f" width={50} />
+        <YAxis id="price" side="right" format={set.priceFormat} width={62} />
         <Layers>
-          <Candlestick series={series} as="ACME" showOHLC />
+          <Candlestick series={bars} as={set.symbol} showOHLC gap={1} />
         </Layers>
       </ChartRow>
     </ChartContainer>

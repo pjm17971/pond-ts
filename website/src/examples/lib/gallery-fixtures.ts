@@ -52,38 +52,6 @@ export function requestMetrics(n = 90) {
 }
 
 // ---------------------------------------------------------------------------
-// Financial terminal — daily OHLCV candles
-// ---------------------------------------------------------------------------
-
-const ohlcSchema = [
-  { name: 'time', kind: 'time' },
-  { name: 'open', kind: 'number' },
-  { name: 'high', kind: 'number' },
-  { name: 'low', kind: 'number' },
-  { name: 'close', kind: 'number' },
-] as const;
-
-export function dailyCandles(n = 42) {
-  const rand = mulberry32(23);
-  const rows: Array<[number, number, number, number, number]> = [];
-  let close = 148;
-  for (let i = 0; i < n; i += 1) {
-    const open = close;
-    const drift = 3.4 * Math.sin(i / 7) + 1.6 * (rand() - 0.5);
-    close = Math.max(60, open + drift);
-    const wick = 0.8 + 1.4 * Math.abs(rand());
-    const high = Math.max(open, close) + wick;
-    const low = Math.min(open, close) - wick;
-    rows.push([BASE + i * DAY, open, high, low, close]);
-  }
-  return new TimeSeries({ name: 'daily', schema: ohlcSchema, rows });
-}
-
-export function dailyCandlesRange(n = 42): [number, number] {
-  return [BASE - DAY / 2, BASE + (n - 1) * DAY + DAY / 2];
-}
-
-// ---------------------------------------------------------------------------
 // Activity chart — a ride's elevation profile
 // ---------------------------------------------------------------------------
 

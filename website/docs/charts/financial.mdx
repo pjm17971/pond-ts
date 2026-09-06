@@ -24,6 +24,14 @@ Above: daily candles with a **Bollinger band** and an **EMA** overlaid — each
 one a study that appended its columns to the bar series, drawn as an ordinary
 `BandChart` / `LineChart` layer.
 
+**The prices are modelled, not measured** — every chart on this page draws the
+same 251-session year as the [Gallery](./gallery.mdx)'s finance cards, generated
+by the process model in the
+[fixture header](https://github.com/pond-ts/pond/blob/main/website/src/examples/lib/financial-fixtures.ts)
+(regimes, volatility clustering, opening gaps, a real NYSE session calendar).
+Market data is not redistributable, so no real feed is used; the calendar the
+axis collapses is the real one.
+
 ## The studies library
 
 A **study** is a pure function `(series, options) => series` that **appends one
@@ -119,7 +127,11 @@ docstrings record every such delta).
 An oscillator is just another column on the same series, drawn on its own
 `<ChartRow>` with its own `<YAxis>`. RSI gets a fixed `min={0} max={100}`
 axis and two `<Baseline>`s at 30 and 70; MACD gets its line and signal on an
-auto-scaled axis around a zero baseline:
+auto-scaled axis around a zero baseline. The window (160 sessions, October
+to June) spans the year's −23.5% correction, which is where an oscillator
+earns its row: RSI drops below 30 in two clusters during the sell-off (late
+December, late March) and above 70 on the run-up either side, and the MACD
+line crosses its signal four times:
 
 <ChartExample name="charts-financial-oscillators" height={380} collapsed>
   {(width) => <ChartsFinancialOscillators width={width} />}
