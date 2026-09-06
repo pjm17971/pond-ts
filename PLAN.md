@@ -1240,14 +1240,24 @@ pandas-oracle-verified) have shipped. Plan:
 - **[PND-STUDY]** — Studies Phase-1 breadth is **landed** (RSI, MACD, ATR,
   momentum, HV, ROC-as-`percentChange`, stochastics, %R, Donchian, OBV,
   rolling VWAP — each oracle-verified with a fluent method; PRs #681 onward).
-  The K2 moving-average engine and its first five consumers (`keltner`,
-  `atrBands`, `qstick`, `trix`, `coppock`) have since landed on top of it,
-  which closes the Phase-1 **ATR bands** leftover. Left open here: the
-  **anchored / session VWAP**, which needs a reset and belongs with the
-  session-anchored studies. Package-wide
-  questions surfaced by the wave, none blocking: `ema()`'s first-sample seed
-  vs TA-Lib's SMA seed; the Wilder-vs-`ema` interior-gap asymmetry (decide
-  before ADX); a monotonic-deque fast path for core's rolling min/max.
+  **Phase 2 is under way**: the K2 moving-average engine (#695) and its first
+  ten consumers — `keltner`, `atrBands`, `qstick`, `trix`, `coppock` (#696)
+  and `priceOscillator`, `disparityIndex`, `detrendedPriceOscillator`,
+  `elderRay`, `awesomeOscillator` (#697) — have landed on top of it, which
+  closes the Phase-1 **ATR bands** leftover. Thirty studies shipped; the
+  next Phase-2 batches by kernel family are the volume / money-flow tail
+  (A/D, PVT, CMF, MFI, Force Index, EOM, volume oscillator, VROC), the
+  momentum tail (CMO, Ultimate, CCI, IMI, RVI, psychological line), the
+  volatility tail (Chaikin, Mass, Choppiness, Ulcer, VHF, Vortex), then K7
+  regression (five projections from one kernel) and K8 two-series (Beta,
+  correlation, relative strength). Left open here: the **anchored /
+  session VWAP**, which needs a reset and belongs with the session-anchored
+  studies. Package-wide questions surfaced by the wave, none blocking:
+  `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine now proves
+  every EMA-family formula on TA-Lib's seed and bounds the transient, so
+  the convention is settled by precedent unless a consumer asks); the
+  Wilder-vs-`ema` interior-gap asymmetry (decide before ADX); a
+  monotonic-deque fast path for core's rolling min/max.
 - **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
   (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
