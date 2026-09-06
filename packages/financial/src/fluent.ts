@@ -357,7 +357,7 @@ declare module 'pond-ts' {
     ): TimeSeries<AppendOpt<S, Output>>;
     /** Fluent Directional Movement System (`+DI` / `−DI` / `DX` / `ADX` /
      *  `ADXR`). */
-    directionalMovement<const Prefix extends string = 'dm'>(
+    directionalMovement<const Prefix extends string = 'dmi'>(
       options?: DirectionalMovementOptions<S, Prefix>,
     ): TimeSeries<
       AppendOpt<

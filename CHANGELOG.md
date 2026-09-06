@@ -74,8 +74,8 @@ include new features and type-level changes; patch bumps are strictly additive.
   studies and two new public kernels, in the uniform shape (redirectable bar
   inputs, bar-count periods, length-preserving warm-up, a fluent method), each
   with oracle cases at two periods.
-  - **`directionalMovement({ period = 14, high?, low?, close?, prefix = 'dm' })`**
-    → `dmPlusDi`, `dmMinusDi`, `dmDx`, `dmAdx`, `dmAdxr`. Wilder's Directional
+  - **`directionalMovement({ period = 14, high?, low?, close?, prefix = 'dmi' })`**
+    → `dmiPlusDi`, `dmiMinusDi`, `dmiDx`, `dmiAdx`, `dmiAdxr`. Wilder's Directional
     Movement System — `+DI`, `−DI`, `DX`, `ADX` and `ADXR` in **one** study
     with a **per-column warm-up** (bars 14 / 14 / 14 / 27 / 40 at the default),
     the `macd` precedent rather than five studies re-running the same pipeline.

@@ -1329,7 +1329,13 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
   it('directionalMovement carries a gap in high or low to the end of the series', () => {
     for (const holeIn of ['high', 'low'] as const) {
       const out = directionalMovement(dirBars(holeIn), { period: 2 });
-      for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr']) {
+      for (const name of [
+        'dmiPlusDi',
+        'dmiMinusDi',
+        'dmiDx',
+        'dmiAdx',
+        'dmiAdxr',
+      ]) {
         const v = cells(out, name);
         // The DM split needs both bars, so the hole lands on bar 4 itself…
         expect(firstMissingFrom(out, name, 4), `${holeIn}/${name}`).toBe(4);
@@ -1342,14 +1348,14 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
       // Everything before the hole is intact — the gap costs the tail, not
       // the whole column.
       expect(
-        cells(directionalMovement(dirBars(holeIn), { period: 2 }), 'dmDx')[3],
+        cells(directionalMovement(dirBars(holeIn), { period: 2 }), 'dmiDx')[3],
       ).toBeDefined();
     }
   });
 
   it('directionalMovement loses a gap in CLOSE one bar later — the true range reads prevClose', () => {
     const out = directionalMovement(dirBars('close'), { period: 2 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx']) {
+    for (const name of ['dmiPlusDi', 'dmiMinusDi', 'dmiDx']) {
       expect(cells(out, name)[4], name).toBeDefined();
       expect(firstMissingFrom(out, name, 4), name).toBe(5);
       expect(
@@ -1361,9 +1367,9 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
     }
     // ADX's own smooth is over DX, so it dies with it; ADXR reads ADX two
     // bars apart and so keeps the one bar where both ends exist.
-    expect(cells(out, 'dmAdx')[4]).toBeDefined();
-    expect(firstMissingFrom(out, 'dmAdx', 4)).toBe(5);
-    expect(cells(out, 'dmAdxr')[4]).toBeDefined();
+    expect(cells(out, 'dmiAdx')[4]).toBeDefined();
+    expect(firstMissingFrom(out, 'dmiAdx', 4)).toBe(5);
+    expect(cells(out, 'dmiAdxr')[4]).toBeDefined();
   });
 
   it('aroon loses period + 1 bars of the leg whose input is holed, then recovers', () => {

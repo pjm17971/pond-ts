@@ -2182,11 +2182,11 @@ def directional_movement(n: int) -> dict:
 
     # Warm-ups are analytic and must hold with or without TA-Lib installed.
     for name, series_, want in (
-        ("dmPlusDi", pdi, n),
-        ("dmMinusDi", mdi, n),
-        ("dmDx", dx, n),
-        ("dmAdx", adx, 2 * n - 1),
-        ("dmAdxr", adxr, 3 * n - 2),
+        ("dmiPlusDi", pdi, n),
+        ("dmiMinusDi", mdi, n),
+        ("dmiDx", dx, n),
+        ("dmiAdx", adx, 2 * n - 1),
+        ("dmiAdxr", adxr, 3 * n - 2),
     ):
         assert series_.first_valid_index() == want, (
             f"{label} {name} first valid at {series_.first_valid_index()}, "
@@ -2200,11 +2200,11 @@ def directional_movement(n: int) -> dict:
             np.asarray(closes, dtype=float),
         )
         refs = {
-            "dmPlusDi": pd.Series(talib.PLUS_DI(*args, timeperiod=n)),
-            "dmMinusDi": pd.Series(talib.MINUS_DI(*args, timeperiod=n)),
-            "dmDx": pd.Series(talib.DX(*args, timeperiod=n)),
-            "dmAdx": pd.Series(talib.ADX(*args, timeperiod=n)),
-            "dmAdxr": pd.Series(talib.ADXR(*args, timeperiod=n)),
+            "dmiPlusDi": pd.Series(talib.PLUS_DI(*args, timeperiod=n)),
+            "dmiMinusDi": pd.Series(talib.MINUS_DI(*args, timeperiod=n)),
+            "dmiDx": pd.Series(talib.DX(*args, timeperiod=n)),
+            "dmiAdx": pd.Series(talib.ADX(*args, timeperiod=n)),
+            "dmiAdxr": pd.Series(talib.ADXR(*args, timeperiod=n)),
         }
         ours = dict(zip(refs, (pdi, mdi, dx, adx, adxr)))
 
@@ -2258,11 +2258,11 @@ def directional_movement(n: int) -> dict:
         print(f"  {label}: ADXR shift n-1 vs the literal n reading differ by {gap:.2f} points")
 
     return {
-        "dmPlusDi": col(pdi),
-        "dmMinusDi": col(mdi),
-        "dmDx": col(dx),
-        "dmAdx": col(adx),
-        "dmAdxr": col(adxr),
+        "dmiPlusDi": col(pdi),
+        "dmiMinusDi": col(mdi),
+        "dmiDx": col(dx),
+        "dmiAdx": col(adx),
+        "dmiAdxr": col(adxr),
     }
 
 

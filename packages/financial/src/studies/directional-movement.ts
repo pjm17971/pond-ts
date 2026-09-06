@@ -27,7 +27,7 @@ export interface DirectionalMovementOptions<
   /** Close column. **Default `'close'`.** */
   close?: NumericColumnNameForSchema<S>;
   /** Column-family prefix — appends `${prefix}PlusDi` / `${prefix}MinusDi` /
-   *  `${prefix}Dx` / `${prefix}Adx` / `${prefix}Adxr`. **Default `'dm'`.** */
+   *  `${prefix}Dx` / `${prefix}Adx` / `${prefix}Adxr`. **Default `'dmi'`.** */
   prefix?: Prefix;
 }
 
@@ -106,7 +106,7 @@ export interface DirectionalMovementOptions<
  * averaging its two ends is the reading consistent with every other `period`
  * here. The two differ by up to **2.64 points at `period 14`** and 8.19 at
  * `period 5` on the oracle input, so it is a real choice, not a rounding
- * one; a caller who wants the literal reading has `dmAdx` on the series and
+ * one; a caller who wants the literal reading has `dmiAdx` on the series and
  * can shift it.
  *
  * ## Edges
@@ -149,14 +149,14 @@ export interface DirectionalMovementOptions<
  */
 export function directionalMovement<
   S extends SeriesSchema,
-  const Prefix extends string = 'dm',
+  const Prefix extends string = 'dmi',
 >(series: TimeSeries<S>, options: DirectionalMovementOptions<S, Prefix> = {}) {
   const period = options.period ?? 14;
   assertPeriod(period);
   const highName = (options.high ?? DEFAULT_OHLCV.high) as string;
   const lowName = (options.low ?? DEFAULT_OHLCV.low) as string;
   const closeName = (options.close ?? DEFAULT_OHLCV.close) as string;
-  const prefix = (options.prefix ?? 'dm') as Prefix;
+  const prefix = (options.prefix ?? 'dmi') as Prefix;
   const plusName = `${prefix}PlusDi` as const;
   const minusName = `${prefix}MinusDi` as const;
   const dxName = `${prefix}Dx` as const;

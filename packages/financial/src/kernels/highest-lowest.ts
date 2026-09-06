@@ -154,9 +154,9 @@ export function percentOfRangeValues(
  * could be hiding the very bar the answer is asking about, and a
  * confidently-reported "12 bars ago" that is really "unknown" is worse than
  * no reading. (TA-Lib's own answer here is the argument: fed a `NaN` high it
- * reports `aroonUp = 100` on every subsequent bar — measured — because a
- * comparison against `NaN` is false and its running extreme silently never
- * updates.)
+ * silently skips that bar — a comparison against `NaN` is false — and its
+ * output is bit-identical to the clean run, measured, so the hole leaves no
+ * trace and every age counted across it is confidently wrong.)
  *
  * ## Cost — O(N), one pass, via a monotonic deque
  *

@@ -2127,27 +2127,27 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
   const cases: Array<[string, string, (s: never) => unknown]> = [
     [
       'directionalMovement',
-      'dmPlusDi',
+      'dmiPlusDi',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
       'directionalMovement',
-      'dmMinusDi',
+      'dmiMinusDi',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
       'directionalMovement',
-      'dmDx',
+      'dmiDx',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
       'directionalMovement',
-      'dmAdx',
+      'dmiAdx',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
       'directionalMovement',
-      'dmAdxr',
+      'dmiAdxr',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     ['aroon', 'aroonUp', (s) => aroon(s, { period: 5 })],
@@ -2166,7 +2166,7 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
     });
   }
 
-  it('aroon is invariant to ANY monotonic rescaling, exactly — it reads positions', () => {
+  it('aroon is invariant to any strictly increasing map of price, exactly — it reads positions', () => {
     // Stronger than the scale/shift invariance above, and asserted as
     // equality rather than a tolerance: the study never touches the SIZE of
     // an extreme, only where it sits, so a strictly increasing map of every
@@ -2197,7 +2197,13 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
       return Math.max(...seen) - Math.min(...seen);
     };
     const dm = directionalMovement(s, { period: 5 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ])
       expect(spread(col(dm, name)), name).toBeGreaterThan(10);
     const ar = aroon(s, { period: 5 });
     for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])
@@ -2229,7 +2235,13 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
     // leg is bounded by the true range, so both DI lines are — and DX, ADX
     // and ADXR are then bounded by construction.
     const dm = directionalMovement(s, { period: 5 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ])
       within(col(dm, name), 0, 100, name);
     const ar = aroon(s, { period: 5 });
     within(col(ar, 'aroonUp'), 0, 100, 'aroonUp');
@@ -2273,15 +2285,15 @@ describe('[talib] the directional group over another study’s output', () => {
       low: 'sl',
       close: 'sc',
     });
-    const plus = col(r, 'dmPlusDi');
+    const plus = col(r, 'dmiPlusDi');
     expect(plus).toHaveLength(40);
     // The inputs are first defined at 2; DM and TR at 3; the Wilder seed
     // steps over the leading gap and lands `period − 1` later, at 5.
     expect(firstValid(plus)).toBe(5);
     expect(plus.slice(5).every((x) => x !== undefined)).toBe(true);
     // ADX is a second Wilder smooth on top: 3 − 1 bars later again.
-    expect(firstValid(col(r, 'dmAdx'))).toBe(7);
-    expect(firstValid(col(r, 'dmAdxr'))).toBe(9);
+    expect(firstValid(col(r, 'dmiAdx'))).toBe(7);
+    expect(firstValid(col(r, 'dmiAdxr'))).toBe(9);
   });
 
   it('aroon over a smoothed high/low composes its warm-up', () => {
@@ -2339,7 +2351,13 @@ describe('[talib] all-missing input yields all-missing directional studies', () 
 
   it('directionalMovement, aroon and vortex', () => {
     const dm = directionalMovement(allMissing as never, { period: 5 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ])
       empty(col(dm, name), name);
     const ar = aroon(allMissing as never, { period: 5 });
     for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])

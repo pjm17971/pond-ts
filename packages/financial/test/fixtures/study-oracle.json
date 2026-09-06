@@ -11740,7 +11740,7 @@
         "period": 14
       },
       "expected": {
-        "dmPlusDi": [
+        "dmiPlusDi": [
           null,
           null,
           null,
@@ -11822,7 +11822,7 @@
           23.244733941380503,
           21.778187350496726
         ],
-        "dmMinusDi": [
+        "dmiMinusDi": [
           null,
           null,
           null,
@@ -11904,7 +11904,7 @@
           17.64271355259175,
           16.929165598793457
         ],
-        "dmDx": [
+        "dmiDx": [
           null,
           null,
           null,
@@ -11986,7 +11986,7 @@
           13.70107632572226,
           12.527391780202295
         ],
-        "dmAdx": [
+        "dmiAdx": [
           null,
           null,
           null,
@@ -12068,7 +12068,7 @@
           52.793806166935774,
           49.917633710740525
         ],
-        "dmAdxr": [
+        "dmiAdxr": [
           null,
           null,
           null,
@@ -12158,7 +12158,7 @@
         "period": 5
       },
       "expected": {
-        "dmPlusDi": [
+        "dmiPlusDi": [
           null,
           null,
           null,
@@ -12240,7 +12240,7 @@
           6.8010748185901315,
           5.5332820705558134
         ],
-        "dmMinusDi": [
+        "dmiMinusDi": [
           null,
           null,
           null,
@@ -12322,7 +12322,7 @@
           29.512396817347277,
           25.191509158027788
         ],
-        "dmDx": [
+        "dmiDx": [
           null,
           null,
           null,
@@ -12404,7 +12404,7 @@
           62.54241463457607,
           63.98164577008978
         ],
-        "dmAdx": [
+        "dmiAdx": [
           null,
           null,
           null,
@@ -12486,7 +12486,7 @@
           56.346569936326866,
           57.87358510307945
         ],
-        "dmAdxr": [
+        "dmiAdxr": [
           null,
           null,
           null,

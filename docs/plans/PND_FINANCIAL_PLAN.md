@@ -665,7 +665,7 @@ convention, since a `period`-bar window spans `i − period + 1 … i` and this
 averages its two ends. Measured separation between the two readings on the
 oracle input: **2.64 points at `period 14`**, 8.19 at `period 5` — asserted in
 the generator so the fixture cannot stop telling them apart. A caller wanting
-the literal reading has `dmAdx` on the series and can shift it.
+the literal reading has `dmiAdx` on the series and can shift it.
 
 (3) **One study, five columns, five warm-ups** — the `macd` precedent, taken
 further than any study so far. `ADXR` as a knob or a separate study was
@@ -704,8 +704,10 @@ must be finite — where `highestLowestValues` skips gaps and reports the extrem
 over what it has. The distinction is that an extreme over the cells you _do_
 have is still an honest extreme, but its **age** is not: the hole could be
 hiding the very bar being asked about. TA-Lib's own answer is the argument for
-strictness — fed a `NaN` high it reports `aroonUp = 100` on every later bar,
-because its running extreme silently never updates.
+strictness — fed a `NaN` high it silently skips that bar (a comparison
+against `NaN` is false) and its output is bit-identical to the clean run
+(measured, `period 25`, holes at bars 30/40/60), so the hole leaves no trace
+and every age counted across it is confidently wrong.
 
 (7) **The window is `period + 1` bars** — the one place in the package where a
 `period` is not its window's bar count. Aroon's `period` counts the oldest
@@ -779,11 +781,11 @@ another study's output without emptying. Both kernels already step over a
 _leading_ run of gaps, so the asymmetry is purely about interior ones.
 
 _What the new studies do, measured_ (an 80-bar series, one missing cell at bar
-40, `period 14`): a gap in **`high`** or **`low`** blanks `dmPlusDi`, `dmMinusDi`,
-`dmDx`, `dmAdx` and `dmAdxr` from bar **40** to the end — the `DM` split needs
+40, `period 14`): a gap in **`high`** or **`low`** blanks `dmiPlusDi`, `dmiMinusDi`,
+`dmiDx`, `dmiAdx` and `dmiAdxr` from bar **40** to the end — the `DM` split needs
 both bars, and the Wilder smooth then carries it. A gap in **`close`** blanks
 the same five from bar **41**: the true range reads only the _previous_ close,
-so it is the next bar that has no denominator (`dmAdxr` emits at bar 40, its
+so it is the next bar that has no denominator (`dmiAdxr` emits at bar 40, its
 first possible bar, and nothing after). `aroon` and `vortex`, being windows,
 lose a bounded run and recover — `aroon` `period + 1` bars, `vortex` up to
 `period + 1`, with the two legs losing _different_ rows.
@@ -794,8 +796,10 @@ all; it is an artifact of C comparison semantics, and it goes both ways. A
 (40 of the 40 remaining bars missing). A `NaN` **close** produces **no missing
 value whatsoever**: every `max` comparison against `NaN` is false, so the true
 range silently falls back to the bar's own range and the study carries on with
-a wrong number. `AROON` fed a `NaN` high is worse — it reports `aroonUp = 100`
-on every subsequent bar, forever, because its running extreme never updates.
+a wrong number. `AROON` fed a `NaN` high does the same — it skips the bar
+silently and its output is bit-identical to the clean run (measured; the
+builder's earlier "`aroonUp = 100` forever" claim was false and is corrected
+in PR #702), so a hole leaves no trace at all.
 So on this axis pond is already strictly better defined than the vendor, in
 both directions.
 

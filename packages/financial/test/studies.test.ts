@@ -4667,11 +4667,11 @@ const workedBars = () =>
 describe('directionalMovement', () => {
   it('is Wilder’s DMS hand-computed, with a per-column warm-up', () => {
     const r = directionalMovement(workedBars(), { period: 2 });
-    const plus = col(r, 'dmPlusDi');
-    const minus = col(r, 'dmMinusDi');
-    const dx = col(r, 'dmDx');
-    const adx = col(r, 'dmAdx');
-    const adxr = col(r, 'dmAdxr');
+    const plus = col(r, 'dmiPlusDi');
+    const minus = col(r, 'dmiMinusDi');
+    const dx = col(r, 'dmiDx');
+    const adx = col(r, 'dmiAdx');
+    const adxr = col(r, 'dmiAdxr');
     expect(plus).toHaveLength(5);
 
     // Wilder(+DM) seeds on the mean of bars 1..2: (2+0)/2 = 1, then
@@ -4707,11 +4707,11 @@ describe('directionalMovement', () => {
   it('warms up at period / 2·period − 1 / 3·period − 2 at the defaults', () => {
     const r = directionalMovement(wavyOhlc());
     for (const [name, first] of [
-      ['dmPlusDi', 14],
-      ['dmMinusDi', 14],
-      ['dmDx', 14],
-      ['dmAdx', 27],
-      ['dmAdxr', 40],
+      ['dmiPlusDi', 14],
+      ['dmiMinusDi', 14],
+      ['dmiDx', 14],
+      ['dmiAdx', 27],
+      ['dmiAdxr', 40],
     ] as const) {
       const v = col(r, name);
       expect(
@@ -4731,13 +4731,13 @@ describe('directionalMovement', () => {
       Array.from({ length: 8 }, (_, i) => [10 + 2 * i, 8 + 2 * i, 9 + 2 * i]),
     );
     const r = directionalMovement(atr(stepping, { period: 3 }), { period: 3 });
-    const plus = col(r, 'dmPlusDi');
+    const plus = col(r, 'dmiPlusDi');
     const a = col(atr(stepping, { period: 3 }), 'atr');
     for (let i = 3; i < 8; i += 1) {
       expect(a[i], `atr[${i}]`).toBeCloseTo(3, 12);
-      expect(plus[i], `dmPlusDi[${i}]`).toBeCloseTo(200 / 3, 12);
-      expect(col(r, 'dmMinusDi')[i], `dmMinusDi[${i}]`).toBeCloseTo(0, 12);
-      expect(col(r, 'dmDx')[i], `dmDx[${i}]`).toBeCloseTo(100, 12);
+      expect(plus[i], `dmiPlusDi[${i}]`).toBeCloseTo(200 / 3, 12);
+      expect(col(r, 'dmiMinusDi')[i], `dmiMinusDi[${i}]`).toBeCloseTo(0, 12);
+      expect(col(r, 'dmiDx')[i], `dmiDx[${i}]`).toBeCloseTo(100, 12);
     }
     // …and the DI pair starts exactly where `atr` does — the shared seed.
     expect(plus.findIndex((x) => x !== undefined)).toBe(
@@ -4756,11 +4756,11 @@ describe('directionalMovement', () => {
       [17, 13, 15],
     ]);
     const r = directionalMovement(inside, { period: 2 });
-    expect(col(r, 'dmPlusDi')[2]).toBe(0);
-    expect(col(r, 'dmMinusDi')[2]).toBe(0);
-    expect(col(r, 'dmDx')[2]).toBe(0);
-    expect(col(r, 'dmDx')[3]).toBe(0);
-    expect(col(r, 'dmAdx')[3]).toBe(0);
+    expect(col(r, 'dmiPlusDi')[2]).toBe(0);
+    expect(col(r, 'dmiMinusDi')[2]).toBe(0);
+    expect(col(r, 'dmiDx')[2]).toBe(0);
+    expect(col(r, 'dmiDx')[3]).toBe(0);
+    expect(col(r, 'dmiAdx')[3]).toBe(0);
   });
 
   it('a zero true range is undefined, not zero — the 0/0 is genuine', () => {
@@ -4773,7 +4773,13 @@ describe('directionalMovement', () => {
       [10, 10, 10],
     ]);
     const r = directionalMovement(frozen, { period: 2 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ])
       expect(
         col(r, name).every((x) => x === undefined),
         name,
@@ -4798,7 +4804,7 @@ describe('directionalMovement', () => {
     expect(
       col(
         directionalMovement(wavyOhlc(), { period: 5, high: 'nope' as never }),
-        'dmPlusDi',
+        'dmiPlusDi',
       ).every((x) => x === undefined),
     ).toBe(true);
   });
@@ -4815,7 +4821,13 @@ describe('directionalMovement', () => {
 
   it('is all-undefined when the period exceeds the series, length kept', () => {
     const r = directionalMovement(workedBars(), { period: 9 });
-    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr']) {
+    for (const name of [
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
+    ]) {
       expect(col(r, name), name).toHaveLength(5);
       expect(
         col(r, name).every((x) => x === undefined),
@@ -4944,7 +4956,7 @@ describe('vortex', () => {
   it('a zero total true range is undefined, not ±Infinity', () => {
     // Bars 1 and 2 sit entirely on the previous close, so their true range is
     // exactly 0 — while +VM on bar 1 is |10 − 8| = 2, a NON-zero numerator
-    // over a zero denominator. This is the case `dmDx`'s forced-zero
+    // over a zero denominator. This is the case `dmiDx`'s forced-zero
     // reasoning does NOT cover, which is why the guard is here and not there.
     const halted = hlcBars([
       [12, 8, 10],

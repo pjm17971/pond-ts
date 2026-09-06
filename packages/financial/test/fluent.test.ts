@@ -593,11 +593,11 @@ describe('fluent: the Wilder directional group', () => {
     );
     const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
     for (const c of [
-      'dmPlusDi',
-      'dmMinusDi',
-      'dmDx',
-      'dmAdx',
-      'dmAdxr',
+      'dmiPlusDi',
+      'dmiMinusDi',
+      'dmiDx',
+      'dmiAdx',
+      'dmiAdxr',
       'aroonUp',
       'aroonDown',
       'aroonOsc',
@@ -614,7 +614,7 @@ describe('fluent: the Wilder directional group', () => {
     // the period is the knob that changes the answer.
     const short = dirBars().directionalMovement({ period: 4 });
     const long = dirBars().directionalMovement({ period: 12, prefix: 'dm12' });
-    expect(col(short, 'dmAdx')[50]).not.toBeCloseTo(
+    expect(col(short, 'dmiAdx')[50]).not.toBeCloseTo(
       col(long, 'dm12Adx')[50]!,
       6,
     );

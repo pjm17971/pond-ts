@@ -75,18 +75,22 @@ export interface AroonOptions<S extends SeriesSchema, Prefix extends string> {
  * - **`aroonUp` and `aroonDown` are bounded `0..100`**, and `aroonOsc`
  *   `−100..100`, by construction: the age is an integer in `0 … period`.
  *   Both are pinned by property tests.
- * - **Both are invariant to *any* monotonic rescaling of price**, not merely
- *   a positive scale factor — the study reads the *position* of the extreme,
- *   never its size, so scaling and shifting the input leave all three
- *   columns bit-identical. That is a stronger invariance than any other
- *   study here has, and the property test asserts it as equality rather than
- *   a tolerance.
+ * - **Both are invariant to any *strictly increasing* map of price**, not
+ *   merely a positive scale factor — the study reads the *position* of the
+ *   extreme, never its size, so any order-preserving transform (scale,
+ *   shift, `x ** 1.5`, …) leaves all three columns bit-identical. A
+ *   *decreasing* map swaps the two columns instead. That is a stronger
+ *   invariance than any other study here has, and the property test asserts
+ *   it as equality rather than a tolerance.
  * - **A gap costs `period + 1` bars and then recovers.** The kernel's rule
  *   is strict — every cell in the window must be finite — because an extreme
  *   taken over the cells you *do* have is still an honest extreme but its
  *   **age** is not: the hole could be hiding the very bar being asked about.
- *   Measured: TA-Lib fed a `NaN` high reports `aroonUp = 100` on every bar
- *   after it, forever, because its running extreme silently never updates.
+ *   Measured: TA-Lib fed a `NaN` high **skips that bar silently** — its
+ *   comparison against `NaN` is false — and reports every other bar
+ *   bit-identical to the clean run, so the hole is invisible in its output
+ *   and an age counted across it is confidently wrong. pond reports the
+ *   window as unknown instead.
  * - **A leading gap shifts the start**, so running over another study's
  *   output starts that many bars later rather than emptying the column.
  * - **The default `period` is not universal.** 25 is the value StockCharts
