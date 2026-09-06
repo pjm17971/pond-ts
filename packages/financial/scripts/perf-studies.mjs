@@ -10,14 +10,19 @@ import { TimeSeries } from 'pond-ts';
 import {
   MA_TYPES,
   atrBands,
+  awesomeOscillator,
   bollinger,
   coppock,
+  detrendedPriceOscillator,
+  disparityIndex,
   donchian,
+  elderRay,
   ema,
   keltner,
   macd,
   movingAverage,
   obv,
+  priceOscillator,
   qstick,
   rsi,
   sma,
@@ -156,6 +161,25 @@ function scaleResults(length) {
       benchmark('qstick({ period: 8 })', () => qstick(series)),
       benchmark('trix({ 15, 9 })', () => trix(series)),
       benchmark('coppock({ 14, 11, 10 })', () => coppock(series)),
+      // The K2 consumers. Each is two engine calls (or one, plus a column
+      // read) and a per-cell pass, so their cost should read as the sum of
+      // their parts — a number far above that means the study grew a loop
+      // of its own.
+      benchmark("priceOscillator({ 12, 26, 'ema', percent })", () =>
+        priceOscillator(series),
+      ),
+      benchmark('disparityIndex({ period: 14 })', () =>
+        disparityIndex(series, { period: 14 }),
+      ),
+      benchmark('detrendedPriceOscillator({ period: 20 })', () =>
+        detrendedPriceOscillator(series, { period: PERIOD }),
+      ),
+      benchmark('elderRay({ period: 13 })', () =>
+        elderRay(series, { period: 13 }),
+      ),
+      benchmark('awesomeOscillator({ 5, 34 })', () =>
+        awesomeOscillator(series),
+      ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(
           { count: PERIOD },

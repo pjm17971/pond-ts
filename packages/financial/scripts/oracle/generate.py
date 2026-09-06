@@ -1247,6 +1247,241 @@ def coppock(long_n: int, short_n: int, wma_n: int) -> dict:
     return {"coppock": col(v)}
 
 
+# --------------------------------------------------------------------------
+# The K2 consumers: price-vs-moving-average oscillators.
+#
+# All five are assemblies over the moving-average engine above (or, for
+# elderRay, over pond's EMA directly), so `_ma_values` is reused rather than
+# a second smoother written here -- the same reason the engine exists.
+#
+# TA-Lib has APO/PPO (the price oscillator) and nothing for the other four,
+# so those four are pandas replications of OUR definition with the analytic
+# first-valid bar asserted, plus a DISCRIMINATING assert each: a fixture that
+# cannot tell the study from the obvious wrong implementation pins nothing.
+# --------------------------------------------------------------------------
+
+
+def price_oscillator(fast: int, slow: int, kind: str, mode: str) -> dict:
+    """Price Oscillator: MA(fast) - MA(slow), absolute or as a percent of the
+    slow MA. TA-Lib's APO and PPO respectively, with matype.
+
+    The seed question is MACD's, and is split the same way: for the EMA
+    family the FORMULA is rebuilt on TA-Lib's own SMA seed and required to
+    match exactly, and the pond-seed transient is bounded separately over the
+    last 20 shared bars. For every other type there is no seed and equality
+    is required outright.
+
+    The 0.5% tail bound discriminates. Measured on (12,26,ema,percent), worst
+    over the last 20 shared bars as a fraction of scale:
+
+        correct 2/(n+1)    0.414%   <- passes
+        wrong   2/(n+2)    5.094%
+        wrong   2/n        5.990%
+        wrong   1/n       44.405%
+
+    so the correct rate sits just inside the bound and the nearest wrong one
+    is 12x outside it. (The margin is tighter than MACD's because this is the
+    worst of the last 20 bars, not the last bar alone -- 0.089% there.)
+    """
+    f = _ma_values(kind, fast)
+    sl = _ma_values(kind, slow)
+    v = (f - sl) if mode == "absolute" else 100 * (f - sl) / sl
+    label = f"priceOscillator({fast},{slow},{kind},{mode})"
+
+    # The two modes must not be within rounding of each other on this fixture,
+    # or a study ignoring `mode` would pass both cases.
+    other = (100 * (f - sl) / sl) if mode == "absolute" else (f - sl)
+    sep = float(np.nanmax(np.abs(v - other)))
+    assert sep > 0.1, (
+        f"{label}: the two modes agree to within {sep} on this fixture - a "
+        "study that ignored `mode` would pass"
+    )
+
+    if talib is None:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+        return {"priceOsc": col(v)}
+
+    matype = _MA_TALIB[kind]
+    fn = talib.APO if mode == "absolute" else talib.PPO
+    ref = pd.Series(
+        fn(
+            np.asarray(closes, dtype=float),
+            fastperiod=fast,
+            slowperiod=slow,
+            matype=matype,
+        )
+    )
+    # Mask first, always (see rsi): nanmax(|a-b|) is blind to a one-sided NaN.
+    assert list(v.isna()) == list(ref.isna()), (
+        f"{label} warm-up differs from TA-Lib: ours first valid "
+        f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+    )
+    both = (~np.asarray(v.isna())) & (~np.asarray(ref.isna()))
+    d = np.abs(np.asarray(v, dtype=float)[both] - np.asarray(ref, dtype=float)[both])
+
+    if kind in _MA_SEED_DELTA:
+        # (a) THE FORMULA, exactly, on TA-Lib's SMA-seeded EMA.
+        fe = _ema_sma_seed(closes, fast)
+        se = _ema_sma_seed(closes, slow)
+        if kind != "ema":
+            raise AssertionError(
+                f"{label}: the SMA-seeded formula proof is written for 'ema' "
+                "only; add the dema/tema stages before using them here"
+            )
+        formula = (fe - se) if mode == "absolute" else 100 * (fe - se) / se
+        refa = np.asarray(ref, dtype=float)
+        assert (np.isnan(formula) == np.isnan(refa)).all(), (
+            f"{label}: SMA-seeded replication's warm-up differs from TA-Lib"
+        )
+        fm = ~np.isnan(refa)
+        fd = float(np.max(np.abs(formula[fm] - refa[fm])))
+        assert fd < 1e-9, (
+            f"{label}: SMA-seeded replication disagrees with TA-Lib by {fd} - "
+            "the formula, not the seed, is wrong"
+        )
+        # (b) THE SEED, bounded over the last 20 shared bars.
+        scale = float(np.nanmax(np.abs(ref)))
+        worst, tail = float(d.max()), float(d[-20:].max())
+        assert tail / scale < 0.005, (
+            f"{label} is {tail / scale:.3%} from TA-Lib over the last 20 shared "
+            "bars - too far to be the seed transient"
+        )
+        print(
+            f"  {label}: formula matches TA-Lib on its SMA seed to {fd:.2g}; "
+            f"pond seed - {worst / scale:.2%} at the first shared bar, "
+            f"{tail / scale:.4%} worst over the last 20 (masks identical)"
+        )
+    else:
+        assert float(d.max()) < 1e-9, (
+            f"{label} disagrees with TA-Lib by {d.max()}"
+        )
+        print(
+            f"  {label}: matches TA-Lib "
+            f"{'APO' if mode == 'absolute' else 'PPO'}(matype={matype}) to "
+            f"{d.max():.3g} (warm-ups identical)"
+        )
+
+    return {"priceOsc": col(v)}
+
+
+def disparity_index(n: int, kind: str) -> dict:
+    """Disparity Index: 100 * (close - MA) / MA. No TA-Lib function exists,
+    so this is a pandas replication of our definition with the analytic first
+    valid bar asserted."""
+    ma = _ma_values(kind, n)
+    v = 100 * (s - ma) / ma
+    label = f"disparityIndex({n},{kind})"
+
+    expected = n - 1  # sma / ema: the MA's own first valid bar
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected} "
+        "-- the fixture would pin the wrong warm-up"
+    )
+    # Dividing by the PRICE instead of the MA is the obvious wrong turn and is
+    # numerically close; assert the fixture separates them.
+    wrong = 100 * (s - ma) / s
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.01, (
+        f"{label} sits within {sep} of the divide-by-price version - the "
+        "fixture cannot tell the denominator apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Disparity Index); first "
+        f"valid at {expected}, {sep:.3f} from the divide-by-price version"
+    )
+    return {"disparity": col(v)}
+
+
+def dpo(n: int, kind: str) -> dict:
+    """Detrended Price Oscillator: close - MA displaced floor(n/2)+1 bars back
+    (TradingView's non-centered form; see studies/detrended-price-oscillator.ts
+    for why that alignment and not StockCharts' centered one).
+
+    No TA-Lib function; pandas replication with the analytic first valid bar
+    (the MA's own, plus the displacement) asserted."""
+    shift = n // 2 + 1
+    ma = _ma_values(kind, n)
+    v = s - ma.shift(shift)
+    label = f"detrendedPriceOscillator({n},{kind})"
+
+    expected = n - 1 + shift
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected} "
+        f"(MA's {n - 1} plus a {shift}-bar displacement)"
+    )
+    # Forgetting the displacement is THE bug this study can have; the fixture
+    # has to separate the two by more than rounding.
+    sep = float(np.nanmax(np.abs(v - (s - ma))))
+    assert sep > 0.5, (
+        f"{label} sits within {sep} of the undisplaced `close - MA` - the "
+        "fixture cannot tell the displacement apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no DPO); shift {shift}, "
+        f"first valid at {expected}, {sep:.3f} from the undisplaced form"
+    )
+    return {"dpo": col(v)}
+
+
+def elder_ray(n: int) -> dict:
+    """Elder Ray: bull = high - EMA(close, n), bear = low - EMA(close, n), on
+    POND's EMA seed (first sample), which is what elderRay's kernel gives.
+
+    No TA-Lib function; pandas replication with the EMA's first valid bar
+    asserted."""
+    e = s.ewm(span=n, adjust=False).mean()
+    e.iloc[: n - 1] = math.nan  # our length-preserving warm-up
+    bull, bear = h - e, low_s - e
+    label = f"elderRay({n})"
+
+    assert bull.first_valid_index() == n - 1 and bear.first_valid_index() == n - 1, (
+        f"{label} first valid at {bull.first_valid_index()}/"
+        f"{bear.first_valid_index()}, expected {n - 1} for both"
+    )
+    # The two legs must be far apart (a study emitting the same column twice
+    # would otherwise pass) and neither may equal the close-based version.
+    legs = float(np.nanmin(bull - bear))
+    close_leg = float(np.nanmax(np.abs(bull - (s - e))))
+    assert legs > 0.5, f"{label}: bull and bear are only {legs} apart at the closest"
+    assert close_leg > 0.3, (
+        f"{label}: bull power is within {close_leg} of the close-based version "
+        "- the fixture cannot tell `high` from `close`"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Elder Ray) on pond's EMA "
+        f"seed; first valid at {n - 1}, legs >= {legs:.3f} apart"
+    )
+    return {"elderBull": col(bull), "elderBear": col(bear)}
+
+
+def awesome_oscillator(fast: int, slow: int) -> dict:
+    """Awesome Oscillator: SMA(fast) - SMA(slow) of the median price
+    (high + low)/2. No TA-Lib function; pandas replication.
+
+    pandas' rolling needs `fast`/`slow` non-NaN observations, which is exactly
+    `rollingMeanValues`' "wait for that many finite VALUES" rule for a derived
+    array."""
+    med = (h + low_s) / 2
+    v = med.rolling(fast).mean() - med.rolling(slow).mean()
+    label = f"awesomeOscillator({fast},{slow})"
+
+    assert v.first_valid_index() == slow - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {slow - 1}"
+    )
+    # Reading the CLOSE instead of the median price is the obvious wrong turn.
+    wrong = s.rolling(fast).mean() - s.rolling(slow).mean()
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.02, (
+        f"{label} sits within {sep} of the close-based version - the fixture "
+        "cannot tell the median price apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no AO); first valid at "
+        f"{slow - 1}, {sep:.4f} from the close-based version"
+    )
+    return {"ao": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -1340,6 +1575,61 @@ cases = [
     {"study": "obv", "params": {}, "expected": obv()},
     {"study": "vwap", "params": {"period": 14}, "expected": vwap(14)},
     {"study": "vwap", "params": {"period": 5}, "expected": vwap(5)},
+    {
+        # The defaults: percent (PPO) on pond's EMA seed.
+        "study": "priceOscillator",
+        "params": {
+            "fastPeriod": 12,
+            "slowPeriod": 26,
+            "maType": "ema",
+            "mode": "percent",
+        },
+        "expected": price_oscillator(12, 26, "ema", "percent"),
+    },
+    {
+        # The other mode on a seedless type, where TA-Lib parity is exact.
+        "study": "priceOscillator",
+        "params": {
+            "fastPeriod": 5,
+            "slowPeriod": 13,
+            "maType": "sma",
+            "mode": "absolute",
+        },
+        "expected": price_oscillator(5, 13, "sma", "absolute"),
+    },
+    {
+        "study": "disparityIndex",
+        "params": {"period": 14, "maType": "sma"},
+        "expected": disparity_index(14, "sma"),
+    },
+    {
+        "study": "disparityIndex",
+        "params": {"period": 20, "maType": "ema"},
+        "expected": disparity_index(20, "ema"),
+    },
+    {
+        "study": "detrendedPriceOscillator",
+        "params": {"period": 20, "maType": "sma"},
+        "expected": dpo(20, "sma"),
+    },
+    {
+        # An ODD period, so the floor in `shift = floor(n/2) + 1` is exercised.
+        "study": "detrendedPriceOscillator",
+        "params": {"period": 15, "maType": "ema"},
+        "expected": dpo(15, "ema"),
+    },
+    {"study": "elderRay", "params": {"period": 13}, "expected": elder_ray(13)},
+    {"study": "elderRay", "params": {"period": 5}, "expected": elder_ray(5)},
+    {
+        "study": "awesomeOscillator",
+        "params": {"fastPeriod": 5, "slowPeriod": 34},
+        "expected": awesome_oscillator(5, 34),
+    },
+    {
+        "study": "awesomeOscillator",
+        "params": {"fastPeriod": 3, "slowPeriod": 8},
+        "expected": awesome_oscillator(3, 8),
+    },
     {
         "study": "keltner",
         "params": {"period": 20, "atrPeriod": 10, "multiplier": 2, "maType": "ema"},
@@ -1490,6 +1780,34 @@ out = {
                 "defaults 14 / 11 / 10 - Coppock's MONTHLY lengths, applied as "
                 "bar counts like every other study here; pandas replication (no "
                 "TA-Lib Coppock)"
+            ),
+            "priceOscillator": (
+                "percent = 100*(MA(fast)-MA(slow))/MA(slow) [TA-Lib PPO], "
+                "absolute = MA(fast)-MA(slow) [TA-Lib APO], matype = our "
+                "maType. The sma/absolute case matches TA-Lib APO(matype=0) "
+                "exactly; the ema/percent case keeps POND's first-sample EMA "
+                "seed (the macd precedent), so the formula is proven on "
+                "TA-Lib's SMA seed and the seed transient bounded at the tail"
+            ),
+            "disparityIndex": (
+                "100*(close-MA)/MA; pandas replication (no TA-Lib function), "
+                "first valid bar asserted, and separated from the "
+                "divide-by-price version on this fixture"
+            ),
+            "detrendedPriceOscillator": (
+                "close - MA.shift(floor(n/2)+1) - the non-centered alignment "
+                "(TradingView's default); pandas replication, first valid at "
+                "n-1+shift, separated from the undisplaced close-MA"
+            ),
+            "elderRay": (
+                "bull = high - EMA(close,n), bear = low - EMA(close,n) on "
+                "POND's first-sample EMA seed; pandas replication (no TA-Lib "
+                "Elder Ray), first valid at n-1 for both columns"
+            ),
+            "awesomeOscillator": (
+                "SMA(fast) - SMA(slow) of the median price (high+low)/2; "
+                "pandas replication (no TA-Lib AO), first valid at slow-1, "
+                "separated from the close-based version"
             ),
         },
     },
