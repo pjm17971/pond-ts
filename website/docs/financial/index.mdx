@@ -13,7 +13,8 @@ Two things, both built on plain pond series:
 
 - **Studies** — twenty technical indicators (`sma`, `bollinger`, `rsi`,
   `macd`, `atr`, `stochastic`, `vwap`, …), each a pure function that appends
-  columns to a bar `TimeSeries`, oracle-verified against pandas and TA-Lib.
+  columns to a bar `TimeSeries`, verified against a pandas oracle (the named
+  indicators against TA-Lib as well).
 - **A trading calendar** — a session schedule (open/close instants, holidays,
   intraday breaks) plus the query surface pond's data ops and
   `@pond-ts/charts`' trading-time axis need. One class, `TradingCalendar`.
@@ -57,8 +58,10 @@ const bars = candles
 | Oscillators     | `rsi`, `macd`, `stochastic`, `williamsR`, `momentum`, `percentChange`, `zScore`, `obv`         |
 | Volatility      | `atr`, `historicalVolatility`, `rollingStdev`, `rollingMin`, `rollingMax`, `rollingPercentile` |
 
-Every study is verified bar-for-bar against pandas — and against TA-Lib where
-TA-Lib has the indicator — before it ships; the handful of deliberate
+Every study is verified bar-for-bar against a pandas oracle before it ships,
+and the eight named indicators (`rsi`, `macd`, `atr`, `stochastic`,
+`williamsR`, `momentum`, `percentChange`, `obv`) against TA-Lib as well; the
+handful of deliberate
 differences (a flat window is `undefined`, not 0; `%K` starts at its own
 first valid bar; a gap in a running sum propagates) are documented on each
 study's docstring. The full table with what each one appends and computes, and

@@ -66,14 +66,14 @@ by where they are drawn:
 
 **Overlays — drawn on the price row**
 
-| Study       | Appends                               | Computes                                                        |
-| ----------- | ------------------------------------- | --------------------------------------------------------------- |
-| `sma`       | `sma`                                 | Simple moving average (mean of the last `period` bars).         |
-| `ema`       | `ema`                                 | Exponential moving average (`α = 2/(period+1)`).                |
-| `bollinger` | `bbMiddle` / `bbUpper` / `bbLower`    | SMA ± `stdDev`×population σ (default 2).                        |
-| `envelope`  | `envMiddle` / `envUpper` / `envLower` | Moving-average envelope, `middle × (1 ± percent/100)`.          |
-| `donchian`  | `dcUpper` / `dcLower` / `dcMiddle`    | Highest high / lowest low over `period` bars, and the midpoint. |
-| `vwap`      | `vwap`                                | Rolling volume-weighted typical price, `Σ tp·v / Σ v`.          |
+| Study       | Appends                               | Computes                                                                     |
+| ----------- | ------------------------------------- | ---------------------------------------------------------------------------- |
+| `sma`       | `sma`                                 | Simple moving average (mean of the last `period` bars).                      |
+| `ema`       | `ema`                                 | Exponential moving average (`α = 2/(period+1)`).                             |
+| `bollinger` | `bbMiddle` / `bbUpper` / `bbLower`    | SMA ± `stdDev`×population σ (default 2).                                     |
+| `envelope`  | `envMiddle` / `envUpper` / `envLower` | Moving-average envelope, `middle × (1 ± percent/100)`.                       |
+| `donchian`  | `dcUpper` / `dcLower` / `dcMiddle`    | Highest high / lowest low over `period` bars, and the midpoint.              |
+| `vwap`      | `vwap`                                | Rolling volume-weighted typical price, `Σ tp·v / Σ v`; `period` is required. |
 
 **Oscillators — drawn on their own row** (the example below)
 
@@ -106,8 +106,10 @@ way `column` lets a single-input study run over any field.
 
 Two conventions worth knowing before you draw them: **warm-up length** is the
 first `period − 1` rows for a rolling study, but one more (`period`) for the
-difference-built ones (`rsi`, `atr`, `momentum`, `historicalVolatility`) and
-`kPeriod + slowing − 2` for `%K`; and a **flat window is `undefined`**, not
+difference-built ones (`rsi`, `atr`, `momentum`, `historicalVolatility`, and
+`percentChange` over its `periods`), `kPeriod + slowing − 2` for `%K`, and
+each `macd` column from its own first valid bar; `obv` has no warm-up at all.
+And a **flat window is `undefined`**, not
 0 — `rsi`, `stochastic` and `williamsR` all report no position when there is
 no range to have a position in (TA-Lib returns 0 there; the package's
 docstrings record every such delta).
@@ -174,19 +176,19 @@ there's no separate "financial mode", just the pieces:
 
 If you're arriving from TradingView / ChartIQ, the vocabulary maps like this:
 
-| TradingView / ChartIQ           | pond-ts                                                             |
-| ------------------------------- | ------------------------------------------------------------------- |
-| Indicator / Study               | the [studies library](#the-studies-library) (`sma`, `bollinger`, …) |
-| Field (indicator input)         | the `column` option on every study                                  |
-| Candles / OHLC bars             | [`<Candlestick>`](./types/candlestick.mdx)                          |
-| Bar / Candle / Hollow style     | `<Candlestick variant>`                                             |
-| Volume sub-pane                 | a second `<ChartRow>` with `<BarChart column="volume">`             |
-| Pane / sub-chart                | a `<ChartRow>` ([Layout](./layout.mdx))                             |
-| Crosshair                       | `cursor="crosshair"`                                                |
-| OHLC legend / data window       | `<Candlestick showOHLC>`                                            |
-| Last-price line / label         | `YAxisIndicator` + `createLiveValue`                                |
-| Session separator               | `sessionDividers` on `<ChartContainer>`                             |
-| Regular trading hours (no gaps) | the `calendar` prop + a `TradingCalendar`                           |
+| TradingView / ChartIQ           | pond-ts                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| Indicator / Study               | the [studies library](#the-studies-library) (`sma`, `bollinger`, …)           |
+| Field (indicator input)         | the `column` option (or the named `high` / `low` / `close` / `volume` inputs) |
+| Candles / OHLC bars             | [`<Candlestick>`](./types/candlestick.mdx)                                    |
+| Bar / Candle / Hollow style     | `<Candlestick variant>`                                                       |
+| Volume sub-pane                 | a second `<ChartRow>` with `<BarChart column="volume">`                       |
+| Pane / sub-chart                | a `<ChartRow>` ([Layout](./layout.mdx))                                       |
+| Crosshair                       | `cursor="crosshair"`                                                          |
+| OHLC legend / data window       | `<Candlestick showOHLC>`                                                      |
+| Last-price line / label         | `YAxisIndicator` + `createLiveValue`                                          |
+| Session separator               | `sessionDividers` on `<ChartContainer>`                                       |
+| Regular trading hours (no gaps) | the `calendar` prop + a `TradingCalendar`                                     |
 
 ## See also
 
