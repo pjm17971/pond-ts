@@ -2617,7 +2617,13 @@ def gopalakrishnan_range_index(n: int) -> dict:
     )
     # The scale-ADDITIVE property, which is what makes GAPO different from
     # every other study in this batch: scaling the prices by k shifts the
-    # reading by exactly ln(k)/ln(n) rather than leaving it alone.
+    # reading by exactly ln(k)/ln(n) rather than leaving it alone. Note what
+    # this does and does not pin: it re-uses the same hh/ll, so it is the
+    # change-of-base identity ln(k*x) = ln(k) + ln(x) checked in floating
+    # point, not the study end to end. The end-to-end claim (scale the bars,
+    # run gopalakrishnanRangeIndex, compare) is the TS property test in
+    # test/talib-properties.test.ts; this assert only documents the algebra
+    # the separation above relies on.
     k = 1000.0
     scaled = np.log(k * hh - k * ll) / math.log(n)
     offset = float(np.nanmax(np.abs((scaled - v) - math.log(k) / math.log(n))))
