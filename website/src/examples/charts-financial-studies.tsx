@@ -7,15 +7,15 @@ import {
   LineChart,
   YAxis,
 } from '@pond-ts/charts';
-import { bollinger, ema } from '@pond-ts/financial';
+import '@pond-ts/financial/fluent';
 import { useSiteChartTheme } from '@site/src/theme/useSiteChartTheme';
 import { marketBars, sessionWindow } from './lib/financial-fixtures';
 
-/** Studies are pure `(series, options) => series` functions that **append**
- *  columns to a bar `TimeSeries` — so they compose, and you draw their output
- *  as ordinary chart layers. Here `bollinger` adds `bbUpper`/`bbMiddle`/
- *  `bbLower` and `ema` adds `ema`; the band and line just read those columns
- *  over the same candles.
+/** Studies **append** columns to a bar `TimeSeries` and return the widened
+ *  series — so they chain, and you draw their output as ordinary chart
+ *  layers. Importing `@pond-ts/financial/fluent` mounts them as methods:
+ *  `.bollinger()` adds `bbUpper`/`bbMiddle`/`bbLower`, `.ema()` adds `ema`,
+ *  and the band and line just read those columns over the same candles.
  *
  *  Prices are **modelled**, not measured — see `lib/financial-fixtures.ts`.
  *  The window is the last 120 sessions of that year, cropped *before* the
@@ -24,7 +24,7 @@ export default function ChartsFinancialStudies({ width }: { width: number }) {
   const theme = useSiteChartTheme();
   const set = marketBars();
   const { range, bars } = sessionWindow(set, 120);
-  const study = ema(bollinger(bars, { period: 20 }), { period: 10 });
+  const study = bars.bollinger({ period: 20 }).ema({ period: 10 });
 
   return (
     <ChartContainer

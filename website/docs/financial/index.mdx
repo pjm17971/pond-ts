@@ -30,16 +30,7 @@ A study is `(series, options) => series`: it reads a column (default
 multi-input ones), computes over bar-count periods, and **appends** its
 output column(s) with the warm-up rows left `undefined` so the result lines
 up on the source's time axis. Studies compose because each returns the
-widened series:
-
-```ts
-import { bollinger, ema, rsi } from '@pond-ts/financial';
-
-const bars = rsi(ema(bollinger(candles, { period: 20 }), { period: 10 }));
-// + bbUpper / bbMiddle / bbLower, ema, rsi
-```
-
-Or opt in to the fluent surface once and chain:
+widened series. Opt in to the fluent surface once and chain them:
 
 ```ts
 import '@pond-ts/financial/fluent';
@@ -50,7 +41,12 @@ const bars = candles
   .rsi({ period: 14 })
   .macd({ fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 })
   .vwap({ period: 20 });
+// + bbUpper / bbMiddle / bbLower, ema, rsi, macdLine / macdSignal / macdHist, vwap
 ```
+
+Every study is also a plain function for code that would rather not augment
+`TimeSeries` — `rsi(ema(bollinger(candles, { period: 20 }), { period: 10 }))`
+gives the same series as the first three links of that chain.
 
 | Group           | Studies                                                                                        |
 | --------------- | ---------------------------------------------------------------------------------------------- |

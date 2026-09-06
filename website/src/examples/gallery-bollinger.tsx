@@ -9,15 +9,16 @@ import {
   YAxis,
   type TrackerInfo,
 } from '@pond-ts/charts';
-import { bollinger } from '@pond-ts/financial';
+import '@pond-ts/financial/fluent';
 import { useSiteChartTheme } from '@site/src/theme/useSiteChartTheme';
 import { marketBars, sessionWindow } from './lib/financial-fixtures';
 import { TrackerReadout } from './lib/tracker-readout';
 
-/** The studies → chart seam. `bollinger()` is a pure `(series, options) =>
- *  series` that **appends** `bbLower` / `bbMiddle` / `bbUpper` columns; nothing
- *  about it knows there's a chart. A `<BandChart>` then just reads two of those
- *  columns as its edges and a `<LineChart>` reads the third.
+/** The studies → chart seam. `.bollinger()` (mounted on `TimeSeries` by the
+ *  fluent import) **appends** `bbLower` / `bbMiddle` / `bbUpper` columns and
+ *  returns the widened series; nothing about it knows there's a chart. A
+ *  `<BandChart>` then just reads two of those columns as its edges and a
+ *  `<LineChart>` reads the third.
  *
  *  Prices are **modelled**, not measured — see `lib/financial-fixtures.ts`.
  *
@@ -48,7 +49,7 @@ export default function GalleryBollinger({
       ? 20
       : Math.round(10 + 30 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2));
 
-  const study = useMemo(() => bollinger(bars, { period }), [bars, period]);
+  const study = useMemo(() => bars.bollinger({ period }), [bars, period]);
 
   const [tracker, setTracker] = useState<TrackerInfo | null>(null);
   const price = new Intl.NumberFormat('en-US', {

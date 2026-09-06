@@ -5,9 +5,10 @@ sidebar_label: Bollinger bands
 
 # Bollinger bands
 
-The seam between **studies** and **charts**. `bollinger()` is a pure
-`(series, options) => series` from `@pond-ts/financial` that appends three
-columns to a bar series and knows nothing about rendering. A `<BandChart>` then
+The seam between **studies** and **charts**. `.bollinger()` — a
+`@pond-ts/financial` study, mounted on `TimeSeries` by the fluent import —
+appends three columns to a bar series and knows nothing about rendering. A
+`<BandChart>` then
 reads two of those columns as its edges and a `<LineChart>` reads the third.
 There is no adapter, no "indicator" type, and no chart-side plugin — the study's
 output is an ordinary `TimeSeries` with more columns on it.
@@ -78,13 +79,12 @@ study hasn't warmed into. The numbers above are counted that way.
 
 ## Build it
 
-The study first. It's a plain function call on a plain series — no chart in
-sight:
+The study first. It's a method call on a plain series — no chart in sight:
 
 ```ts
-import { bollinger } from '@pond-ts/financial';
+import '@pond-ts/financial/fluent';
 
-const study = bollinger(bars, { period: 20 });
+const study = bars.bollinger({ period: 20 });
 // study now has bbMiddle / bbUpper / bbLower alongside open/high/low/close
 ```
 
@@ -150,12 +150,12 @@ set `as` to something that reads as an identity and carry the styling elsewhere.
 Studies compose, because each one returns a series:
 
 ```ts
-import { bollinger, ema } from '@pond-ts/financial';
-
-const study = ema(bollinger(bars, { period: 20 }), { period: 10 });
-// …or, with the opt-in fluent import:
 import '@pond-ts/financial/fluent';
+
 const study = bars.bollinger({ period: 20 }).ema({ period: 10 });
+// …or as plain functions, without augmenting TimeSeries:
+import { bollinger, ema } from '@pond-ts/financial';
+const same = ema(bollinger(bars, { period: 20 }), { period: 10 });
 ```
 
 ## Options to try
