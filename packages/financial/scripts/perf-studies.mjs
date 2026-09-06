@@ -9,15 +9,20 @@ import { performance } from 'node:perf_hooks';
 import { TimeSeries } from 'pond-ts';
 import {
   MA_TYPES,
+  atrBands,
   bollinger,
+  coppock,
   donchian,
   ema,
+  keltner,
   macd,
   movingAverage,
   obv,
+  qstick,
   rsi,
   sma,
   stochastic,
+  trix,
   vwap,
   williamsR,
 } from '../dist/index.js';
@@ -26,6 +31,7 @@ const PERIOD = 20;
 
 function makeBars(length) {
   const time = new Float64Array(length);
+  const open = new Float64Array(length);
   const high = new Float64Array(length);
   const low = new Float64Array(length);
   const close = new Float64Array(length);
@@ -35,6 +41,9 @@ function makeBars(length) {
     time[i] = 1_700_000_000_000 + i * 60_000;
     px += Math.sin(i * 0.001) * 0.3 + ((i * 2654435761) % 97) / 970 - 0.05;
     close[i] = px;
+    // The open leans off the close by a varying amount, so the candle body
+    // QStick averages changes sign rather than being a constant offset.
+    open[i] = px - 0.25 * Math.cos(i / 3.1);
     // Varying half-widths, so the range studies never see a flat window.
     high[i] = px + 0.2 + 0.3 * Math.abs(Math.sin(i / 4));
     low[i] = px - 0.2 - 0.3 * Math.abs(Math.cos(i / 3));
@@ -44,12 +53,13 @@ function makeBars(length) {
     name: 'bars',
     schema: [
       { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number' },
       { name: 'high', kind: 'number' },
       { name: 'low', kind: 'number' },
       { name: 'close', kind: 'number' },
       { name: 'volume', kind: 'number' },
     ],
-    columns: { time, high, low, close, volume },
+    columns: { time, open, high, low, close, volume },
   });
   return { series, close };
 }
@@ -132,6 +142,20 @@ function scaleResults(length) {
       benchmark('donchian({ period: 20 })', () =>
         donchian(series, { period: PERIOD }),
       ),
+      // The K2 consumers. Every one is options-validation plus kernel calls,
+      // so what these measure is the kernels underneath: `keltner` is a
+      // typical price, an MA of it and an ATR; `atrBands` is the same ATR
+      // plus two adds; `qstick` a subtraction and one MA; `trix` three EMA
+      // passes plus a rate of change and a fourth EMA; `coppock` two rate-of-
+      // change passes and a WMA.
+      benchmark('keltner({ 20, 10, 2, ema })', () => keltner(series)),
+      benchmark('keltner({ maType: sma })', () =>
+        keltner(series, { maType: 'sma' }),
+      ),
+      benchmark('atrBands({ period: 14 })', () => atrBands(series)),
+      benchmark('qstick({ period: 8 })', () => qstick(series)),
+      benchmark('trix({ 15, 9 })', () => trix(series)),
+      benchmark('coppock({ 14, 11, 10 })', () => coppock(series)),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(
           { count: PERIOD },

@@ -1240,9 +1240,11 @@ pandas-oracle-verified) have shipped. Plan:
 - **[PND-STUDY]** — Studies Phase-1 breadth is **landed** (RSI, MACD, ATR,
   momentum, HV, ROC-as-`percentChange`, stochastics, %R, Donchian, OBV,
   rolling VWAP — each oracle-verified with a fluent method; PRs #681 onward).
-  Left open here: **ATR bands** (Keltner-style `close ± k·ATR`, on the
-  `trueRangeValues` kernel) and the **anchored / session VWAP**, which needs
-  a reset and belongs with the session-anchored studies. Package-wide
+  The K2 moving-average engine and its first five consumers (`keltner`,
+  `atrBands`, `qstick`, `trix`, `coppock`) have since landed on top of it,
+  which closes the Phase-1 **ATR bands** leftover. Left open here: the
+  **anchored / session VWAP**, which needs a reset and belongs with the
+  session-anchored studies. Package-wide
   questions surfaced by the wave, none blocking: `ema()`'s first-sample seed
   vs TA-Lib's SMA seed; the Wilder-vs-`ema` interior-gap asymmetry (decide
   before ADX); a monotonic-deque fast path for core's rolling min/max.

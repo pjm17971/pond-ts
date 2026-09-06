@@ -34,6 +34,11 @@ import {
   donchian,
   obv,
   vwap,
+  keltner,
+  atrBands,
+  qstick,
+  trix,
+  coppock,
 } from '../src/index.js';
 
 interface OracleCase {
@@ -53,6 +58,11 @@ interface OracleCase {
     kPeriod?: number;
     slowing?: number;
     dPeriod?: number;
+    atrPeriod?: number;
+    multiplier?: number;
+    longPeriod?: number;
+    shortPeriod?: number;
+    wmaPeriod?: number;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -60,6 +70,7 @@ interface Oracle {
   meta: { oracle: string };
   input: {
     closes: number[];
+    opens: number[];
     highs: number[];
     lows: number[];
     volumes: number[];
@@ -86,15 +97,17 @@ function series(): TimeSeries<never> {
   }) as unknown as TimeSeries<never>;
 }
 
-/** The same bars with high/low/volume, for the studies that read a whole
- *  bar. Kept separate so the close-only cases stay on exactly the series they
- *  were generated against. The volume column rides along on every bar study
- *  — an extra column is invisible to one that does not name it. */
+/** The same bars with open/high/low/volume, for the studies that read a
+ *  whole bar. Kept separate so the close-only cases stay on exactly the
+ *  series they were generated against. The volume and open columns ride
+ *  along on every bar study — an extra column is invisible to one that does
+ *  not name it. */
 function ohlcSeries(): TimeSeries<never> {
   return new TimeSeries({
     name: 'oracle',
     schema: [
       { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number' },
       { name: 'high', kind: 'number' },
       { name: 'low', kind: 'number' },
       { name: 'close', kind: 'number' },
@@ -102,6 +115,7 @@ function ohlcSeries(): TimeSeries<never> {
     ],
     rows: oracle.input.closes.map((c, i) => [
       i,
+      oracle.input.opens[i]!,
       oracle.input.highs[i]!,
       oracle.input.lows[i]!,
       c,
@@ -171,6 +185,30 @@ function run(c: OracleCase): unknown {
       return williamsR(ohlcSeries(), p as { period?: number });
     case 'donchian':
       return donchian(ohlcSeries(), p as { period?: number });
+    case 'keltner':
+      return keltner(
+        ohlcSeries(),
+        p as {
+          period?: number;
+          atrPeriod?: number;
+          multiplier?: number;
+          maType?: MaType;
+        },
+      );
+    case 'atrBands':
+      return atrBands(
+        ohlcSeries(),
+        p as { period?: number; multiplier?: number },
+      );
+    case 'qstick':
+      return qstick(ohlcSeries(), p as { period?: number; maType?: MaType });
+    case 'trix':
+      return trix(series(), p as { period?: number; signalPeriod?: number });
+    case 'coppock':
+      return coppock(
+        series(),
+        p as { longPeriod?: number; shortPeriod?: number; wmaPeriod?: number },
+      );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

@@ -60,6 +60,11 @@ import {
   sma,
   stochastic,
   williamsR,
+  keltner,
+  atrBands,
+  qstick,
+  trix,
+  coppock,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -863,5 +868,294 @@ describe('[talib] the moving-average engine is linear in its input', () => {
         type,
       ).toBe(true);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The K2 consumers. Two families with OPPOSITE scale behaviour, and each     */
+/* assertion is the one its family should satisfy: the channels (keltner,     */
+/* atrBands) and QStick are in the units of the price and scale LINEARLY;     */
+/* the rate studies (trix, coppock) are ratios and are INVARIANT. A study     */
+/* that normalised by the price level would pass one family's test and fail   */
+/* the other's, which is the point of asserting both.                          */
+/* -------------------------------------------------------------------------- */
+
+const k2OhlcvSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'open', kind: 'number' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+] as const;
+
+/** Wavy bars with a varying range and a body that changes sign. `k` scales
+ *  every price; `shift` adds a constant to every price. */
+const k2Bars = (n: number, k = 1, shift = 0) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: k2OhlcvSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      const o = c - 0.5 * Math.cos(i / 1.7);
+      return [
+        i,
+        o * k + shift,
+        (c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2))) * k + shift,
+        (c - 0.5 - 0.6 * Math.abs(Math.cos(i / 2.5))) * k + shift,
+        c * k + shift,
+      ];
+    }) as Array<[number, number, number, number, number]>,
+  });
+
+describe('[talib] the K2 channels are linear in price', () => {
+  const K = 1000;
+
+  it('keltner scales LINEARLY with the input', () => {
+    const base = keltner(k2Bars(40), { period: 6, atrPeriod: 5 });
+    const scaled = keltner(k2Bars(40, K), { period: 6, atrPeriod: 5 });
+    for (const name of ['kcMiddle', 'kcUpper', 'kcLower']) {
+      const b = col(base, name);
+      const s = col(scaled, name);
+      expect(b.filter((x) => x !== undefined).length, name).toBeGreaterThan(30);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i]! / K, `${name}[${i}]`).toBeCloseTo(b[i]!, 6);
+      }
+    }
+  });
+
+  it('keltner TRANSLATES with the input — a channel, not a normalised one', () => {
+    // Adding a constant to every price moves the whole channel by it and
+    // leaves its WIDTH alone (true range is a difference). A study that
+    // divided by the price level would fail this while passing the scale
+    // test above.
+    const base = keltner(k2Bars(40), { period: 6, atrPeriod: 5 });
+    const moved = keltner(k2Bars(40, 1, 50), { period: 6, atrPeriod: 5 });
+    const b = col(base, 'kcUpper');
+    const m = col(moved, 'kcUpper');
+    const bw = col(base, 'kcUpper').map((x, i) =>
+      x === undefined ? undefined : x - col(base, 'kcLower')[i]!,
+    );
+    const mw = col(moved, 'kcUpper').map((x, i) =>
+      x === undefined ? undefined : x - col(moved, 'kcLower')[i]!,
+    );
+    for (let i = 0; i < b.length; i += 1) {
+      if (b[i] === undefined) continue;
+      expect(m[i]! - 50, `bar ${i}`).toBeCloseTo(b[i]!, 6);
+      expect(mw[i], `width ${i}`).toBeCloseTo(bw[i]!, 6);
+    }
+  });
+
+  it('atrBands scales LINEARLY with the input', () => {
+    const base = atrBands(k2Bars(40), { period: 5 });
+    const scaled = atrBands(k2Bars(40, K), { period: 5 });
+    for (const name of ['atrbUpper', 'atrbLower']) {
+      const b = col(base, name);
+      const s = col(scaled, name);
+      expect(b.filter((x) => x !== undefined).length, name).toBeGreaterThan(30);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i]! / K, `${name}[${i}]`).toBeCloseTo(b[i]!, 6);
+      }
+    }
+  });
+
+  it('qstick scales LINEARLY with the input and is unmoved by a shift', () => {
+    // Both halves matter: the body is a DIFFERENCE of two prices, so it
+    // scales with them and is blind to their common level.
+    const base = col(qstick(k2Bars(40), { period: 5 }), 'qstick');
+    const scaled = col(qstick(k2Bars(40, K), { period: 5 }), 'qstick');
+    const moved = col(qstick(k2Bars(40, 1, 50), { period: 5 }), 'qstick');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(30);
+    // Not flat, or "scales linearly" would hold vacuously.
+    expect(new Set(base.slice(4)).size).toBeGreaterThan(20);
+    expect(base.some((x) => x !== undefined && x > 0)).toBe(true);
+    expect(base.some((x) => x !== undefined && x < 0)).toBe(true);
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) {
+        expect(scaled[i], `bar ${i}`).toBeUndefined();
+        continue;
+      }
+      expect(scaled[i]! / K, `bar ${i}`).toBeCloseTo(base[i]!, 6);
+      expect(moved[i], `shift bar ${i}`).toBeCloseTo(base[i]!, 6);
+    }
+  });
+});
+
+describe('[talib] the K2 rate studies are scale-invariant', () => {
+  const wavy = Array.from(
+    { length: 60 },
+    (_, i) => 100 + 8 * Math.sin(i / 3) + 3 * Math.sin(i / 1.3),
+  );
+
+  it('trix is UNCHANGED by scaling the input', () => {
+    // A rate of change of a linear filter of the price: the constant factor
+    // cancels. Checked at 1e5 and 1e-5, where the RSI test above showed
+    // float error can bite.
+    const base = trix(bars(wavy), { period: 4, signalPeriod: 3 });
+    for (const k of [1e5, 1e-5]) {
+      const scaled = trix(bars(wavy.map((x) => x * k)), {
+        period: 4,
+        signalPeriod: 3,
+      });
+      for (const name of ['trix', 'trixSignal']) {
+        const b = col(base, name);
+        const s = col(scaled, name);
+        expect(b.filter((x) => x !== undefined).length, name).toBeGreaterThan(
+          30,
+        );
+        for (let i = 0; i < b.length; i += 1) {
+          if (b[i] === undefined)
+            expect(s[i], `×${k} ${name}[${i}]`).toBeUndefined();
+          else expect(s[i], `×${k} ${name}[${i}]`).toBeCloseTo(b[i]!, 9);
+        }
+      }
+    }
+    // Not identically zero, or invariance would hold for the wrong reason.
+    expect(
+      col(base, 'trix').some((x) => x !== undefined && Math.abs(x) > 0.01),
+    ).toBe(true);
+  });
+
+  it('coppock is UNCHANGED by scaling the input', () => {
+    const base = col(
+      coppock(bars(wavy), { longPeriod: 8, shortPeriod: 5, wmaPeriod: 4 }),
+      'coppock',
+    );
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(40);
+    expect(base.some((x) => x !== undefined && Math.abs(x) > 0.01)).toBe(true);
+    for (const k of [1e5, 1e-5]) {
+      const scaled = col(
+        coppock(bars(wavy.map((x) => x * k)), {
+          longPeriod: 8,
+          shortPeriod: 5,
+          wmaPeriod: 4,
+        }),
+        'coppock',
+      );
+      for (let i = 0; i < base.length; i += 1) {
+        if (base[i] === undefined)
+          expect(scaled[i], `×${k} bar ${i}`).toBeUndefined();
+        else expect(scaled[i], `×${k} bar ${i}`).toBeCloseTo(base[i]!, 9);
+      }
+    }
+  });
+});
+
+describe('[talib] the K2 consumers compose over another study', () => {
+  const wavy = Array.from(
+    { length: 60 },
+    (_, i) => 100 + 8 * Math.sin(i / 3) + 3 * Math.sin(i / 1.3),
+  );
+
+  it('trix over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3, output: 'mid' });
+    const r = trix(src, { period: 3, signalPeriod: 3, column: 'mid' });
+    const line = col(r, 'trix');
+    expect(line).toHaveLength(60);
+    // sma(3) first valid at 2; three 3-bar EMAs cost 6 more, the rate of
+    // change one more.
+    expect(firstValid(line)).toBe(9);
+    expect(line.slice(9).every((x) => x !== undefined)).toBe(true);
+    expect(firstValid(col(r, 'trixSignal'))).toBe(11);
+  });
+
+  it('coppock over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3, output: 'mid' });
+    const v = col(
+      coppock(src, {
+        column: 'mid',
+        longPeriod: 6,
+        shortPeriod: 3,
+        wmaPeriod: 2,
+        output: 'c',
+      }),
+      'c',
+    );
+    expect(v).toHaveLength(60);
+    // sma(3) at 2; the 6-bar rate of change 6 later; the 2-bar WMA 1 more.
+    expect(firstValid(v)).toBe(9);
+    expect(v.slice(9).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('atrBands over sma draws the band around the smoothed line', () => {
+    const src = sma(k2Bars(40), { period: 6, output: 'mid' });
+    const r = atrBands(src, { period: 5, column: 'mid' });
+    const up = col(r, 'atrbUpper');
+    expect(up).toHaveLength(40);
+    // The ATR is defined from bar 5 and `mid` from bar 5 as well, so the
+    // band starts there and never goes missing again.
+    expect(firstValid(up)).toBe(5);
+    expect(up.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('qstick over a smoothed close composes its warm-up', () => {
+    const src = sma(k2Bars(40), { period: 4, output: 'mid' });
+    const v = col(qstick(src, { period: 3, close: 'mid' }), 'qstick');
+    expect(v).toHaveLength(40);
+    // `mid` first valid at 3; the body then needs 3 finite values.
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing K2 consumers', () => {
+  const allMissing = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as never,
+  });
+
+  const allBlank = (result: unknown, names: string[]) => {
+    for (const name of names) {
+      const v = col(result, name);
+      expect(v, name).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  };
+
+  it('keltner', () => {
+    allBlank(keltner(allMissing, { period: 3, atrPeriod: 3 }), [
+      'kcMiddle',
+      'kcUpper',
+      'kcLower',
+    ]);
+  });
+
+  it('atrBands', () => {
+    allBlank(atrBands(allMissing, { period: 3 }), ['atrbUpper', 'atrbLower']);
+  });
+
+  it('qstick', () => {
+    allBlank(qstick(allMissing, { period: 3 }), ['qstick']);
+  });
+
+  it('trix', () => {
+    allBlank(trix(allMissing, { period: 3, signalPeriod: 3 }), [
+      'trix',
+      'trixSignal',
+    ]);
+  });
+
+  it('coppock', () => {
+    allBlank(
+      coppock(allMissing, { longPeriod: 4, shortPeriod: 2, wmaPeriod: 2 }),
+      ['coppock'],
+    );
   });
 });

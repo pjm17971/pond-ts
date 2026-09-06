@@ -21,6 +21,12 @@ import {
   donchian,
   momentum,
   historicalVolatility,
+  movingAverage,
+  keltner,
+  atrBands,
+  qstick,
+  trix,
+  coppock,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -1521,5 +1527,651 @@ describe('vwap', () => {
     const v = col(vwap(cv([10, 11, 12], [1, 2, 3]), { period: 9 }), 'vwap');
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The K2 consumers: channels (keltner, atrBands) and smoothed rates          */
+/* (qstick, trix, coppock).                                                    */
+/* -------------------------------------------------------------------------- */
+
+const k2OhlcSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+] as const;
+
+const k2Bars = (rows: Array<[number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: k2OhlcSchema,
+    rows: rows.map(([h, l, c], i) => [i, h, l, c]) as Array<
+      [number, number, number, number]
+    >,
+  });
+
+/** `n` bars of a steady 2-wide range around 100: typical price is exactly
+ *  100 and true range exactly 2 on every bar but the first, so every value
+ *  below can be written out by hand. (The oracle covers the varied case bar
+ *  for bar; this fixture exists so the assembly can be checked without a
+ *  reference — the same trick the `atr` block already uses.) */
+const k2Steady = (n: number) =>
+  k2Bars(Array.from({ length: n }, () => [101, 99, 100]));
+
+/** Wavy OHLC bars: the range varies, the close is never on an extreme, and
+ *  the bar-to-bar moves are large enough that the gap terms of true range
+ *  win on some bars. */
+const k2Wavy = (n: number) =>
+  k2Bars(
+    Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+      return [
+        c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+        c - 0.3 - 0.5 * Math.abs(Math.cos(i / 2.5)),
+        c,
+      ] as [number, number, number];
+    }),
+  );
+
+/** A wavy close-only series — the input the rate studies read. */
+const k2Closes = (n: number) =>
+  Array.from({ length: n }, (_, i) => 100 + 6 * Math.sin(i / 4) + 0.1 * i);
+
+describe('keltner', () => {
+  it('is MA(typical price) ± multiplier × ATR, hand-checked', () => {
+    // Typical price is (101 + 99 + 100)/3 = 100 on every bar, so a 3-bar SMA
+    // of it is 100 from bar 2. True range is max(2, |101−100|, |99−100|) = 2
+    // from bar 1 (bar 0 has no previous close), so ATR(3) = 2 from bar 3.
+    // The bands are then 100 ± 2 × 2.
+    const r = keltner(k2Steady(8), {
+      period: 3,
+      atrPeriod: 3,
+      multiplier: 2,
+      maType: 'sma',
+    });
+    expect(col(r, 'kcMiddle')).toEqual([
+      undefined,
+      undefined,
+      100,
+      100,
+      100,
+      100,
+      100,
+      100,
+    ]);
+    expect(col(r, 'kcUpper')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      104,
+      104,
+      104,
+      104,
+      104,
+    ]);
+    expect(col(r, 'kcLower')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      96,
+      96,
+      96,
+      96,
+      96,
+    ]);
+  });
+
+  it('warms up per column: the centre where it is defined, the bands at max(centre, ATR)', () => {
+    // The `macd` rule, and the reason it is worth a test: the centre keeps
+    // three real values (bars 2, 3, 4) that a study masking everything back
+    // to the slowest input would throw away.
+    const r = keltner(k2Steady(12), {
+      period: 3,
+      atrPeriod: 5,
+      maType: 'sma',
+    });
+    const mid = col(r, 'kcMiddle');
+    const up = col(r, 'kcUpper');
+    expect(mid.findIndex((x) => x !== undefined)).toBe(2);
+    expect(up.findIndex((x) => x !== undefined)).toBe(5);
+    expect(mid.slice(2, 5).every((x) => x === 100)).toBe(true);
+  });
+
+  it('the band half-width is exactly `multiplier` × the shipped atr()', () => {
+    // Not "close to": `keltner` and `atr` call the same `atrValues` kernel,
+    // so the half-width is the multiplier times the same double.
+    const source = k2Wavy(40);
+    const k = keltner(source, { period: 6, atrPeriod: 7, multiplier: 2.5 });
+    const a = col(atr(source, { period: 7 }), 'atr');
+    const mid = col(k, 'kcMiddle');
+    const up = col(k, 'kcUpper');
+    const lo = col(k, 'kcLower');
+    let checked = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (mid[i] === undefined || a[i] === undefined) continue;
+      expect(up[i], `bar ${i}`).toBe(mid[i]! + 2.5 * a[i]!);
+      expect(lo[i], `bar ${i}`).toBe(mid[i]! - 2.5 * a[i]!);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(30);
+  });
+
+  it('the default IS the modern variant: EMA(20) of typical price ± 2 × ATR(10)', () => {
+    // The pinned variant, asserted as an equality against the explicit call
+    // rather than left to the docstring.
+    const source = k2Wavy(60);
+    const defaults = keltner(source);
+    const explicit = keltner(source, {
+      period: 20,
+      atrPeriod: 10,
+      multiplier: 2,
+      maType: 'ema',
+      prefix: 'x',
+    });
+    for (const suffix of ['Middle', 'Upper', 'Lower']) {
+      expect(col(defaults, `kc${suffix}`), suffix).toEqual(
+        col(explicit, `x${suffix}`),
+      );
+    }
+    // …and the centre is genuinely an EMA, not an SMA.
+    const smaCentre = keltner(source, { maType: 'sma', prefix: 'y' });
+    expect(col(defaults, 'kcMiddle')).not.toEqual(col(smaCentre, 'yMiddle'));
+  });
+
+  it('reads redirected high/low/close and a custom prefix', () => {
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'h2', kind: 'number' },
+        { name: 'l2', kind: 'number' },
+        { name: 'c2', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 8 }, (_, i) => [i, 101, 99, 100]) as Array<
+        [number, number, number, number]
+      >,
+    });
+    const r = keltner(s, {
+      period: 3,
+      atrPeriod: 3,
+      maType: 'sma',
+      high: 'h2',
+      low: 'l2',
+      close: 'c2',
+      prefix: 'band',
+    });
+    expect(col(r, 'bandMiddle')[7]).toBe(100);
+    expect(col(r, 'bandUpper')[7]).toBe(104);
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const r = keltner(k2Steady(10), {
+      period: 3,
+      atrPeriod: 3,
+      high: 'nope' as never,
+    });
+    for (const name of ['kcMiddle', 'kcUpper', 'kcLower']) {
+      expect(
+        col(r, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects bad periods, a bad multiplier, an unknown maType and a collision', () => {
+    expect(() => keltner(k2Steady(5), { period: 0 })).toThrow(TypeError);
+    expect(() => keltner(k2Steady(5), { atrPeriod: 1.5 })).toThrow(TypeError);
+    expect(() => keltner(k2Steady(5), { multiplier: 0 })).toThrow(TypeError);
+    expect(() => keltner(k2Steady(5), { multiplier: -2 })).toThrow(TypeError);
+    expect(() => keltner(k2Steady(5), { maType: 'wilder' as never })).toThrow(
+      TypeError,
+    );
+    // Running it twice with the same prefix collides on `kcMiddle`.
+    expect(() => keltner(keltner(k2Steady(30)))).toThrow(TypeError);
+  });
+
+  it('is all-undefined when the periods exceed the bars available', () => {
+    const r = keltner(k2Steady(4), { period: 9, atrPeriod: 9 });
+    expect(col(r, 'kcMiddle')).toHaveLength(4);
+    expect(col(r, 'kcUpper').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('atrBands', () => {
+  it('is close ± multiplier × ATR, hand-checked', () => {
+    // True range is 2 on every bar but the first, so ATR(3) = 2 from bar 3;
+    // the close is 100 throughout, so the bands are 100 ± 2 × 2.
+    const r = atrBands(k2Steady(6), { period: 3, multiplier: 2 });
+    expect(col(r, 'atrbUpper')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      104,
+      104,
+      104,
+    ]);
+    expect(col(r, 'atrbLower')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      96,
+      96,
+      96,
+    ]);
+  });
+
+  it('appends TWO columns — there is no middle, the middle is the field', () => {
+    const r = atrBands(k2Steady(6), { period: 3 });
+    const names = (
+      r as unknown as { schema: ReadonlyArray<{ name: string }> }
+    ).schema.map((c) => c.name);
+    expect(names).toEqual([
+      'time',
+      'high',
+      'low',
+      'close',
+      'atrbUpper',
+      'atrbLower',
+    ]);
+  });
+
+  it('`upper − column` is EXACTLY multiplier × the shipped atr()', () => {
+    // The claim the study makes, checked bit-for-bit rather than to a
+    // tolerance: both call the same `atrValues` kernel, so `upper` is the
+    // same `close + m × atr` expression evaluated once.
+    const source = k2Wavy(40);
+    const r = atrBands(source, { period: 9, multiplier: 1.5 });
+    const a = col(atr(source, { period: 9 }), 'atr');
+    const closes = col(source, 'close');
+    const up = col(r, 'atrbUpper');
+    const lo = col(r, 'atrbLower');
+    let checked = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === undefined) {
+        expect(up[i], `bar ${i}`).toBeUndefined();
+        continue;
+      }
+      expect(up[i], `bar ${i}`).toBe(closes[i]! + 1.5 * a[i]!);
+      expect(lo[i], `bar ${i}`).toBe(closes[i]! - 1.5 * a[i]!);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(30);
+  });
+
+  it('draws the bands around `column`, which need not be the ATR’s close', () => {
+    // The reason `column` is separate from `close`: bands around a smoothed
+    // line, with the volatility still measured off the raw bars.
+    const source = k2Wavy(40);
+    const smoothed = sma(source, { period: 5, output: 'mid' });
+    const r = atrBands(smoothed, { period: 9, column: 'mid' });
+    const mid = col(smoothed, 'mid');
+    const a = col(atr(source, { period: 9 }), 'atr');
+    expect(col(r, 'atrbUpper')[20]).toBe(mid[20]! + 2 * a[20]!);
+    // The band starts where BOTH are defined — the ATR at 9, `mid` at 4.
+    expect(col(r, 'atrbUpper').findIndex((x) => x !== undefined)).toBe(9);
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const r = atrBands(k2Steady(10), { period: 3, low: 'nope' as never });
+    expect(col(r, 'atrbUpper').every((x) => x === undefined)).toBe(true);
+    const f = atrBands(k2Steady(10), { period: 3, column: 'nope' as never });
+    expect(col(f, 'atrbLower').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period, a bad multiplier and a collision', () => {
+    expect(() => atrBands(k2Steady(5), { period: 0 })).toThrow(TypeError);
+    expect(() => atrBands(k2Steady(5), { multiplier: 0 })).toThrow(TypeError);
+    expect(() => atrBands(k2Steady(5), { multiplier: Number.NaN })).toThrow(
+      TypeError,
+    );
+    expect(() => atrBands(atrBands(k2Steady(20)))).toThrow(TypeError);
+  });
+});
+
+describe('qstick', () => {
+  const bodySchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'open', kind: 'number' },
+    { name: 'close', kind: 'number' },
+  ] as const;
+
+  const bodyBars = (pairs: Array<[number, number]>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: bodySchema,
+      rows: pairs.map(([o, c], i) => [i, o, c]) as Array<
+        [number, number, number]
+      >,
+    });
+
+  it('averages close − open, hand-checked, and changes sign', () => {
+    // Bodies: +2, −1, +3, 0, −4. A 2-bar SMA of them is
+    // undefined, 0.5, 1, 1.5, −2.
+    const r = qstick(
+      bodyBars([
+        [10, 12],
+        [12, 11],
+        [11, 14],
+        [14, 14],
+        [14, 10],
+      ]),
+      { period: 2 },
+    );
+    expect(col(r, 'qstick')).toEqual([undefined, 0.5, 1, 1.5, -2]);
+  });
+
+  it('a doji contributes an honest 0, not a gap', () => {
+    const r = qstick(
+      bodyBars([
+        [10, 10],
+        [10, 10],
+        [10, 10],
+      ]),
+      { period: 2 },
+    );
+    expect(col(r, 'qstick')).toEqual([undefined, 0, 0]);
+  });
+
+  it('honours maType — and the types genuinely differ', () => {
+    const pairs = Array.from({ length: 30 }, (_, i) => {
+      const c = 100 + 5 * Math.sin(i / 2.5);
+      return [c - 0.4 * Math.cos(i / 1.7), c] as [number, number];
+    });
+    const simple = qstick(bodyBars(pairs), { period: 5, maType: 'sma' });
+    const exp = qstick(bodyBars(pairs), {
+      period: 5,
+      maType: 'ema',
+      output: 'q2',
+    });
+    expect(col(simple, 'qstick')[20]).not.toBe(col(exp, 'q2')[20]);
+    // A wma waits for a full window of finite values, like the sma here.
+    const w = qstick(bodyBars(pairs), {
+      period: 5,
+      maType: 'wma',
+      output: 'q3',
+    });
+    expect(col(w, 'q3').findIndex((x) => x !== undefined)).toBe(4);
+  });
+
+  it('reads redirected open/close columns and a custom output', () => {
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'o2', kind: 'number' },
+        { name: 'c2', kind: 'number' },
+      ] as const,
+      rows: [
+        [0, 10, 12],
+        [1, 12, 11],
+        [2, 11, 14],
+      ] as Array<[number, number, number]>,
+    });
+    const r = qstick(s, { period: 2, open: 'o2', close: 'c2', output: 'body' });
+    expect(col(r, 'body')).toEqual([undefined, 0.5, 1]);
+  });
+
+  it('reads all-missing when `open` is absent (the new bar input)', () => {
+    // The likely misconfiguration for this study — a series with no open.
+    const r = qstick(bars([10, 11, 12, 13]) as never, { period: 2 });
+    expect(col(r, 'qstick').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a bad period, an unknown maType and a collision', () => {
+    const b = bodyBars([
+      [10, 12],
+      [12, 11],
+    ]);
+    expect(() => qstick(b, { period: 0 })).toThrow(TypeError);
+    expect(() => qstick(b, { period: 2.5 })).toThrow(TypeError);
+    expect(() => qstick(b, { maType: 'rma' as never })).toThrow(TypeError);
+    expect(() => qstick(b, { output: 'close' })).toThrow(TypeError);
+  });
+});
+
+describe('trix', () => {
+  it('is 0 on a flat series — three EMAs of a constant are the constant', () => {
+    // A hand-checkable value: T[i] = T[i−1] = 100, so the rate of change is
+    // exactly 0, and the signal EMA of zeros is 0.
+    const r = trix(bars(Array.from({ length: 20 }, () => 100)), {
+      period: 2,
+      signalPeriod: 2,
+    });
+    const line = col(r, 'trix');
+    expect(line.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(line.slice(4).every((x) => x === 0)).toBe(true);
+    expect(
+      col(r, 'trixSignal')
+        .slice(5)
+        .every((x) => x === 0),
+    ).toBe(true);
+  });
+
+  it('warms up at 3·period − 2, and the signal `signalPeriod − 1` later', () => {
+    // Three chained EMAs each cost period − 1, and the rate of change costs
+    // one more bar: TA-Lib's TRIX lookback exactly.
+    const r = trix(bars(k2Closes(60)), { period: 4, signalPeriod: 3 });
+    expect(col(r, 'trix').findIndex((x) => x !== undefined)).toBe(10);
+    expect(col(r, 'trixSignal').findIndex((x) => x !== undefined)).toBe(12);
+  });
+
+  it('is NOT the rate of change of `tema` — the chain, not the combination', () => {
+    // `tema` is 3·EMA − 3·EMA² + EMA³ over the same three stages; TRIX wants
+    // EMA³ alone. Pinned because reaching for `tema` here would compile, run,
+    // and be a different indicator.
+    const closes = k2Closes(60);
+    const line = col(trix(bars(closes), { period: 4 }), 'trix');
+    const temaRoc = percentChange(
+      movingAverage(bars(closes), { period: 4, type: 'tema', output: 't' }),
+      { column: 't' as never, periods: 1, output: 'r' },
+    );
+    expect(col(temaRoc, 'r')[40]).toBeDefined();
+    expect(line[40]).not.toBeCloseTo(col(temaRoc, 'r')[40]!, 6);
+  });
+
+  it('a zero previous value reads as missing rather than blowing up', () => {
+    // The zero-base guard, inherited from `percentChange`. Without it the
+    // ratio at bar 12 is `1.48 / 0 = Infinity`, which `withColumn` rejects
+    // outright — so an unguarded build fails this as an exception, not as a
+    // wrong number.
+    const closes = [...Array.from({ length: 12 }, () => 0), 5, 5, 5, 5, 5, 5];
+    const r = trix(bars(closes), { period: 2, signalPeriod: 2 });
+    const line = col(r, 'trix');
+    expect(line[11]).toBeUndefined(); // flat at zero: 0/0 is not a value
+    expect(line[12]).toBeUndefined(); // the bar whose predecessor was 0
+    expect(line[13]).toBeGreaterThan(0);
+  });
+
+  it('honours column and prefix', () => {
+    const src = sma(bars(k2Closes(60)), { period: 3, output: 'mid' });
+    const r = trix(src, { period: 3, column: 'mid', prefix: 'tx' });
+    expect(col(r, 'tx').filter((x) => x !== undefined).length).toBeGreaterThan(
+      30,
+    );
+    expect(
+      col(r, 'txSignal').filter((x) => x !== undefined).length,
+    ).toBeGreaterThan(20);
+  });
+
+  it('rejects bad periods and a collision', () => {
+    const b = bars([1, 2, 3, 4, 5]);
+    expect(() => trix(b, { period: 0 })).toThrow(TypeError);
+    expect(() => trix(b, { signalPeriod: -1 })).toThrow(TypeError);
+    // The line takes the prefix itself as its name, so this collides on
+    // `close` directly.
+    expect(() => trix(b, { prefix: 'close' })).toThrow(TypeError);
+  });
+
+  it('is all-undefined when the period exceeds the bars available', () => {
+    const r = trix(bars([1, 2, 3, 4, 5]), { period: 4 });
+    expect(col(r, 'trix')).toHaveLength(5);
+    expect(col(r, 'trix').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('coppock', () => {
+  it('is the WMA of two percent rates of change, hand-checked', () => {
+    // A geometric series makes every rate of change constant, so the whole
+    // curve is one number that can be written down: ROC(2) = 21%, ROC(1) =
+    // 10%, sum 31, and a weighted average of a constant is that constant.
+    const geo = Array.from({ length: 8 }, (_, i) => 100 * 1.1 ** i);
+    const v = col(
+      coppock(bars(geo), { longPeriod: 2, shortPeriod: 1, wmaPeriod: 2 }),
+      'coppock',
+    );
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    for (let i = 3; i < 8; i += 1) expect(v[i], `bar ${i}`).toBeCloseTo(31, 9);
+  });
+
+  it('warms up at max(long, short) + wma − 1', () => {
+    const closes = k2Closes(60);
+    const r = coppock(bars(closes));
+    expect(col(r, 'coppock').findIndex((x) => x !== undefined)).toBe(23);
+    const short = coppock(bars(closes), {
+      longPeriod: 6,
+      shortPeriod: 3,
+      wmaPeriod: 4,
+      output: 'c2',
+    });
+    expect(col(short, 'c2').findIndex((x) => x !== undefined)).toBe(9);
+  });
+
+  it('is symmetric in longPeriod and shortPeriod', () => {
+    // The two rates of change are ADDED, so no ordering is enforced (unlike
+    // macd, which subtracts and therefore rejects fast >= slow).
+    const closes = k2Closes(40);
+    const a = col(
+      coppock(bars(closes), { longPeriod: 9, shortPeriod: 4 }),
+      'coppock',
+    );
+    const b = col(
+      coppock(bars(closes), { longPeriod: 4, shortPeriod: 9 }),
+      'coppock',
+    );
+    expect(a).toEqual(b);
+    expect(a.filter((x) => x !== undefined).length).toBeGreaterThan(20);
+  });
+
+  it('the average is WEIGHTED — the unsmoothed sum differs from it', () => {
+    // `wmaPeriod: 1` is the raw sum of the two rates of change (a one-bar
+    // weighted average is the value itself); the 6-bar weighted average of a
+    // curving input must differ from it.
+    const closes = k2Closes(40);
+    const weighted = col(coppock(bars(closes), { wmaPeriod: 6 }), 'coppock');
+    const raw = col(
+      coppock(bars(closes), { wmaPeriod: 1, output: 'raw' }),
+      'raw',
+    );
+    expect(weighted[30]).toBeDefined();
+    expect(weighted[30]).not.toBeCloseTo(raw[30]!, 6);
+  });
+
+  it('a zero base reads as missing', () => {
+    const v = col(
+      coppock(bars([0, 1, 2, 3, 4, 5, 6, 7]), {
+        longPeriod: 2,
+        shortPeriod: 1,
+        wmaPeriod: 1,
+      }),
+      'coppock',
+    );
+    expect(v[2]).toBeUndefined(); // ROC(2) at bar 2 reads the 0 at bar 0
+    expect(v[3]).toBeCloseTo((3 / 1 - 1) * 100 + (3 / 2 - 1) * 100, 9);
+  });
+
+  it('rejects bad periods and a collision', () => {
+    const b = bars([1, 2, 3, 4, 5]);
+    expect(() => coppock(b, { longPeriod: 0 })).toThrow(TypeError);
+    expect(() => coppock(b, { shortPeriod: 1.5 })).toThrow(TypeError);
+    expect(() => coppock(b, { wmaPeriod: -2 })).toThrow(TypeError);
+    expect(() => coppock(b, { output: 'close' })).toThrow(TypeError);
+  });
+});
+
+describe('the K2 consumers pin their published defaults', () => {
+  // Every default in this batch is a documented convention (Wilder's 14,
+  // Chande's 8, Hutson's 15 / ChartIQ's 9, Coppock's 14/11/10), so each is
+  // asserted as an equality against the explicit call. Without these, a
+  // mutation of any default changes no test — measured: four of them
+  // survived the first mutation run.
+  const source = k2Wavy(80);
+  const closes = bars(k2Closes(80));
+
+  it('atrBands defaults to period 14, multiplier 2', () => {
+    const d = atrBands(source);
+    const e = atrBands(source, { period: 14, multiplier: 2, prefix: 'z' });
+    expect(col(d, 'atrbUpper')).toEqual(col(e, 'zUpper'));
+    expect(col(d, 'atrbLower')).toEqual(col(e, 'zLower'));
+    // …and the default is not some OTHER period that happens to agree.
+    expect(col(d, 'atrbUpper')).not.toEqual(
+      col(atrBands(source, { period: 20, prefix: 'w' }), 'wUpper'),
+    );
+  });
+
+  it('qstick defaults to period 8, maType sma', () => {
+    const bodyBars = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: k2Closes(80).map((c, i) => [
+        i,
+        c - 0.5 * Math.cos(i / 1.7),
+        c,
+      ]) as Array<[number, number, number]>,
+    });
+    const d = qstick(bodyBars);
+    const e = qstick(bodyBars, { period: 8, maType: 'sma', output: 'z' });
+    expect(col(d, 'qstick')).toEqual(col(e, 'z'));
+    expect(col(d, 'qstick')).not.toEqual(
+      col(qstick(bodyBars, { period: 5, output: 'w' }), 'w'),
+    );
+  });
+
+  it('trix defaults to period 15, signalPeriod 9', () => {
+    const d = trix(closes);
+    const e = trix(closes, { period: 15, signalPeriod: 9, prefix: 'z' });
+    expect(col(d, 'trix')).toEqual(col(e, 'z'));
+    expect(col(d, 'trixSignal')).toEqual(col(e, 'zSignal'));
+    // The signal default is the one a wrong value hides in: the line is
+    // unchanged by it, so it needs its own inequality.
+    expect(col(d, 'trixSignal')).not.toEqual(
+      col(trix(closes, { signalPeriod: 5, prefix: 'w' }), 'wSignal'),
+    );
+  });
+
+  it('coppock defaults to 14 / 11 / 10', () => {
+    const d = coppock(closes);
+    const e = coppock(closes, {
+      longPeriod: 14,
+      shortPeriod: 11,
+      wmaPeriod: 10,
+      output: 'z',
+    });
+    expect(col(d, 'coppock')).toEqual(col(e, 'z'));
+    expect(col(d, 'coppock')).not.toEqual(
+      col(coppock(closes, { wmaPeriod: 5, output: 'w' }), 'w'),
+    );
+  });
+
+  it('keltner defaults to 20 / 10 / 2 / ema', () => {
+    // (The modern-variant test above asserts the same equality; this one
+    // adds the inequalities that pin each default individually.)
+    const d = col(keltner(source), 'kcUpper');
+    expect(d).not.toEqual(
+      col(keltner(source, { period: 10, prefix: 'a' }), 'aUpper'),
+    );
+    expect(d).not.toEqual(
+      col(keltner(source, { atrPeriod: 20, prefix: 'b' }), 'bUpper'),
+    );
+    expect(d).not.toEqual(
+      col(keltner(source, { multiplier: 3, prefix: 'c' }), 'cUpper'),
+    );
+    expect(d).not.toEqual(
+      col(keltner(source, { maType: 'sma', prefix: 'd' }), 'dUpper'),
+    );
   });
 });

@@ -89,8 +89,47 @@ assert all(v > 0 for v in _wins.values()), (
     "would not distinguish an implementation that dropped one"
 )
 
+# Opens for the body studies (QStick; later IMI, Relative Vigor Index).
+#
+# Built as the PREVIOUS CLOSE, pulled just inside the bar's own range when it
+# does not fit. That is what a real tape looks like: a bar that does not gap
+# opens where the last one closed, and one that does opens at the extreme end
+# of its range. It has to be pulled in at all because this fixture's bar
+# half-widths are deliberately NARROWER than its close-to-close moves (see the
+# true-range note above), so an unclamped previous close would sit outside its
+# own bar on the gap bars - which is exactly the shape the high/low asserts
+# were added to stop. Measured on this series: 47 of the 80 opens are the
+# previous close exactly, and 33 are gap bars.
+#
+# The 0.05 inset keeps the open strictly INSIDE the range rather than on it,
+# so no bar reads a degenerate zero-width body against its own extreme.
+opens = [
+    round(
+        min(
+            max(closes[i - 1] if i else round(closes[0] - 0.2, 4), lows[i] + 0.05),
+            highs[i] - 0.05,
+        ),
+        4,
+    )
+    for i in range(N)
+]
+assert all(
+    lo <= o <= hi for lo, o, hi in zip(lows, opens, highs)
+), "oracle bars must satisfy low <= open <= high"
+_bodies = [c - o for c, o in zip(closes, opens)]
+assert (
+    sum(b > 0 for b in _bodies) >= 10 and sum(b < 0 for b in _bodies) >= 10
+), (
+    "oracle bodies must change sign - a QStick on all-up bars would pass "
+    "under a dropped sign"
+)
+assert len(set(round(b, 6) for b in _bodies)) > N // 2, (
+    "oracle bodies must vary - a constant body makes every MA type agree"
+)
+
 h = pd.Series(highs, dtype="float64")
 low_s = pd.Series(lows, dtype="float64")
+o_s = pd.Series(opens, dtype="float64")
 
 # Volume for the volume studies (OBV, VWAP; later MFI / A/D / CMF).
 #
@@ -254,25 +293,48 @@ def _kama(values, n: int, fast: int = 2, slow: int = 30) -> pd.Series:
     return pd.Series(out)
 
 
-def _ma_values(kind: str, n: int) -> pd.Series:
+def _wilder(values, n: int) -> pd.Series:
+    """Wilder / RMA over an ARRAY: seed = mean of the first n finite values,
+    then (prev*(n-1) + x)/n, with a leading run of NaN stepped over rather
+    than poisoning the seed -- `wilderValues`, which is also the engine's
+    `smma`."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    finite = np.flatnonzero(np.isfinite(x))
+    if len(finite) < n:
+        return pd.Series(out)
+    first = int(finite[0])
+    seed = first + n - 1
+    if seed >= len(x):
+        return pd.Series(out)
+    out[seed] = float(np.mean(x[first : seed + 1]))
+    for i in range(seed + 1, len(x)):
+        out[i] = (out[i - 1] * (n - 1) + x[i]) / n
+    return pd.Series(out)
+
+
+def _ma_over(values, kind: str, n: int) -> pd.Series:
+    """One of the ten K2 types over an arbitrary array -- the ARRAY door
+    (`movingAverageValues`), where every type waits for `n` FINITE values.
+
+    Parameterised on the input because the K2 consumers smooth DERIVED
+    arrays: Keltner the typical price, QStick the candle body, Coppock the
+    sum of two ROCs. `_ma_values` is this over the fixture's closes, where
+    (the series being gap-free) the array and column doors agree.
+    """
+    x = pd.Series(np.asarray(values, dtype=float))
     if kind == "sma":
-        return s.rolling(n).mean()
+        # pandas' rolling requires `n` non-NaN observations, which IS the
+        # array door's "finite values, not rows" rule.
+        return x.rolling(n).mean()
     if kind == "ema":
-        e = s.ewm(span=n, adjust=False).mean()
-        e.iloc[: n - 1] = math.nan  # our length-preserving warm-up
-        return e
+        return _ema_first_seed(x, n)
     if kind == "wma":
-        return _wma(s, n)
+        return _wma(x, n)
     if kind == "smma":
-        # Wilder / RMA: seed = mean of the first n, then (prev*(n-1) + x)/n.
-        # The same recursion rsi/atr run on, one bar earlier (no diff to lose).
-        out = pd.Series(math.nan, index=s.index, dtype="float64")
-        out.iloc[n - 1] = s.iloc[:n].mean()
-        for i in range(n, len(s)):
-            out.iloc[i] = (out.iloc[i - 1] * (n - 1) + s.iloc[i]) / n
-        return out
+        return _wilder(x, n)
     if kind in ("dema", "tema"):
-        e1 = _ma_values("ema", n)
+        e1 = _ema_first_seed(x, n)
         e2 = _ema_first_seed(e1, n)
         if kind == "dema":
             return 2 * e1 - e2
@@ -282,16 +344,20 @@ def _ma_values(kind: str, n: int) -> pd.Series:
         # TA-Lib's split: the two box lengths sum to n + 1, so the convolution
         # is n bars wide. Odd n gets a single peak, even n a two-bar plateau.
         p, q = ((n + 1) // 2, (n + 1) // 2) if n % 2 else (n // 2 + 1, n // 2)
-        return s.rolling(p).mean().rolling(q).mean()
+        return x.rolling(p).mean().rolling(q).mean()
     if kind == "hull":
         half, root = max(1, n // 2), max(1, _round_half_up(math.sqrt(n)))
-        return _wma(2 * _wma(s, half) - _wma(s, n), root)
+        return _wma(2 * _wma(x, half) - _wma(x, n), root)
     if kind == "kama":
-        return _kama(s, n)
+        return _kama(x, n)
     if kind == "zlema":
         lag = (n - 1) // 2  # floors; see the kernel's note on even periods
-        return _ema_first_seed(2 * s - s.shift(lag), n)
+        return _ema_first_seed(2 * x - x.shift(lag), n)
     raise AssertionError(f"unknown moving-average type {kind!r}")
+
+
+def _ma_values(kind: str, n: int) -> pd.Series:
+    return _ma_over(s, kind, n)
 
 
 def moving_average(n: int, kind: str) -> dict:
@@ -605,6 +671,35 @@ def macd(fast: int, slow: int, sig: int) -> dict:
     return {"macdLine": col(line), "macdSignal": col(signal), "macdHist": col(hist)}
 
 
+def _true_range() -> pd.Series:
+    """TR = max(high-low, |high-prevClose|, |low-prevClose|), undefined on bar
+    0 (no previous close)."""
+    prev = s.shift(1)
+    tr = pd.concat(
+        [(h - low_s), (h - prev).abs(), (low_s - prev).abs()], axis=1
+    ).max(axis=1)
+    tr.iloc[0] = math.nan
+    return tr
+
+
+def _atr_series(n: int) -> pd.Series:
+    """Wilder's ATR: the recursion RSI uses over the true ranges, seeded on
+    their mean over the first n, so the first value lands on bar n.
+
+    Factored out because THREE studies now price on the same array -- `atr`
+    itself, `keltner`'s band half-width and `atrBands` -- exactly as the
+    TypeScript side shares one `atrValues` kernel call. A second replication
+    here would be free to drift from the one TA-Lib is asserted against,
+    which is the whole failure mode the shared kernel exists to stop.
+    """
+    tr = _true_range()
+    a = pd.Series(math.nan, index=s.index, dtype="float64")
+    a.iloc[n] = tr.iloc[1 : n + 1].mean()
+    for i in range(n + 1, len(s)):
+        a.iloc[i] = (a.iloc[i - 1] * (n - 1) + tr.iloc[i]) / n
+    return a
+
+
 def atr(n: int) -> dict:
     """Wilder's ATR, as TA-Lib defines it.
 
@@ -616,16 +711,7 @@ def atr(n: int) -> dict:
     asserted against TA-Lib -- both the values AND the warm-up mask -- when it
     is installed.
     """
-    prev = s.shift(1)
-    tr = pd.concat(
-        [(h - low_s), (h - prev).abs(), (low_s - prev).abs()], axis=1
-    ).max(axis=1)
-    tr.iloc[0] = math.nan
-
-    a = pd.Series(math.nan, index=s.index, dtype="float64")
-    a.iloc[n] = tr.iloc[1 : n + 1].mean()
-    for i in range(n + 1, len(s)):
-        a.iloc[i] = (a.iloc[i - 1] * (n - 1) + tr.iloc[i]) / n
+    a = _atr_series(n)
 
     if talib is not None:
         ref = pd.Series(
@@ -906,6 +992,261 @@ def vwap(n: int) -> dict:
     return {"vwap": col(v)}
 
 
+def keltner(n: int, atr_n: int, mult: float, kind: str) -> dict:
+    """Keltner Channel, the MODERN (Chester Keltner via Linda Raschke) form:
+    an EMA of TYPICAL PRICE with bands at +/- mult * ATR.
+
+        middle = MA((h+l+c)/3, n)
+        upper  = middle + mult * ATR(atr_n)
+        lower  = middle - mult * ATR(atr_n)
+
+    TA-Lib has no Keltner, so this is a pandas replication of OUR definition
+    -- but not an independent one all the way down: the ATR half-width is
+    `_atr_series`, the same reference TA-Lib is asserted against above, and
+    the typical price is `vwap`'s. What the case adds over those is the
+    ASSEMBLY (which MA, over which price, times which multiplier) and the
+    PER-COLUMN warm-up.
+
+    The two warm-ups differ and the assert says so: the centre lands on the
+    MA's own first bar and the bands on max(centre, ATR) -- the `macd`
+    per-column rule, NOT all three masked back to the slower.
+
+    The original 1960 Keltner (10-bar SMA of typical price, +/- 1x the SMA of
+    the PLAIN high-low range) is a documented delta, not an option: the
+    half-width here is always true range.
+    """
+    tp = (h + low_s + s) / 3
+    mid = _ma_over(tp, kind, n)
+    a = _atr_series(atr_n)
+    upper, lower = mid + mult * a, mid - mult * a
+
+    label = f"keltner({n},{atr_n},{mult},{kind})"
+    # The analytic first valid bars, asserted rather than assumed: the sma /
+    # ema / wma / smma / trima family lands at n-1 over a gap-free typical
+    # price, and ATR at atr_n (true range costs bar 0).
+    expected_mid = {"sma": n - 1, "ema": n - 1, "wma": n - 1}.get(kind)
+    assert expected_mid is not None, f"{label}: no analytic warm-up for {kind}"
+    assert mid.first_valid_index() == expected_mid, (
+        f"{label} centre first valid at {mid.first_valid_index()}, expected "
+        f"{expected_mid}"
+    )
+    assert a.first_valid_index() == atr_n, (
+        f"{label} ATR first valid at {a.first_valid_index()}, expected {atr_n}"
+    )
+    assert upper.first_valid_index() == max(expected_mid, atr_n), (
+        f"{label} bands first valid at {upper.first_valid_index()}, expected "
+        f"max(centre, ATR) = {max(expected_mid, atr_n)} -- the per-column rule"
+    )
+    # The channel must be WIDE enough on this fixture that a dropped
+    # multiplier (mult = 1) would be visible rather than a rounding away.
+    width = float((upper - lower).dropna().min())
+    assert width > 0.5, (
+        f"{label} narrowest channel is {width} -- too tight for the fixture to "
+        "catch a dropped multiplier"
+    )
+    print(
+        f"  {label}: pandas replication on the TA-Lib-checked ATR; centre at "
+        f"{expected_mid}, bands at {max(expected_mid, atr_n)}, narrowest "
+        f"channel {width:.3f}"
+    )
+    return {
+        "kcMiddle": col(mid),
+        "kcUpper": col(upper),
+        "kcLower": col(lower),
+    }
+
+
+def atr_bands(n: int, mult: float) -> dict:
+    """ATR Bands: close +/- mult * ATR(n). TWO columns -- the middle is the
+    field itself, which is already on the series.
+
+    pandas replication on `_atr_series` (the reference TA-Lib is asserted
+    against). The assert that earns its keep here is the IDENTITY: the upper
+    band less the close must be exactly mult times that same ATR, which is
+    what makes `atrBands` provably `atr()` plus arithmetic rather than a
+    second ATR that happens to agree.
+    """
+    a = _atr_series(n)
+    upper, lower = s + mult * a, s - mult * a
+
+    label = f"atrBands({n},{mult})"
+    assert upper.first_valid_index() == n, (
+        f"{label} first valid at {upper.first_valid_index()}, expected {n}"
+    )
+    # The half-width IS mult * ATR. Read back by subtraction it is that to
+    # within a double's last bits rather than exactly -- (c + w) - c is not w
+    # in IEEE754 -- so the bit-exact form of this claim is asserted on the
+    # TypeScript side, where `atrbUpper === close + mult * atr()` can be
+    # checked as the same expression rather than as its difference.
+    identity = float(np.nanmax(np.abs((upper - s) - mult * a)))
+    assert identity < 1e-12, f"{label}: upper - close != mult * atr ({identity})"
+    symmetry = float(np.nanmax(np.abs((upper - lower) - 2 * mult * a)))
+    assert symmetry < 1e-12, (
+        f"{label}: the two bands are not symmetric about the close ({symmetry})"
+    )
+    print(
+        f"  {label}: pandas replication; upper - close == {mult} * atr to "
+        f"{identity:.3g}, bands symmetric to {symmetry:.3g}"
+    )
+    return {"atrbUpper": col(upper), "atrbLower": col(lower)}
+
+
+def qstick(n: int, kind: str) -> dict:
+    """QStick (Tushar Chande): MA of the candle body, close - open.
+
+    No TA-Lib function, so a pandas replication with the analytic first valid
+    bar asserted. The fixture's bodies change sign 30/50 and are all
+    distinct (asserted where `opens` is built), so a dropped sign or a
+    constant-body bug cannot pass.
+    """
+    body = s - o_s
+    v = _ma_over(body, kind, n)
+
+    label = f"qstick({n},{kind})"
+    expected = {"sma": n - 1, "ema": n - 1, "wma": n - 1}.get(kind)
+    assert expected is not None, f"{label}: no analytic warm-up for {kind}"
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected}"
+    )
+    # It must cross zero on this fixture, or the study's whole reading (the
+    # zero line) is untested by the case.
+    assert (v.dropna() > 0).any() and (v.dropna() < 0).any(), (
+        f"{label} never crosses zero on this fixture"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no QSTICK); first valid at "
+        f"{expected}, crosses zero"
+    )
+    return {"qstick": col(v)}
+
+
+def trix(n: int, sig: int) -> dict:
+    """TRIX: the 1-bar PERCENT rate of change of a triple-smoothed EMA, x100,
+    plus a signal EMA of it.
+
+        T      = EMA(EMA(EMA(close, n), n), n)
+        trix   = 100 * (T[i] / T[i-1] - 1)
+        signal = EMA(trix, sig)
+
+    TA-Lib HAS this one (`TRIX`), but on ITS EMA seed (SMA of the first n)
+    rather than pond's (first sample). So the check is the `moving_average`
+    EMA-family pattern, in two parts:
+
+      (a) THE FORMULA, exactly -- rebuild TRIX on TA-Lib's own SMA seed
+          (`_ema_sma_seed` three times, then the percent ROC) and require
+          bit-level agreement. This is what catches a dropped stage, a `tema`
+          substituted for the EMA chain, or a LOG rate of change in place of
+          the percent one; all three are within the tail bound below but none
+          survives here.
+      (b) THE SEED, bounded -- pond's transient must have decayed over the
+          last 20 shared bars.
+
+    The signal line has NO vendor reference (TA-Lib's TRIX returns the line
+    alone), so it is a pandas replication with its analytic warm-up asserted.
+    """
+    t3 = _ema_first_seed(_ema_first_seed(_ema_first_seed(s, n), n), n)
+    line = (t3 / t3.shift(1) - 1) * 100
+    line[t3.shift(1) == 0] = math.nan
+    signal = _ema_first_seed(line, sig)
+
+    label = f"trix({n},{sig})"
+    assert line.first_valid_index() == 3 * n - 2, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{3 * n - 2} (three EMAs then a 1-bar rate of change)"
+    )
+    assert signal.first_valid_index() == 3 * n - 2 + sig - 1, (
+        f"{label} signal first valid at {signal.first_valid_index()}, expected "
+        f"{3 * n - 2 + sig - 1}"
+    )
+
+    if talib is not None:
+        ref = pd.Series(talib.TRIX(np.asarray(closes, dtype=float), timeperiod=n))
+        assert list(line.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib TRIX: ours first valid "
+            f"{line.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        e1 = _ema_sma_seed(closes, n)
+        e2 = _ema_sma_seed(e1, n)
+        e3 = _ema_sma_seed(e2, n)
+        formula = np.full(len(e3), np.nan)
+        formula[1:] = (e3[1:] / e3[:-1] - 1) * 100
+        refa = np.asarray(ref, dtype=float)
+        assert (np.isnan(formula) == np.isnan(refa)).all(), (
+            f"{label}: SMA-seeded replication's warm-up differs from TA-Lib"
+        )
+        fm = ~np.isnan(refa)
+        fd = float(np.max(np.abs(formula[fm] - refa[fm])))
+        assert fd < 1e-9, (
+            f"{label}: SMA-seeded replication disagrees with TA-Lib by {fd} - "
+            "the formula, not the seed, is wrong"
+        )
+        scale = float(np.nanmax(np.abs(refa)))
+        both = (~np.isnan(refa)) & (~np.asarray(line.isna()))
+        d = np.abs(np.asarray(line, dtype=float)[both] - refa[both])
+        worst, tail = float(d.max()), float(d[-20:].max())
+        # 2% of scale, not the MA family's 0.5%, and the looser bound is
+        # measured rather than fitted after the fact. TRIX divides a triple
+        # EMA by its own predecessor, so `scale` here is the size of a percent
+        # rate of change (0.45 at n=15) rather than of a price: a seed
+        # difference that is a rounding error on the price is a visible
+        # fraction of THIS number, and with only 37 shared bars at n=15 it has
+        # 20 bars to decay in, not 60. Measured, tail over the last 20 bars as
+        # a fraction of scale:
+        #
+        #                        n=15      n=5
+        #     correct 2/(n+1)   0.847%   0.000%   <- passes
+        #     wrong   2/(n+2)   8.540%  17.254%
+        #     wrong   2/n       9.807%  20.939%
+        #
+        # so 2% sits ~2.4x clear of the correct value and ~4x below the
+        # nearest wrong one. It is also the WEAKER of the two checks here:
+        # part (a) above pins the formula, alpha included, bit-exactly on
+        # TA-Lib's own seed, so every one of those wrong rates is already
+        # dead before this line runs.
+        assert tail / scale < 0.02, (
+            f"{label} is {tail / scale:.3%} from TA-Lib over the last 20 shared "
+            "bars - too far to be the seed transient"
+        )
+        print(
+            f"  {label}: formula matches TA-Lib on its SMA seed to {fd:.2g}; "
+            f"pond seed vs TA-Lib's - {worst / scale:.3%} at the first shared "
+            f"bar, {tail / scale:.4%} worst over the last 20 (masks identical)"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"trix": col(line), "trixSignal": col(signal)}
+
+
+def coppock(long_n: int, short_n: int, wma_n: int) -> dict:
+    """Coppock Curve: WMA(ROC(long) + ROC(short)), ROC in PERCENT.
+
+    No TA-Lib function. A pandas replication built on the same `pct_change`
+    the TA-Lib-verified `percentChange` case uses and the same `_wma` the
+    TA-Lib-verified `MA(matype=2)` case uses, so the novel part -- the
+    assembly and its composed warm-up -- is what the case pins. The WMA needs
+    `wma_n` finite values (a positional weight cannot skip a cell), so the
+    first value lands at max(long, short) + wma_n - 1.
+    """
+    total = s.pct_change(long_n) * 100 + s.pct_change(short_n) * 100
+    v = _wma(total, wma_n)
+
+    label = f"coppock({long_n},{short_n},{wma_n})"
+    expected = max(long_n, short_n) + wma_n - 1
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected}"
+    )
+    assert (v.dropna() > 0).any() and (v.dropna() < 0).any(), (
+        f"{label} never crosses zero on this fixture - the only reading the "
+        "curve has would be untested"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Coppock); first valid at "
+        f"{expected}, crosses zero"
+    )
+    return {"coppock": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -999,6 +1340,54 @@ cases = [
     {"study": "obv", "params": {}, "expected": obv()},
     {"study": "vwap", "params": {"period": 14}, "expected": vwap(14)},
     {"study": "vwap", "params": {"period": 5}, "expected": vwap(5)},
+    {
+        "study": "keltner",
+        "params": {"period": 20, "atrPeriod": 10, "multiplier": 2, "maType": "ema"},
+        "expected": keltner(20, 10, 2, "ema"),
+    },
+    {
+        # A shorter centre than the ATR, so the per-column warm-up differs the
+        # OTHER way round (bands later than the centre) than at the defaults.
+        "study": "keltner",
+        "params": {"period": 5, "atrPeriod": 14, "multiplier": 1.5, "maType": "sma"},
+        "expected": keltner(5, 14, 1.5, "sma"),
+    },
+    {
+        "study": "atrBands",
+        "params": {"period": 14, "multiplier": 2},
+        "expected": atr_bands(14, 2),
+    },
+    {
+        "study": "atrBands",
+        "params": {"period": 5, "multiplier": 3},
+        "expected": atr_bands(5, 3),
+    },
+    {"study": "qstick", "params": {"period": 8}, "expected": qstick(8, "sma")},
+    {
+        "study": "qstick",
+        "params": {"period": 5, "maType": "ema"},
+        "expected": qstick(5, "ema"),
+    },
+    {
+        "study": "trix",
+        "params": {"period": 15, "signalPeriod": 9},
+        "expected": trix(15, 9),
+    },
+    {
+        "study": "trix",
+        "params": {"period": 5, "signalPeriod": 3},
+        "expected": trix(5, 3),
+    },
+    {
+        "study": "coppock",
+        "params": {"longPeriod": 14, "shortPeriod": 11, "wmaPeriod": 10},
+        "expected": coppock(14, 11, 10),
+    },
+    {
+        "study": "coppock",
+        "params": {"longPeriod": 6, "shortPeriod": 3, "wmaPeriod": 4},
+        "expected": coppock(6, 3, 4),
+    },
 ]
 
 out = {
@@ -1067,9 +1456,50 @@ out = {
                 "rolling: (tp*volume).rolling(n).sum() / volume.rolling(n).sum(), "
                 "tp = (high+low+close)/3; pandas replication (no TA-Lib VWAP)"
             ),
+            "keltner": (
+                "the MODERN variant (Keltner via Raschke; ChartIQ's default): "
+                "MA(typical price, n) +/- mult * ATR(atr_n), defaults 20 / 10 / "
+                "2 / ema. pandas replication reusing the TA-Lib-checked ATR and "
+                "the typical price; per-column warm-up - centre at the MA's own "
+                "first bar, bands at max(centre, ATR). The 1960 original (SMA "
+                "of typical price +/- 1x SMA of PLAIN range) is a documented "
+                "delta: the half-width here is always TRUE range"
+            ),
+            "atrBands": (
+                "column +/- mult * ATR(n), defaults 14 / 2; TWO columns (the "
+                "middle is the field itself). pandas replication on the same "
+                "TA-Lib-checked ATR, with `upper - close == mult * atr` "
+                "asserted exactly"
+            ),
+            "qstick": (
+                "MA(close - open, n), defaults 8 / sma; pandas replication (no "
+                "TA-Lib QSTICK). The fixture's opens are the previous close "
+                "pulled inside the bar, so 30 of 80 bodies are negative"
+            ),
+            "trix": (
+                "100 * (T[i]/T[i-1] - 1) where T = EMA(EMA(EMA(x, n))), plus "
+                "EMA(trix, sig); defaults 15 / 9. TA-Lib TRIX is the reference: "
+                "the FORMULA is asserted bit-exact on TA-Lib's own SMA seed "
+                "(which catches a log-vs-percent ROC, a dropped stage or a "
+                "`tema` substitution), pond's first-sample seed bounded at the "
+                "tail. The signal has no vendor reference (TA-Lib returns the "
+                "line alone); 9 is ChartIQ's default"
+            ),
+            "coppock": (
+                "WMA(pct_change(long)*100 + pct_change(short)*100, wma), "
+                "defaults 14 / 11 / 10 - Coppock's MONTHLY lengths, applied as "
+                "bar counts like every other study here; pandas replication (no "
+                "TA-Lib Coppock)"
+            ),
         },
     },
-    "input": {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes},
+    "input": {
+        "closes": closes,
+        "opens": opens,
+        "highs": highs,
+        "lows": lows,
+        "volumes": volumes,
+    },
     "cases": cases,
 }
 

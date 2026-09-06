@@ -9,8 +9,7 @@ import {
   assertPeriod,
   columnValues,
 } from '../kernels/rolling.js';
-import { trueRangeValues } from '../kernels/true-range.js';
-import { wilderValues } from '../kernels/wilder.js';
+import { atrValues } from '../kernels/true-range.js';
 
 export interface AtrOptions<S extends SeriesSchema, Output extends string> {
   /** Look-back in **bars**. **Default `14`** (Wilder's own). */
@@ -43,8 +42,10 @@ export interface AtrOptions<S extends SeriesSchema, Output extends string> {
  * average of it first lands on bar `period` — the same off-by-one {@link rsi}
  * has, for the same reason.
  *
- * The true-range derivation itself is {@link trueRangeValues}, shared with
- * the other Wilder-family studies rather than owned here.
+ * The derivation itself is `atrValues` (true range, then Wilder), shared with
+ * the other Wilder-family studies rather than owned here — `keltner`'s band
+ * half-width and `atrBands` call the same kernel, so they are this ATR and
+ * not a second one.
  *
  * ## Three inputs, not one
  *
@@ -95,20 +96,18 @@ export function atr<
   const wide = series as unknown as TimeSeries<SeriesSchema>;
   assertNoColumn(wide, output);
 
-  // True range lives in a kernel rather than here: ADX, NATR, Keltner and
-  // SuperTrend all need the same array, and a study is options-validation
-  // plus kernel calls.
-  const tr = trueRangeValues(
-    columnValues(wide, highName),
-    columnValues(wide, lowName),
-    columnValues(wide, closeName),
+  // Both the true-range derivation and the Wilder smoothing of it live in
+  // kernels rather than here — ADX, NATR, Keltner, ATR bands and SuperTrend
+  // all want the same array, and a study is options-validation plus kernel
+  // calls. `atrValues` is the pair named once, so `keltner` and `atrBands`
+  // are provably the same ATR rather than two that were written to match.
+  return series.withColumn(
+    output,
+    atrValues(
+      columnValues(wide, highName),
+      columnValues(wide, lowName),
+      columnValues(wide, closeName),
+      period,
+    ),
   );
-
-  // `start = 1` because TR[0] is undefined (no previous close). Strictly this
-  // is redundant — `wilderValues` steps over a leading NaN anyway, so passing
-  // 0 gives the same answer, and a review confirmed no test distinguishes
-  // them. It is kept because it states at the call site WHY the first bar is
-  // skipped, rather than leaving that to be inferred from gap-handling that
-  // exists for an unrelated reason.
-  return series.withColumn(output, wilderValues(tr, period, 1));
 }

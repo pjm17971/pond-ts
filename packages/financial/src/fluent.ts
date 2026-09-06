@@ -84,6 +84,16 @@ import type { ObvOptions } from './studies/obv.js';
 import { obv as obvStudy } from './studies/obv.js';
 import type { VwapOptions } from './studies/vwap.js';
 import { vwap as vwapStudy } from './studies/vwap.js';
+import type { KeltnerOptions } from './studies/keltner.js';
+import { keltner as keltnerStudy } from './studies/keltner.js';
+import type { AtrBandsOptions } from './studies/atr-bands.js';
+import { atrBands as atrBandsStudy } from './studies/atr-bands.js';
+import type { QstickOptions } from './studies/qstick.js';
+import { qstick as qstickStudy } from './studies/qstick.js';
+import type { TrixOptions } from './studies/trix.js';
+import { trix as trixStudy } from './studies/trix.js';
+import type { CoppockOptions } from './studies/coppock.js';
+import { coppock as coppockStudy } from './studies/coppock.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -198,6 +208,31 @@ declare module 'pond-ts' {
     /** Fluent rolling VWAP. */
     vwap<const Output extends string = 'vwap'>(
       options: VwapOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Keltner Channel. */
+    keltner<const Prefix extends string = 'kc'>(
+      options?: KeltnerOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, `${Prefix}Middle`>, `${Prefix}Upper`>,
+        `${Prefix}Lower`
+      >
+    >;
+    /** Fluent ATR bands (two columns — the middle is the field itself). */
+    atrBands<const Prefix extends string = 'atrb'>(
+      options?: AtrBandsOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Upper`>, `${Prefix}Lower`>>;
+    /** Fluent QStick (moving average of the candle body). */
+    qstick<const Output extends string = 'qstick'>(
+      options?: QstickOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent TRIX (line + signal). */
+    trix<const Prefix extends string = 'trix'>(
+      options?: TrixOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Coppock Curve. */
+    coppock<const Output extends string = 'coppock'>(
+      options?: CoppockOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -330,4 +365,34 @@ proto.vwap = function (
   options: VwapOptions<SeriesSchema, string>,
 ) {
   return vwapStudy(this, options);
+};
+proto.keltner = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: KeltnerOptions<SeriesSchema, string>,
+) {
+  return keltnerStudy(this, options);
+};
+proto.atrBands = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AtrBandsOptions<SeriesSchema, string>,
+) {
+  return atrBandsStudy(this, options);
+};
+proto.qstick = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: QstickOptions<SeriesSchema, string>,
+) {
+  return qstickStudy(this, options);
+};
+proto.trix = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: TrixOptions<SeriesSchema, string>,
+) {
+  return trixStudy(this, options);
+};
+proto.coppock = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: CoppockOptions<SeriesSchema, string>,
+) {
+  return coppockStudy(this, options);
 };

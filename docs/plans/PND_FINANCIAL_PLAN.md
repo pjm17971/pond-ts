@@ -240,6 +240,108 @@ KAMA is still far below it. Unblocks the §6.1 K2 family (Price Oscillator,
 Disparity, DPO, MA Cross/Deviation, GMMA, Rainbow, Alligator/Gator, TRIX,
 Coppock, KST) and the §6.2 MA-centred bands (Keltner, STARC, High-Low Bands).
 
+**Landed — the K2 consumers (channels and smoothed rates).** The first five
+studies built _on_ the moving-average engine rather than beside it:
+`keltner`, `atrBands` (§6.2) and `qstick`, `trix`, `coppock` (§6.1/§6.3).
+Nothing here added a smoother — every "MA type" option is `MaType` and every
+average is a `movingAverageValues` call on a **derived array**, which is the
+door the engine was built for (typical price, the candle body, a sum of two
+ROCs). Decisions:
+
+(1) **Two new kernel assemblies, both named to stop a definition forking.**
+`atrValues(high, low, close, period)` (`kernels/true-range.ts`) is the
+true-range-then-Wilder pair `atr` was doing inline; `atr`, `keltner` and
+`atrBands` now all call it, which is what makes "`atrbUpper` is
+`close + multiplier × atr()`" **bit-for-bit** rather than a coincidence two
+tests keep true (pinned as an exact `toBe` against the shipped `atr` study —
+the generator can only get to 7.1e-15 because `(c + w) − c` is not `w` in
+IEEE754, so the exact form of the claim lives on the TypeScript side).
+`percentChangeValues(values, periods)` (`kernels/rate-of-change.ts`, K4) is
+the percent rate of change **and its two edge rules** — no predecessor yet, a
+zero base → `undefined`; `percentChange` was refactored onto it and `trix`
+(1 bar) and `coppock` (two look-backs) share it, so the zero-base guard is
+one rule in one place rather than three.
+
+(2) **Keltner's variant is pinned, and the delta is a doc note not an
+option.** The **modern** form ships — EMA(20) of typical price ± 2 × ATR(10),
+Chester Keltner via Linda Raschke, and ChartIQ / StockCharts / TradingView's
+default — because it is what a caller's chart draws. Keltner's own 1960 form
+(SMA(10) of typical price ± 1 × the SMA of the **plain** high−low range) is
+reachable except for the half-width: it is always **true** range here. A
+`range | trueRange` knob was considered and rejected — plain range is a
+quantity the package computes nowhere else, and the knob would have exactly
+one useful value. Warm-up is **per column** (`macd`): centre at the MA's own
+first bar, bands at `max(centre, ATR)`, so at `{ period: 5, atrPeriod: 14 }`
+the centre keeps ten real bars a study masking to the slower input would
+discard.
+
+(3) **`atrBands` appends TWO columns.** No `atrbMiddle`: the middle is
+`column`, already on the series, and a third column would be a copy of the
+caller's own input to keep in step. That is the line between this and
+`keltner`/`bollinger`, whose centres are _computed_. It also needed `column`
+(what the bands are drawn around) to be **separate from** `close` (what the
+ATR is measured from) — bands on an `sma` with volatility off the raw bars is
+the usual reason to reach for it.
+
+(4) **TRIX is not TEMA, and the oracle is what proves it.** TRIX wants the
+EMA **chain** (`EMA³`); the K2 menu's `tema` is Mulloy's de-lagged
+`3·EMA − 3·EMA² + EMA³` built from the same three stages. Reaching for `tema`
+would compile, run, and be a different indicator, so `trix` composes three
+`movingAverageValues(…, 'ema')` passes and a test pins the two apart. The
+generator follows the EMA-family pattern from #695: the **formula** is
+asserted bit-exact on **TA-Lib's own SMA seed** (2.2e-14, identical masks),
+which is what catches a dropped stage, a `tema` substitution _or_ a
+log-vs-percent rate of change; pond's first-sample seed is then bounded as a
+transient. That bound is **2% of scale, not the MA family's 0.5%**, and the
+looser number is measured rather than fitted: TRIX's scale is a percent rate
+of change (0.45 at `period 15`) rather than a price, and only 37 bars are
+shared, so the correct rate sits at 0.85% where `2/(n+2)` and `2/n` sit at
+8.5% and 9.8% — 2% is ~2.4× clear below and ~4× under the nearest wrong one.
+The line is named `trix`, not `trixLine`: the study _is_ the line, and the
+signal keeps the family suffix.
+
+(5) **Coppock's monthly convention is stated, not enforced.** The 14/11/10
+defaults are Coppock's **months** on a monthly index chart; the study is
+bar-count like every other one here, so on daily bars it is a defensible
+short-horizon oscillator and not the indicator he defined — said on the
+docstring because the defaults look innocuous on any chart. The weighted
+average is part of the definition, so no `maType` knob (an EMA-smoothed
+variant is a different curve, and a knob would let one name mean two lines).
+`longPeriod` / `shortPeriod` are **symmetric** — the two ROCs are added — so
+no ordering is enforced, unlike `macd`, which subtracts.
+
+(6) **`open` joined the bar contract's used columns.** `qstick` is the first
+study to read it (`DEFAULT_OHLCV` already named it), so the oracle fixture
+gained an `opens` column: the **previous close, pulled just inside the bar's
+own range** when it does not fit. It has to be pulled in because the
+fixture's half-widths are deliberately narrower than its close-to-close moves
+(the property that makes true range's gap terms win) — 47 of the 80 opens are
+the previous close exactly and 33 are gap bars, with 30 negative bodies and
+80 distinct ones, all asserted, so a dropped sign or a constant body cannot
+pass.
+
+**Mutation matrix** (26 mutations; failing tests of the five study files
+each): 24 killed. The first run had **four** survivors and every one was a
+**default value** — `atrBands` period, `qstick` period, `trix` signalPeriod
+all changed no test at all; a defaults-equality block was added and they now
+kill 1–2 each. The lesson is worth carrying: a study's defaults are part of
+its published definition and nothing else in the shape tests them, because
+every other test passes explicit options. The two remaining survivors are
+**observationally equivalent**, not missing tests: `percentChangeValues`'
+`i < periods` early return (an out-of-range typed-array read is `undefined`
+and every arithmetic on it is already `NaN`, so removing the branch changes
+no output — it stays as a **bounds** guard, so `values[i - periods]!` is not
+a lie, and is documented as such rather than claimed load-bearing) and
+`atrValues`' `start = 1`, which `atr` already documented as redundant since
+`wilderValues` steps over a leading `NaN` anyway.
+
+**Perf** (1M bars, medians, `scripts/perf-studies.mjs`): `keltner` 84 ms
+(`maType: 'sma'` 96 ms), `atrBands` 66 ms, `qstick` 46 ms, `trix` 67 ms,
+`coppock` 47 ms — against `bollinger` 128 ms and `stochastic` 368 ms on the
+same run, so all five sit in the cheap half of the corpus. Every one is
+options-validation plus kernel calls, so these are the kernels' numbers: no
+new data loop was written, and nothing here rescans a window.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,
