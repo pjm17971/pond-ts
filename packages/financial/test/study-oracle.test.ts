@@ -58,6 +58,13 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  chaikinVolatility,
+  massIndex,
+  choppinessIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
+  gopalakrishnanRangeIndex,
+  relativeVolatilityIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -88,6 +95,10 @@ interface OracleCase {
     wmaPeriod?: number;
     mode?: PriceOscillatorMode;
     mediumPeriod?: number;
+    rocPeriod?: number;
+    emaPeriod?: number;
+    sumPeriod?: number;
+    stdevPeriod?: number;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -305,6 +316,29 @@ function run(c: OracleCase): unknown {
       return relativeVigorIndex(ohlcSeries(), p as { period?: number });
     case 'psychologicalLine':
       return psychologicalLine(series(), p as { period?: number });
+    case 'chaikinVolatility':
+      return chaikinVolatility(
+        ohlcSeries(),
+        p as { period?: number; rocPeriod?: number },
+      );
+    case 'massIndex':
+      return massIndex(
+        ohlcSeries(),
+        p as { emaPeriod?: number; sumPeriod?: number },
+      );
+    case 'choppinessIndex':
+      return choppinessIndex(ohlcSeries(), p as { period?: number });
+    case 'ulcerIndex':
+      return ulcerIndex(series(), p as { period?: number });
+    case 'verticalHorizontalFilter':
+      return verticalHorizontalFilter(series(), p as { period?: number });
+    case 'gopalakrishnanRangeIndex':
+      return gopalakrishnanRangeIndex(ohlcSeries(), p as { period?: number });
+    case 'relativeVolatilityIndex':
+      return relativeVolatilityIndex(
+        series(),
+        p as { period?: number; stdevPeriod?: number },
+      );
     case 'directionalMovement':
       return directionalMovement(ohlcSeries(), p as { period?: number });
     case 'aroon':

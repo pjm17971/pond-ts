@@ -2372,6 +2372,326 @@ def vortex(n: int) -> dict:
     return {"viPlus": col(plus), "viMinus": col(minus)}
 
 
+# --------------------------------------------------------------------------
+# The volatility tail (assessment 6.5): Chaikin Volatility, Mass Index,
+# Choppiness, Ulcer, VHF, GAPO and the Relative VOLATILITY Index.
+#
+# NONE of the seven has a TA-Lib function, so every case here is a pandas
+# replication of the definition the study documents, and each one asserts
+# (a) the analytic first valid bar and (b) a measured separation from the
+# plausible WRONG turn -- the substitution a reader of the formula could
+# make that would leave the shape of the curve intact while changing every
+# value. Without (b) a fixture can pin the wrong indicator perfectly.
+# --------------------------------------------------------------------------
+
+
+def _bar_range() -> pd.Series:
+    """high - low, the PLAIN range (`barRangeValues`). Chaikin's and Dorsey's
+    studies take this; the Wilder family takes `_true_range()`."""
+    return h - low_s
+
+
+def chaikin_volatility(n: int, roc: int) -> dict:
+    """Chaikin Volatility: the percent rate of change, over `roc` bars, of an
+    EMA of the plain bar range.
+
+    Pond's first-sample EMA seed through the ARRAY door (`_ema_first_seed`),
+    which is what makes the warm-up n-1 and not n-1 plus a seed window.
+    """
+    e = _ema_first_seed(_bar_range(), n)
+    v = (e / e.shift(roc) - 1) * 100
+    label = f"chaikinVolatility({n}, {roc})"
+
+    assert v.first_valid_index() == n - 1 + roc, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1 + roc}"
+    )
+    assert float(np.nanmin(e)) > 0, (
+        f"{label}: the fixture has a zero smoothed range - the zero-base rule "
+        "would then need its own oracle note rather than a unit test"
+    )
+    # TRUE range instead of plain range is the substitution to catch: same
+    # shape, every value different, and it is what `atr` uses two files away.
+    wrong_e = _ema_first_seed(_true_range(), n)
+    wrong = (wrong_e / wrong_e.shift(roc) - 1) * 100
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 1, (
+        f"{label} sits within {sep} of the TRUE-range version - the fixture "
+        "cannot tell plain range from true range"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Chaikin Volatility); "
+        f"first valid at {n - 1 + roc}, {sep:.2f} points from the "
+        "true-range version"
+    )
+    return {"chaikinVol": col(v)}
+
+
+def mass_index(ema_n: int, sum_n: int) -> dict:
+    """Dorsey's Mass Index: the SUM over `sum_n` bars of EMA(range)/EMA(EMA(range)).
+
+    The EMA chain is the TRIX pattern one stage shallower: stage 2 steps over
+    stage 1's warm-up (the array door), so the ratio starts at 2*ema_n - 2 and
+    the summation sum_n - 1 bars after that.
+    """
+    e1 = _ema_first_seed(_bar_range(), ema_n)
+    e2 = _ema_first_seed(e1, ema_n)
+    ratio = e1 / e2
+    v = ratio.rolling(sum_n).sum()
+    label = f"massIndex({ema_n}, {sum_n})"
+
+    expected_first = 2 * ema_n - 2 + sum_n - 1
+    assert v.first_valid_index() == expected_first, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected_first}"
+    )
+    assert float(np.nanmin(e2)) > 0, (
+        f"{label}: the fixture has a zero double EMA - the 0/0 rule would then "
+        "need its own oracle note rather than a unit test"
+    )
+    # The MEAN of the ratio rather than its sum is the wrong turn: identical
+    # shape, sum_n times smaller, and every published threshold (27 / 26.5) is
+    # on the sum.
+    sep = float(np.nanmax(np.abs(v - ratio.rolling(sum_n).mean())))
+    assert sep > 1, (
+        f"{label} sits within {sep} of the MEAN version - the fixture cannot "
+        "tell a sum from an average"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Mass Index); first "
+        f"valid at {expected_first}, range "
+        f"{float(np.nanmin(v)):.3f}..{float(np.nanmax(v)):.3f} "
+        f"(a steady market sits at ~{sum_n}), {sep:.2f} from the mean version"
+    )
+    return {"mass": col(v)}
+
+
+def choppiness_index(n: int) -> dict:
+    """Dreiss' Choppiness Index: 100*log10(sum(TR)/(HH-LL))/log10(n).
+
+    TRUE range (the ATR family's, asserted equal to talib.TRANGE through the
+    ultimateOscillator case), so the warm-up is n and not n-1: TR[0] does not
+    exist.
+    """
+    tr = _true_range()
+    total = tr.rolling(n).sum()
+    hh, ll = _hh_ll(n)
+    v = 100 * np.log10(total / (hh - ll)) / math.log10(n)
+    label = f"choppinessIndex({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(the true-range sum needs a previous close)"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert 0.0 <= lo_v and hi_v <= 100.0, (
+        f"{label} left the 0..100 band ({lo_v}..{hi_v})"
+    )
+    # The log base cancels (log_b(x)/log_b(n) = log_n(x)), so log10 here is a
+    # presentation choice and not a definition fork -- asserted rather than
+    # asserted-against, because "which log?" is the first question the formula
+    # raises. MIXING the bases would be a real bug and is not this number.
+    same_base = float(
+        np.nanmax(np.abs(v - 100 * np.log(total / (hh - ll)) / math.log(n)))
+    )
+    assert same_base < 1e-12, (
+        f"{label}: log10/log10 and ln/ln disagree by {same_base} - they are "
+        "the same number by change of base, so this is an arithmetic slip"
+    )
+    # PLAIN range in place of true range is the wrong turn -- the one
+    # substitution that keeps the curve's shape and moves every value.
+    plain = (h - low_s).rolling(n).sum()
+    wrong = 100 * np.log10(plain / (hh - ll)) / math.log10(n)
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 1, (
+        f"{label} sits within {sep} of the plain-range version - the fixture "
+        "cannot tell true range from high-minus-low"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Choppiness Index); "
+        f"first valid at {n}, range {lo_v:.2f}..{hi_v:.2f}, {sep:.2f} points "
+        f"from the plain-range version; the log base cancels (to {same_base:.1e})"
+    )
+    return {"chop": col(v)}
+
+
+def ulcer_index(n: int) -> dict:
+    """Martin's Ulcer Index, StockCharts' ROLLING form: the root mean square
+    of the percent drawdown from the window's OWN highest close.
+
+    Two chained windows, so the first value lands at 2n-2: the drawdown needs
+    n closes and the mean of squares needs n drawdowns.
+    """
+    peak = s.rolling(n).max()
+    drawdown = 100 * (s - peak) / peak
+    v = np.sqrt((drawdown**2).rolling(n).mean())
+    label = f"ulcerIndex({n})"
+
+    assert v.first_valid_index() == 2 * n - 2, (
+        f"{label} first valid at {v.first_valid_index()}, expected {2 * n - 2}"
+    )
+    assert float(np.nanmin(v)) >= 0.0, f"{label} went negative"
+    assert float(np.nanmin(peak.dropna())) > 0, (
+        f"{label}: the fixture has a zero rolling peak - the guard would then "
+        "need its own oracle note rather than a unit test"
+    )
+    # The MEAN ABSOLUTE drawdown (the "Pain Index") is the wrong turn: same
+    # inputs, same warm-up, a different statistic that is always smaller.
+    wrong = drawdown.abs().rolling(n).mean()
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.1, (
+        f"{label} sits within {sep} of the mean-absolute (Pain Index) form - "
+        "the fixture cannot tell the squaring apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Ulcer Index); first "
+        f"valid at {2 * n - 2}, max {float(np.nanmax(v)):.3f}, {sep:.3f} from "
+        "the mean-absolute (Pain Index) form"
+    )
+    return {"ulcer": col(v)}
+
+
+def vertical_horizontal_filter(n: int) -> dict:
+    """Adam White's VHF: (HH - LL) / sum(|close change|), both over n bars.
+
+    The alignment is the point: n bars give n-1 changes, so an n-long SUM of
+    changes needs n+1 closes and the study first lands on bar n -- one row
+    later than the range's n-1.
+    """
+    hi, lo = s.rolling(n).max(), s.rolling(n).min()
+    path = s.diff().abs().rolling(n).sum()
+    v = (hi - lo) / path
+    label = f"verticalHorizontalFilter({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(n changes need n+1 closes)"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert 0.0 < lo_v and hi_v <= 1.0, f"{label} left (0, 1] ({lo_v}..{hi_v})"
+    # The n-1-term path sum is the off-by-one this alignment invites: it
+    # starts a bar earlier AND divides by less, so it is high everywhere.
+    wrong = (hi - lo) / s.diff().abs().rolling(n - 1).sum()
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.005, (
+        f"{label} sits within {sep} of the (n-1)-term path version - the "
+        "fixture cannot tell the window alignment apart"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no VHF); first valid at "
+        f"{n}, range {lo_v:.4f}..{hi_v:.4f}, {sep:.4f} from the (n-1)-term "
+        "path version"
+    )
+    return {"vhf": col(v)}
+
+
+def gopalakrishnan_range_index(n: int) -> dict:
+    """GAPO: ln(HH - LL) / ln(n) -- which IS log base n of the window's range.
+
+    The base cancels (log_b(x)/log_b(n) = log_n(x) for every b), exactly as it
+    does in the Choppiness Index, so writing it with the natural log (ChartIQ)
+    or with log10 gives the same number -- asserted below rather than assumed,
+    because "which log?" is the first question a reader of the formula asks.
+    What does NOT cancel is MIXING the bases, which is the plausible slip, and
+    that is what the separation assert pins.
+    """
+    hh, ll = _hh_ll(n)
+    v = np.log(hh - ll) / math.log(n)
+    label = f"gopalakrishnanRangeIndex({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    same_base = float(np.nanmax(np.abs(v - np.log10(hh - ll) / math.log10(n))))
+    assert same_base < 1e-12, (
+        f"{label}: ln/ln and log10/log10 disagree by {same_base} - they are "
+        "the same number by change of base, so this is an arithmetic slip"
+    )
+    # Mixing the bases (log10 on top, ln underneath) is the real slip, and so
+    # is dropping the ln(n) normalisation altogether.
+    sep = min(
+        float(np.nanmax(np.abs(v - np.log10(hh - ll) / math.log(n)))),
+        float(np.nanmax(np.abs(v - np.log(hh - ll)))),
+    )
+    assert sep > 0.05, (
+        f"{label} sits within {sep} of a mixed-base or un-normalised version "
+        "- the fixture cannot tell the normalisation apart"
+    )
+    # The scale-ADDITIVE property, which is what makes GAPO different from
+    # every other study in this batch: scaling the prices by k shifts the
+    # reading by exactly ln(k)/ln(n) rather than leaving it alone. Note what
+    # this does and does not pin: it re-uses the same hh/ll, so it is the
+    # change-of-base identity ln(k*x) = ln(k) + ln(x) checked in floating
+    # point, not the study end to end. The end-to-end claim (scale the bars,
+    # run gopalakrishnanRangeIndex, compare) is the TS property test in
+    # test/talib-properties.test.ts; this assert only documents the algebra
+    # the separation above relies on.
+    k = 1000.0
+    scaled = np.log(k * hh - k * ll) / math.log(n)
+    offset = float(np.nanmax(np.abs((scaled - v) - math.log(k) / math.log(n))))
+    assert offset < 1e-12, (
+        f"{label}: scaling by {k} did not shift the reading by exactly "
+        f"ln(k)/ln(n) (off by {offset})"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no GAPO); first valid at "
+        f"{n - 1}, range {float(np.nanmin(v)):.4f}..{float(np.nanmax(v)):.4f}; "
+        f"the log base cancels (ln/ln == log10/log10 to {same_base:.1e}), "
+        f"{sep:.4f} from a mixed-base or un-normalised version; scaling by "
+        f"{k:.0f} shifts it by exactly ln(k)/ln(n) (to {offset:.1e})"
+    )
+    return {"gapo": col(v)}
+
+
+def relative_volatility_index(n: int, sd_n: int) -> dict:
+    """Dorsey's Relative VOLATILITY Index (as revised): RSI's form with the
+    population standard deviation of the close in place of the price change,
+    Wilder-smoothed over n.
+
+    An unchanged close counts as a DOWN bar (Dorsey's `close > prevClose` is
+    the up test, everything else is the other leg) -- deliberately unlike
+    `upDownLegValues`, which gives a flat bar 0 on both legs.
+    """
+    sd = s.rolling(sd_n).std(ddof=0)
+    d = s.diff()
+    unknown = d.isna() | sd.isna()
+    up = pd.Series(np.where(unknown, np.nan, np.where(d > 0, sd, 0.0)))
+    down = pd.Series(np.where(unknown, np.nan, np.where(d > 0, 0.0, sd)))
+    smoothed_up, smoothed_down = _wilder(up, n), _wilder(down, n)
+    v = 100 * smoothed_up / (smoothed_up + smoothed_down)
+    label = f"relativeVolatilityIndex({n}, {sd_n})"
+
+    assert v.first_valid_index() == sd_n + n - 2, (
+        f"{label} first valid at {v.first_valid_index()}, expected "
+        f"{sd_n + n - 2}"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert -1e-9 <= lo_v and hi_v <= 100.0 + 1e-9, (
+        f"{label} left the 0..100 band ({lo_v}..{hi_v})"
+    )
+    # The EMA-smoothed fork (TradingView's) is the definition delta worth
+    # measuring: same legs, a different recursion and a different seed.
+    ema_up = _ema_first_seed(up, n)
+    ema_down = _ema_first_seed(down, n)
+    fork = 100 * ema_up / (ema_up + ema_down)
+    sep = float(np.nanmax(np.abs(v - fork)))
+    assert sep > 1, (
+        f"{label} sits within {sep} of the EMA-smoothed fork - the fixture "
+        "cannot tell Wilder's smoothing from a span EMA"
+    )
+    # And the flat-bar rule: counting an unchanged close for NEITHER leg (the
+    # `rsi` convention) is a different study. This fixture has no unchanged
+    # close, which is what the assert records.
+    assert int((d == 0).sum()) == 0, (
+        "the oracle input has an unchanged close - relativeVolatilityIndex's "
+        "count-it-as-down rule would then need its own fixture note"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no RVI of either kind); "
+        f"first valid at {sd_n + n - 2}, range {lo_v:.2f}..{hi_v:.2f}, "
+        f"{sep:.2f} points from the EMA-smoothed (TradingView) fork"
+    )
+    return {"relVol": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -2695,6 +3015,73 @@ cases = [
         "expected": psychological_line(5),
     },
     {
+        "study": "chaikinVolatility",
+        "params": {"period": 10, "rocPeriod": 10},
+        "expected": chaikin_volatility(10, 10),
+    },
+    {
+        # A shorter EMA than the look-back, so the two halves of the warm-up
+        # are told apart (a study that used one period for both would land on
+        # the same bar at the defaults).
+        "study": "chaikinVolatility",
+        "params": {"period": 5, "rocPeriod": 3},
+        "expected": chaikin_volatility(5, 3),
+    },
+    {
+        "study": "massIndex",
+        "params": {"emaPeriod": 9, "sumPeriod": 25},
+        "expected": mass_index(9, 25),
+    },
+    {
+        "study": "massIndex",
+        "params": {"emaPeriod": 4, "sumPeriod": 10},
+        "expected": mass_index(4, 10),
+    },
+    {
+        "study": "choppinessIndex",
+        "params": {"period": 14},
+        "expected": choppiness_index(14),
+    },
+    {
+        "study": "choppinessIndex",
+        "params": {"period": 5},
+        "expected": choppiness_index(5),
+    },
+    {"study": "ulcerIndex", "params": {"period": 14}, "expected": ulcer_index(14)},
+    {"study": "ulcerIndex", "params": {"period": 5}, "expected": ulcer_index(5)},
+    {
+        "study": "verticalHorizontalFilter",
+        "params": {"period": 28},
+        "expected": vertical_horizontal_filter(28),
+    },
+    {
+        "study": "verticalHorizontalFilter",
+        "params": {"period": 10},
+        "expected": vertical_horizontal_filter(10),
+    },
+    {
+        "study": "gopalakrishnanRangeIndex",
+        "params": {"period": 10},
+        "expected": gopalakrishnan_range_index(10),
+    },
+    {
+        "study": "gopalakrishnanRangeIndex",
+        "params": {"period": 5},
+        "expected": gopalakrishnan_range_index(5),
+    },
+    {
+        "study": "relativeVolatilityIndex",
+        "params": {"period": 14, "stdevPeriod": 10},
+        "expected": relative_volatility_index(14, 10),
+    },
+    {
+        # Both periods short, so the Wilder seed and the sigma window sit
+        # close together and a study that swapped them would still be caught.
+        "study": "relativeVolatilityIndex",
+        "params": {"period": 8, "stdevPeriod": 5},
+        "expected": relative_volatility_index(8, 5),
+    },
+    {
         "study": "directionalMovement",
         "params": {"period": 14},
         "expected": directional_movement(14),
@@ -2972,6 +3359,68 @@ out = {
                 "100 * count(close > prevClose) / n, strictly greater (an "
                 "unchanged close is NOT up); pandas replication (no TA-Lib "
                 "PSY), first valid at n (bar 0 has no direction)"
+            ),
+            "chaikinVolatility": (
+                "100 * (E[i]/E[i-roc] - 1) where E = EMA(high-low, period) on "
+                "POND's first-sample seed, defaults 10 / 10; PLAIN range, not "
+                "true range (Chaikin's). pandas replication - no TA-Lib "
+                "function - first valid at period-1+roc, separated from the "
+                "true-range version"
+            ),
+            "massIndex": (
+                "sum over sumPeriod of EMA(range, emaPeriod) / "
+                "EMA(EMA(range, emaPeriod), emaPeriod), defaults 9 / 25 "
+                "(Dorsey's). A SUM, not a mean - the 27 / 26.5 reversal-bulge "
+                "thresholds are on the sum. The EMA chain follows the TRIX "
+                "rule (stage 2 starts at stage 1's first valid bar), so the "
+                "first valid bar is 2*emaPeriod + sumPeriod - 3; pandas "
+                "replication, separated from the mean version"
+            ),
+            "choppinessIndex": (
+                "100 * log10(sum(TR, n) / (HH - LL over n)) / log10(n), "
+                "default 14; TRUE range (the ATR family's). The log base "
+                "cancels here (asserted: log10/log10 and ln/ln agree to "
+                "1e-16), so log10 is a presentation choice. First valid at n, not "
+                "n-1 (TR[0] does not exist); bounded 0..100 on this fixture; "
+                "pandas replication, separated from the plain-range version. "
+                "n must be >= 2 (log10(1) = 0)"
+            ),
+            "ulcerIndex": (
+                "sqrt(mean over n of (100*(close - rollingMax(close,n))/"
+                "rollingMax(close,n))^2), default 14 - Peter Martin's, in "
+                "StockCharts' ROLLING form (Martin's own is cumulative over "
+                "the whole history, a different deliverable). Two chained "
+                "windows, so the first valid bar is 2n-2; pandas replication, "
+                "separated from the mean-ABSOLUTE (Pain Index) form"
+            ),
+            "verticalHorizontalFilter": (
+                "(HH - LL over n) / sum(|close change|, n), default 28 (Adam "
+                "White's); a FRACTION, not a percent, and both halves read "
+                "the same column. n changes need n+1 closes, so the first "
+                "valid bar is n and not n-1; bounded (0, 1]; pandas "
+                "replication, separated from the (n-1)-term path version"
+            ),
+            "gopalakrishnanRangeIndex": (
+                "ln(HH - LL over n) / ln(n), default 10 - i.e. log base n of "
+                "the window's range. The log base CANCELS (asserted: ln/ln "
+                "and log10/log10 agree to 1e-16), so ChartIQ's natural log is "
+                "a presentation choice; a MIXED base is the slip, and that is "
+                "separated. First valid at n-1; pandas replication. "
+                "Scale-ADDITIVE rather than scale-invariant: scaling every "
+                "price by k shifts the reading by exactly ln(k)/ln(n), which "
+                "the generator asserts. n must be >= 2"
+            ),
+            "relativeVolatilityIndex": (
+                "100*U/(U+D) where U = Wilder(sigma on up bars, period), "
+                "D = Wilder(sigma on the rest, period) and sigma = "
+                "rolling(stdevPeriod).std(ddof=0) of the close; defaults 14 / "
+                "10 (Dorsey as revised; his 1993 original used stdevPeriod 9). "
+                "An unchanged close counts as a DOWN bar, unlike rsi's "
+                "up/down split which gives a flat bar 0 on both legs. First "
+                "valid at stdevPeriod + period - 2; bounded 0..100; pandas "
+                "replication - no TA-Lib RVI of either kind - separated from "
+                "the EMA-smoothed (TradingView) fork. Its output column is "
+                "`relVol`, NOT `rvi`, which belongs to relativeVigorIndex"
             ),
         },
     },

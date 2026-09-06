@@ -843,6 +843,190 @@ and is documented per study; (b) is rejected as a flag in front of two
 indicators, and (c) is reserved for a real consumer with gapped bars in hand,
 to land as a changelogged behaviour change, never silently.
 
+**Landed — the volatility tail (§6.5).** `chaikinVolatility`, `massIndex`,
+`choppinessIndex`, `ulcerIndex`, `verticalHorizontalFilter`,
+`gopalakrishnanRangeIndex` and `relativeVolatilityIndex` — seven studies of
+**range and drawdown**, and the batch's defining property is that **TA-Lib
+implements none of them**. Every previous batch had at least one vendor anchor
+to hang the others off (`ULTOSC`, `CCI`, `MFI`, `ADOSC`); this one has none, so
+the oracle discipline had to carry the whole load: each of the fourteen cases
+asserts the **analytic first-valid bar** and a **measured separation from the
+plausible wrong turn** — the substitution a reader of the formula could make
+that leaves the curve's shape intact and changes every value. Without the
+second half a fixture pins a wrong indicator perfectly. Decisions:
+
+(1) **Plain range and true range are two families, and the split is by
+author.** `chaikinVolatility` and `massIndex` smooth `high − low`; `atr`,
+`keltner` and now `choppinessIndex` smooth _true_ range. Neither side gets a
+`range | trueRange` knob — that is two indicators behind a flag (the `keltner`
+precedent) — and the oracle measures the gap so the choice is visible rather
+than assumed: **35.6 points** for Chaikin Volatility at `(10, 10)` and **7.7
+points** of Choppiness at `period 14`. The shared `high − low` derivation
+became **`barRangeValues`** in `kernels/typical-price.ts`, beside
+`typicalPriceValues` and `medianPriceValues`, on the two-consumer rule.
+
+(2) **The log base cancels in both log studies, and the first draft got that
+wrong.** Choppiness is `log_b(ΣTR/(HH−LL))/log_b(n)` and GAPO is
+`log_b(HH−LL)/log_b(n)`; both are `log_n(x)`, so `ln` and `log10` give the
+_same number_ and neither study takes a base option. GAPO's docstring
+originally claimed the opposite — that its numerator is a bare logarithm of a
+dimensioned quantity, so the base is load-bearing — and the generator's
+separation assert **failed at 2.2e-16**, which is how the error was caught
+rather than shipped. What is now asserted is the identity (`ln/ln == log10/
+log10`) plus a separation from the real slip, **mixing** the bases. Both
+studies reject `period: 1`, where the denominator is zero.
+
+(3) **GAPO is the one study in the batch that is not scale-invariant, and it
+is pinned as an identity.** Scaling every price by `k` shifts the reading by
+**exactly** `ln(k)/ln(period)` — asserted in the generator to `1.8e-15` and in
+a property test to 10 decimals — because GAPO carries the _units_ of the
+price. `ulcerIndex` is the mirror: scale-invariant (it divides by a price) and
+**not** shift-invariant, asserted as a _direction_ (adding a constant must
+shrink every reading) rather than merely "different". The other five are
+invariant to both. The batch's property matrix is therefore written out study
+by study rather than looped over one claim — a loop would have quietly
+asserted the wrong half for two of the seven.
+
+(4) **Ulcer brought the first square root of a rolling mean, and it needed a
+counter.** `sqrt(mean(drawdown²))` composes badly with an incremental
+accumulator: the rolling mean carries an `O(ε)` residue from the values that
+have just left the window, and the square root turns `2.5e-18` in the mean of
+squares into **`1.6e-9`** in the reading — precisely where the true answer is
+exactly `0` (a window at new highs, which is also the reading a caller looks
+for). **The oracle caught it**: the `period 5` case failed at bar 22 against
+pandas' Kahan-compensated `rolling().mean()`. The fix is a running count of
+the bars that actually contributed a drawdown, `O(1)` per bar; a window with
+none reports `0` exactly and every other value keeps `rollingMeanValues`'
+arithmetic. Rejected: an `O(N·period)` exact walk (the `rollingMeanAbsDev`
+route — correct everywhere, but ~1.3 ms per unit of period per 1M bars for a
+residue that is relative `1e-16` on every reading but this one), and loosening
+the oracle's global 1e-9 tolerance (shared infrastructure, and it would hide
+the next study's real drift).
+
+(5) **The zero-denominator question was asked seven times, and the mutation
+matrix answered it — twice against the first draft.** The #699 test (_is the
+numerator forced to zero?_) turns out to be only half the rule. The other half
+is **where the division sits relative to the next kernel**, and it is new:
+
+- **`choppinessIndex` needs two guards, and both are live.** Its halves read
+  _different_ columns, so a redirected `close` puts a positive ΣTR over a zero
+  span (`log10(∞)`) and bars whose high and low sit on the previous close put a
+  zero ΣTR under a positive span (`log10(0)`). The division is the study's
+  **last** step, so a non-finite result would reach `withColumn` — which
+  **throws** on `±Infinity` rather than mapping it to a gap. Each guard has its
+  own unit test and each is killed by its own mutation.
+- **`gopalakrishnanRangeIndex`'s flat-window guard is live** for the same
+  reason: `ln(0)` at the output.
+- **`verticalHorizontalFilter` and `relativeVolatilityIndex` needed none**, on
+  the #699 test alone: both read one column (VHF) or two non-negative legs
+  (relVol), so a zero denominator forces a zero numerator and `0/0` is already
+  `NaN`.
+- **`massIndex` and `ulcerIndex` were written WITH a guard, and mutation
+  testing deleted both.** Their divisions sit _upstream_ of a
+  {@link rollingMeanValues} summation, and that kernel counts a **non-finite**
+  cell as missing exactly as it counts a `NaN` — so an `Infinity` produced by a
+  crossing-column double EMA, or by a zero rolling peak with a value under it,
+  never survives to `withColumn`. The guard was unobservable: no input could
+  tell it was there. This is the CCI dead-guard finding (now recorded a third
+  time) arriving by a **new mechanism** — not "the numerator is forced to zero"
+  but "a rolling kernel downstream of the division absorbs it" — and the pair
+  of live/dead cases in the same batch is what makes the rule statable:
+  **a zero-denominator guard at a study's output is load-bearing; one upstream
+  of a window kernel is not.** Both crossing cases are still unit-tested (the
+  behaviour is pinned even though the branch is gone).
+
+`choppinessIndex`'s flat window is explicitly **not** the
+`accumulationDistribution` flat-bar case: a close location's numerator is
+algebraically forced to zero, so `0` is the answer; here the two candidate
+conventions (`0` = perfectly trending, `100` = perfectly choppy) are
+**opposites** for a market that did not move, so there is no value a limit
+picks out.
+
+(6) **`relVol`, not `rvi` — the name collision is resolved by yielding.**
+"RVI" abbreviates both the Relative _Vigor_ Index (shipped, §6.3) and the
+Relative _Volatility_ Index. The Vigor Index keeps `rvi` (it claimed it first,
+and its option is a `prefix` shared with a signal column); the Volatility Index
+takes **`relVol`**, and a test appends both to one series to pin that they
+coexist. Its own definition fork is `F-AMBIG` in the corpus and is pinned to
+**Dorsey as revised** (σ over 10, Wilder over 14): TradingView's EMA-smoothed
+build is **31.3 points** away and is measured, and Dorsey's high/low variant is
+two calls to this study plus an average, not an option. An unchanged close
+counts as a **down** bar — a deliberate asymmetry against `rsi`'s
+`upDownLegValues` split, which gives a flat bar `0` on both legs — and the test
+that pins it is the one that matters: on a series of all-up closes with one
+flat bar, the `rsi` rule would read exactly `100` everywhere and Dorsey's reads
+63.4.
+
+(7) **`ulcerIndex` pins the rolling variant and says what it is not.** The
+corpus flags **F-AMBIG** on "smoothing variants" and three things ship under
+the name: StockCharts' rolling form (what ships), Martin's cumulative original
+(one number per portfolio — a different _deliverable_, and a study whose window
+silently means "everything" would be a footgun beside every other bar-count
+study here), and the mean-**absolute** form, which is the _Pain Index_ and has
+its own name (**1.53** away on the fixture, asserted apart).
+
+(8) **A kernel inconsistency surfaced and is documented rather than
+patched.** `rollingValues`' answer to a **misnamed column** depends on the
+reducer: `stdev` and `avg` take the range-exact `rollingMeanSdColumns` path,
+which reads a missing column as all-`NaN`, while `max` / `min` fall through to
+core's sweep, which throws. So `relativeVolatilityIndex` answers empty where
+`ulcerIndex` and `verticalHorizontalFilter` — the same door, one reducer along
+— throw. Both behaviours are pinned by tests and stated on all three studies.
+It was not fixed here because the choice (throw everywhere, or answer
+all-missing everywhere, matching `highestLowestValues`) is a kernel-level
+decision that would move existing studies' behaviour, and this batch is not
+the place to make it. **Carry-forward.**
+
+(9) **Two warm-ups are measured rather than derived, because the doors are
+mixed.** `ulcerIndex` reads its peak through the _column_ door (rows, skips
+gaps) and its mean of squares through the _array_ door (finite values), so
+over an `sma(3)` it first lands on bar **4**, not the `2 + 2·3 − 2 = 6` the
+array rule alone gives. `relativeVolatilityIndex` is the same story one step
+along: its σ emits from the column door's first row (over one value, where σ
+is `0` — `rollingStdev`'s contract, the one `historicalVolatility` already
+flags), so it starts at bar **5**, one earlier than derived. Both are pinned
+by tests and stated on the studies; the general rule "compose the warm-ups"
+is not enough when a study reads two doors.
+
+(10) **`gopalakrishnanRangeIndex` is the only study in the batch that survives
+an interior gap.** It reads nothing but core's rolling extremes, which _skip_ a
+missing cell, so it keeps reporting over one bar fewer where the six studies
+with an averaging or recursive half blank. `relativeVolatilityIndex` is the
+other extreme — a Wilder recursion, so an interior gap runs to the end of the
+series, as in `rsi` and `atr`. Both are pinned in the missing-cell suite rather
+than left to be discovered from a chart.
+
+Perf at 1M bars (medians of 5, run twice, agreeing within 11%):
+`chaikinVolatility` 30 ms, `relativeVolatilityIndex` 75–84 ms, `massIndex`
+73–81 ms, `ulcerIndex` 172–176 ms, `gopalakrishnanRangeIndex` 234–241 ms,
+`verticalHorizontalFilter` 250–263 ms, `choppinessIndex` 288–291 ms — against
+`ema` 14 ms, `sma` 38 ms, `rsi` 56 ms, `bollinger` 108 ms, `donchian` 241 ms,
+`williamsR` 252 ms and `stochastic` 319 ms on the same run. The ordering is
+entirely the substrate: the three dearest all run core's rolling **min/max**,
+which is the package's most expensive reducer pair (the monotonic-deque fast
+path `highestLowestValues` asks for would lift all of them at once), while the
+two cheapest are pure EMA chains. Nothing here is `O(N·period)`.
+
+**Mutation matrix**: 29 mutations, one per shipped decision (the plain/true
+range fork, each smoothing type, each period's role, each default, each guard,
+each normalisation, the sum-vs-mean choice, the flat-bar rule, the `relVol`
+output name). **Zero survivors** after the two dead guards above were deleted
+and a direct `barRangeValues` kernel test was added — the sign of `high − low`
+survived every study test, because both of its consumers read only _ratios_ of
+ranges and are blind to a flipped sign, so the contract had to be pinned at
+the kernel. Killed-test counts ranged from 1 (a changed default period, which
+only the defaults test reads) to 12 (the `relVol` → `rvi` rename, which
+collides with `relativeVigorIndex`).
+
+**Considered and not built**: a `range | trueRange` option on any of the three
+range studies (two indicators behind a flag); separate peak and averaging
+periods on `ulcerIndex` (no published pairing); a cumulative mode on
+`ulcerIndex` (a different deliverable); a `maType` on `chaikinVolatility` or
+`massIndex` (Chaikin and Dorsey both name the EMA); a log-base option on either
+log study (it cancels); a high/low mode on `relativeVolatilityIndex` (two calls
+and an average); and fixing the `rollingValues` missing-column asymmetry, which
+is recorded above as a kernel-level carry-forward.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

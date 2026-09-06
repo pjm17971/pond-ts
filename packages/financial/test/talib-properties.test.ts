@@ -84,6 +84,13 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  chaikinVolatility,
+  massIndex,
+  choppinessIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
+  gopalakrishnanRangeIndex,
+  relativeVolatilityIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -2364,5 +2371,296 @@ describe('[talib] all-missing input yields all-missing directional studies', () 
       empty(col(ar, name), name);
     const vi = vortex(allMissing as never, { period: 5 });
     for (const name of ['viPlus', 'viMinus']) empty(col(vi, name), name);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The volatility tail (assessment §6.5). Its property matrix is NOT uniform,  */
+/* which is the reason it is worth writing out rather than looping over one    */
+/* claim: five of the seven are invariant to both a scale factor and a shift,  */
+/* `ulcerIndex` is scale-invariant only (it normalises by a price, so adding   */
+/* a constant moves its base), and `gopalakrishnanRangeIndex` is the mirror —  */
+/* shift-invariant, and scale-ADDITIVE by exactly ln(k)/ln(period). A test     */
+/* that asserted the wrong half of that would pass vacuously.                  */
+/* -------------------------------------------------------------------------- */
+
+describe('[talib] the volatility tail: scale and shift, one claim per study', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  const bothInvariant: Array<[string, string, (s: never) => unknown]> = [
+    [
+      'chaikinVolatility',
+      'chaikinVol',
+      (s) => chaikinVolatility(s, { period: 4, rocPeriod: 3 }),
+    ],
+    ['massIndex', 'mass', (s) => massIndex(s, { emaPeriod: 4, sumPeriod: 6 })],
+    ['choppinessIndex', 'chop', (s) => choppinessIndex(s, { period: 5 })],
+    [
+      'verticalHorizontalFilter',
+      'vhf',
+      (s) => verticalHorizontalFilter(s, { period: 6 }),
+    ],
+    [
+      'relativeVolatilityIndex',
+      'relVol',
+      (s) => relativeVolatilityIndex(s, { period: 4, stdevPeriod: 3 }),
+    ],
+  ];
+
+  for (const [name, column, run] of bothInvariant) {
+    it(`${name} (${column}) is unchanged by scaling and by shifting`, () => {
+      const base = col(run(momBars(momRows()) as never), column);
+      expect(base.some((x) => x !== undefined)).toBe(true);
+      expectSame(base, col(run(momBars(momRows(K)) as never), column));
+      expectSame(base, col(run(momBars(momRows(1, SHIFT)) as never), column));
+    });
+  }
+
+  it('ulcerIndex is scale-invariant but NOT shift-invariant', () => {
+    const run = (s: never) => ulcerIndex(s, { period: 5 });
+    const base = col(run(momBars(momRows()) as never), 'ulcer');
+    expect(base.some((x) => x !== undefined)).toBe(true);
+    expectSame(base, col(run(momBars(momRows(K)) as never), 'ulcer'));
+    // Adding a constant raises the base of every percentage, so the reading
+    // must SHRINK — asserted as a direction, not merely as "different".
+    const shifted = col(run(momBars(momRows(1, SHIFT)) as never), 'ulcer');
+    let compared = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined || base[i] === 0) continue;
+      expect(shifted[i]!, `bar ${i}`).toBeLessThan(base[i]!);
+      compared += 1;
+    }
+    expect(compared).toBeGreaterThan(10);
+  });
+
+  it('gopalakrishnanRangeIndex is shift-invariant and scale-ADDITIVE', () => {
+    const run = (s: never) => gopalakrishnanRangeIndex(s, { period: 5 });
+    const base = col(run(momBars(momRows()) as never), 'gapo');
+    expect(base.some((x) => x !== undefined)).toBe(true);
+    expectSame(base, col(run(momBars(momRows(1, SHIFT)) as never), 'gapo'));
+    // Scaling every price by K adds exactly ln(K)/ln(period) to the reading:
+    // the study carries the units of the price, which is what separates it
+    // from every other study in this batch.
+    const scaled = col(run(momBars(momRows(K)) as never), 'gapo');
+    const offset = Math.log(K) / Math.log(5);
+    let compared = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(scaled[i]!, `bar ${i}`).toBeCloseTo(base[i]! + offset, 10);
+      compared += 1;
+    }
+    expect(compared).toBeGreaterThan(10);
+    // …and the offset is real: without it the two would not agree at all.
+    expect(offset).toBeGreaterThan(4);
+  });
+
+  it('the readings are not constant — the claims above are not vacuous', () => {
+    const s = momBars(momRows()) as never;
+    const spread = (v: Array<number | undefined>) => {
+      const seen = v.filter((x) => x !== undefined) as number[];
+      return Math.max(...seen) - Math.min(...seen);
+    };
+    expect(
+      spread(
+        col(chaikinVolatility(s, { period: 4, rocPeriod: 3 }), 'chaikinVol'),
+      ),
+    ).toBeGreaterThan(10);
+    expect(
+      spread(col(massIndex(s, { emaPeriod: 4, sumPeriod: 6 }), 'mass')),
+    ).toBeGreaterThan(0.05);
+    expect(
+      spread(col(choppinessIndex(s, { period: 5 }), 'chop')),
+    ).toBeGreaterThan(10);
+    expect(spread(col(ulcerIndex(s, { period: 5 }), 'ulcer'))).toBeGreaterThan(
+      0.5,
+    );
+    expect(
+      spread(col(verticalHorizontalFilter(s, { period: 6 }), 'vhf')),
+    ).toBeGreaterThan(0.1);
+    expect(
+      spread(col(gopalakrishnanRangeIndex(s, { period: 5 }), 'gapo')),
+    ).toBeGreaterThan(0.1);
+    expect(
+      spread(
+        col(
+          relativeVolatilityIndex(s, { period: 4, stdevPeriod: 3 }),
+          'relVol',
+        ),
+      ),
+    ).toBeGreaterThan(10);
+  });
+
+  it('the bounded ones stay in their bands', () => {
+    const s = momBars(momRows()) as never;
+    const within = (
+      v: Array<number | undefined>,
+      lo: number,
+      hi: number,
+      label: string,
+    ) => {
+      let seen = 0;
+      for (const x of v) {
+        if (x === undefined) continue;
+        expect(x, label).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(x, label).toBeLessThanOrEqual(hi + 1e-9);
+        seen += 1;
+      }
+      expect(seen, `${label} had no readings to bound`).toBeGreaterThan(10);
+    };
+    within(col(choppinessIndex(s, { period: 5 }), 'chop'), 0, 100, 'chop');
+    within(
+      col(relativeVolatilityIndex(s, { period: 4, stdevPeriod: 3 }), 'relVol'),
+      0,
+      100,
+      'relVol',
+    );
+    // VHF is a fraction in (0, 1]; ulcer is a non-negative percentage.
+    within(col(verticalHorizontalFilter(s, { period: 6 }), 'vhf'), 0, 1, 'vhf');
+    within(col(ulcerIndex(s, { period: 5 }), 'ulcer'), 0, 100, 'ulcer');
+  });
+});
+
+describe('[talib] the volatility tail over another study composes its warm-up', () => {
+  const wavy = Array.from(
+    { length: 40 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + i * 0.1,
+  );
+
+  it('ulcerIndex over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(ulcerIndex(src, { column: 'sma', period: 3 }), 'ulcer');
+    expect(v).toHaveLength(wavy.length);
+    // sma(3) first valid at 2 — but the PEAK reads the COLUMN door, whose
+    // window counts rows and skips missing cells, so it emits from bar 2 over
+    // one contributor (`rollingMax`'s documented contract, and `donchian`'s).
+    // The first drawdown is therefore at 2 and the mean of squares — on the
+    // ARRAY door, which waits for `period` finite values — at 4. The mixed
+    // doors are why this is measured rather than derived from `2·period − 2`.
+    expect(firstValid(v)).toBe(4);
+    expect(v.slice(4).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('verticalHorizontalFilter over sma starts late rather than empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(
+      verticalHorizontalFilter(src, { column: 'sma', period: 3 }),
+      'vhf',
+    );
+    expect(v).toHaveLength(wavy.length);
+    // sma(3) first valid at 2, its first change at 3, a 3-change sum at 5.
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('relativeVolatilityIndex over sma starts late rather than empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const v = col(
+      relativeVolatilityIndex(src, {
+        column: 'sma',
+        period: 3,
+        stdevPeriod: 3,
+      }),
+      'relVol',
+    );
+    expect(v).toHaveLength(wavy.length);
+    // σ also reads the COLUMN door, so it emits from bar 2 (over one value,
+    // where it is 0 — `rollingStdev`'s contract, the one `historicalVolatility`
+    // flags). The first DIRECTION is at bar 3, so the legs start there and the
+    // Wilder seed lands `period − 1` later, at 5.
+    expect(firstValid(v)).toBe(5);
+    expect(v.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+
+  it('the bar studies over a smoothed bar start late rather than empty', () => {
+    const rows = momRows().slice(0, 30);
+    const sh = sma(momBars(rows), { period: 3, column: 'high', output: 'sh' });
+    const sl = sma(sh, { period: 3, column: 'low', output: 'sl' });
+    const sc = sma(sl, { period: 3, column: 'close', output: 'sc' });
+    const opts = { high: 'sh', low: 'sl', close: 'sc' } as const;
+
+    // The smoothed inputs are first valid at 2, so the range is too.
+    const cv = col(
+      chaikinVolatility(sc, { ...opts, period: 2, rocPeriod: 2 }),
+      'chaikinVol',
+    );
+    expect(cv).toHaveLength(30);
+    expect(firstValid(cv)).toBe(5); // 2 + (period − 1) + rocPeriod
+
+    const mi = col(
+      massIndex(sc, { ...opts, emaPeriod: 2, sumPeriod: 3 }),
+      'mass',
+    );
+    expect(firstValid(mi)).toBe(6); // 2 + 2·emaPeriod − 2 + sumPeriod − 1
+
+    const ci = col(choppinessIndex(sc, { ...opts, period: 3 }), 'chop');
+    expect(firstValid(ci)).toBe(5); // the first true range is at 3, +period−1
+
+    const gp = col(
+      gopalakrishnanRangeIndex(sc, { high: 'sh', low: 'sl', period: 3 }),
+      'gapo',
+    );
+    // The extremes SKIP the warm-up rows rather than waiting for them, so
+    // GAPO starts at its input's own first bar — the one study here that does.
+    expect(firstValid(gp)).toBe(2);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing volatility-tail studies', () => {
+  const allMissing = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+    ]) as Array<
+      [number, number | undefined, number | undefined, number | undefined]
+    >,
+  });
+  const empty = (v: Array<number | undefined>) => {
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  };
+
+  it('the bar studies: chaikinVolatility, massIndex, choppinessIndex, gapo', () => {
+    empty(
+      col(
+        chaikinVolatility(allMissing as never, { period: 3, rocPeriod: 3 }),
+        'chaikinVol',
+      ),
+    );
+    empty(
+      col(
+        massIndex(allMissing as never, { emaPeriod: 3, sumPeriod: 4 }),
+        'mass',
+      ),
+    );
+    empty(col(choppinessIndex(allMissing as never, { period: 5 }), 'chop'));
+    empty(
+      col(gopalakrishnanRangeIndex(allMissing as never, { period: 5 }), 'gapo'),
+    );
+  });
+
+  it('the column studies: ulcerIndex, verticalHorizontalFilter, relVol', () => {
+    empty(col(ulcerIndex(allMissing as never, { period: 5 }), 'ulcer'));
+    empty(
+      col(verticalHorizontalFilter(allMissing as never, { period: 5 }), 'vhf'),
+    );
+    empty(
+      col(
+        relativeVolatilityIndex(allMissing as never, {
+          period: 5,
+          stdevPeriod: 3,
+        }),
+        'relVol',
+      ),
+    );
   });
 });

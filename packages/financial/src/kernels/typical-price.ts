@@ -55,3 +55,46 @@ export function medianPriceValues(
   }
   return out;
 }
+
+/**
+ * **Bar range** — `high − low`, the span a bar covered *within itself*, and
+ * the third per-bar summary this file names (after {@link
+ * typicalPriceValues} and {@link medianPriceValues}).
+ *
+ * ## Why it is here rather than inside a study
+ *
+ * Two studies want exactly this array and nothing else from the bar:
+ * {@link chaikinVolatility} smooths it with an EMA and reads that EMA's rate
+ * of change, and {@link massIndex} takes the ratio of one EMA of it to a
+ * second EMA of the first. Sharing the derivation is what stops the two from
+ * disagreeing about what "the range" is — the studies README's rule that a
+ * study is options-validation plus kernel calls.
+ *
+ * **This is plain range, not {@link trueRangeValues}.** True range widens a
+ * bar that opened away from the previous close; this does not, so a gap up
+ * shows here only as whatever the bar traded through afterwards. Both
+ * definitions are in the corpus and the two families do not mix: the
+ * volatility studies built on Wilder's work (ATR, Keltner, the Choppiness
+ * Index) take *true* range, while Chaikin's and Dorsey's take the plain one,
+ * because that is what each author defined. Neither study exposes a knob to
+ * swap them — that would be two indicators behind a flag.
+ *
+ * `NaN` marks a gap ([PND-STUDYBOX]) and propagates through the subtraction,
+ * so a bar missing either price has no range. Nothing clamps the sign: a
+ * caller who redirects `high` and `low` at two columns that cross gets
+ * negative ranges, honestly, and each consumer documents what that means for
+ * it.
+ *
+ * O(N), one pass, one allocation.
+ */
+export function barRangeValues(
+  high: Float64Array,
+  low: Float64Array,
+): Float64Array {
+  const length = high.length;
+  const out = new Float64Array(length);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = high[i]! - low[i]!;
+  }
+  return out;
+}

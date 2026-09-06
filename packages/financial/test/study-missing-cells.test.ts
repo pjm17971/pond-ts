@@ -42,6 +42,13 @@ import {
   intradayMomentumIndex,
   relativeVigorIndex,
   psychologicalLine,
+  chaikinVolatility,
+  massIndex,
+  choppinessIndex,
+  ulcerIndex,
+  verticalHorizontalFilter,
+  gopalakrishnanRangeIndex,
+  relativeVolatilityIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -1423,6 +1430,192 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
     expect(cells(holedClose, 'viPlus')[7]).toBeDefined();
     expect(nullCountOf(holedClose, 'viMinus')).toBe(
       nullCountOf(holedClose, 'viPlus'),
+    );
+  });
+});
+
+describe('[PND-STUDYBOX] the volatility tail: where the missing rows are', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is pinned is WHERE the missing
+  // rows are, and this batch is not uniform about it: six of the seven are
+  // windows and recover after a gap, `relativeVolatilityIndex` is a Wilder
+  // recursion and carries one to the end, and `gopalakrishnanRangeIndex`
+  // reads only core's rolling extremes, which SKIP a gap rather than blanking
+  // the windows over it. Those three behaviours are the point of this block.
+  const volSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+
+  /** Bars built around each close; a missing close makes the whole bar
+   *  missing, which is what a dropped tick actually looks like. */
+  const volBars = (closes: Array<number | undefined>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: volSchema,
+      rows: closes.map((c, i) => [
+        i * MINUTE,
+        c === undefined ? undefined : c + 1,
+        c === undefined ? undefined : c - 1,
+        c,
+      ]) as never,
+    });
+
+  const volCloses = [10, 12, 14, 20, 22, 24, 26, 28, 27, 29, 31, 30];
+  const holedCloses = [...volCloses];
+  holedCloses[4] = undefined as never;
+  const clean = volBars(volCloses);
+  const holed = volBars(holedCloses);
+
+  it('chaikinVolatility loses the gap bar and the bar `rocPeriod` later', () => {
+    // The EMA family SKIPS a gap rather than blanking every window over it, so
+    // the only rows lost past the warm-up are the gap bar itself and the one
+    // whose rate of change reads it as a predecessor.
+    expect(
+      nullCountOf(
+        chaikinVolatility(clean, { period: 2, rocPeriod: 2 }),
+        'chaikinVol',
+      ),
+    ).toBe(3); // period − 1 + rocPeriod
+    const out = chaikinVolatility(holed, { period: 2, rocPeriod: 2 });
+    const v = cells(out, 'chaikinVol');
+    expect(typeof v[3]).toBe('number');
+    expect(v[4]).toBeUndefined(); // the gap bar: no range
+    expect(typeof v[5]).toBe('number'); // the EMA skipped it and carried on
+    expect(v[6]).toBeUndefined(); // reads bar 4 as its base
+    expect(typeof v[7]).toBe('number');
+    expect(nullCountOf(out, 'chaikinVol')).toBe(5);
+  });
+
+  it('massIndex blanks the summation windows over the gap, then recovers', () => {
+    // Both EMA stages skip the gap bar, but the SUM is a window kernel and
+    // blanks every window holding the missing ratio.
+    expect(
+      nullCountOf(massIndex(clean, { emaPeriod: 2, sumPeriod: 2 }), 'mass'),
+    ).toBe(3); // 2·emaPeriod + sumPeriod − 3
+    const out = massIndex(holed, { emaPeriod: 2, sumPeriod: 2 });
+    const v = cells(out, 'mass');
+    expect(typeof v[3]).toBe('number');
+    expect(v[4]).toBeUndefined();
+    expect(v[5]).toBeUndefined(); // its 2-bar sum still holds bar 4
+    expect(typeof v[6]).toBe('number');
+    expect(nullCountOf(out, 'mass')).toBe(5);
+  });
+
+  it('choppinessIndex loses two bars of true range and the windows over them', () => {
+    // True range reads the PREVIOUS close, so a missing bar costs its own row
+    // and the next one's; the ΣTR window then blanks over both. The HH/LL half
+    // would have skipped the gap — the sum is what sets the mask.
+    expect(nullCountOf(choppinessIndex(clean, { period: 3 }), 'chop')).toBe(3);
+    const out = choppinessIndex(holed, { period: 3 });
+    const v = cells(out, 'chop');
+    expect(typeof v[3]).toBe('number');
+    // Bars 4 and 5 have no true range, so every 3-bar sum holding either is
+    // blank: bars 4, 5, 6 and 7. Bar 8 is the first with three ranges again.
+    expect(v.slice(4, 8).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[8]).toBe('number');
+    expect(nullCountOf(out, 'chop')).toBe(7);
+  });
+
+  it('ulcerIndex blanks the averaging windows over the gap, not the peak', () => {
+    // Core's rolling `max` skips a missing cell, so the peak stays defined;
+    // the drawdown on the gap bar does not, and the mean-of-squares window
+    // blanks over it.
+    expect(nullCountOf(ulcerIndex(clean, { period: 3 }), 'ulcer')).toBe(4); // 2·3 − 2
+    const out = ulcerIndex(holed, { period: 3 });
+    const v = cells(out, 'ulcer');
+    expect(v[4]).toBeUndefined(); // the gap bar has no drawdown
+    expect(v[5]).toBeUndefined(); // its 3-bar mean-of-squares still holds it
+    expect(v[6]).toBeUndefined();
+    expect(typeof v[7]).toBe('number');
+    expect(nullCountOf(out, 'ulcer')).toBe(7);
+  });
+
+  it('verticalHorizontalFilter blanks the path windows over the gap', () => {
+    // Two changes go missing (the gap bar's own and the next bar's), and every
+    // path-length window holding one of them goes with them; the range half
+    // skips, as in choppinessIndex.
+    expect(
+      nullCountOf(verticalHorizontalFilter(clean, { period: 3 }), 'vhf'),
+    ).toBe(3); // `period` rows
+    const out = verticalHorizontalFilter(holed, { period: 3 });
+    const v = cells(out, 'vhf');
+    expect(typeof v[3]).toBe('number');
+    expect(v.slice(4, 8).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[8]).toBe('number');
+    expect(nullCountOf(out, 'vhf')).toBe(7);
+  });
+
+  it('gopalakrishnanRangeIndex SKIPS the gap — the one study here that does', () => {
+    // It reads only core's rolling `max`/`min`, whose policy is to take the
+    // extreme over the cells the window does hold. So no row is lost at all
+    // past the warm-up, where every other study in this batch blanks. The
+    // contrast is the point: this study has no averaging half to set a
+    // stricter mask.
+    expect(
+      nullCountOf(gopalakrishnanRangeIndex(clean, { period: 3 }), 'gapo'),
+    ).toBe(2); // period − 1
+    const out = gopalakrishnanRangeIndex(holed, { period: 3 });
+    expect(nullCountOf(out, 'gapo')).toBe(2);
+    expect(typeof cells(out, 'gapo')[4]).toBe('number');
+  });
+
+  it('relativeVolatilityIndex carries an interior gap to the END, like rsi', () => {
+    // The Wilder recursion has no state to carry across a hole, so unlike the
+    // six window studies above this one never recovers. That asymmetry is
+    // stated on the study and pinned here.
+    expect(
+      nullCountOf(
+        relativeVolatilityIndex(clean, { period: 2, stdevPeriod: 2 }),
+        'relVol',
+      ),
+    ).toBe(2); // stdevPeriod + period − 2
+    const out = relativeVolatilityIndex(holed, {
+      period: 2,
+      stdevPeriod: 2,
+    });
+    const v = cells(out, 'relVol');
+    expect(typeof v[3]).toBe('number');
+    expect(v.slice(4).every((x) => x === undefined)).toBe(true);
+    expect(nullCountOf(out, 'relVol')).toBe(volCloses.length - 2);
+  });
+
+  it('a LEADING gap shifts the start rather than emptying relativeVolatilityIndex', () => {
+    // The other half of the Wilder rule: the seed steps over a leading run,
+    // which is what makes the study composable over another study's warm-up.
+    const late = volBars([undefined, undefined, ...volCloses.slice(2)]);
+    const v = cells(
+      relativeVolatilityIndex(late, { period: 2, stdevPeriod: 2 }),
+      'relVol',
+    );
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[4]).toBe('number');
+    expect(v.slice(4).every((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('the zero-denominator guards report missing, not ±Infinity', () => {
+    // Each of these would otherwise send an infinity to `withColumn`, which
+    // rejects it outright — so "the study returns at all" is the assertion.
+    // A constant high and low with a moving close: the span is zero and the
+    // true range is not (it reads the close).
+    const noSpan = new TimeSeries({
+      name: 'bars',
+      schema: volSchema,
+      rows: volCloses.map((c, i) => [i * MINUTE, 5, 5, c]) as never,
+    });
+    expect(nullCountOf(choppinessIndex(noSpan, { period: 3 }), 'chop')).toBe(
+      volCloses.length,
+    );
+    expect(
+      nullCountOf(gopalakrishnanRangeIndex(noSpan, { period: 3 }), 'gapo'),
+    ).toBe(volCloses.length);
+    // A column whose rolling peak is exactly zero with a non-zero value under
+    // it — reachable over another study's output, not over prices.
+    const crossesZero = volBars([0, -5, -5, -5, -5, -5]);
+    expect(nullCountOf(ulcerIndex(crossesZero, { period: 2 }), 'ulcer')).toBe(
+      3,
     );
   });
 });
