@@ -55,8 +55,8 @@ except **ATR bands** (open: Keltner-style `close ± k·ATR` on
 session-anchored phase; needs a reset). The per-batch write-ups below are
 the decision record. Package-wide questions the wave surfaced, none
 blocking: `ema()`'s first-sample seed vs TA-Lib's SMA seed (MACD chose
-internal consistency); the Wilder-vs-`ema` interior-gap asymmetry (decided
-with the directional group below — status quo kept, reasoning recorded); `percentChange.periods` vs `period` naming; the website study
+internal consistency); the Wilder-vs-`ema` interior-gap asymmetry (**decided by Peter with the
+directional group below — kept**, reasoning recorded); `percentChange.periods` vs `period` naming; the website study
 table has no rows for any of the new studies; a monotonic-deque fast path
 for core's rolling min/max would lift stochastics/%R/Donchian ~2×.
 
@@ -833,6 +833,11 @@ The answer today is "fill before smoothing", and if that turns out to be
 unreasonable in practice, **(c)** is the honest fix rather than **(b)** — one
 behaviour, not a flag — and it should land as a deliberate, changelogged
 behaviour change with missing-cell tests updated in the same pass.
+
+_Decision (Peter, 2026-09-06): **keep** — option (a)._ The asymmetry stands
+and is documented per study; (b) is rejected as a flag in front of two
+indicators, and (c) is reserved for a real consumer with gapped bars in hand,
+to land as a changelogged behaviour change, never silently.
 
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
