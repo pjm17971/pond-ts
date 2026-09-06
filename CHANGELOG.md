@@ -70,6 +70,57 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **five K2 consumers** — the first studies built on the
+  moving-average engine, two channels and three smoothed rates. All five take
+  the uniform shape (bar-count periods, redirectable inputs, length-preserving
+  warm-up, a fluent method) and each has two oracle cases.
+  - **`keltner({ period = 20, atrPeriod = 10, multiplier = 2, maType = 'ema', high?, low?, close?, prefix = 'kc' })`**
+    → `kcMiddle` / `kcUpper` / `kcLower`. A moving average of **typical price**
+    with bands at ±`multiplier` × **ATR**. The variant is pinned: this is the
+    **modern** form (Chester Keltner via Linda Raschke, and ChartIQ's default) —
+    EMA(20) of typical price ± 2 × ATR(10). Keltner's 1960 original used ±1 ×
+    the SMA of the **plain** high−low range; the half-width here is always
+    _true_ range, which is a documented delta rather than an option.
+    Warm-up is **per column** (the `macd` rule): the centre from the MA's own
+    first bar, the bands from `max(centre, ATR)`.
+  - **`atrBands({ period = 14, multiplier = 2, column = 'close', high?, low?, close?, prefix = 'atrb' })`**
+    → `atrbUpper` / `atrbLower`. **Two** columns, not three: the middle is
+    `column` itself, already on the series. `column` (what the bands are drawn
+    around) is separate from `close` (what the ATR is measured from), so the
+    bands can sit on an `sma` while the volatility still comes off the raw bars.
+    `atrbUpper === column + multiplier × atr()` **bit-for-bit** — both call one
+    shared `atrValues` kernel — and a test pins it against the shipped `atr`.
+  - **`qstick({ period = 8, maType = 'sma', open?, close?, output = 'qstick' })`**
+    → `qstick`. Chande's moving average of the candle body, `close − open`; the
+    candlestick chart's colour, quantified, read against its zero line. The
+    **first study to read `open`**, which joins the named bar inputs.
+  - **`trix({ period = 15, signalPeriod = 9, column?, prefix = 'trix' })`** →
+    `trix` / `trixSignal`. The 1-bar **percent** rate of change of a
+    triple-smoothed EMA, plus an EMA signal (9 is ChartIQ's default; TA-Lib
+    returns the line alone). The line takes the prefix itself, not
+    `${prefix}Line`. It composes **three** EMA passes — TRIX wants `EMA³`, which
+    is _not_ the menu's `tema` (`3·EMA − 3·EMA² + EMA³`), and a test pins the
+    difference.
+  - **`coppock({ longPeriod = 14, shortPeriod = 11, wmaPeriod = 10, column?, output = 'coppock' })`**
+    → `coppock`. `WMA(ROC(14) + ROC(11), 10)`. Coppock's lengths are **months**
+    on a monthly index chart; the study is bar-count like every other here, so
+    on daily bars it is a short-horizon oscillator and not the indicator he
+    defined — stated on the study. The weighted average is part of the
+    definition, so there is no `maType` knob.
+
+  **Oracle.** `trix` is cross-checked against **TA-Lib `TRIX`**: the formula is
+  asserted **bit-exact on TA-Lib's own SMA seed** (2.2e-14, identical null
+  masks — which is what catches a log-vs-percent rate of change, a dropped
+  stage, or a `tema` substitution), with pond's first-sample EMA seed bounded as
+  a decaying transient (8.75% of scale at the first shared bar → 0.85% over the
+  last 20 at `period 15`, against 8.5% / 9.8% for the wrong smoothing rates).
+  TA-Lib has no Keltner, ATR-band, QStick or Coppock function, so those four are
+  pandas replications — but the ATR half-width and the rates of change reuse the
+  references TA-Lib already validates, so what each case adds is the assembly
+  and its composed warm-up, each asserted as an analytic first-valid bar. The
+  oracle fixture gains an **`opens`** column (the previous close pulled inside
+  its own bar; 30 of 80 bodies negative, all 80 distinct).
+
 - `@pond-ts/financial`: **the K2 moving-average engine** — one **MA-type
   vocabulary** shared by every study that exposes a "MA Type" input (~25 of
   them in the corpus assessment). New study **`movingAverage({ period, type =

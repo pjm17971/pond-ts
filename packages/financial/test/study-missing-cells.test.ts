@@ -18,6 +18,11 @@ import {
   stochastic,
   williamsR,
   donchian,
+  keltner,
+  atrBands,
+  qstick,
+  trix,
+  coppock,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -528,5 +533,226 @@ describe('[PND-STUDYBOX] the moving-average engine: where each type is missing',
       // values between the warm-up and bar 10.
       expect(nullCountOf(out, 'ma'), type).toBe(24 - (10 - firstBar[type]!));
     }
+  });
+});
+
+describe('[PND-STUDYBOX] the K2 channels: where the missing rows are', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is pinned is WHERE the missing
+  // rows are, and how many.
+  const gappyOhlc = (gapAt: number | undefined, column: 'high' | 'close') =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+        const high = c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2));
+        const low = c - 0.3 - 0.5 * Math.abs(Math.cos(i / 2.5));
+        const hide = i === gapAt;
+        return [
+          i * MINUTE,
+          hide && column === 'high' ? undefined : high,
+          low,
+          hide && column === 'close' ? undefined : c,
+        ];
+      }) as never,
+    });
+
+  it('keltner warms up per column: centre at period − 1, bands at max(centre, ATR)', () => {
+    const out = keltner(gappyOhlc(undefined, 'close'), {
+      period: 4,
+      atrPeriod: 6,
+      maType: 'sma',
+    });
+    expect(nullCountOf(out, 'kcMiddle')).toBe(3);
+    expect(nullCountOf(out, 'kcUpper')).toBe(6);
+    expect(nullCountOf(out, 'kcLower')).toBe(6);
+    expect(
+      cells(out, 'kcMiddle')
+        .slice(0, 3)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'kcMiddle')[3]).toBe('number');
+    expect(typeof cells(out, 'kcUpper')[6]).toBe('number');
+  });
+
+  it('keltner: a missing close blanks the centre for one bar and the bands to the end', () => {
+    // The two halves genuinely differ, and this is the case that shows it.
+    // The centre is an EMA of typical price: the gap bar has no typical
+    // price, and the recursion then skips it and carries on. The ATR is
+    // Wilder-smoothed TRUE RANGE, which reads the PREVIOUS close — so the
+    // missing close costs the NEXT bar's true range, and a recursion never
+    // gives that back.
+    const out = keltner(gappyOhlc(15, 'close'), { period: 4, atrPeriod: 6 });
+    const mid = cells(out, 'kcMiddle');
+    const up = cells(out, 'kcUpper');
+    expect(mid[14]).toBeDefined();
+    expect(mid[15]).toBeUndefined();
+    expect(typeof mid[16]).toBe('number'); // the ema recovers
+    expect(typeof up[14]).toBe('number');
+    expect(up.slice(15).every((x) => x === undefined)).toBe(true);
+    // The head (6) plus bars 15..29.
+    expect(nullCountOf(out, 'kcUpper')).toBe(6 + 15);
+  });
+
+  it('atrBands warms up over `period` rows — the ATR’s own off-by-one', () => {
+    const out = atrBands(gappyOhlc(undefined, 'close'), { period: 5 });
+    for (const name of ['atrbUpper', 'atrbLower']) {
+      expect(
+        cells(out, name)
+          .slice(0, 5)
+          .every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(typeof cells(out, name)[5], name).toBe('number');
+      expect(nullCountOf(out, name), name).toBe(5);
+    }
+  });
+
+  it('atrBands: a missing close propagates to the end; a missing FIELD costs one bar', () => {
+    const hole = atrBands(gappyOhlc(12, 'close'), { period: 5 });
+    const up = cells(hole, 'atrbUpper');
+    expect(typeof up[11]).toBe('number');
+    expect(up.slice(12).every((x) => x === undefined)).toBe(true);
+    expect(nullCountOf(hole, 'atrbUpper')).toBe(5 + 18); // head + 12..29
+
+    // The field is a SEPARATE input, so gapping it alone leaves the ATR
+    // intact and exactly one bar is lost — the asymmetry `column` exists for.
+    const withField = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'mid', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i * MINUTE,
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.3 - 0.5 * Math.abs(Math.cos(i / 2.5)),
+          c,
+          i === 12 ? undefined : c,
+        ];
+      }) as never,
+    });
+    const field = atrBands(withField, { period: 5, column: 'mid' as never });
+    const fu = cells(field, 'atrbUpper');
+    expect(typeof fu[11]).toBe('number');
+    expect(fu[12]).toBeUndefined();
+    expect(typeof fu[13]).toBe('number');
+    expect(nullCountOf(field, 'atrbUpper')).toBe(5 + 1);
+  });
+});
+
+describe('[PND-STUDYBOX] the smoothed-rate studies: where the missing rows are', () => {
+  const wavy = Array.from(
+    { length: 40 },
+    (_, i) => 100 + 6 * Math.sin(i / 4) + 0.1 * i,
+  );
+
+  const gappyClose = (gapAt: number | undefined) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: wavy.map((c, i) => [
+        i * MINUTE,
+        i === gapAt ? undefined : c,
+      ]) as never,
+    });
+
+  const bodyBars = (gapAt: number | undefined) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: wavy.map((c, i) => [
+        i * MINUTE,
+        i === gapAt ? undefined : c - 0.4 * Math.cos(i / 1.7),
+        c,
+      ]) as never,
+    });
+
+  it('qstick: `period − 1` head, and a gap blanks only the windows holding it', () => {
+    const clean = qstick(bodyBars(undefined), { period: 4 });
+    expect(nullCountOf(clean, 'qstick')).toBe(3);
+    expect(typeof cells(clean, 'qstick')[3]).toBe('number');
+
+    // A missing open has no body, and the array door's SMA waits for
+    // `period` finite VALUES — so the four windows containing bar 10 are
+    // blank and bar 14 is a value again.
+    const hole = qstick(bodyBars(10), { period: 4 });
+    const v = cells(hole, 'qstick');
+    expect(typeof v[9]).toBe('number');
+    expect(v.slice(10, 14).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[14]).toBe('number');
+    expect(nullCountOf(hole, 'qstick')).toBe(3 + 4);
+  });
+
+  it('trix: a 3·period − 2 head on both columns, offset by the signal', () => {
+    const out = trix(gappyClose(undefined), { period: 3, signalPeriod: 4 });
+    const line = cells(out, 'trix');
+    expect(line.slice(0, 7).every((x) => x === undefined)).toBe(true);
+    expect(typeof line[7]).toBe('number');
+    expect(nullCountOf(out, 'trix')).toBe(7);
+    expect(nullCountOf(out, 'trixSignal')).toBe(10);
+    expect(typeof cells(out, 'trixSignal')[10]).toBe('number');
+  });
+
+  it('trix: an interior gap costs the bar and the one after it, then recovers', () => {
+    // The `ema` family skips a missing bar (so the three stages resume), and
+    // the rate of change reads a predecessor (so the bar AFTER the gap has
+    // no base). Two bars, not a propagation to the end.
+    const out = trix(gappyClose(20), { period: 3, signalPeriod: 4 });
+    const line = cells(out, 'trix');
+    expect(typeof line[19]).toBe('number');
+    expect(line[20]).toBeUndefined();
+    expect(line[21]).toBeUndefined();
+    expect(typeof line[22]).toBe('number');
+    expect(nullCountOf(out, 'trix')).toBe(7 + 2);
+  });
+
+  it('coppock: the head is max(long, short) + wma − 1', () => {
+    const out = coppock(gappyClose(undefined), {
+      longPeriod: 6,
+      shortPeriod: 3,
+      wmaPeriod: 2,
+    });
+    const v = cells(out, 'coppock');
+    expect(v.slice(0, 7).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[7]).toBe('number');
+    expect(nullCountOf(out, 'coppock')).toBe(7);
+  });
+
+  it('coppock: one gap blanks THREE windows — the bar and both look-backs', () => {
+    // A missing bar costs its own rate of change and the ones that read it
+    // as a base, `shortPeriod` and `longPeriod` bars later; the WMA then
+    // masks each window containing one of the three.
+    const out = coppock(gappyClose(12), {
+      longPeriod: 6,
+      shortPeriod: 3,
+      wmaPeriod: 2,
+    });
+    const v = cells(out, 'coppock');
+    for (const b of [12, 13, 15, 16, 18, 19]) {
+      expect(v[b], `bar ${b}`).toBeUndefined();
+    }
+    for (const b of [11, 14, 17, 20]) {
+      expect(typeof v[b], `bar ${b}`).toBe('number');
+    }
+    expect(nullCountOf(out, 'coppock')).toBe(7 + 6);
   });
 });

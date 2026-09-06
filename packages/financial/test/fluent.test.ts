@@ -20,6 +20,11 @@ import {
   stochastic,
   williamsR,
   donchian,
+  keltner,
+  atrBands,
+  qstick,
+  trix,
+  coppock,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -219,5 +224,75 @@ describe('fluent volume studies', () => {
     for (const c of ['obv', 'w']) {
       expect(col(fluent, c)).toEqual(col(functional, c));
     }
+  });
+});
+
+describe('fluent K2 consumers (channels and smoothed rates)', () => {
+  const ohlc = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c - 0.5 * Math.cos(i / 1.7),
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.5 - 0.6 * Math.abs(Math.cos(i / 2.5)),
+          c,
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('.keltner().atrBands().qstick().trix().coppock() chain and match the standalone functions', () => {
+    const fluent = ohlc()
+      .keltner({ period: 6, atrPeriod: 5 })
+      .atrBands({ period: 5 })
+      .qstick({ period: 4 })
+      .trix({ period: 3, signalPeriod: 3 })
+      .coppock({ longPeriod: 6, shortPeriod: 3, wmaPeriod: 2 });
+    const functional = coppock(
+      trix(
+        qstick(
+          atrBands(keltner(ohlc(), { period: 6, atrPeriod: 5 }), { period: 5 }),
+          { period: 4 },
+        ),
+        { period: 3, signalPeriod: 3 },
+      ),
+      { longPeriod: 6, shortPeriod: 3, wmaPeriod: 2 },
+    );
+    const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
+    for (const c of [
+      'kcMiddle',
+      'kcUpper',
+      'kcLower',
+      'atrbUpper',
+      'atrbLower',
+      'qstick',
+      'trix',
+      'trixSignal',
+      'coppock',
+    ]) {
+      expect(typeof last[c], c).toBe('number');
+      expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+
+  it('the fluent methods take no options at all (every period has a default)', () => {
+    const study = ohlc().keltner().atrBands().qstick().trix().coppock();
+    // 40 bars is not enough for the default TRIX (3 × 15 − 2 = 43), so what
+    // is pinned here is that the no-argument calls run, stay
+    // length-preserving, and warm up where their defaults say.
+    expect(study.length).toBe(40);
+    expect(col(study, 'kcMiddle').filter((x) => x !== undefined).length).toBe(
+      21,
+    );
+    expect(col(study, 'trix').every((x) => x === undefined)).toBe(true);
   });
 });

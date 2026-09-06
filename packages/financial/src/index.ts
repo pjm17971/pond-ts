@@ -24,6 +24,7 @@ export { DEFAULT_OHLCV, DEFAULT_SOURCE } from './contract/columns.js';
 export type { RollingReducer } from './kernels/rolling.js';
 export type { MaType } from './kernels/moving-average.js';
 export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
+export { percentChangeValues } from './kernels/rate-of-change.js';
 export type {
   MovingAverageOptions,
   MovingAverageTypeOptions,
@@ -67,3 +68,13 @@ export type { ObvOptions } from './studies/obv.js';
 export { obv } from './studies/obv.js';
 export type { VwapOptions } from './studies/vwap.js';
 export { vwap } from './studies/vwap.js';
+export type { KeltnerOptions } from './studies/keltner.js';
+export { keltner } from './studies/keltner.js';
+export type { AtrBandsOptions } from './studies/atr-bands.js';
+export { atrBands } from './studies/atr-bands.js';
+export type { QstickOptions } from './studies/qstick.js';
+export { qstick } from './studies/qstick.js';
+export type { TrixOptions } from './studies/trix.js';
+export { trix } from './studies/trix.js';
+export type { CoppockOptions } from './studies/coppock.js';
+export { coppock } from './studies/coppock.js';

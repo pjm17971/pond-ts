@@ -1,3 +1,5 @@
+import { wilderValues } from './wilder.js';
+
 /**
  * **True range** — the widest of the three spans a bar can cover:
  *
@@ -55,4 +57,35 @@ export function trueRangeValues(
     );
   }
   return out;
+}
+
+/**
+ * **Average true range** — {@link wilderValues} over {@link trueRangeValues},
+ * seeded from bar 1.
+ *
+ * The two-line assembly ATR is, named once. Three studies now want the same
+ * array — `atr` itself, `keltner`'s band half-width and `atrBands` — and the
+ * studies README's rule ("a kernel improvement lifts every consumer at once")
+ * applies to a *definition* as much as to a loop: a second study that wrote
+ * `wilderValues(trueRangeValues(…), period)` without the `start = 1` would
+ * differ from `atr` on nothing the oracle tests and everything a reader
+ * assumes. Sharing the call is what makes "`atrBands` is `close ± k · atr()`"
+ * structural rather than a coincidence two tests have to keep true.
+ *
+ * `start = 1` is where `TR[0]` is skipped: the first bar has no previous
+ * close, so its true range is undefined rather than its plain range.
+ * (Strictly redundant — `wilderValues` steps over a leading `NaN` anyway —
+ * and kept for the reason `atr` kept it: it states WHY the first bar is
+ * skipped at the call site.)
+ *
+ * No loop of its own, so it inherits both kernels' O(N) and adds no cost
+ * beyond theirs.
+ */
+export function atrValues(
+  high: Float64Array,
+  low: Float64Array,
+  close: Float64Array,
+  period: number,
+): Float64Array {
+  return wilderValues(trueRangeValues(high, low, close), period, 1);
 }

@@ -4,6 +4,7 @@ import type {
   TimeSeries,
 } from 'pond-ts';
 import { DEFAULT_SOURCE } from '../contract/columns.js';
+import { percentChangeValues } from '../kernels/rate-of-change.js';
 import { assertNoColumn, columnValues } from '../kernels/rolling.js';
 
 export interface PercentChangeOptions<
@@ -44,18 +45,10 @@ export function percentChange<
   const wide = series as unknown as TimeSeries<SeriesSchema>;
   assertNoColumn(wide, output);
 
-  const v = columnValues(wide, column);
-  // Missing cells are `NaN` and propagate through the ratio on their own
-  // ([PND-STUDYBOX]); the surviving guards are the two study-specific ones —
-  // no predecessor yet, and a zero base (an undefined percent change).
-  const pc = new Float64Array(v.length);
-  for (let i = 0; i < pc.length; i += 1) {
-    if (i < periods) {
-      pc[i] = NaN;
-      continue;
-    }
-    const prev = v[i - periods]!;
-    pc[i] = prev === 0 ? NaN : (v[i]! / prev - 1) * 100;
-  }
+  // The arithmetic and its two edge rules (no predecessor yet, a zero base)
+  // live in `percentChangeValues` so the derived-input callers — TRIX's 1-bar
+  // rate of change of a triple EMA, Coppock's sum of two — are the same
+  // definition rather than three that agree until they don't.
+  const pc = percentChangeValues(columnValues(wide, column), periods);
   return series.withColumn(output, pc);
 }
