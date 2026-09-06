@@ -30,6 +30,8 @@ import {
   stochastic,
   williamsR,
   donchian,
+  obv,
+  vwap,
 } from '../src/index.js';
 
 interface OracleCase {
@@ -53,7 +55,12 @@ interface OracleCase {
 }
 interface Oracle {
   meta: { oracle: string };
-  input: { closes: number[]; highs: number[]; lows: number[] };
+  input: {
+    closes: number[];
+    highs: number[];
+    lows: number[];
+    volumes: number[];
+  };
   cases: OracleCase[];
 }
 
@@ -76,9 +83,10 @@ function series(): TimeSeries<never> {
   }) as unknown as TimeSeries<never>;
 }
 
-/** The same bars with high/low, for the studies that read a whole bar. Kept
- *  separate so the close-only cases stay on exactly the series they were
- *  generated against. */
+/** The same bars with high/low/volume, for the studies that read a whole
+ *  bar. Kept separate so the close-only cases stay on exactly the series they
+ *  were generated against. The volume column rides along on every bar study
+ *  — an extra column is invisible to one that does not name it. */
 function ohlcSeries(): TimeSeries<never> {
   return new TimeSeries({
     name: 'oracle',
@@ -87,12 +95,14 @@ function ohlcSeries(): TimeSeries<never> {
       { name: 'high', kind: 'number' },
       { name: 'low', kind: 'number' },
       { name: 'close', kind: 'number' },
+      { name: 'volume', kind: 'number' },
     ],
     rows: oracle.input.closes.map((c, i) => [
       i,
       oracle.input.highs[i]!,
       oracle.input.lows[i]!,
       c,
+      oracle.input.volumes[i]!,
     ]),
   }) as unknown as TimeSeries<never>;
 }
@@ -127,6 +137,10 @@ function run(c: OracleCase): unknown {
       return rsi(series(), p as { period?: number });
     case 'atr':
       return atr(ohlcSeries(), p as { period?: number });
+    case 'obv':
+      return obv(ohlcSeries());
+    case 'vwap':
+      return vwap(ohlcSeries(), p as { period: number });
     case 'macd':
       return macd(
         series(),

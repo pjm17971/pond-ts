@@ -103,6 +103,42 @@ include new features and type-level changes; patch bumps are strictly additive.
   `atr`; a missing `high`/`low` is skipped (core's reducer policy), not
   propagated.
 
+- `@pond-ts/financial`: **`obv(...)`** and **`vwap(...)`** — the first two
+  **volume** studies, plus fluent `.obv()` / `.vwap()`. Both name their inputs
+  per column (`close` / `volume`, and `high` / `low` for VWAP), each
+  defaulting to its `DEFAULT_OHLCV` name, the rule `atr` established.
+
+  **`obv`** is Granville's On-Balance Volume — the running total of each bar's
+  volume signed by its close change — and is the first study with **no
+  `period`**: it is read for its shape, not its level, so there is nothing to
+  size a window over. It is **TA-Lib's OBV exactly**, including the seed
+  (`OBV[0] = volume[0]`) and an unchanged close adding nothing; the oracle
+  asserts equality, with an identical (empty) warm-up mask. On **interior
+  gaps** it deliberately departs from TA-Lib: a running sum has no local
+  answer for a missing term, so a missing close or volume leaves the level
+  `undefined` from that bar on (the same asymmetry the Wilder recursion has —
+  a leading gap shifts the seed, an interior one propagates). TA-Lib has no
+  gap semantics; measured on a seven-bar series it carries on 400 out of
+  level and presents that as a value.
+
+  **`vwap`** is a **rolling** Volume-Weighted Average Price:
+  `Σ typicalPrice · volume / Σ volume` over `period` bars, typical price
+  `(high + low + close) / 3`. There is no TA-Lib VWAP and no single
+  definition, so this is a documented design choice: the rolling form fits
+  the package's count-window shape, and the intraday desk's _anchored_ VWAP
+  is not a special case of it (a count window emits only once it spans
+  `period` rows) — that one needs a session reset and is deferred to the
+  session-anchored phase. `period` is **required** (no conventional length to
+  default to). A window with no volume is `undefined`; a bar missing any
+  input is dropped from **both** sums so the ratio is never biased. Verified
+  against a pandas replication on a fixture whose volume spikes make a
+  dropped weighting visible (≥ 1.24 price units from the plain mean).
+
+  The oracle fixture gains a `volumes` input, and four kernels land under
+  them for the studies that follow: `cumulativeValues` (A/D line, PVT),
+  `signedVolumeValues`, `typicalPriceValues` (CCI, MFI, Keltner) and
+  `rollingWeightedMeanValues` (VWMA).
+
 - `@pond-ts/financial`: **`atr(...)`** — Wilder's Average True Range, the third
   [PND-STUDY] named indicator, plus a fluent `.atr()`. `{ period = 14,
 high = 'high', low = 'low', close = 'close', output = 'atr' }`. Verified

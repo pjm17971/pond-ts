@@ -13,6 +13,8 @@ import {
   bollinger,
   momentum,
   historicalVolatility,
+  obv,
+  vwap,
   stochastic,
   williamsR,
   donchian,
@@ -163,6 +165,36 @@ describe('fluent studies (opt-in prototype augmentation)', () => {
     ]) {
       expect(typeof last[c], c).toBe('number');
       expect(col(fluent, c), c).toEqual(col(functional, c));
+    }
+  });
+});
+
+describe('fluent volume studies', () => {
+  const ohlcv = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: [10, 11, 11, 9, 12, 12, 8].map((c, i) => [
+        i,
+        c + 1,
+        c - 1,
+        c,
+        100 * (i + 1),
+      ]) as Array<[number, number, number, number, number]>,
+    });
+
+  it('.obv() and .vwap() chain and match the standalone functions', () => {
+    const fluent = ohlcv().obv().vwap({ period: 3, output: 'w' });
+    const functional = vwap(obv(ohlcv()), { period: 3, output: 'w' });
+    expect(col(fluent, 'obv')).toEqual([100, 300, 300, -100, 400, 400, -300]);
+    for (const c of ['obv', 'w']) {
+      expect(col(fluent, c)).toEqual(col(functional, c));
     }
   });
 });

@@ -73,6 +73,10 @@ import type { WilliamsROptions } from './studies/williams-r.js';
 import { williamsR as williamsRStudy } from './studies/williams-r.js';
 import type { DonchianOptions } from './studies/donchian.js';
 import { donchian as donchianStudy } from './studies/donchian.js';
+import type { ObvOptions } from './studies/obv.js';
+import { obv as obvStudy } from './studies/obv.js';
+import type { VwapOptions } from './studies/vwap.js';
+import { vwap as vwapStudy } from './studies/vwap.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -176,6 +180,14 @@ declare module 'pond-ts' {
         `${Prefix}Middle`
       >
     >;
+    /** Fluent On-Balance Volume. */
+    obv<const Output extends string = 'obv'>(
+      options?: ObvOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent rolling VWAP. */
+    vwap<const Output extends string = 'vwap'>(
+      options: VwapOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
 
@@ -289,4 +301,16 @@ proto.donchian = function (
   options?: DonchianOptions<SeriesSchema, string>,
 ) {
   return donchianStudy(this, options);
+};
+proto.obv = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ObvOptions<SeriesSchema, string>,
+) {
+  return obvStudy(this, options);
+};
+proto.vwap = function (
+  this: TimeSeries<SeriesSchema>,
+  options: VwapOptions<SeriesSchema, string>,
+) {
+  return vwapStudy(this, options);
 };

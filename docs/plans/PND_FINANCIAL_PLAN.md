@@ -49,6 +49,17 @@ each study is a vocabulary wrapper following the studies README checklist
 (uniform `column`/`output` shape, bar-count periods, length-preserving
 warm-up, fluent method, oracle case).
 
+**Status (2026-09-06): Phase-1 breadth landed** — every named study above
+except **ATR bands** (open: Keltner-style `close ± k·ATR` on
+`trueRangeValues`) and the **anchored / session VWAP** (deferred to the
+session-anchored phase; needs a reset). The per-batch write-ups below are
+the decision record. Package-wide questions the wave surfaced, none
+blocking: `ema()`'s first-sample seed vs TA-Lib's SMA seed (MACD chose
+internal consistency); Wilder-vs-`ema` interior-gap asymmetry (decide
+before ADX); `percentChange.periods` vs `period` naming; the website study
+table has no rows for any of the new studies; a monotonic-deque fast path
+for core's rolling min/max would lift stochastics/%R/Donchian ~2×.
+
 #### Landed so far: RSI, MACD, ATR (2026-09-01)
 
 Three of the ten, plus a property-test net. The decisions worth keeping,
@@ -153,6 +164,34 @@ single-column `rollingMax` still throws — left alone). Considered and
 rejected: clamping `%K`/`%R` to their bounds (a redirected `close` outside
 its range should read outside, honestly); a Donchian `close`-based breakout
 column (a rule, not a study).
+
+**Landed — OBV / VWAP (volume fan-out).** The oracle fixture gains a
+`volume` column (spikes of 5–9×, so a dropped weighting sits > 1.2 price
+units from the plain mean — asserted). Decisions: (1) **`obv` is TA-Lib's
+exactly** (seed `OBV[0] = volume[0]`, flat close adds nothing; mask then
+values, delta 0) and is the first study with no `period` — it is read for
+its shape, not its level. (2) **A missing cell in a running sum propagates
+to the end**, the Wilder asymmetry for the same reason: a window recovers
+once a gap leaves it, a cumulative quantity cannot. A leading gap in either
+input shifts the seed to the first bar where both are present (what TA-Lib's
+wrapper does by stripping leading NaNs). Deliberate delta from TA-Lib, whose
+NaN close makes both comparisons false and silently carries on at a level
+that is wrong forever (measured: 400 out of level on seven bars). (3)
+**`vwap` is ROLLING** — `Σ tp·v / Σ v` over `period` bars, `tp = (h+l+c)/3`,
+`period` required (no conventional length). Anchored / session VWAP is NOT a
+special case of it (a count window emits once it spans `period` rows) and
+only makes sense with a reset, so it is deferred to the session phase; the
+`cumulativeValues` kernel it needs already exists. No `price` option — a
+knob with one conventional value; redirect `high`/`low` at `close` for a
+close-weighted VWAP. A bar missing ANY input leaves BOTH sums, so the ratio
+is never biased by a volume whose price went missing. (4) Four one-loop
+kernels — `cumulativeValues` (A/D, PVT next), `signedVolumeValues`,
+`typicalPriceValues` (CCI, MFI, Keltner next), `rollingWeightedMeanValues`
+(VWMA next; two range-exact mean passes whose divisor cancels — a fused
+single pass would be ~10× cheaper at the cost of range exactness, the same
+trade already deferred for the fused SMA). Lesson from the mutation matrix:
+the `Σw === 0 ? NaN` guard was dead code (non-negative weights make 0/0 NaN
+already) and was removed rather than kept with a false "load-bearing" claim.
 
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
