@@ -103,20 +103,20 @@ type EventListener = (event: any) => void;
  * snapshot to a `TimeSeries` first via
  * `live.toTimeSeries().reduce(...)`.
  *
- * **Caveat — `reorder` + retention specifically.** The windowed
- * reducers `min` / `max` / `first` / `last` / `samples` maintain
- * forward-sliding-window state (a monotone deque, or head-removal
- * ordered entries) that assumes eviction removes the OLDEST-arrived
- * event first. That holds for `strict` / `drop` (append-only) and
- * the chunked backing, but NOT for `reorder` + retention, where the
- * source evicts the sorted-prefix — which may be a later arrival. On
- * that combination those five reducers can report stale or
- * `undefined` snapshots. The value-based reducers (`avg`, `count`,
- * `sum`, `stdev`, `median`, `percentile`, `unique`) remove by value
- * and stay correct. This is a long-standing limitation (it predates
- * the chunked backing); for reliable windowed extrema on a reorder
- * source, snapshot to a `TimeSeries` and `reduce` there. Tracked in
- * PLAN.md "Deferred".
+ * **`reorder` + retention** ([PND-LIVFIX]). The windowed reducers
+ * `min` / `max` / `first` / `last` normally keep forward-sliding-window
+ * state (a monotone deque, head-removal ordered entries) that assumes
+ * eviction removes the oldest-arrived event first — true for `strict` /
+ * `drop` and the chunked backing. A `reorder` source evicts its sorted
+ * prefix, which may be a later arrival, and those states used to go
+ * stale or `undefined` there. Over a `reorder` source this class now
+ * selects removal-by-any-index structures for those four reducers (a
+ * sorted array for the extrema, an index-keyed map for `first` / `last`)
+ * — exact in any eviction order, at O(n) per update instead of O(1),
+ * and only on that source shape. `first` / `last` still follow
+ * ARRIVAL order (the caveat above), never a value the source has
+ * evicted. `samples` and the value-based reducers were already
+ * order-independent.
  *
  * **Source contract — `EMITS_EVICT` is load-bearing.** This
  * class's reducer state stays in sync with the source's current
@@ -231,7 +231,17 @@ export class LiveReduce<
     // the live aggregation surface; keeps `LiveReduce`'s reducer
     // semantics identical to `aggregate` / `rolling`.
     this.#columns = normalizeAggregateColumns(source.schema, mapping);
-    this.#states = this.#columns.map((c) => rollingStateFor(c.reducer));
+    // [PND-LIVFIX] A `reorder` source evicts its sorted prefix, which can
+    // be a later arrival than the FIFO frontier; the windowed states for
+    // `min` / `max` / `first` / `last` must then accept removal of any
+    // index. Ask the source (internal getter on `LiveSeries`); anything
+    // else is append-only.
+    const evictionOrder =
+      (source as { _evictionOrder?: 'arrival' | 'sorted' })._evictionOrder ??
+      'arrival';
+    this.#states = this.#columns.map((c) =>
+      rollingStateFor(c.reducer, evictionOrder),
+    );
 
     // Output schema: source's first (time/keyed) column + each
     // reducer's output column. Matches LiveRollingAggregation's

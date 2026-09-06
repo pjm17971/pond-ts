@@ -10,6 +10,7 @@ import type {
   RollingReducerState,
 } from './types.js';
 import type { AggregateReducer, ColumnValue } from '../schema/index.js';
+import { rollingIndexedEntries, rollingSortedExtreme } from './rolling.js';
 import { parsePercentile, percentileReducer } from './percentile.js';
 import { parseTopN, topReducer } from './top.js';
 
@@ -148,10 +149,37 @@ export function bucketStateFor(
  * Custom-function reducers shine on low-rate streams where
  * convenience matters more than per-snapshot cost.
  */
+/**
+ * Which order a source removes events from its buffer, relative to the
+ * order it delivered them. `'arrival'` (append-only sources — the chunked
+ * backing, `strict` / `drop`): oldest-arrived first, so a forward-sliding
+ * window state is exact. `'sorted'` (`reorder` + retention): the sorted
+ * prefix, which may be a later arrival — the windowed states must accept
+ * removal of any index ([PND-LIVFIX]).
+ */
+export type EvictionOrder = 'arrival' | 'sorted';
+
 export function rollingStateFor(
   reducer: AggregateReducer,
+  evictionOrder: EvictionOrder = 'arrival',
 ): RollingReducerState {
   if (typeof reducer === 'string') {
+    if (evictionOrder === 'sorted') {
+      // [PND-LIVFIX] The four forward-sliding-window states assume
+      // oldest-arrived-first eviction; swap in the any-order structures
+      // for a source that evicts its sorted prefix. Every other built-in
+      // already removes by index or by value.
+      switch (reducer) {
+        case 'min':
+          return skipNonFiniteRolling(rollingSortedExtreme('min'));
+        case 'max':
+          return skipNonFiniteRolling(rollingSortedExtreme('max'));
+        case 'first':
+          return skipNonFiniteRolling(rollingIndexedEntries('first'));
+        case 'last':
+          return skipNonFiniteRolling(rollingIndexedEntries('last'));
+      }
+    }
     return skipNonFiniteRolling(resolveReducer(reducer).rollingState());
   }
   // Custom-function adapter: Map keyed by event index for O(1) remove.

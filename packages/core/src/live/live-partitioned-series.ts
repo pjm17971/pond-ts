@@ -31,7 +31,7 @@ import type {
   FusedPartitionedRollingSchema,
   ValidatedAggregateMap,
 } from '../schema/index.js';
-import type { DurationInput } from '../core/duration.js';
+import { parseDuration, type DurationInput } from '../core/duration.js';
 import type {
   LiveRollingOptions,
   RollingWindow,
@@ -86,6 +86,14 @@ export type LivePartitionedOptions<K extends string> = {
    */
   ordering?: NonNullable<LiveSeriesOptions<SeriesSchema>['ordering']>;
 };
+
+/** [PND-LIVFIX] The option keys `partitionBy` accepts; anything else throws. */
+const PARTITION_OPTION_KEYS: ReadonlySet<string> = new Set([
+  'groups',
+  'retention',
+  'graceWindow',
+  'ordering',
+]);
 
 /** Encoder for partition values → keys. Mirrors the batch single-column case. */
 function partitionKey(
@@ -192,6 +200,22 @@ export class LivePartitionedSeries<
   // Cumulative since construction; never reset.
   #statsEventsRouted = 0;
 
+  /**
+   * [PND-LIVFIX] Quiet-partition age sweep. Per-partition `maxAge` used
+   * to run only when a partition received a push, so a partition that
+   * went quiet never evicted (audit 2026-06 §4.3). The router now tracks
+   * the source watermark (newest key routed) and, when it has advanced
+   * by at least `#sweepEveryMs` since the last sweep, asks EVERY
+   * partition to age out against it (`LiveSeries._sweepAge`). The
+   * throttle keeps the hot path O(1) per event on high-cardinality
+   * sources — a sweep is O(partitions) — while bounding how long a quiet
+   * partition can overstay `maxAge` to `maxAge / 8`. `Infinity` when the
+   * partition retention has no `maxAge` (nothing to sweep).
+   */
+  readonly #sweepEveryMs: number;
+  #watermarkMs = -Infinity;
+  #lastSweepMs = -Infinity;
+
   constructor(
     source: LiveSource<S>,
     by: ByCol,
@@ -200,6 +224,17 @@ export class LivePartitionedSeries<
     this.name = source.name;
     this.schema = source.schema;
     this.by = by;
+
+    // [PND-LIVFIX] Unknown options used to be silently ignored, so a JS
+    // caller passing e.g. `maxPartitions` got no signal (audit §4.3).
+    for (const key of Object.keys(options)) {
+      if (!PARTITION_OPTION_KEYS.has(key)) {
+        throw new TypeError(
+          `LivePartitionedSeries: unknown option "${key}". Known options: ` +
+            `${[...PARTITION_OPTION_KEYS].join(', ')}.`,
+        );
+      }
+    }
 
     if (!source.schema.some((c) => c.name === by)) {
       throw new TypeError(
@@ -231,6 +266,11 @@ export class LivePartitionedSeries<
     };
     this.#onSpawn = new Set();
     this.#disposers = new Set();
+    const maxAge = options.retention?.maxAge;
+    this.#sweepEveryMs =
+      maxAge === undefined
+        ? Infinity
+        : Math.max(1, Math.floor(parseDuration(maxAge) / 8));
 
     // Column-native routing path: when the source is a chunked-backed
     // LiveSeries (top-level strict time-keyed), route its appended chunks
@@ -1061,6 +1101,18 @@ export class LivePartitionedSeries<
     // instead of round-tripping `Event → row → Event` (which would
     // re-validate and re-allocate per event).
     part._pushTrustedEvents([event]);
+    this.#advanceWatermark(event.begin());
+  }
+
+  /** [PND-LIVFIX] Track the newest routed key and sweep quiet partitions. */
+  #advanceWatermark(beginMs: number): void {
+    if (this.#sweepEveryMs === Infinity) return;
+    if (beginMs > this.#watermarkMs) this.#watermarkMs = beginMs;
+    if (this.#watermarkMs - this.#lastSweepMs < this.#sweepEveryMs) return;
+    this.#lastSweepMs = this.#watermarkMs;
+    for (const part of this.#partitions.values()) {
+      part._sweepAge(this.#watermarkMs);
+    }
   }
 
   /**
@@ -1096,6 +1148,7 @@ export class LivePartitionedSeries<
       one[0] = i;
       part._stageRows(store, one);
     }
+    if (n > 0) this.#advanceWatermark(store.beginAt(n - 1));
   }
 
   /**

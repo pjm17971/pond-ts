@@ -9,29 +9,58 @@
 
 ## Tasks
 
-### [PND-LIVFIX] — Live robustness P1 cluster
+### [PND-LIVFIX] — Live robustness P1 cluster — **shipped 2026-09-06**
 
-**The standing live-correctness P1** (tasks #98/#99/#114) — the one piece of
-non-speculative core debt from the 2026-06 audits, empirically reproduced
-(confirmed wrong-answer behavior, not optimization):
+The five confirmed wrong-answer defects from the 2026-06 audits
+([technical-audit-2026-06-v2.md](../notes/technical-audit-2026-06-v2.md) §4),
+each reproduced as a failing test first (`test/live/livfix-*.test.ts`), then
+fixed. Decisions worth keeping:
 
-- Listener error isolation (a throw skips retention entirely; a derived
-  `filter()` view desyncs permanently).
-- Re-entrancy (3 failures incl. the `[object Object]` error at
-  `live-view.ts:704`).
-- Unbounded partitions (push-driven `maxAge` never evicts quiet keys;
-  `maxPartitions` silently ignored).
-- Chained dispose (`live.filter().map()` orphans the intermediate;
-  `dispose()` has no JSDoc).
-- Travels with the **reorder+retention windowed-extrema bug**: `LiveReduce`
-  over a `reorder` source with retention returns stale/`undefined` for
-  `min`/`max`/`first`/`last`/`samples` (their state assumes oldest-arrived
-  eviction). Fix: removal-by-value structure selected only for reorder
-  sources. Documented in `LiveReduce` JSDoc; workaround
-  `live.toTimeSeries().reduce(...)`.
+- **Listener errors are isolated, and the first one is rethrown after the
+  push completes.** The alternative — swallow and log — would hide bugs;
+  the alternative the code had — unwind immediately — skipped retention
+  and desynced every later subscriber. Rethrow-after-commit keeps the
+  caller's "my listener threw" signal while guaranteeing `length`,
+  `ingested`, retention and every view agree. `ListenerSet` caches its
+  iteration snapshot (invalidated on add/delete) so isolation costs no
+  allocation per event on the kHz path.
+- **Re-entrant pushes are queued, not rejected or interleaved.** A push
+  from inside a listener runs after the current push, in arrival order.
+  Under strict ordering the nested rows are then order-checked against the
+  buffer at their turn; the audit's "spurious out-of-order rejection" was
+  the nested push racing the outer batch's own rows. Queueing gives
+  monotonic emission on both backings with one counter and one array.
+- **Quiet partitions age out against the source watermark**, via an
+  internal `LiveSeries._sweepAge(latestMs)`, throttled so a sweep
+  (O(partitions)) runs at most once per `maxAge / 8` of data time — the
+  bound on how long a quiet partition can overstay. Deliberately NOT done:
+  dropping an emptied partition object. `toMap()` hands out partition
+  references and spawn is observable; the per-partition fixed cost the
+  audit measured (~1.7 KB × 50k keys) is a cardinality question for a
+  `maxPartitions`-style policy, which would be a feature. Instead unknown
+  option keys now throw, so a caller passing `maxPartitions` learns it
+  does nothing.
+- **Chain-aware dispose treats a subscriber-less source view as
+  unreachable.** `live.filter(p).map(f)` has no handle on the
+  intermediate; disposing the outer view now cascades into any source view
+  left with zero listeners. The documented cost: a caller who keeps a
+  reference to an intermediate and disposes a derived view must keep a
+  listener on the intermediate to keep it live. Judged the right trade —
+  the idiomatic one-liner is the common case, and the leak was unbounded.
+- **Windowed reducers over a `reorder` source select any-order state.**
+  `min` / `max` use a sorted array (removal by value, O(n)); `first` /
+  `last` an index-keyed map. Selected by an internal `_evictionOrder`
+  getter on `LiveSeries` (`'sorted'` for `reorder`), so append-only
+  sources keep the O(1) deque. `first` / `last` still follow arrival
+  order on a reorder source (the pre-existing, documented caveat); what
+  changed is that they never report an evicted value.
+- **Not changed:** the audit's §4.5 (grace boundary — not a bug) and §4.6
+  (evict-callback staleness for a source listener registered before a
+  view's creation — order-fragile, undocumented). §4.6 is real but narrow;
+  logged here rather than fixed, since the fix (fan-out ordering by
+  registration) would change observable listener order for everyone.
 
-Context: [technical-audit-2026-06-v2.md](../notes/technical-audit-2026-06-v2.md)
-§4, [live-columnar-assessment-2026-06.md](../notes/live-columnar-assessment-2026-06.md).
+Perf: `scripts/perf-live-columnar.mjs` before/after in the landing PR.
 
 ### [PND-LATE] — Late-event propagation through live transforms
 

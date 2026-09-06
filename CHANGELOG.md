@@ -68,6 +68,43 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Fixed
+
+- `pond-ts` live layer, the [PND-LIVFIX] cluster — the five confirmed
+  wrong-answer defects from the 2026-06 audits, each now pinned by a test:
+  - **Listener errors are isolated.** A `LiveSeries` / `LiveView` listener
+    that throws no longer aborts the push: every row still commits, the
+    remaining listeners still run, retention still runs and `'batch'` /
+    `'evict'` still fire; the first error is rethrown to the caller once
+    the push has completed. Before, a throw skipped retention (the buffer
+    sat over `maxEvents` until the next push) and left every later
+    subscriber — a derived `filter()` view included — permanently out of
+    sync.
+  - **Re-entrancy.** A listener may subscribe or unsubscribe during
+    dispatch without disturbing the fan-out (a listener added mid-event
+    does not fire for that event), and a `push` made from inside a
+    listener is queued and delivered after the current push, in order.
+    Before, a re-entrant push emitted out of order, was spuriously
+    rejected as out-of-order on the chunked backing, and broke an attached
+    view with an error that read `[object Object]` (keys in that message
+    now print as ISO timestamps).
+  - **Quiet partitions evict by age.** Per-partition `maxAge` was
+    push-driven, so a partition that stopped receiving events kept them
+    forever. `partitionBy` now sweeps every partition against the source
+    watermark as it advances (throttled to `maxAge / 8`), emitting
+    `'evict'` as push-driven retention does. `partitionBy` also throws on
+    an unknown option key (e.g. `maxPartitions`) instead of ignoring it.
+  - **Chain-aware `LiveView.dispose()`.** Disposing the last view of
+    `live.filter(p).map(f)` now disposes the unreachable intermediate too
+    (a source view left with no subscribers is torn down; one with another
+    subscriber is not). `dispose()` is idempotent and documented.
+  - **`LiveReduce` windowed reducers on a `reorder` source with
+    retention.** `min` / `max` / `first` / `last` reported stale or
+    `undefined` values because their sliding-window state assumed
+    oldest-arrived-first eviction; over a `reorder` source they now use
+    removal-by-any-index structures (exact in any eviction order, O(n)
+    per update, selected only on that source shape).
+
 ## [0.65.0] — 2026-09-06
 
 ### Added

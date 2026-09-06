@@ -1257,10 +1257,6 @@ pandas-oracle-verified) have shipped. Plan:
 Robustness debt plus the queued composition workstreams. Plan:
 [PND_LIVE_PLAN.md](docs/plans/PND_LIVE_PLAN.md).
 
-- **[PND-LIVFIX]** — **The standing live-correctness P1**: listener error
-  isolation, re-entrancy, unbounded partitions, chained dispose, and the
-  reorder+retention windowed-extrema bug. Confirmed wrong-answer behavior,
-  not optimization.
 - **[PND-LATE]** — Late-event propagation through stateful live transforms
   (needs a reorder-aware event payload; overlaps [PND-CHANGE]).
 - **[PND-LJOIN]** — Live merge / join across sources.
@@ -1864,7 +1860,7 @@ in [docs/archive/experiments-2026.md](docs/archive/experiments-2026.md)):
 | gRPC pipeline      | Claude | M3.5 realized; remaining: writeup + M5 extraction sweep (3 RFCs → [PND-SERVER])                                              |
 | Webapp telemetry   | Codex  | In production; watch for friction reports                                                                                    |
 | Charts experiment  | Claude | First `@pond-ts/charts` package consumer; annotation dogfood, ongoing                                                        |
-| Robustness audits  | fresh  | Re-run as the available model improves; residue → [PND-LIVFIX], [PND-AUDIT]                                                  |
+| Robustness audits  | fresh  | Re-run as the available model improves; residue → [PND-AUDIT] ([PND-LIVFIX] shipped 2026-09-06)                              |
 
 ---
 

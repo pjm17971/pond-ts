@@ -240,15 +240,12 @@ describe('LiveSeries.reduce — eviction slot resolution (PR #170 regression)', 
   // NOTE on `reorder` + retention: the *value-based* reducers
   // (`avg`/`sum`/`count`/`median`/`percentile`/`stdev`/`unique`)
   // remove by value and are correct regardless of eviction order — the
-  // guarantee pinned here. The *windowed* reducers
-  // (`min`/`max`/`first`/`last`/`samples`) use forward-sliding-window
-  // state (monotone deque / head-removal ordered entries) that assumes
-  // monotonic oldest-by-arrival eviction; `reorder`'s sorted-prefix
-  // eviction violates that, so they are NOT reliable for
-  // `reorder` + retention. That is a pre-existing limitation (true on
-  // main before the chunked work) and is documented in `LiveReduce`'s
-  // class JSDoc — see PLAN.md "Deferred". This PR neither introduces
-  // nor fixes it.
+  // guarantee pinned here. The *windowed* reducers (`min`/`max`/
+  // `first`/`last`) used forward-sliding-window state that assumed
+  // oldest-by-arrival eviction and went stale or `undefined` on
+  // `reorder`'s sorted-prefix eviction; [PND-LIVFIX] selects any-order
+  // states for them on a reorder source — pinned in
+  // `live/livfix-reduce-reorder.test.ts`.
 
   it('reorder + retention: value-based reducers track the retained window', () => {
     // Arrivals 30, 20, 10 (descending time); maxEvents:2 evicts the

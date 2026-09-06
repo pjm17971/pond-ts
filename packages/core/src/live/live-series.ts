@@ -222,6 +222,44 @@ type EvictListener<S extends SeriesSchema> = (
  * channels; snapshot to the batch layer at any time with `toTimeSeries()`.
  * Example: `new LiveSeries({ name, schema, retention: { maxEvents: 10_000 } })`.
  */
+/** [PND-LIVFIX] Surface the first listener error once the push has completed. */
+function rethrowFirst(errors: ReadonlyArray<unknown>): void {
+  if (errors.length > 0) throw errors[0];
+}
+
+/**
+ * [PND-LIVFIX] A listener set whose iteration snapshot is cached: `add` /
+ * `delete` invalidate it, `snapshot()` rebuilds it lazily. Dispatch
+ * iterates the snapshot, so a listener that subscribes or unsubscribes
+ * mid-fan-out neither disturbs the others nor fires for the event it was
+ * added during — without allocating an array per event on the hot path
+ * (subscriptions change rarely; events arrive at kHz).
+ */
+export class ListenerSet<F extends (...args: never[]) => void> {
+  readonly #set = new Set<F>();
+  #snapshot: readonly F[] | null = null;
+  get size(): number {
+    return this.#set.size;
+  }
+  add(fn: F): void {
+    this.#set.add(fn);
+    this.#snapshot = null;
+  }
+  delete(fn: F): void {
+    if (this.#set.delete(fn)) this.#snapshot = null;
+  }
+  clear(): void {
+    this.#set.clear();
+    this.#snapshot = null;
+  }
+  snapshot(): readonly F[] {
+    return (this.#snapshot ??= Array.from(this.#set));
+  }
+  [Symbol.iterator](): Iterator<F> {
+    return this.snapshot()[Symbol.iterator]();
+  }
+}
+
 export class LiveSeries<S extends SeriesSchema> {
   /** @internal */
   readonly [EMITS_EVICT] = true as const;
@@ -241,9 +279,19 @@ export class LiveSeries<S extends SeriesSchema> {
   #perRow: LiveStorage<S> | null;
   #chunked: ChunkedColumnarLiveStorage<S> | null;
 
-  readonly #onEvent: Set<EventListener<S>>;
-  readonly #onBatch: Set<BatchListener<S>>;
-  readonly #onEvict: Set<EvictListener<S>>;
+  readonly #onEvent: ListenerSet<EventListener<S>>;
+  readonly #onBatch: ListenerSet<BatchListener<S>>;
+  readonly #onEvict: ListenerSet<EvictListener<S>>;
+  /**
+   * [PND-LIVFIX] Re-entrancy guard. `> 0` while a push is fanning out to
+   * listeners. A push that arrives from inside a listener (`#dispatchDepth
+   * > 0`) is queued on `#pendingPushes` and run after the outer push has
+   * fully completed (retention, `'batch'`, `'evict'`), so emission order
+   * stays monotonic and the nested rows are order-checked against the
+   * buffer at their turn rather than mid-fan-out.
+   */
+  #dispatchDepth = 0;
+  #pendingPushes: Array<() => void> = [];
   /**
    * Column-native delta subscribers (chunked backing only). Fires with
    * the appended `ColumnarStore` per `pushMany` — the internal hook the
@@ -327,10 +375,10 @@ export class LiveSeries<S extends SeriesSchema> {
       this.#storage = array;
     }
 
-    this.#onEvent = new Set();
-    this.#onBatch = new Set();
+    this.#onEvent = new ListenerSet();
+    this.#onBatch = new ListenerSet();
     this.#onChunk = new Set();
-    this.#onEvict = new Set();
+    this.#onEvict = new ListenerSet();
   }
 
   get length(): number {
@@ -467,64 +515,137 @@ export class LiveSeries<S extends SeriesSchema> {
    * **Commit granularity differs by backing.** On the `Event[]`
    * backing each row is appended then its `'event'` fires, so a
    * handler observes `length` grow row-by-row (`1, 2, …`) within one
-   * `pushMany`, and a handler that throws mid-batch leaves only the
-   * rows up to the throw committed. On the chunked columnar backing
-   * (top-level `strict` time-keyed series) the whole batch is appended
-   * as one chunk *before* any `'event'` fires — so a handler sees the
-   * full post-batch `length` for every event of the batch, and a
-   * handler that throws mid-fan-out leaves the *entire* batch committed
-   * (the chunk is already appended). Both leave `length` and `ingested`
-   * mutually consistent after a throw; they differ only in how much of
-   * the batch is committed. This is intrinsic to all-or-nothing
-   * columnar append — per-row commit would reintroduce the per-row
-   * `Event` cost the chunked backing exists to avoid. The cross-backing
-   * contract callers can rely on: every successfully-ingested row fires
-   * exactly one `'event'`, in order, before `'batch'`/`'evict'`.
+   * `pushMany`. On the chunked columnar backing (top-level `strict`
+   * time-keyed series) the whole batch is appended as one chunk
+   * *before* any `'event'` fires, so a handler sees the full post-batch
+   * `length` for every event of the batch. This is intrinsic to
+   * all-or-nothing columnar append — per-row commit would reintroduce
+   * the per-row `Event` cost the chunked backing exists to avoid. The
+   * cross-backing contract callers can rely on: every
+   * successfully-ingested row fires exactly one `'event'`, in order,
+   * before `'batch'`/`'evict'`.
+   *
+   * **Listener errors are isolated** ([PND-LIVFIX]). A listener that
+   * throws does not stop the push: every row is still committed, the
+   * remaining listeners still run, retention still runs, and `'batch'` /
+   * `'evict'` still fire. The first error is rethrown to the caller once
+   * the push has completed, so `length`, `ingested` and every subscriber
+   * (a derived `filter()` view included) agree afterwards. A push made
+   * from inside a listener is queued and runs after the current push,
+   * in arrival order, so emission stays monotonic.
    */
   pushMany(rows: ReadonlyArray<RowForSchema<S>>): void {
     if (rows.length === 0) return;
-
-    // Chunked (column-native) path: validate the whole batch into
-    // columns, no per-row Event. Only top-level strict time-keyed
-    // series select this backing.
-    if (this.#chunked) {
-      this.#pushManyColumnar(rows);
+    if (this.#dispatchDepth > 0) {
+      // Re-entrant push from inside a listener: defer until the outer
+      // push has completed. See `#dispatchDepth`.
+      this.#pendingPushes.push(() => this.pushMany(rows));
       return;
     }
+    this.#guarded(() => {
+      // Chunked (column-native) path: validate the whole batch into
+      // columns, no per-row Event. Only top-level strict time-keyed
+      // series select this backing.
+      if (this.#chunked) {
+        this.#pushManyColumnar(rows);
+        return;
+      }
 
-    // Per-row (Event[]) path.
-    const added: EventForSchema<S>[] = [];
+      // Per-row (Event[]) path.
+      const added: EventForSchema<S>[] = [];
+      const errors: unknown[] = [];
 
-    for (const row of rows) {
-      const event = this.#validateRow(row);
-      if (this.#insertPerRow(event)) {
-        // Increment the counter immediately after a successful
-        // insert and BEFORE listener fan-out. If a listener throws
-        // partway through the loop, the event is committed in the
-        // buffer and reflected in `length` — `ingested` must
-        // reflect that too, so callers can recover from listener
-        // exceptions without observability counters lying.
-        this.#statsIngested++;
-        added.push(event);
-        for (const fn of this.#onEvent) fn(event);
-      } else {
-        // Drop-mode silent rejection: out-of-order event under
-        // `ordering: 'drop'`. Strict / reorder modes throw; those
-        // never reach this counter.
-        this.#statsRejected++;
+      for (const row of rows) {
+        const event = this.#validateRow(row);
+        if (this.#insertPerRow(event)) {
+          // Increment the counter immediately after a successful
+          // insert and BEFORE listener fan-out. If a listener throws
+          // partway through the loop, the event is committed in the
+          // buffer and reflected in `length` — `ingested` must
+          // reflect that too, so callers can recover from listener
+          // exceptions without observability counters lying.
+          this.#statsIngested++;
+          added.push(event);
+          this.#dispatch(this.#onEvent, event, errors);
+        } else {
+          // Drop-mode silent rejection: out-of-order event under
+          // `ordering: 'drop'`. Strict / reorder modes throw; those
+          // never reach this counter.
+          this.#statsRejected++;
+        }
+      }
+
+      if (added.length === 0) return;
+
+      // `#applyRetention` updates `#statsEvicted` internally and returns
+      // the materialized evicted events only when an `'evict'` listener
+      // will consume them.
+      const evicted = this.#applyRetention();
+
+      this.#dispatch(this.#onBatch, added, errors);
+      if (evicted.length > 0) {
+        this.#dispatch(this.#onEvict, evicted, errors);
+      }
+      rethrowFirst(errors);
+    });
+  }
+
+  /**
+   * [PND-LIVFIX] Run one push under the re-entrancy guard: bump
+   * `#dispatchDepth` for its duration, then drain any pushes that
+   * listeners queued while it ran. A queued push runs as its own guarded
+   * push (so its listeners can queue more), in arrival order. An error
+   * from the outer push is rethrown AFTER the queue has drained — the
+   * queued rows were accepted by `push()` and must not be lost to a
+   * listener's exception elsewhere.
+   */
+  #guarded(run: () => void): void {
+    let failure: { error: unknown } | undefined;
+    this.#dispatchDepth += 1;
+    try {
+      run();
+    } catch (error) {
+      failure = { error };
+    } finally {
+      this.#dispatchDepth -= 1;
+    }
+    if (this.#dispatchDepth === 0 && this.#pendingPushes.length > 0) {
+      const queued = this.#pendingPushes;
+      this.#pendingPushes = [];
+      for (const push of queued) {
+        try {
+          push();
+        } catch (error) {
+          failure ??= { error };
+        }
       }
     }
+    if (failure) throw failure.error;
+  }
 
-    if (added.length === 0) return;
-
-    // `#applyRetention` updates `#statsEvicted` internally and returns
-    // the materialized evicted events only when an `'evict'` listener
-    // will consume them.
-    const evicted = this.#applyRetention();
-
-    for (const fn of this.#onBatch) fn(added);
-    if (evicted.length > 0) {
-      for (const fn of this.#onEvict) fn(evicted);
+  /**
+   * [PND-LIVFIX] Fan out to a listener set with error isolation. Iterates
+   * a snapshot, so a listener that adds or removes listeners during
+   * dispatch neither disturbs the others nor fires for the event it was
+   * added during. A throwing listener is recorded and the remaining
+   * listeners still run; the caller rethrows the first error once the
+   * whole push (retention, `'batch'`, `'evict'`) has completed. Before
+   * this, a throw skipped retention entirely and left every later
+   * subscriber — a derived `filter()` view included — permanently out of
+   * sync with the buffer (audit 2026-06 §4.1).
+   */
+  #dispatch<T>(
+    set: ListenerSet<(arg: T) => void>,
+    arg: T,
+    errors: unknown[],
+  ): void {
+    if (set.size === 0) return;
+    for (const fn of set.snapshot()) {
+      try {
+        fn(arg);
+      } catch (error) {
+        errors.push(error);
+      }
     }
   }
 
@@ -596,20 +717,18 @@ export class LiveSeries<S extends SeriesSchema> {
       this.#onEvent.size > 0 || this.#onBatch.size > 0
         ? materializeEventsFromStoreAt(source, indices, this.schema)
         : null;
-    if (added) {
-      for (const ev of added) {
-        for (const fn of this.#onEvent) fn(ev);
+    this.#guarded(() => {
+      const errors: unknown[] = [];
+      if (added) {
+        for (const ev of added) this.#dispatch(this.#onEvent, ev, errors);
       }
-    }
 
-    const evicted = this.#applyRetention();
+      const evicted = this.#applyRetention();
 
-    if (added) {
-      for (const fn of this.#onBatch) fn(added);
-    }
-    if (evicted.length > 0) {
-      for (const fn of this.#onEvict) fn(evicted);
-    }
+      if (added) this.#dispatch(this.#onBatch, added, errors);
+      if (evicted.length > 0) this.#dispatch(this.#onEvict, evicted, errors);
+      rethrowFirst(errors);
+    });
   }
 
   /**
@@ -659,10 +778,9 @@ export class LiveSeries<S extends SeriesSchema> {
         : null;
 
     // `'event'` fan-out fires before retention (the ordering contract).
+    const errors: unknown[] = [];
     if (added) {
-      for (const ev of added) {
-        for (const fn of this.#onEvent) fn(ev);
-      }
+      for (const ev of added) this.#dispatch(this.#onEvent, ev, errors);
     }
 
     // Retention always runs. It updates `#statsEvicted` internally and
@@ -670,12 +788,9 @@ export class LiveSeries<S extends SeriesSchema> {
     // listener exists (else `dropPrefix`, returning `[]`).
     const evicted = this.#applyRetention();
 
-    if (added) {
-      for (const fn of this.#onBatch) fn(added);
-    }
-    if (evicted.length > 0) {
-      for (const fn of this.#onEvict) fn(evicted);
-    }
+    if (added) this.#dispatch(this.#onBatch, added, errors);
+    if (evicted.length > 0) this.#dispatch(this.#onEvict, evicted, errors);
+    rethrowFirst(errors);
   }
 
   /**
@@ -724,29 +839,91 @@ export class LiveSeries<S extends SeriesSchema> {
       return;
     }
 
-    const added: EventForSchema<S>[] = [];
+    if (this.#dispatchDepth > 0) {
+      this.#pendingPushes.push(() => this._pushTrustedEvents(events));
+      return;
+    }
+    this.#guarded(() => {
+      const added: EventForSchema<S>[] = [];
+      const errors: unknown[] = [];
 
-    for (const event of events) {
-      if (this.#insertPerRow(event)) {
-        // See pushMany — counter advances before listener fan-out
-        // so partial-failure on any listener still leaves
-        // `ingested` consistent with `length`.
-        this.#statsIngested++;
-        added.push(event);
-        for (const fn of this.#onEvent) fn(event);
-      } else {
-        this.#statsRejected++;
+      for (const event of events) {
+        if (this.#insertPerRow(event)) {
+          // See pushMany — counter advances before listener fan-out
+          // so partial-failure on any listener still leaves
+          // `ingested` consistent with `length`.
+          this.#statsIngested++;
+          added.push(event);
+          this.#dispatch(this.#onEvent, event, errors);
+        } else {
+          this.#statsRejected++;
+        }
       }
+
+      if (added.length === 0) return;
+
+      const evicted = this.#applyRetention();
+
+      this.#dispatch(this.#onBatch, added, errors);
+      if (evicted.length > 0) this.#dispatch(this.#onEvict, evicted, errors);
+      rethrowFirst(errors);
+    });
+  }
+
+  /**
+   * @internal — number of row-materialising listeners (`'event'` +
+   * `'batch'`). Zero means a push on the chunked backing builds no
+   * `Event` objects at all. Exposed for the [PND-LIVFIX] chained-dispose
+   * pin, which asserts a disposed chain leaves nothing subscribed.
+   */
+  get _rowListenerCount(): number {
+    return this.#onEvent.size + this.#onBatch.size;
+  }
+
+  /**
+   * @internal — [PND-LIVFIX] the order this series evicts relative to
+   * arrival. `'sorted'` for `ordering: 'reorder'`, whose retention drops
+   * the sorted prefix (possibly a late, i.e. recent, arrival);
+   * `'arrival'` otherwise. `LiveReduce` selects its windowed reducer
+   * state on this.
+   */
+  get _evictionOrder(): 'arrival' | 'sorted' {
+    return this.#ordering === 'reorder' ? 'sorted' : 'arrival';
+  }
+
+  /**
+   * @internal — [PND-LIVFIX] age-based retention against an EXTERNAL
+   * clock. `#applyRetention` measures `maxAge` from this buffer's own
+   * newest event, which is right for a standalone series but leaves a
+   * partition sub-series that has gone quiet holding its events forever:
+   * nothing ever pushes into it, so its clock never advances (audit
+   * 2026-06 §4.3 — a 10 s `maxAge` partition still held its event 9,999 s
+   * later). `LivePartitionedSeries` calls this on every partition as the
+   * source's watermark advances, so a quiet partition ages out against
+   * the time the source has actually reached. Emits `'evict'` exactly as
+   * push-driven retention does, so `LiveReduce` and views stay in sync.
+   * No-op without `maxAge`, on an empty buffer, or while this series is
+   * mid-dispatch (the next sweep catches up).
+   */
+  _sweepAge(latestMs: number): void {
+    if (this.#maxAgeMs === Infinity || this.#dispatchDepth > 0) return;
+    const len = this.#storage.length;
+    if (len === 0) return;
+    const cutoff = latestMs - this.#maxAgeMs;
+    let i = 0;
+    while (i < len && this.#storage.beginAt(i)! < cutoff) i += 1;
+    if (i === 0) return;
+    this.#statsEvicted += i;
+    if (this.#onEvict.size === 0) {
+      this.#storage.dropPrefix(i);
+      return;
     }
-
-    if (added.length === 0) return;
-
-    const evicted = this.#applyRetention();
-
-    for (const fn of this.#onBatch) fn(added);
-    if (evicted.length > 0) {
-      for (const fn of this.#onEvict) fn(evicted);
-    }
+    const evicted = this.#storage.evictPrefix(i);
+    this.#guarded(() => {
+      const errors: unknown[] = [];
+      this.#dispatch(this.#onEvict, evicted, errors);
+      rethrowFirst(errors);
+    });
   }
 
   /**
@@ -829,7 +1006,9 @@ export class LiveSeries<S extends SeriesSchema> {
       // `evicted` counter on `stats()` for consistency. JSDoc on
       // `stats().evicted` documents both paths.
       this.#statsEvicted += evicted.length;
-      for (const fn of this.#onEvict) fn(evicted);
+      const errors: unknown[] = [];
+      this.#dispatch(this.#onEvict, evicted, errors);
+      rethrowFirst(errors);
     }
   }
 
