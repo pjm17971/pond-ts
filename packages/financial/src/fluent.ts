@@ -120,6 +120,18 @@ import type { EaseOfMovementOptions } from './studies/ease-of-movement.js';
 import { easeOfMovement as easeOfMovementStudy } from './studies/ease-of-movement.js';
 import type { VolumeOscillatorOptions } from './studies/volume-oscillator.js';
 import { volumeOscillator as volumeOscillatorStudy } from './studies/volume-oscillator.js';
+import type { ChandeMomentumOptions } from './studies/chande-momentum.js';
+import { chandeMomentum as chandeMomentumStudy } from './studies/chande-momentum.js';
+import type { UltimateOscillatorOptions } from './studies/ultimate-oscillator.js';
+import { ultimateOscillator as ultimateOscillatorStudy } from './studies/ultimate-oscillator.js';
+import type { CommodityChannelIndexOptions } from './studies/commodity-channel-index.js';
+import { commodityChannelIndex as commodityChannelIndexStudy } from './studies/commodity-channel-index.js';
+import type { IntradayMomentumIndexOptions } from './studies/intraday-momentum-index.js';
+import { intradayMomentumIndex as intradayMomentumIndexStudy } from './studies/intraday-momentum-index.js';
+import type { RelativeVigorIndexOptions } from './studies/relative-vigor-index.js';
+import { relativeVigorIndex as relativeVigorIndexStudy } from './studies/relative-vigor-index.js';
+import type { PsychologicalLineOptions } from './studies/psychological-line.js';
+import { psychologicalLine as psychologicalLineStudy } from './studies/psychological-line.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -312,6 +324,30 @@ declare module 'pond-ts' {
     /** Fluent Volume Oscillator. */
     volumeOscillator<const Output extends string = 'volOsc'>(
       options?: VolumeOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Chande Momentum Oscillator (unsmoothed up/down sums). */
+    chandeMomentum<const Output extends string = 'cmo'>(
+      options?: ChandeMomentumOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Ultimate Oscillator (three horizons, weighted 4/2/1). */
+    ultimateOscillator<const Output extends string = 'uo'>(
+      options?: UltimateOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Commodity Channel Index. */
+    commodityChannelIndex<const Output extends string = 'cci'>(
+      options?: CommodityChannelIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Intraday Momentum Index (RSI form on the candle body). */
+    intradayMomentumIndex<const Output extends string = 'imi'>(
+      options?: IntradayMomentumIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Relative Vigor Index (index + signal). */
+    relativeVigorIndex<const Prefix extends string = 'rvi'>(
+      options?: RelativeVigorIndexOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Psychological Line (percent of up closes). */
+    psychologicalLine<const Output extends string = 'psy'>(
+      options?: PsychologicalLineOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -552,4 +588,40 @@ proto.volumeOscillator = function (
   options?: VolumeOscillatorOptions<SeriesSchema, string>,
 ) {
   return volumeOscillatorStudy(this, options);
+};
+proto.chandeMomentum = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChandeMomentumOptions<SeriesSchema, string>,
+) {
+  return chandeMomentumStudy(this, options);
+};
+proto.ultimateOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: UltimateOscillatorOptions<SeriesSchema, string>,
+) {
+  return ultimateOscillatorStudy(this, options);
+};
+proto.commodityChannelIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: CommodityChannelIndexOptions<SeriesSchema, string>,
+) {
+  return commodityChannelIndexStudy(this, options);
+};
+proto.intradayMomentumIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: IntradayMomentumIndexOptions<SeriesSchema, string>,
+) {
+  return intradayMomentumIndexStudy(this, options);
+};
+proto.relativeVigorIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RelativeVigorIndexOptions<SeriesSchema, string>,
+) {
+  return relativeVigorIndexStudy(this, options);
+};
+proto.psychologicalLine = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PsychologicalLineOptions<SeriesSchema, string>,
+) {
+  return psychologicalLineStudy(this, options);
 };

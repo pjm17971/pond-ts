@@ -52,6 +52,12 @@ import {
   forceIndex,
   easeOfMovement,
   volumeOscillator,
+  chandeMomentum,
+  ultimateOscillator,
+  commodityChannelIndex,
+  intradayMomentumIndex,
+  relativeVigorIndex,
+  psychologicalLine,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -78,6 +84,7 @@ interface OracleCase {
     shortPeriod?: number;
     wmaPeriod?: number;
     mode?: PriceOscillatorMode;
+    mediumPeriod?: number;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -276,6 +283,25 @@ function run(c: OracleCase): unknown {
         ohlcSeries(),
         p as { fastPeriod?: number; slowPeriod?: number; maType?: MaType },
       );
+    case 'chandeMomentum':
+      return chandeMomentum(series(), p as { period?: number });
+    case 'ultimateOscillator':
+      return ultimateOscillator(
+        ohlcSeries(),
+        p as {
+          shortPeriod?: number;
+          mediumPeriod?: number;
+          longPeriod?: number;
+        },
+      );
+    case 'commodityChannelIndex':
+      return commodityChannelIndex(ohlcSeries(), p as { period?: number });
+    case 'intradayMomentumIndex':
+      return intradayMomentumIndex(ohlcSeries(), p as { period?: number });
+    case 'relativeVigorIndex':
+      return relativeVigorIndex(ohlcSeries(), p as { period?: number });
+    case 'psychologicalLine':
+      return psychologicalLine(series(), p as { period?: number });
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

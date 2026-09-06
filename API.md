@@ -435,7 +435,8 @@ All are pure `(series, options) → TimeSeries` appending output columns;
 length-preserving (`undefined` head rows). A **multi-input** study (`atr`,
 `keltner`, `qstick`) names each input instead of taking one `column`, each
 defaulting to its `DEFAULT_OHLCV` name — the same "never hard-code a column"
-rule applied per input. A study whose centre line is the caller's own field
+rule applied per input (`relativeVigorIndex` names all four OHLC columns). A
+study whose centre line is the caller's own field
 appends only the bands (`atrBands`: no `Middle`), since the middle is already
 on the series.
 
@@ -479,6 +480,12 @@ on the series.
 | `forceIndex`                | `force`                              | `{ period?, close?, volume?, output? }` (EMA of Δclose·volume, Elder's 13; `period: 1` is the raw force)                             | `packages/financial/src/studies/force-index.ts`                |
 | `easeOfMovement`            | `eom`                                | `{ period?, maType?, scale?, high?, low?, volume?, output? }` (Arms' box ratio, 14/sma/1e8; quadratic in price)                      | `packages/financial/src/studies/ease-of-movement.ts`           |
 | `volumeOscillator`          | `volOsc`                             | `{ fastPeriod?, slowPeriod?, maType?, volume?, output? }` (5/10/sma; `priceOscillator` percent-mode over volume)                     | `packages/financial/src/studies/volume-oscillator.ts`          |
+| `chandeMomentum`            | `cmo`                                | `{ period?, column?, output? }` (Chande's **unsmoothed** up/down sums, default 14 — _not_ TA-Lib's CMO, which is `2·rsi − 100`)      | `packages/financial/src/studies/chande-momentum.ts`            |
+| `ultimateOscillator`        | `uo`                                 | `{ shortPeriod?, mediumPeriod?, longPeriod?, high?, low?, close?, output? }` (7/14/28 weighted 4/2/1; TA-Lib `ULTOSC`)               | `packages/financial/src/studies/ultimate-oscillator.ts`        |
+| `commodityChannelIndex`     | `cci`                                | `{ period?, high?, low?, close?, output? }` (`(tp − SMA)/(0.015 · meanAbsDev)`, default 20; TA-Lib `CCI`)                            | `packages/financial/src/studies/commodity-channel-index.ts`    |
+| `intradayMomentumIndex`     | `imi`                                | `{ period?, open?, close?, output? }` (RSI's form over `close − open`, **plain** sums, default 14)                                   | `packages/financial/src/studies/intraday-momentum-index.ts`    |
+| `relativeVigorIndex`        | `rvi`, `rviSignal`                   | `{ period?, open?, high?, low?, close?, prefix? }` (SWMA `(1,2,2,1)/6` body/range sums + SWMA signal, default 10)                    | `packages/financial/src/studies/relative-vigor-index.ts`       |
+| `psychologicalLine`         | `psy`                                | `{ period?, column?, output? }` (percent of **up** closes, strict `>`, default 12)                                                   | `packages/financial/src/studies/psychological-line.ts`         |
 
 Every study also exports its options type (`SmaOptions`-style, named for the
 study). `PriceOscillatorMode` (`'percent' | 'absolute'`) is exported alongside
