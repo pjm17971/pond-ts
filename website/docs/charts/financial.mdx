@@ -5,6 +5,7 @@ sidebar_position: 6
 
 import ChartExample from '@site/src/components/ChartExample';
 import ChartsFinancialStudies from '@site/src/examples/charts-financial-studies';
+import ChartsFinancialOscillators from '@site/src/examples/charts-financial-oscillators';
 import GalleryFinancial from '@site/src/examples/gallery-financial';
 
 # Financial charts
@@ -39,8 +40,10 @@ Three conventions make the corpus uniform and composable:
 - **`output` / `prefix`** — what to name the result column(s), so overlays don't
   collide.
 - **Bar-count periods, length-preserving warm-up** — `period` is a number of
-  bars; the first `period − 1` rows are `undefined` (the chart renders that as a
-  clean gap, so a moving average simply starts once it has enough history).
+  bars; the warm-up rows are `undefined` (the chart renders that as a clean
+  gap, so a moving average simply starts once it has enough history). For a
+  rolling study that is the first `period − 1` rows; the difference-built ones
+  cost one more — see the warm-up note under the tables.
 
 ```ts
 import { bollinger, ema } from '@pond-ts/financial';
@@ -55,36 +58,87 @@ Every study is also a **fluent method** on `TimeSeries` once you opt in with
 
 ### What's here today
 
-The library is **growing** — this is the first batch. Each is a batch
-transform (`TimeSeries → TimeSeries + columns`):
+Twenty studies, every one verified against a pandas oracle before it
+shipped — and the eight named indicators (`rsi`, `macd`, `atr`, `stochastic`,
+`williamsR`, `momentum`, `percentChange`, `obv`) bar-for-bar against TA-Lib
+too. Each is a batch transform (`TimeSeries → TimeSeries + columns`). Grouped
+by where they are drawn:
 
-| Study               | Appends                               | Computes                                                |
-| ------------------- | ------------------------------------- | ------------------------------------------------------- |
-| `sma`               | `sma`                                 | Simple moving average (mean of the last `period` bars). |
-| `ema`               | `ema`                                 | Exponential moving average (`α = 2/(period+1)`).        |
-| `bollinger`         | `bbMiddle` / `bbUpper` / `bbLower`    | SMA ± `stdDev`×population σ (default 2).                |
-| `envelope`          | `envMiddle` / `envUpper` / `envLower` | Moving-average envelope, `middle × (1 ± percent/100)`.  |
-| `rollingStdev`      | `stdev`                               | Rolling population standard deviation.                  |
-| `rollingMin`        | `min`                                 | Rolling minimum (Donchian lower).                       |
-| `rollingMax`        | `max`                                 | Rolling maximum (Donchian upper).                       |
-| `rollingPercentile` | `p{q}`                                | Rolling `q`-th percentile (linear interpolation).       |
-| `zScore`            | `zscore`                              | `(value − SMA) / σ`, standardized deviation.            |
-| `percentChange`     | `pctChange`                           | Rate of change vs `periods` bars ago, in percent.       |
+**Overlays — drawn on the price row**
 
-Overlay a moving average or a band as chart layers (the hero above); read a
-scalar study like `zScore` or `pctChange` off a second row, or through the
-cursor.
+| Study       | Appends                               | Computes                                                                     |
+| ----------- | ------------------------------------- | ---------------------------------------------------------------------------- |
+| `sma`       | `sma`                                 | Simple moving average (mean of the last `period` bars).                      |
+| `ema`       | `ema`                                 | Exponential moving average (`α = 2/(period+1)`).                             |
+| `bollinger` | `bbMiddle` / `bbUpper` / `bbLower`    | SMA ± `stdDev`×population σ (default 2).                                     |
+| `envelope`  | `envMiddle` / `envUpper` / `envLower` | Moving-average envelope, `middle × (1 ± percent/100)`.                       |
+| `donchian`  | `dcUpper` / `dcLower` / `dcMiddle`    | Highest high / lowest low over `period` bars, and the midpoint.              |
+| `vwap`      | `vwap`                                | Rolling volume-weighted typical price, `Σ tp·v / Σ v`; `period` is required. |
+
+**Oscillators — drawn on their own row** (the example below)
+
+| Study           | Appends                                | Computes                                                                                                                      |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `rsi`           | `rsi`                                  | Wilder's Relative Strength Index, 0–100 (default 14).                                                                         |
+| `macd`          | `macdLine` / `macdSignal` / `macdHist` | EMA(fast) − EMA(slow), its EMA signal, and the difference (12/26/9).                                                          |
+| `stochastic`    | `stochK` / `stochD`                    | `%K` = where the close sits in the `kPeriod` range, smoothed by `slowing`; `%D` its SMA. `slowing: 1` is the fast stochastic. |
+| `williamsR`     | `williamsR`                            | Williams %R, −100..0 — `stochastic({ slowing: 1 }).K − 100`.                                                                  |
+| `momentum`      | `momentum`                             | `value − value[period bars ago]` (default 10).                                                                                |
+| `percentChange` | `pctChange`                            | Rate of change vs `periods` bars ago, in percent (TA-Lib's ROC).                                                              |
+| `zScore`        | `zscore`                               | `(value − SMA) / σ`, standardized deviation.                                                                                  |
+| `obv`           | `obv`                                  | On-Balance Volume — the running total of volume signed by the close change. No `period`.                                      |
+
+**Volatility and range statistics**
+
+| Study                  | Appends | Computes                                                              |
+| ---------------------- | ------- | --------------------------------------------------------------------- |
+| `atr`                  | `atr`   | Wilder's Average True Range, in price units (default 14).             |
+| `historicalVolatility` | `hv`    | Annualised σ of log returns (`annualize` bars per year, default 252). |
+| `rollingStdev`         | `stdev` | Rolling population standard deviation.                                |
+| `rollingMin`           | `min`   | Rolling minimum (one Donchian edge).                                  |
+| `rollingMax`           | `max`   | Rolling maximum (the other).                                          |
+| `rollingPercentile`    | `p{q}`  | Rolling `q`-th percentile (linear interpolation).                     |
+
+Multi-input studies (`atr`, `stochastic`, `williamsR`, `donchian`, `obv`,
+`vwap`) name each bar column they read — `high`, `low`, `close`, `volume` —
+with the conventional defaults, so they run over any column layout the same
+way `column` lets a single-input study run over any field.
+
+Two conventions worth knowing before you draw them: **warm-up length** is the
+first `period − 1` rows for a rolling study, but one more (`period`) for the
+difference-built ones (`rsi`, `atr`, `momentum`, `historicalVolatility`, and
+`percentChange` over its `periods`), `kPeriod + slowing − 2` for `%K`, and
+each `macd` column from its own first valid bar; `obv` has no warm-up at all.
+And a **flat window is `undefined`**, not
+0 — `rsi`, `stochastic` and `williamsR` all report no position when there is
+no range to have a position in (TA-Lib returns 0 there; the package's
+docstrings record every such delta).
+
+### Oscillators in their own rows
+
+An oscillator is just another column on the same series, drawn on its own
+`<ChartRow>` with its own `<YAxis>`. RSI gets a fixed `min={0} max={100}`
+axis and two `<Baseline>`s at 30 and 70; MACD gets its line and signal on an
+auto-scaled axis around a zero baseline:
+
+<ChartExample name="charts-financial-oscillators" height={380} collapsed>
+  {(width) => <ChartsFinancialOscillators width={width} />}
+</ChartExample>
+
+The crosshair reads all three rows at once — the OHLC readout on the candles,
+and each oscillator's value on its own axis.
 
 ### What's coming
 
 The corpus assessment maps ~124 ChartIQ studies onto ~11 rolling kernels, so
-the library extends cheaply. The **next batch** (Phase 1 breadth) adds the
-oscillators and volume studies most charts reach for: **RSI, MACD, ATR (+ATR
-bands), stochastics, Williams %R, Donchian channel, OBV, VWAP, historical
-volatility, and momentum / ROC**. A later phase covers the stateful ones
-(PSAR, SuperTrend, ATR trailing stop, ZigZag) and session-anchored studies
-(pivot points, session-reset VWAP). Adding one is a short, oracle-verified
-assembly — see the `studies/README.md` pattern in the package.
+the library extends cheaply, and Phase 1 breadth (the oscillators and volume
+studies above) has landed. Still open in that phase: **ATR bands** (Keltner-style
+`close ± k·ATR`) and the **session-anchored VWAP** — the rolling `vwap` above
+is a window, not the intraday desk's running line, which needs a session reset.
+A later phase covers the stateful ones (PSAR, SuperTrend, ATR trailing stop,
+ZigZag) and the other session-anchored studies (pivot points). Adding one is a
+short, oracle-verified assembly — see the `studies/README.md` pattern in the
+package.
 
 ## Assembling the chart
 
@@ -122,24 +176,24 @@ there's no separate "financial mode", just the pieces:
 
 If you're arriving from TradingView / ChartIQ, the vocabulary maps like this:
 
-| TradingView / ChartIQ           | pond-ts                                                             |
-| ------------------------------- | ------------------------------------------------------------------- |
-| Indicator / Study               | the [studies library](#the-studies-library) (`sma`, `bollinger`, …) |
-| Field (indicator input)         | the `column` option on every study                                  |
-| Candles / OHLC bars             | [`<Candlestick>`](./types/candlestick.mdx)                          |
-| Bar / Candle / Hollow style     | `<Candlestick variant>`                                             |
-| Volume sub-pane                 | a second `<ChartRow>` with `<BarChart column="volume">`             |
-| Pane / sub-chart                | a `<ChartRow>` ([Layout](./layout.mdx))                             |
-| Crosshair                       | `cursor="crosshair"`                                                |
-| OHLC legend / data window       | `<Candlestick showOHLC>`                                            |
-| Last-price line / label         | `YAxisIndicator` + `createLiveValue`                                |
-| Session separator               | `sessionDividers` on `<ChartContainer>`                             |
-| Regular trading hours (no gaps) | the `calendar` prop + a `TradingCalendar`                           |
+| TradingView / ChartIQ           | pond-ts                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| Indicator / Study               | the [studies library](#the-studies-library) (`sma`, `bollinger`, …)           |
+| Field (indicator input)         | the `column` option (or the named `high` / `low` / `close` / `volume` inputs) |
+| Candles / OHLC bars             | [`<Candlestick>`](./types/candlestick.mdx)                                    |
+| Bar / Candle / Hollow style     | `<Candlestick variant>`                                                       |
+| Volume sub-pane                 | a second `<ChartRow>` with `<BarChart column="volume">`                       |
+| Pane / sub-chart                | a `<ChartRow>` ([Layout](./layout.mdx))                                       |
+| Crosshair                       | `cursor="crosshair"`                                                          |
+| OHLC legend / data window       | `<Candlestick showOHLC>`                                                      |
+| Last-price line / label         | `YAxisIndicator` + `createLiveValue`                                          |
+| Session separator               | `sessionDividers` on `<ChartContainer>`                                       |
+| Regular trading hours (no gaps) | the `calendar` prop + a `TradingCalendar`                                     |
 
 ## See also
 
-- [@pond-ts/financial](../financial/) — constructing a `TradingCalendar` and
-  the studies API surface (the package side).
+- [@pond-ts/financial](../financial/) — the package side: the studies list,
+  the fluent opt-in, and constructing a `TradingCalendar`.
 - [Candlestick](./types/candlestick.mdx) · [Trading-time axis](./axes/trading-time-axis.mdx)
   — the two primitives this hub assembles.
 - Storybook: [`Charts/Candlestick` → ScenarioPriceVolume](pathname:///storybook/?path=/story/charts-candlestick--scenario-price-volume)
