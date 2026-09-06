@@ -22,8 +22,13 @@ export { TradingCalendar } from './calendar/trading-calendar.js';
 export type { OhlcvColumns } from './contract/columns.js';
 export { DEFAULT_OHLCV, DEFAULT_SOURCE } from './contract/columns.js';
 export type { RollingReducer } from './kernels/rolling.js';
-export type { MovingAverageOptions } from './studies/moving-average.js';
-export { sma, ema } from './studies/moving-average.js';
+export type { MaType } from './kernels/moving-average.js';
+export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
+export type {
+  MovingAverageOptions,
+  MovingAverageTypeOptions,
+} from './studies/moving-average.js';
+export { sma, ema, movingAverage } from './studies/moving-average.js';
 export type { BollingerOptions } from './studies/bollinger.js';
 export { bollinger } from './studies/bollinger.js';
 export type {

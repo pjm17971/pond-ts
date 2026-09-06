@@ -194,6 +194,52 @@ trade already deferred for the fused SMA). Lesson from the mutation matrix:
 the `Σw === 0 ? NaN` guard was dead code (non-negative weights make 0/0 NaN
 already) and was removed rather than kept with a false "load-bearing" claim.
 
+**Landed — the K2 moving-average engine.** `kernels/moving-average.ts` names
+the MA-type menu once — `MaType` = `sma | ema | wma | smma | dema | tema |
+trima | hull | kama | zlema` — with `movingAverageValues(values, period,
+type)` over a **raw array** (so the derived-input callers can use it: Keltner
+on typical price, Coppock's WMA of two ROCs, Disparity, the Price Oscillator)
+and `movingAverageColumn` as the series-level door. Surfaced as the
+`movingAverage({ period, type, column, output = 'ma' })` study plus fluent;
+`envelope.maType` widened from `'sma' | 'ema'` to the whole menu. Decisions:
+(1) **`sma` and `ema` are routed back to `rollingValues` / `emaValues`, not
+reimplemented** — one definition rather than two that agree "to rounding", and
+they keep the parallel accelerator and core's columnar EMA fast path; pinned
+bit-for-bit, which is also what makes the envelope widening provably a no-op
+on the two types it already had. (2) **The EMA seed question was not
+reopened**: `ema`/`dema`/`tema` use pond's first-sample seed, so the engine
+cannot disagree with `ema()` inside the package (the MACD precedent). Masks
+are identical to TA-Lib's regardless — the seed does not move the lookback —
+so the generator asserts the null mask exactly and bounds the values at the
+tail; measured at period 21 the transient is 0.210% / 0.529% / 0.059% of scale
+at the first shared bar and 0.0008% / 0.0155% / 0.0144% by bar 79. `sma`,
+`wma`, `trima` and `kama` match TA-Lib `MA(matype=…)` outright (`kama` to
+`0`). (3) **Interior gaps are stated per type rather than reconciled** — the
+Wilder asymmetry the plan flagged before ADX, now written down: window types
+recover, the `ema` family skips the gap bar and carries on, `smma` and `kama`
+propagate to the end. On the **array door** every type, `sma` included,
+steps over a leading gap (waits for `period` finite values — the studies
+README's rule for derived inputs; the builder had kept `sma()`'s
+rows-not-contributors window there and the Layer-2 review held the engine
+to the rule). The **column door** routes `'sma'` to `rollingValues`, so
+`movingAverage({ type: 'sma' })` over a column and `sma()` stay one SMA; the
+doors differ only on a column with missing cells, pinned both ways. (4) **WMA got the O(N) running weighted sum**
+(`W(i) = W(i−1) − S(i−1) + period·x(i)`, rebuilt on `i % period === 0` like
+`ranged.ts` so the cancellation cannot accumulate): 57.0 → 30.7 ms at period
+20 over 1M bars, 262.1 → 29.4 ms at period 100 — the point being that the
+shipped form is flat in `period` where the definition's dot product is
+linear in it. (5) **Deferred and named**: MAMA/FAMA, T3, VIDYA (wants the
+K6 recursion, [PND-SFOLD]) and the time-series/regression forecast MA (that
+is kernel **K7**, not a smoothing rate). Two mutation-matrix findings worth
+keeping: TRIMA's two SMA lengths **commute**, so swapping them changes no
+number (only dropping the even branch's `+ 1` does); and KAMA's `sum === 0 ?
+1` flat-window guard is load-bearing for a reason the first comment got wrong
+— it is not what propagates a gap (the recursion's own `NaN` does that), it is
+what stops an unguarded `0/0` emptying the column when a series flattens while
+KAMA is still far below it. Unblocks the §6.1 K2 family (Price Oscillator,
+Disparity, DPO, MA Cross/Deviation, GMMA, Rainbow, Alligator/Gator, TRIX,
+Coppock, KST) and the §6.2 MA-centred bands (Keltner, STARC, High-Low Bands).
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

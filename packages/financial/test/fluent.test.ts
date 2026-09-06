@@ -8,6 +8,8 @@
 import { describe, it, expect } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
+  MA_TYPES,
+  movingAverage,
   sma,
   ema,
   bollinger,
@@ -104,6 +106,27 @@ describe('fluent studies (opt-in prototype augmentation)', () => {
     );
     for (const c of ['sma', 'e', 'bbMiddle', 'bbUpper', 'bbLower']) {
       expect(col(fluent, c)).toEqual(col(functional, c));
+    }
+  });
+
+  it('.movingAverage() is the standalone study, for every type', () => {
+    // Chained twice with different `type`s and `output`s, which is the shape
+    // a "MA Type" study actually gets used in (fast vs slow line).
+    const chained = bars()
+      .movingAverage({ period: 3, type: 'wma', output: 'fast' })
+      .movingAverage({ period: 4, type: 'hull', output: 'slow' });
+    const functional = movingAverage(
+      movingAverage(bars(), { period: 3, type: 'wma', output: 'fast' }),
+      { period: 4, type: 'hull', output: 'slow' },
+    );
+    expect(col(chained, 'fast')).toEqual(col(functional, 'fast'));
+    expect(col(chained, 'slow')).toEqual(col(functional, 'slow'));
+
+    for (const type of MA_TYPES) {
+      expect(
+        col(bars().movingAverage({ period: 3, type }), 'ma'),
+        type,
+      ).toEqual(col(movingAverage(bars(), { period: 3, type }), 'ma'));
     }
   });
 

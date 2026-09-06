@@ -36,10 +36,10 @@ import json
 import math
 import pathlib
 
+import numpy as np
 import pandas as pd
 
 try:  # optional: the industry cross-check for the named indicators
-    import numpy as np
     import talib
 except ImportError:  # pragma: no cover - pandas-only venv
     talib = None
@@ -137,6 +137,265 @@ def ema(n: int) -> dict:
     e = s.ewm(span=n, adjust=False).mean()
     e.iloc[: n - 1] = math.nan  # our length-preserving warm-up (minSamples: n)
     return {"ema": col(e)}
+
+
+# --------------------------------------------------------------------------
+# The K2 moving-average engine: ten types behind one `type` option.
+#
+# TA-Lib ships seven of them under MA(matype=...) and they are asserted
+# against below. SMMA / Hull / ZLEMA have no TA-Lib function, so they are
+# pandas replications of OUR definition with their analytic warm-up asserted,
+# which is what stops a fixture from pinning the wrong one silently.
+#
+# THE SEED. `ema`, `dema` and `tema` run on POND's EMA (first-sample seed),
+# not TA-Lib's (SMA of the first n) -- the `macd` precedent, and for the same
+# reason: seeding TA-Lib's way here would make movingAverage(type='ema')
+# disagree with ema() inside our own package. The seed does not move the
+# lookback, so their null MASK is still asserted exactly; the VALUES get a
+# tail bound (a seed difference decays, a wrong rate does not) and the
+# first-bars delta is printed and recorded in the conventions block.
+# --------------------------------------------------------------------------
+
+def _round_half_up(x: float) -> int:
+    """JS `Math.round`, which is not Python's `round` (banker's rounding).
+    sqrt(n) is never exactly x.5 for integer n, so this only ever matters as
+    a guard against the two languages drifting on some future input."""
+    return math.floor(x + 0.5)
+
+
+_MA_MENU = [
+    "sma",
+    "ema",
+    "wma",
+    "smma",
+    "dema",
+    "tema",
+    "trima",
+    "hull",
+    "kama",
+    "zlema",
+]
+_MA_TALIB = {"sma": 0, "ema": 1, "wma": 2, "dema": 3, "tema": 4, "trima": 5, "kama": 6}
+_MA_SEED_DELTA = {"ema", "dema", "tema"}  # pond's seed, not TA-Lib's
+# The three TA-Lib has no function for: assert the analytic first valid bar.
+_MA_NO_TALIB_FIRST = {
+    "smma": lambda n: n - 1,
+    "hull": lambda n: n - 2 + _round_half_up(math.sqrt(n)),
+    "zlema": lambda n: (n - 1) // 2 + n - 1,
+}
+
+
+def _ema_sma_seed(values, n: int) -> np.ndarray:
+    """TA-Lib's span-EMA: seed = mean of the first n finite samples, placed at
+    the n-th, then the recursion. Used to prove the DEMA/TEMA FORMULAS against
+    TA-Lib exactly, separately from the seed convention (see moving_average)."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    alpha = 2.0 / (n + 1.0)
+    finite = np.flatnonzero(~np.isnan(x))
+    if len(finite) < n:
+        return out
+    first = int(finite[0])
+    out[first + n - 1] = float(np.mean(x[first : first + n]))
+    for i in range(first + n, len(x)):
+        out[i] = alpha * x[i] + (1.0 - alpha) * out[i - 1]
+    return out
+
+
+def _ema_first_seed(values, n: int) -> pd.Series:
+    """Pond's span-EMA over an ARRAY: first-sample seed, missing cells skipped,
+    emitted once `n` samples have been consumed -- so a leading run of NaN
+    (another stage's warm-up) steps the seed over rather than poisoning it."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    alpha = 2.0 / (n + 1.0)
+    prev = None
+    seen = 0
+    for i, v in enumerate(x):
+        if not np.isfinite(v):
+            continue
+        prev = v if prev is None else alpha * v + (1.0 - alpha) * prev
+        seen += 1
+        if seen >= n:
+            out[i] = prev
+    return pd.Series(out)
+
+
+def _wma(values, n: int) -> pd.Series:
+    """Linear weights 1..n, heaviest on the newest bar. pandas' rolling needs
+    `n` non-NaN observations, which is our "the whole window must be finite"
+    mask -- a positional weight cannot skip a cell without reweighting the
+    rest."""
+    w = np.arange(1.0, n + 1.0)
+    return (
+        pd.Series(np.asarray(values, dtype=float))
+        .rolling(n)
+        .apply(lambda x: float(np.dot(x, w) / w.sum()), raw=True)
+    )
+
+
+def _kama(values, n: int, fast: int = 2, slow: int = 30) -> pd.Series:
+    """Kaufman adaptive MA with TA-Lib's constants; seeded on x[n-1], so the
+    first value lands on bar n. ER = |n-bar change| / (sum of the n absolute
+    steps); the triangle inequality bounds it by 1 with no clamp, and a flat
+    window (0/0) takes TA-Lib's ER = 1."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    const_slow = 2.0 / (slow + 1.0)
+    const_diff = 2.0 / (fast + 1.0) - const_slow
+    prev = x[n - 1]
+    for i in range(n, len(x)):
+        change = abs(x[i] - x[i - n])
+        path = float(np.sum(np.abs(np.diff(x[i - n : i + 1]))))
+        er = 1.0 if path == 0 else change / path
+        sc = (er * const_diff + const_slow) ** 2
+        prev = prev + sc * (x[i] - prev)
+        out[i] = prev
+    return pd.Series(out)
+
+
+def _ma_values(kind: str, n: int) -> pd.Series:
+    if kind == "sma":
+        return s.rolling(n).mean()
+    if kind == "ema":
+        e = s.ewm(span=n, adjust=False).mean()
+        e.iloc[: n - 1] = math.nan  # our length-preserving warm-up
+        return e
+    if kind == "wma":
+        return _wma(s, n)
+    if kind == "smma":
+        # Wilder / RMA: seed = mean of the first n, then (prev*(n-1) + x)/n.
+        # The same recursion rsi/atr run on, one bar earlier (no diff to lose).
+        out = pd.Series(math.nan, index=s.index, dtype="float64")
+        out.iloc[n - 1] = s.iloc[:n].mean()
+        for i in range(n, len(s)):
+            out.iloc[i] = (out.iloc[i - 1] * (n - 1) + s.iloc[i]) / n
+        return out
+    if kind in ("dema", "tema"):
+        e1 = _ma_values("ema", n)
+        e2 = _ema_first_seed(e1, n)
+        if kind == "dema":
+            return 2 * e1 - e2
+        e3 = _ema_first_seed(e2, n)
+        return 3 * e1 - 3 * e2 + e3
+    if kind == "trima":
+        # TA-Lib's split: the two box lengths sum to n + 1, so the convolution
+        # is n bars wide. Odd n gets a single peak, even n a two-bar plateau.
+        p, q = ((n + 1) // 2, (n + 1) // 2) if n % 2 else (n // 2 + 1, n // 2)
+        return s.rolling(p).mean().rolling(q).mean()
+    if kind == "hull":
+        half, root = max(1, n // 2), max(1, _round_half_up(math.sqrt(n)))
+        return _wma(2 * _wma(s, half) - _wma(s, n), root)
+    if kind == "kama":
+        return _kama(s, n)
+    if kind == "zlema":
+        lag = (n - 1) // 2  # floors; see the kernel's note on even periods
+        return _ema_first_seed(2 * s - s.shift(lag), n)
+    raise AssertionError(f"unknown moving-average type {kind!r}")
+
+
+def moving_average(n: int, kind: str) -> dict:
+    v = _ma_values(kind, n)
+    label = f"movingAverage({n}, {kind})"
+
+    if kind in _MA_NO_TALIB_FIRST:
+        expected = _MA_NO_TALIB_FIRST[kind](n)
+        assert v.first_valid_index() == expected, (
+            f"{label} first valid at {v.first_valid_index()}, expected "
+            f"{expected} -- the fixture would pin the wrong warm-up"
+        )
+        print(
+            f"  {label}: pandas replication (TA-Lib has no {kind.upper()}); "
+            f"first valid at {expected}"
+        )
+    elif talib is not None:
+        matype = _MA_TALIB[kind]
+        ref = pd.Series(
+            talib.MA(np.asarray(closes, dtype=float), timeperiod=n, matype=matype)
+        )
+        # Mask first, always (see rsi): nanmax(|a-b|) is blind to an index
+        # where only one side is NaN, so a warm-up off-by-one passes at 0.0.
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib MA(matype={matype}): ours "
+            f"first valid {v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        both = (~np.asarray(v.isna())) & (~np.asarray(ref.isna()))
+        d = np.abs(
+            np.asarray(v, dtype=float)[both] - np.asarray(ref, dtype=float)[both]
+        )
+        if kind in _MA_SEED_DELTA:
+            # Two separate questions, asserted separately (a Layer-2 review
+            # of #695 showed the last-bar check alone lets a wrong DEMA
+            # coefficient through, because every EMA-family formula converges
+            # to the tail):
+            #
+            # (a) THE FORMULA, exactly: rebuild the same type on TA-Lib's own
+            #     SMA seed and require bit-level agreement with TA-Lib. A
+            #     swapped coefficient or a dropped stage fails here at 1e-9.
+            e1 = _ema_sma_seed(closes, n)
+            if kind == "ema":
+                formula = e1
+            elif kind == "dema":
+                e2 = _ema_sma_seed(e1, n)
+                formula = 2 * e1 - e2
+            else:
+                e2 = _ema_sma_seed(e1, n)
+                e3 = _ema_sma_seed(e2, n)
+                formula = 3 * e1 - 3 * e2 + e3
+            refa = np.asarray(ref, dtype=float)
+            assert (np.isnan(formula) == np.isnan(refa)).all(), (
+                f"{label}: SMA-seeded replication's warm-up differs from TA-Lib"
+            )
+            fm = ~np.isnan(refa)
+            fd = float(np.max(np.abs(formula[fm] - refa[fm])))
+            assert fd < 1e-9, (
+                f"{label}: SMA-seeded replication disagrees with TA-Lib by {fd} "
+                "- the formula, not the seed, is wrong"
+            )
+            # (b) THE SEED, bounded: pond's first-sample seed differs from
+            #     TA-Lib's SMA seed by a transient that must have decayed over
+            #     the last 20 shared bars, not merely at the last one.
+            scale = float(np.nanmax(np.abs(ref)))
+            worst, tail = float(d.max()), float(d[-20:].max())
+            assert tail / scale < 0.005, (
+                f"{label} is {tail / scale:.3%} from TA-Lib over the last 20 "
+                "shared bars - too far to be the seed transient"
+            )
+            print(
+                f"  {label}: formula matches TA-Lib on its SMA seed to {fd:.2g}; "
+                f"pond seed vs TA-Lib's SMA seed - {worst / scale:.3%} at the "
+                f"first shared bar, {tail / scale:.4%} worst over the last 20 "
+                "(warm-up masks identical)"
+            )
+        else:
+            assert float(d.max()) < 1e-9, (
+                f"{label} disagrees with TA-Lib MA(matype={matype}) by {d.max()}"
+            )
+            print(
+                f"  {label}: matches TA-Lib MA(matype={matype}) to {d.max():.3g} "
+                "(warm-ups identical)"
+            )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"ma": col(v)}
+
+
+# The engine's dispatch has to be DISCRIMINATING or a wrong-branch bug is
+# invisible: ten types that all agreed on this fixture would let `type` be
+# ignored entirely and every case still pass. Asserted pairwise, on the bars
+# where both are defined.
+for _n in (10, 21):
+    _computed = {k: np.asarray(_ma_values(k, _n), dtype=float) for k in _MA_MENU}
+    for _i, _a in enumerate(_MA_MENU):
+        for _b in _MA_MENU[_i + 1 :]:
+            _both = np.isfinite(_computed[_a]) & np.isfinite(_computed[_b])
+            assert _both.any(), f"{_a} and {_b} never overlap at period {_n}"
+            _sep = float(np.max(np.abs(_computed[_a][_both] - _computed[_b][_both])))
+            assert _sep > 0.01, (
+                f"movingAverage {_a} and {_b} at period {_n} agree to within "
+                f"{_sep} on this fixture - a wrong-branch dispatch would pass"
+            )
 
 
 def bollinger(n: int, k: float) -> dict:
@@ -652,6 +911,17 @@ cases = [
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
     {"study": "ema", "params": {"period": 12}, "expected": ema(12)},
     {"study": "ema", "params": {"period": 26}, "expected": ema(26)},
+    *[
+        {
+            "study": "movingAverage",
+            "params": {"period": n, "type": kind},
+            "expected": moving_average(n, kind),
+        }
+        # Two periods per type, one even and one odd -- TRIMA and ZLEMA both
+        # split the period, and their even and odd branches differ.
+        for kind in _MA_MENU
+        for n in (10, 21)
+    ],
     {
         "study": "bollinger",
         "params": {"period": 20, "stdDev": 2},
@@ -741,6 +1011,20 @@ out = {
         "conventions": {
             "sma": "close.rolling(n).mean()",
             "ema": "close.ewm(span=n, adjust=False).mean(); first n-1 masked",
+            "movingAverage": (
+                "the K2 MA-type menu. Exact against TA-Lib MA(matype): sma 0, "
+                "wma 2, trima 5 (SMA-of-SMA, lengths summing to n+1), kama 6 "
+                "(fast 2 / slow 30, seeded on x[n-1]). ema 1 / dema 3 / tema 4 "
+                "run on POND's first-sample EMA seed, not TA-Lib's SMA seed - "
+                "identical null masks, values bounded at the tail (the seed "
+                "transient decays: at n=21 it is 0.210% / 0.529% / 0.059% of "
+                "scale at the first shared bar and 0.0008% / 0.0155% / 0.0144% "
+                "by bar 79; at n=10 it is under 0.00005% by bar 79). "
+                "smma = Wilder (the rsi/atr recursion), hull = "
+                "WMA(2*WMA(n/2)-WMA(n), round(sqrt n)), zlema = "
+                "EMA(2x - x[n-1 floor-halved back]) - pandas replications, no "
+                "TA-Lib function exists for any of the three"
+            ),
             "bollingerStd": "rolling(n).std(ddof=0) [population]",
             "atr": (
                 "TR = max(h-l, |h-prevC|, |l-prevC|), TR[0] undefined; Wilder "

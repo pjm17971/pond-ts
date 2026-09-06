@@ -68,8 +68,60 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- `@pond-ts/financial`: **the K2 moving-average engine** — one **MA-type
+  vocabulary** shared by every study that exposes a "MA Type" input (~25 of
+  them in the corpus assessment). New study **`movingAverage({ period, type =
+'sma', column = 'close', output = 'ma' })`** with fluent
+  `.movingAverage()`, new exported type **`MaType`** and its **`MA_TYPES`**
+  menu, and the raw-array kernel **`movingAverageValues(values, period,
+type)`** for studies whose input is derived rather than a column (Keltner's
+  typical price, Coppock's WMA of two ROCs, the Price Oscillator).
+
+  Ten types: `sma`, `ema`, `wma` (linear weights), `smma` (Wilder/RMA),
+  `dema` (`2·EMA − EMA²`), `tema` (`3·EMA − 3·EMA² + EMA³`), `trima`
+  (TA-Lib's SMA-of-SMA, lengths summing to `period + 1`), `hull`
+  (`WMA(2·WMA(n/2) − WMA(n), round √n)`), `kama` (Kaufman, TA-Lib's fast 2 /
+  slow 30) and `zlema` (`EMA(2x − x[i−lag])`, `lag = ⌊(period−1)/2⌋` — it
+  floors, so `zlema(10)` and `zlema(11)` share a lag). Deferred, and named as
+  deferred: MAMA/FAMA, T3, VIDYA (needs the K6 recursion) and the
+  time-series/regression forecast MA (kernel K7).
+
+  **`type: 'sma'` and `type: 'ema'` are the calls `sma()` and `ema()` already
+  make** — routed back to `rollingValues` / `smooth('ema')`, so they are the
+  same doubles rather than a second implementation, and stay on their
+  accelerated paths. Pinned bit-for-bit by test.
+
+  **Oracle**: every type has cases at two periods. `sma` / `wma` / `trima` /
+  `kama` match TA-Lib's `MA(matype=…)` **exactly** (≤ 5.7e-13, identical null
+  masks; `kama` to `0`). `ema` / `dema` / `tema` keep **pond's first-sample
+  EMA seed** rather than TA-Lib's SMA seed — the `macd` precedent, so
+  `movingAverage({ type: 'ema' })` cannot disagree with `ema()` inside our own
+  package. Masks are still identical; the values are a decaying seed
+  transient, measured at 0.210% / 0.529% / 0.059% of scale at the first shared
+  bar (period 21) falling to 0.0008% / 0.0155% / 0.0144% by bar 79, and
+  asserted as a tail bound. `smma` / `hull` / `zlema` have no TA-Lib function
+  and are pandas replications with their analytic warm-up asserted (`smma`
+  also pinned bit-for-bit against the `wilderValues` kernel RSI and ATR run
+  on).
+
+  **Interior gaps differ by type, deliberately** (the Wilder asymmetry, now
+  stated per type on the kernel): the window types recover once the gap leaves
+  the window, the `ema` family skips the missing bar and carries on, and
+  `smma` and `kama` propagate to the end — a recursion that consumes every bar
+  has no state to carry across a hole. `sma` is also the one type a leading
+  gap does **not** shift, because it keeps `sma()`'s row-counting window.
+
 ### Changed
 
+- `@pond-ts/financial`: **`envelope`'s `maType` widens from `'sma' | 'ema'` to
+  the full `MaType` menu** and routes through the shared engine. Strictly
+  additive for existing callers — the `sma` and `ema` centre lines are the
+  same kernel calls as before, pinned bit-for-bit — and an unknown `maType`
+  now throws instead of silently falling back to SMA. (On the raw-array door,
+  `movingAverageValues(…, 'sma')` waits for `period` finite values like every
+  other type; the column door keeps `sma()`'s rows window.)
 - `pond-ts`: `partitionBy(column, options)` now throws a `TypeError` on an
   unknown option key (e.g. `maxPartitions`, which was never implemented)
   instead of silently ignoring it. Only JS callers passing a key the type
