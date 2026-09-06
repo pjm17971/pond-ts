@@ -456,6 +456,8 @@ per input.
 | `stochastic`                | `stochK`, `stochD`                   | `{ kPeriod?, slowing?, dPeriod?, high?, low?, close?, prefix? }` (14/3/3; `slowing: 1` = fast) | `packages/financial/src/studies/stochastic.ts`     |
 | `williamsR`                 | `williamsR`                          | `{ period?, high?, low?, close?, output? }` (default 14, bounded −100..0)                      | `packages/financial/src/studies/williams-r.ts`     |
 | `donchian`                  | `dcUpper`, `dcLower`, `dcMiddle`     | `{ period?, high?, low?, prefix? }` (default 20)                                               | `packages/financial/src/studies/donchian.ts`       |
+| `obv`                       | `obv`                                | `{ close?, volume?, output? }` (no period; TA-Lib seed `volume[0]`)                            | `packages/financial/src/studies/obv.ts`            |
+| `vwap`                      | `vwap`                               | `{ period, high?, low?, close?, volume?, output? }` (rolling, typical px)                      | `packages/financial/src/studies/vwap.ts`           |
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).

@@ -14,6 +14,8 @@ import {
   rsi,
   macd,
   atr,
+  obv,
+  vwap,
   stochastic,
   williamsR,
   donchian,
@@ -1265,5 +1267,259 @@ describe('donchian', () => {
         name,
       ).toBe(true);
     }
+  });
+});
+
+/** Bars with a volume column, for the volume studies. Row = [h, l, c, v]. */
+const ohlcvSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+  { name: 'volume', kind: 'number' },
+] as const;
+
+const ohlcv = (rows: Array<[number, number, number, number]>) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: ohlcvSchema,
+    rows: rows.map(([h, l, c, v], i) => [i, h, l, c, v]) as Array<
+      [number, number, number, number, number]
+    >,
+  });
+
+/** Close/volume bars with a fixed 1-wide range around the close. */
+const cv = (closes: number[], volumes: number[]) =>
+  ohlcv(closes.map((c, i) => [c + 0.5, c - 0.5, c, volumes[i]!]));
+
+/** Bars whose close (and/or volume) may be missing, for the gap cases. */
+const cvGappy = (
+  closes: Array<number | undefined>,
+  volumes: Array<number | undefined>,
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: closes.map((c, i) => [i, c, volumes[i]]) as Array<
+      [number, number | undefined, number | undefined]
+    >,
+  });
+
+describe('obv', () => {
+  // TA-Lib's own answer for this sequence (checked by running it): the seed
+  // is volume[0]; up adds, down subtracts, unchanged adds nothing.
+  const closes = [10, 11, 11, 9, 12, 12, 8];
+  const volumes = [100, 200, 300, 400, 500, 600, 700];
+  const expected = [100, 300, 300, -100, 400, 400, -300];
+
+  it('accumulates signed volume from a volume[0] seed, exactly as TA-Lib', () => {
+    const v = col(obv(cv(closes, volumes)), 'obv');
+    expect(v).toEqual(expected);
+  });
+
+  it('has no warm-up and no period: defined from bar 0', () => {
+    const v = col(obv(cv([5], [42])), 'obv');
+    expect(v).toEqual([42]);
+  });
+
+  it('defaults to the `obv` output name, and honours a custom one', () => {
+    const named = obv(cv(closes, volumes), { output: 'balance' });
+    expect(col(named, 'balance')).toEqual(expected);
+    expect(col(named, 'obv').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('reads redirected close/volume columns', () => {
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'px', kind: 'number' },
+        { name: 'qty', kind: 'number' },
+      ] as const,
+      rows: closes.map((c, i) => [i, c, volumes[i]!]) as Array<
+        [number, number, number]
+      >,
+    });
+    // No cast on the series: the schema flows through, so `close: 'px'` is
+    // accepted by `NumericColumnNameForSchema<S>`.
+    expect(col(obv(s, { close: 'px', volume: 'qty' }), 'obv')).toEqual(
+      expected,
+    );
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const v = col(obv(cv(closes, volumes), { volume: 'nope' as never }), 'obv');
+    expect(v).toHaveLength(closes.length);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('shifts the seed past a leading gap in volume', () => {
+    // Close is present on bar 0 but volume is not: the seed moves to bar 1
+    // and is bar 1's whole volume, whatever direction close took to get
+    // there (it FELL — a direction-keeping implementation would say −200).
+    const v = col(obv(cvGappy([10, 9, 12], [undefined, 200, 300])), 'obv');
+    expect(v).toEqual([undefined, 200, 500]);
+  });
+
+  it('propagates an interior gap in close to the end', () => {
+    // A running sum has no local answer for a gap: the level is unknown
+    // from the unknown term on. TA-Lib (0.7.1, measured) reports
+    // 300, 300, 300, 300, -400 from bar 2 on — 400 out at the gap bar and
+    // 100 out thereafter against the gap-free -100, 400, 400, -300 — never
+    // recovered, presented as a value.
+    const v = col(
+      obv(cvGappy([10, 11, 11, undefined, 12, 12, 8], volumes)),
+      'obv',
+    );
+    expect(v.slice(0, 3)).toEqual([100, 300, 300]);
+    expect(v.slice(3).every((x) => x === undefined)).toBe(true);
+  });
+
+  it('propagates an interior gap in volume to the end', () => {
+    const v = col(
+      obv(cvGappy(closes, [100, 200, 300, undefined, 500, 600, 700])),
+      'obv',
+    );
+    expect(v.slice(0, 3)).toEqual([100, 300, 300]);
+    expect(v.slice(3).every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a colliding output', () => {
+    expect(() => obv(cv(closes, volumes), { output: 'close' })).toThrow();
+  });
+});
+
+describe('vwap', () => {
+  it('weights typical price by volume — not the mean of typical prices', () => {
+    // tp = 10.5 on 1 unit, tp = 20 on 3 units:
+    //   weighted  (10.5·1 + 20·3) / 4 = 17.625
+    //   plain     (10.5 + 20) / 2     = 15.25
+    const v = col(
+      vwap(
+        ohlcv([
+          [12, 9, 10.5, 1],
+          [22, 18, 20, 3],
+        ]),
+        { period: 2 },
+      ),
+      'vwap',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(17.625, 12);
+  });
+
+  it('warms up over `period − 1` rows, length-preserving', () => {
+    const s = cv([10, 11, 12, 13, 14, 15], [1, 2, 3, 4, 5, 6]);
+    const v = col(vwap(s, { period: 4 }), 'vwap');
+    expect(v).toHaveLength(6);
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    // (10·1 + 11·2 + 12·3 + 13·4) / 10 = 12
+    expect(v[3]).toBeCloseTo(12, 12);
+    // Slid one bar: (11·2 + 12·3 + 13·4 + 14·5) / 14
+    expect(v[4]).toBeCloseTo(180 / 14, 12);
+  });
+
+  it('is the typical price at period 1', () => {
+    const v = col(
+      vwap(
+        ohlcv([
+          [12, 9, 10, 7],
+          [15, 12, 15, 1],
+        ]),
+        { period: 1 },
+      ),
+      'vwap',
+    );
+    expect(v[0]).toBeCloseTo(31 / 3, 12);
+    expect(v[1]).toBeCloseTo(14, 12);
+  });
+
+  it('is undefined on a window with no volume, and resumes after it', () => {
+    // Σvolume = 0: nothing to weight by. Not the plain mean, and not 0.
+    const v = col(
+      vwap(cv([10, 20, 30, 40], [0, 0, 5, 5]), { period: 2 }),
+      'vwap',
+    );
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo(30, 12); // (0·20 + 5·30) / 5
+    expect(v[3]).toBeCloseTo(35, 12);
+  });
+
+  it('drops a bar with a missing close from BOTH sums', () => {
+    // The middle bar carries almost all the volume but has no price. Its
+    // volume must leave the denominator with it, or the window reads
+    // (10·1 + 30·3) / 104 ≈ 0.96 instead of the VWAP of the bars present.
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number', required: false },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: [
+        [0, 10, 10, 10, 1],
+        [1, 20, 20, undefined, 100],
+        [2, 30, 30, 30, 3],
+      ] as Array<[number, number, number, number | undefined, number]>,
+    });
+    const v = col(vwap(s as never, { period: 3 }), 'vwap');
+    expect(v[2]).toBeCloseTo((10 + 90) / 4, 12);
+  });
+
+  it('defaults to the `vwap` output name, honours a custom one, and reads redirected columns', () => {
+    const rows: Array<[number, number, number, number]> = [
+      [12, 9, 10.5, 1],
+      [22, 18, 20, 3],
+    ];
+    const named = vwap(ohlcv(rows), { period: 2, output: 'avgPx' });
+    expect(col(named, 'avgPx')[1]).toBeCloseTo(17.625, 12);
+    expect(col(named, 'vwap')[1]).toBeUndefined();
+
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'h2', kind: 'number' },
+        { name: 'l2', kind: 'number' },
+        { name: 'c2', kind: 'number' },
+        { name: 'v2', kind: 'number' },
+      ] as const,
+      rows: rows.map(([h, l, c, v], i) => [i, h, l, c, v]) as Array<
+        [number, number, number, number, number]
+      >,
+    });
+    const v = col(
+      vwap(s, { period: 2, high: 'h2', low: 'l2', close: 'c2', volume: 'v2' }),
+      'vwap',
+    );
+    expect(v[1]).toBeCloseTo(17.625, 12);
+  });
+
+  it('reads all-missing when a named column is absent', () => {
+    const v = col(
+      vwap(cv([10, 11, 12], [1, 2, 3]), { period: 2, high: 'nope' as never }),
+      'vwap',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('requires a period, rejects a bad one, and rejects a colliding output', () => {
+    const s = cv([10, 11, 12], [1, 2, 3]);
+    expect(() => vwap(s, {} as never)).toThrow(TypeError);
+    expect(() => vwap(s, { period: 0 })).toThrow(TypeError);
+    expect(() => vwap(s, { period: 1.5 })).toThrow(TypeError);
+    expect(() => vwap(s, { period: 2, output: 'close' })).toThrow();
+  });
+
+  it('is all-undefined when the period exceeds the bars available', () => {
+    const v = col(vwap(cv([10, 11, 12], [1, 2, 3]), { period: 9 }), 'vwap');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

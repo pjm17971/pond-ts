@@ -12,9 +12,11 @@ import {
   donchian,
   ema,
   macd,
+  obv,
   rsi,
   sma,
   stochastic,
+  vwap,
   williamsR,
 } from '../dist/index.js';
 
@@ -107,6 +109,8 @@ function scaleResults(length) {
       benchmark('ema({ period: 20 })', () => ema(series, { period: PERIOD })),
       benchmark('rsi({ period: 14 })', () => rsi(series, { period: 14 })),
       benchmark('macd({ 12, 26, 9 })', () => macd(series)),
+      benchmark('obv()', () => obv(series)),
+      benchmark('vwap({ period: 20 })', () => vwap(series, { period: PERIOD })),
       benchmark('bollinger({ period: 20 })', () =>
         bollinger(series, { period: PERIOD }),
       ),

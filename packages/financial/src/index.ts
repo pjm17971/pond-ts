@@ -58,3 +58,7 @@ export type { WilliamsROptions } from './studies/williams-r.js';
 export { williamsR } from './studies/williams-r.js';
 export type { DonchianOptions } from './studies/donchian.js';
 export { donchian } from './studies/donchian.js';
+export type { ObvOptions } from './studies/obv.js';
+export { obv } from './studies/obv.js';
+export type { VwapOptions } from './studies/vwap.js';
+export { vwap } from './studies/vwap.js';

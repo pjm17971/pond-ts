@@ -11,6 +11,8 @@ import {
   macd,
   momentum,
   historicalVolatility,
+  obv,
+  vwap,
   stochastic,
   williamsR,
   donchian,
@@ -360,5 +362,79 @@ describe('[PND-STUDYBOX] range-position studies: where the missing rows are', ()
     const dc = donchian(flat, { period: 3 });
     expect(nullCountOf(dc, 'dcUpper')).toBe(2);
     expect(cells(dc, 'dcMiddle')[9]).toBe(42);
+  });
+});
+
+describe('[PND-STUDYBOX] the volume studies', () => {
+  const cvSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+    { name: 'volume', kind: 'number', required: false },
+  ] as const;
+  const cv = (
+    closes: Array<number | undefined>,
+    volumes: Array<number | undefined>,
+  ) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: cvSchema,
+      rows: closes.map((c, i) => [
+        i * MINUTE,
+        c === undefined ? undefined : c + 1,
+        c === undefined ? undefined : c - 1,
+        c,
+        volumes[i],
+      ]) as never,
+    });
+  const closes = [10, 11, 11, 9, 12, 12, 8];
+  const volumes = [100, 200, 300, 400, 500, 600, 700];
+
+  it('obv has no warm-up: bar 0 is its own volume', () => {
+    const out = obv(cv(closes, volumes) as never);
+    expect(cells(out, 'obv')[0]).toBe(100);
+    expect(nullCountOf(out, 'obv')).toBe(0);
+  });
+
+  it('obv shifts for a leading gap and propagates an interior one', () => {
+    // The running-sum asymmetry, same as Wilder's: the head is stepped
+    // over, a hole is carried to the end. Where the missing rows ARE is
+    // what is pinned — no `!isNaN` check, which could never fire.
+    const lead = cells(
+      obv(cv([undefined, ...closes.slice(1)], volumes) as never),
+      'obv',
+    );
+    expect(lead[0]).toBeUndefined();
+    expect(lead[1]).toBe(200);
+    expect(lead[6]).toBe(-400);
+
+    const hole = obv(
+      cv(closes, [100, 200, 300, undefined, 500, 600, 700]) as never,
+    );
+    const h = cells(hole, 'obv');
+    expect(h[2]).toBe(300);
+    expect(h[3]).toBeUndefined();
+    expect(nullCountOf(hole, 'obv')).toBe(4); // bars 3..6
+  });
+
+  it('vwap warms up length-preservingly', () => {
+    const out = vwap(cv(closes, volumes) as never, { period: 3 });
+    const v = cells(out, 'vwap');
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[2]).toBe('number');
+    expect(nullCountOf(out, 'vwap')).toBe(2);
+  });
+
+  it('vwap emits missing where the window has no volume', () => {
+    // Σvolume = 0 has nothing to weight by. It must read back as a gap —
+    // not as the plain mean, and not as 0.
+    const out = vwap(cv(closes, [0, 0, 0, 400, 500, 600, 700]) as never, {
+      period: 3,
+    });
+    const v = cells(out, 'vwap');
+    expect(v[2]).toBeUndefined(); // volumes 0, 0, 0
+    expect(v[3]).toBeCloseTo(9, 10); // 0, 0, 400 — all the weight on bar 3
+    expect(nullCountOf(out, 'vwap')).toBe(3); // two warm-up + one no-volume
   });
 });

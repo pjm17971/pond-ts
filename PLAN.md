@@ -1237,9 +1237,15 @@ pandas-oracle-verified) have shipped. Plan:
 [PND_FINANCIAL_PLAN.md](docs/plans/PND_FINANCIAL_PLAN.md) · assessment:
 [financial-indicators-assessment-2026-07.md](docs/notes/financial-indicators-assessment-2026-07.md).
 
-- **[PND-STUDY]** — Studies Phase-1 breadth: RSI, MACD, ATR(+bands),
-  stochastics, %R, Donchian, OBV, VWAP, HV, momentum/ROC — each with the
-  TA-Lib + pandas oracle and a fluent method.
+- **[PND-STUDY]** — Studies Phase-1 breadth is **landed** (RSI, MACD, ATR,
+  momentum, HV, ROC-as-`percentChange`, stochastics, %R, Donchian, OBV,
+  rolling VWAP — each oracle-verified with a fluent method; PRs #681 onward).
+  Left open here: **ATR bands** (Keltner-style `close ± k·ATR`, on the
+  `trueRangeValues` kernel) and the **anchored / session VWAP**, which needs
+  a reset and belongs with the session-anchored studies. Package-wide
+  questions surfaced by the wave, none blocking: `ema()`'s first-sample seed
+  vs TA-Lib's SMA seed; the Wilder-vs-`ema` interior-gap asymmetry (decide
+  before ADX); a monotonic-deque fast path for core's rolling min/max.
 - **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
   (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
@@ -1850,15 +1856,15 @@ Canonical roster (philosophy in CLAUDE.md; detail + queued coordination in
 [PND_EXPERIMENTS_PLAN.md](docs/plans/PND_EXPERIMENTS_PLAN.md); full histories
 in [docs/archive/experiments-2026.md](docs/archive/experiments-2026.md)):
 
-| Track              | Agent  | Status / next                                                                     |
-| ------------------ | ------ | --------------------------------------------------------------------------------- |
+| Track              | Agent  | Status / next                                                                                                                |
+| ------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | Tidal (financial)  | Claude | Most active loop; drives [PND-STUDY] + charts friction, now also `@pond-ts/process` (derive seam); auto-woken on npm publish |
-| estela (geo/power) | Claude | Waiting on [PND-FITPUB]; then adopts fit + charts from npm, deletes local copy    |
-| Dashboard          | Claude | Next: adopt `@pond-ts/charts`, report gaps/perf vs its hand-rolled charts         |
-| gRPC pipeline      | Claude | M3.5 realized; remaining: writeup + M5 extraction sweep (3 RFCs → [PND-SERVER])   |
-| Webapp telemetry   | Codex  | In production; watch for friction reports                                         |
-| Charts experiment  | Claude | First `@pond-ts/charts` package consumer; annotation dogfood, ongoing             |
-| Robustness audits  | fresh  | Re-run as the available model improves; residue → [PND-LIVFIX], [PND-AUDIT]       |
+| estela (geo/power) | Claude | Waiting on [PND-FITPUB]; then adopts fit + charts from npm, deletes local copy                                               |
+| Dashboard          | Claude | Next: adopt `@pond-ts/charts`, report gaps/perf vs its hand-rolled charts                                                    |
+| gRPC pipeline      | Claude | M3.5 realized; remaining: writeup + M5 extraction sweep (3 RFCs → [PND-SERVER])                                              |
+| Webapp telemetry   | Codex  | In production; watch for friction reports                                                                                    |
+| Charts experiment  | Claude | First `@pond-ts/charts` package consumer; annotation dogfood, ongoing                                                        |
+| Robustness audits  | fresh  | Re-run as the available model improves; residue → [PND-LIVFIX], [PND-AUDIT]                                                  |
 
 ---
 
