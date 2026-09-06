@@ -593,8 +593,8 @@ describe('fluent: the Wilder directional group', () => {
     );
     const last = fluent.events.at(-1)!.data() as Record<string, unknown>;
     for (const c of [
-      'dmPlus',
-      'dmMinus',
+      'dmPlusDi',
+      'dmMinusDi',
       'dmDx',
       'dmAdx',
       'dmAdxr',

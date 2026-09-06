@@ -2127,12 +2127,12 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
   const cases: Array<[string, string, (s: never) => unknown]> = [
     [
       'directionalMovement',
-      'dmPlus',
+      'dmPlusDi',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
       'directionalMovement',
-      'dmMinus',
+      'dmMinusDi',
       (s) => directionalMovement(s, { period: 5 }),
     ],
     [
@@ -2197,7 +2197,7 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
       return Math.max(...seen) - Math.min(...seen);
     };
     const dm = directionalMovement(s, { period: 5 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
       expect(spread(col(dm, name)), name).toBeGreaterThan(10);
     const ar = aroon(s, { period: 5 });
     for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])
@@ -2229,7 +2229,7 @@ describe('[talib] the directional group is scale- AND shift-invariant', () => {
     // leg is bounded by the true range, so both DI lines are — and DX, ADX
     // and ADXR are then bounded by construction.
     const dm = directionalMovement(s, { period: 5 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
       within(col(dm, name), 0, 100, name);
     const ar = aroon(s, { period: 5 });
     within(col(ar, 'aroonUp'), 0, 100, 'aroonUp');
@@ -2273,7 +2273,7 @@ describe('[talib] the directional group over another study’s output', () => {
       low: 'sl',
       close: 'sc',
     });
-    const plus = col(r, 'dmPlus');
+    const plus = col(r, 'dmPlusDi');
     expect(plus).toHaveLength(40);
     // The inputs are first defined at 2; DM and TR at 3; the Wilder seed
     // steps over the leading gap and lands `period − 1` later, at 5.
@@ -2339,7 +2339,7 @@ describe('[talib] all-missing input yields all-missing directional studies', () 
 
   it('directionalMovement, aroon and vortex', () => {
     const dm = directionalMovement(allMissing as never, { period: 5 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
       empty(col(dm, name), name);
     const ar = aroon(allMissing as never, { period: 5 });
     for (const name of ['aroonUp', 'aroonDown', 'aroonOsc'])

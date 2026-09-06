@@ -1329,7 +1329,7 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
   it('directionalMovement carries a gap in high or low to the end of the series', () => {
     for (const holeIn of ['high', 'low'] as const) {
       const out = directionalMovement(dirBars(holeIn), { period: 2 });
-      for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr']) {
+      for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr']) {
         const v = cells(out, name);
         // The DM split needs both bars, so the hole lands on bar 4 itself…
         expect(firstMissingFrom(out, name, 4), `${holeIn}/${name}`).toBe(4);
@@ -1349,7 +1349,7 @@ describe('[PND-STUDYBOX] the directional group: which input kills which column',
 
   it('directionalMovement loses a gap in CLOSE one bar later — the true range reads prevClose', () => {
     const out = directionalMovement(dirBars('close'), { period: 2 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx']) {
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx']) {
       expect(cells(out, name)[4], name).toBeDefined();
       expect(firstMissingFrom(out, name, 4), name).toBe(5);
       expect(

@@ -26,7 +26,7 @@ export interface DirectionalMovementOptions<
   low?: NumericColumnNameForSchema<S>;
   /** Close column. **Default `'close'`.** */
   close?: NumericColumnNameForSchema<S>;
-  /** Column-family prefix — appends `${prefix}Plus` / `${prefix}Minus` /
+  /** Column-family prefix — appends `${prefix}PlusDi` / `${prefix}MinusDi` /
    *  `${prefix}Dx` / `${prefix}Adx` / `${prefix}Adxr`. **Default `'dm'`.** */
   prefix?: Prefix;
 }
@@ -37,8 +37,8 @@ export interface DirectionalMovementOptions<
  *
  * ```
  * +DM / −DM   this bar's movement outside the previous bar's range
- * +DI = 100 · Wilder(+DM, period) / Wilder(TR, period)     ${prefix}Plus
- * −DI = 100 · Wilder(−DM, period) / Wilder(TR, period)     ${prefix}Minus
+ * +DI = 100 · Wilder(+DM, period) / Wilder(TR, period)     ${prefix}PlusDi
+ * −DI = 100 · Wilder(−DM, period) / Wilder(TR, period)     ${prefix}MinusDi
  * DX  = 100 · |+DI − −DI| / (+DI + −DI)                    ${prefix}Dx
  * ADX = Wilder(DX, period)                                 ${prefix}Adx
  * ADXR = (ADX[i] + ADX[i − period + 1]) / 2                ${prefix}Adxr
@@ -157,8 +157,8 @@ export function directionalMovement<
   const lowName = (options.low ?? DEFAULT_OHLCV.low) as string;
   const closeName = (options.close ?? DEFAULT_OHLCV.close) as string;
   const prefix = (options.prefix ?? 'dm') as Prefix;
-  const plusName = `${prefix}Plus` as const;
-  const minusName = `${prefix}Minus` as const;
+  const plusName = `${prefix}PlusDi` as const;
+  const minusName = `${prefix}MinusDi` as const;
   const dxName = `${prefix}Dx` as const;
   const adxName = `${prefix}Adx` as const;
   const adxrName = `${prefix}Adxr` as const;

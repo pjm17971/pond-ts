@@ -4667,8 +4667,8 @@ const workedBars = () =>
 describe('directionalMovement', () => {
   it('is Wilder’s DMS hand-computed, with a per-column warm-up', () => {
     const r = directionalMovement(workedBars(), { period: 2 });
-    const plus = col(r, 'dmPlus');
-    const minus = col(r, 'dmMinus');
+    const plus = col(r, 'dmPlusDi');
+    const minus = col(r, 'dmMinusDi');
     const dx = col(r, 'dmDx');
     const adx = col(r, 'dmAdx');
     const adxr = col(r, 'dmAdxr');
@@ -4707,8 +4707,8 @@ describe('directionalMovement', () => {
   it('warms up at period / 2·period − 1 / 3·period − 2 at the defaults', () => {
     const r = directionalMovement(wavyOhlc());
     for (const [name, first] of [
-      ['dmPlus', 14],
-      ['dmMinus', 14],
+      ['dmPlusDi', 14],
+      ['dmMinusDi', 14],
       ['dmDx', 14],
       ['dmAdx', 27],
       ['dmAdxr', 40],
@@ -4731,12 +4731,12 @@ describe('directionalMovement', () => {
       Array.from({ length: 8 }, (_, i) => [10 + 2 * i, 8 + 2 * i, 9 + 2 * i]),
     );
     const r = directionalMovement(atr(stepping, { period: 3 }), { period: 3 });
-    const plus = col(r, 'dmPlus');
+    const plus = col(r, 'dmPlusDi');
     const a = col(atr(stepping, { period: 3 }), 'atr');
     for (let i = 3; i < 8; i += 1) {
       expect(a[i], `atr[${i}]`).toBeCloseTo(3, 12);
-      expect(plus[i], `dmPlus[${i}]`).toBeCloseTo(200 / 3, 12);
-      expect(col(r, 'dmMinus')[i], `dmMinus[${i}]`).toBeCloseTo(0, 12);
+      expect(plus[i], `dmPlusDi[${i}]`).toBeCloseTo(200 / 3, 12);
+      expect(col(r, 'dmMinusDi')[i], `dmMinusDi[${i}]`).toBeCloseTo(0, 12);
       expect(col(r, 'dmDx')[i], `dmDx[${i}]`).toBeCloseTo(100, 12);
     }
     // …and the DI pair starts exactly where `atr` does — the shared seed.
@@ -4756,8 +4756,8 @@ describe('directionalMovement', () => {
       [17, 13, 15],
     ]);
     const r = directionalMovement(inside, { period: 2 });
-    expect(col(r, 'dmPlus')[2]).toBe(0);
-    expect(col(r, 'dmMinus')[2]).toBe(0);
+    expect(col(r, 'dmPlusDi')[2]).toBe(0);
+    expect(col(r, 'dmMinusDi')[2]).toBe(0);
     expect(col(r, 'dmDx')[2]).toBe(0);
     expect(col(r, 'dmDx')[3]).toBe(0);
     expect(col(r, 'dmAdx')[3]).toBe(0);
@@ -4773,7 +4773,7 @@ describe('directionalMovement', () => {
       [10, 10, 10],
     ]);
     const r = directionalMovement(frozen, { period: 2 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr'])
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr'])
       expect(
         col(r, name).every((x) => x === undefined),
         name,
@@ -4788,12 +4788,17 @@ describe('directionalMovement', () => {
       low: 'low',
       close: 'close',
     });
-    for (const name of ['wilderPlus', 'wilderMinus', 'wilderDx', 'wilderAdx'])
+    for (const name of [
+      'wilderPlusDi',
+      'wilderMinusDi',
+      'wilderDx',
+      'wilderAdx',
+    ])
       expect(col(named, name)[30], name).toBeDefined();
     expect(
       col(
         directionalMovement(wavyOhlc(), { period: 5, high: 'nope' as never }),
-        'dmPlus',
+        'dmPlusDi',
       ).every((x) => x === undefined),
     ).toBe(true);
   });
@@ -4810,7 +4815,7 @@ describe('directionalMovement', () => {
 
   it('is all-undefined when the period exceeds the series, length kept', () => {
     const r = directionalMovement(workedBars(), { period: 9 });
-    for (const name of ['dmPlus', 'dmMinus', 'dmDx', 'dmAdx', 'dmAdxr']) {
+    for (const name of ['dmPlusDi', 'dmMinusDi', 'dmDx', 'dmAdx', 'dmAdxr']) {
       expect(col(r, name), name).toHaveLength(5);
       expect(
         col(r, name).every((x) => x === undefined),

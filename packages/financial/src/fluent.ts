@@ -363,7 +363,7 @@ declare module 'pond-ts' {
       AppendOpt<
         AppendOpt<
           AppendOpt<
-            AppendOpt<AppendOpt<S, `${Prefix}Plus`>, `${Prefix}Minus`>,
+            AppendOpt<AppendOpt<S, `${Prefix}PlusDi`>, `${Prefix}MinusDi`>,
             `${Prefix}Dx`
           >,
           `${Prefix}Adx`

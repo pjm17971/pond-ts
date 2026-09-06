@@ -779,7 +779,7 @@ another study's output without emptying. Both kernels already step over a
 _leading_ run of gaps, so the asymmetry is purely about interior ones.
 
 _What the new studies do, measured_ (an 80-bar series, one missing cell at bar
-40, `period 14`): a gap in **`high`** or **`low`** blanks `dmPlus`, `dmMinus`,
+40, `period 14`): a gap in **`high`** or **`low`** blanks `dmPlusDi`, `dmMinusDi`,
 `dmDx`, `dmAdx` and `dmAdxr` from bar **40** to the end — the `DM` split needs
 both bars, and the Wilder smooth then carries it. A gap in **`close`** blanks
 the same five from bar **41**: the true range reads only the _previous_ close,

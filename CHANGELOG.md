@@ -75,7 +75,7 @@ include new features and type-level changes; patch bumps are strictly additive.
   inputs, bar-count periods, length-preserving warm-up, a fluent method), each
   with oracle cases at two periods.
   - **`directionalMovement({ period = 14, high?, low?, close?, prefix = 'dm' })`**
-    → `dmPlus`, `dmMinus`, `dmDx`, `dmAdx`, `dmAdxr`. Wilder's Directional
+    → `dmPlusDi`, `dmMinusDi`, `dmDx`, `dmAdx`, `dmAdxr`. Wilder's Directional
     Movement System — `+DI`, `−DI`, `DX`, `ADX` and `ADXR` in **one** study
     with a **per-column warm-up** (bars 14 / 14 / 14 / 27 / 40 at the default),
     the `macd` precedent rather than five studies re-running the same pipeline.

@@ -41,7 +41,7 @@
       "commodityChannelIndex": "(tp - SMA(tp,n)) / (0.015 * meanAbsDev(tp,n)), tp = (h+l+c)/3, deviation taken about the window's own MEAN; cross-checked against TA-Lib CCI (3.6e-12 at n=20, 1.5e-11 at n=5 - float summation order), first valid at n-1, and separated from the standard-deviation (z-score) version. Default period 20 is ChartIQ's; TA-Lib's own default is 14",
       "intradayMomentumIndex": "100*sum(gains)/(sum(gains)+sum(losses)) over the candle BODY (close-open), PLAIN sums not Wilder smoothing; pandas replication (no TA-Lib IMI), first valid at n-1 (a body needs no previous bar), separated from the close-to-close form",
       "relativeVigorIndex": "num = swma(close-open), den = swma(high-low) with swma the SYMMETRIC (1,2,2,1)/6 4-bar filter; rvi = sum(num,n)/sum(den,n); signal = swma(rvi) - TradingView's definition. pandas replication (no TA-Lib RVI), first valid at n+2 and n+5, separated from the linear-WMA(4) version",
-      "directionalMovement": "Wilder's DMS. +DM/-DM = the part of the bar's move outside the previous bar's range on the side that moved further (at most one leg non-zero; a tie is zero for both); +DI = 100*Wilder(+DM,n)/Wilder(TR,n) with the denominator the SAME array `atr` uses; DX = 100*|+DI - -DI|/(+DI + -DI) with a zero sum reading 0 (the numerator is forced to zero with it); ADX = Wilder(DX,n); ADXR = (ADX[i] + ADX[i-n+1])/2, TA-Lib's n-1 look-back and the package's own bar-count reading (the literal `n` reading differs by up to 2.68 points at n=14). SEED: Wilder's own - the mean of the first n values, i.e. `wilderValues`. TA-Lib instead seeds +DM/-DM/TR on the first n-1 and takes one decayed step, which its own ATR does not do; masks are identical either way, the FORMULA is asserted exactly by replaying our pipeline on TA-Lib's seed (<=2.9e-14 on all five columns), and the pond-seed transient is bounded and asserted to decay",
+      "directionalMovement": "Wilder's DMS. +DM/-DM = the part of the bar's move outside the previous bar's range on the side that moved further (at most one leg non-zero; a tie is zero for both); +DI = 100*Wilder(+DM,n)/Wilder(TR,n) with the denominator the SAME array `atr` uses; DX = 100*|+DI - -DI|/(+DI + -DI) with a zero sum reading 0 (the numerator is forced to zero with it); ADX = Wilder(DX,n); ADXR = (ADX[i] + ADX[i-n+1])/2, TA-Lib's n-1 look-back and the package's own bar-count reading (the literal `n` reading differs by up to 2.64 points at n=14). SEED: Wilder's own - the mean of the first n values, i.e. `wilderValues`. TA-Lib instead seeds +DM/-DM/TR on the first n-1 and takes one decayed step, which its own ATR does not do; masks are identical either way, the FORMULA is asserted exactly by replaying our pipeline on TA-Lib's seed (<=2.9e-14 on all five columns), and the pond-seed transient is bounded and asserted to decay",
       "aroon": "100*(n - barsSinceExtreme)/n over a window of n+1 BARS (n counts the oldest AGE reportable), ties to the MOST RECENT bar - both measured against TA-Lib AROON/AROONOSC, exact, identical masks, first valid at n",
       "vortex": "+VI = sum|high - prevLow| / sum TR, -VI = sum|low - prevHigh| / sum TR over n bars (Botes & Siepman 2010); pandas replication (no TA-Lib vortex), first valid at n, separated from the plain-bar-range denominator. sum TR = 0 -> undefined (unlike DX, the numerator is NOT forced to zero with it)",
       "psychologicalLine": "100 * count(close > prevClose) / n, strictly greater (an unchanged close is NOT up); pandas replication (no TA-Lib PSY), first valid at n (bar 0 has no direction)"
@@ -11740,7 +11740,7 @@
         "period": 14
       },
       "expected": {
-        "dmPlus": [
+        "dmPlusDi": [
           null,
           null,
           null,
@@ -11822,7 +11822,7 @@
           23.244733941380503,
           21.778187350496726
         ],
-        "dmMinus": [
+        "dmMinusDi": [
           null,
           null,
           null,
@@ -12158,7 +12158,7 @@
         "period": 5
       },
       "expected": {
-        "dmPlus": [
+        "dmPlusDi": [
           null,
           null,
           null,
@@ -12240,7 +12240,7 @@
           6.8010748185901315,
           5.5332820705558134
         ],
-        "dmMinus": [
+        "dmMinusDi": [
           null,
           null,
           null,
