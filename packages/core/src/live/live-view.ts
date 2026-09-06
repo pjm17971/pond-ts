@@ -1,3 +1,4 @@
+import { ListenerSet } from './listener-set.js';
 import { Event } from '../core/event.js';
 import { ValidationError } from '../core/errors.js';
 import { LiveAggregation } from './live-aggregation.js';
@@ -93,6 +94,35 @@ type TimeKeyOnly<S extends SeriesSchema> =
  * operator rather than constructing it directly. Example:
  * `live.filter((e) => (e.get('value') as number) > 5)`.
  */
+/**
+ * [PND-LIVFIX] Fan out to a listener set with error isolation: iterate a
+ * snapshot (a listener may add or remove listeners while running) and
+ * let every listener run before surfacing the first error. Mirrors
+ * `LiveSeries`'s dispatch so a throwing subscriber on a view cannot
+ * starve the view's other subscribers.
+ */
+function dispatchIsolated<T>(set: ListenerSet<(arg: T) => void>, arg: T) {
+  if (set.size === 0) return;
+  let first: { error: unknown } | undefined;
+  for (const fn of set.snapshot()) {
+    try {
+      fn(arg);
+    } catch (error) {
+      first ??= { error };
+    }
+  }
+  if (first) throw first.error;
+}
+
+/** A readable key for error messages — `String(key)` on a key object is `[object Object]`. */
+function describeKey(event: { begin(): number; end?(): number }): string {
+  const begin = new Date(event.begin()).toISOString();
+  const end = event.end?.();
+  return end !== undefined && end !== event.begin()
+    ? `[${begin}, ${new Date(end).toISOString()})`
+    : begin;
+}
+
 export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   /** @internal */
   readonly [EMITS_EVICT] = true as const;
@@ -117,9 +147,12 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     | ((events: readonly EventForSchema<S>[]) => number)
     | undefined;
   readonly #windowMs: number | undefined;
-  readonly #onEvent: Set<EventListener<S>>;
-  readonly #onEvict: Set<EvictListener<S>>;
+  readonly #onEvent: ListenerSet<EventListener<S>>;
+  readonly #onEvict: ListenerSet<EvictListener<S>>;
   readonly #unsubscribe: () => void;
+  /** The source this view subscribes to — kept for chain-aware dispose. */
+  readonly #source: LiveSource<any>;
+  #disposed = false;
 
   constructor(
     source: LiveSource<any>,
@@ -128,12 +161,13 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
   ) {
     this.name = source.name;
     this.schema = options?.schema ?? (source.schema as unknown as S);
+    this.#source = source;
     this.#events = [];
     this.#process = process;
     this.#evict = options?.evict;
     this.#windowMs = options?.windowMs;
-    this.#onEvent = new Set();
-    this.#onEvict = new Set();
+    this.#onEvent = new ListenerSet();
+    this.#onEvict = new ListenerSet();
 
     for (let i = 0; i < source.length; i++) {
       const result = this.#process(source.at(i)!);
@@ -146,7 +180,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
       if (result !== undefined) {
         this.#appendChecked(result);
         this.#applyEviction();
-        for (const fn of this.#onEvent) fn(result);
+        dispatchIsolated(this.#onEvent, result);
       }
     });
 
@@ -170,7 +204,7 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
         if (i > 0) {
           const removed = this.#events.splice(0, i);
           this.#version += 1;
-          for (const fn of this.#onEvict) fn(removed as any);
+          dispatchIsolated(this.#onEvict, removed as any);
         }
       });
     }
@@ -651,15 +685,47 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     type: 'event' | 'evict',
     fn: EventListener<S> | EvictListener<S>,
   ): () => void {
-    const set: Set<any> = type === 'event' ? this.#onEvent : this.#onEvict;
+    const set: ListenerSet<any> =
+      type === 'event' ? this.#onEvent : this.#onEvict;
     set.add(fn);
     return () => {
       set.delete(fn);
     };
   }
 
+  /**
+   * Detach this view from its source and drop its own listeners. After
+   * `dispose()` the view stops receiving events; its buffer is left as it
+   * was (a final `toTimeSeries()` snapshot still works) and further
+   * `dispose()` calls are no-ops.
+   *
+   * **Chain-aware.** `live.filter(p).map(f)` creates an intermediate view
+   * that nothing but the outer view references, and before [PND-LIVFIX]
+   * disposing the outer view left that intermediate subscribed to the
+   * source forever, processing every push into an unbounded buffer with
+   * no handle to stop it (audit 2026-06 §4.4). Now, when this view's source
+   * is itself a `LiveView` and this was its last subscriber, the source is
+   * disposed too, and so on up the chain. A source view that still has
+   * another subscriber is left alone. If you hold a reference to an
+   * intermediate and want to keep reading it after disposing a derived
+   * view, keep a listener on it — a view with no subscribers is treated
+   * as unreachable.
+   */
   dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
     this.#unsubscribe();
+    this.#onEvent.clear();
+    this.#onEvict.clear();
+    const source = this.#source;
+    if (source instanceof LiveView && source._listenerCount === 0) {
+      source.dispose();
+    }
+  }
+
+  /** @internal — subscribers on this view (`'event'` + `'evict'`). */
+  get _listenerCount(): number {
+    return this.#onEvent.size + this.#onEvict.size;
   }
 
   #applyEviction(): void {
@@ -692,8 +758,8 @@ export class LiveView<S extends SeriesSchema> implements LiveSource<S> {
     const last = this.#events[this.#events.length - 1];
     if (last && event.key().compare(last.key()) < 0) {
       throw new ValidationError(
-        `LiveView: processed event has key ${String(event.key())} ` +
-          `older than the previous tail ${String(last.key())}. ` +
+        `LiveView: processed event has key ${describeKey(event)} ` +
+          `older than the previous tail ${describeKey(last)}. ` +
           `Re-keying maps that produce non-monotonic output break the ` +
           `view's sorted-buffer invariant. Use a transform that ` +
           `preserves keys, or perform time-axis rewrites on a snapshot ` +
