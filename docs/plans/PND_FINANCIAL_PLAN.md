@@ -1659,6 +1659,193 @@ machines (4); SuperTrend's two band columns (5); an `anchor` knob on
 function with a signed output convention); and the fold-loop specialisation
 the bench did not justify.
 
+**Landed — the moving-average stacks and smoothed-momentum tail (§6.1/§6.3).**
+`guppy`, `rainbow`, `rainbowOscillator`, `kst`, `priceMomentumOscillator`,
+`stochasticRsi`, `trueStrengthIndex` and `movingAverageDeviation` — eight
+studies (twelve, ten and three columns among them), plus two kernel additions
+the studies earned. Fifteen oracle cases; 149 in the fixture. Decisions:
+
+(1) **Two fixed-parameter stacks, and neither gets a "which periods" option.**
+`guppy` is Daryl Guppy's twelve EMAs (short 3/5/8/10/12/15 as `gmmaS{n}`, long
+30/35/40/45/50/60 as `gmmaL{n}`); `rainbow` is Mel Widner's ten **recursive**
+averages, each smoothing the previous. The twelve and the ten _are_ the
+studies: an option would make each a generic stack-of-averages wearing a
+name, so a chart legend reading "GMMA" would mean nothing without the call
+site beside it. What ships instead is the period lists as exports
+(`GUPPY_SHORT_PERIODS` / `GUPPY_LONG_PERIODS`) so a chart can label the ribbon,
+and the observation that a caller who wants their own stack has
+`movingAverage` with their own `output` names. The same reasoning covers
+`kst`'s twelve constants and the PMO's four — see (4).
+
+The one knob that _is_ vendor-compatible on both is which average, so both
+take the K2 `MaType` menu. **They spell it `type`, not `maType`** — the
+appended columns _are_ the moving averages, as `movingAverage`'s are, and
+`maType` stays the spelling where an average is an _ingredient_
+(`keltner`, `disparityIndex`, `envelope`, and this batch's
+`movingAverageDeviation`). That is a new split: before this batch,
+`movingAverage` was the only study using `type` and every other used `maType`.
+Flagged for review rather than assumed.
+
+(2) **The EMA-seed check needed a new form, because the fixture is 80 bars and
+`guppy` reaches back 60.** The MA family's rule — rebuild the formula on
+TA-Lib's SMA seed exactly, then require pond's first-sample transient to have
+decayed under 0.5% of scale over the last 20 shared bars — is unusable at
+`period 60`: only 21 bars are shared and the worst last-bar residue across the
+twelve is still **0.367%**, with no room left to decay. The replacement is an
+exact statement rather than a looser bound: two EMAs over the same input with
+the same `α` and different seeds satisfy the same recursion, so their
+difference is **exactly geometric**, `d[k] = d[0]·(1−α)^k`. Measured, the
+relative residue from that curve is 1e-14…1e-12 for the correct rate and
+**3.15** (n=15) / **0.459** (n=30) for a `2/n` rate — twelve orders of
+magnitude of separation, and it makes no claim about how far the transient has
+got. `_ema_seed_is_geometric` in the generator; available to any future
+EMA-family study whose warm-up crowds the fixture.
+
+(3) **`rainbowOscillator` is F-AMBIG, so the source is named and the
+alternatives are measured.** ChartIQ's definition ships:
+`100·(price − mean of the ten)/(HH − LL)` over `lookback` bars of the source
+column, with `±100·(max − min of the ten)/(HH − LL)` as mirrored bands. The
+divide-by-**price** variant sits **67.27** away and a first-average numerator
+**49.16**, on a reading that spans −68.6…63.8 — both the size of the reading
+itself, so the generator asserts the separation.
+
+Its flat-window rule is where the brief's "apply the test, don't copy the
+precedent" earned its keep, and the first draft got it wrong in an
+instructive way. A flat `lookback` window is `undefined` — but **not** because
+it is a `0/0`. The stack reaches back past the `lookback` window, so the
+numerators are not forced to zero: on a series that rises then holds a level,
+the stack's mean is **>10 points** from the flat level at `lookback: 3`, and
+even at the default `lookback: 10`, where the stack has nearly caught up, it
+is still **0.0044** away. That is a real number over zero — an infinity, not a
+`0/0` — which is a _stronger_ reason for `undefined`. The first test asserted
+the residue was >1 at the default look-back and **failed at 0.0044**; the
+claim was wrong, the conclusion was not, and both measurements are now pinned
+by tests because the "it converges, so it is really 0/0" intuition is exactly
+what would talk someone into returning `0`.
+
+(4) **Three studies with (almost) no options, and one asymmetry.** `kst`
+exposes only `column` / `prefix` / `signalPeriod` — Pring published _several_
+KSTs (short daily, weekly, monthly) and they are different indicators, not one
+with parameters; `priceMomentumOscillator` exposes only `column` / `prefix`.
+The asymmetry is deliberate and named on both docstrings: `signalPeriod` is
+exposed on `kst` because vendors genuinely differ on it, and not on the PMO
+because DecisionPoint's 10 is not contested. A caller wanting another
+parameterisation composes it from shipped primitives, which is four lines and
+honest about not being the named study.
+
+(5) **The PMO forced the K2 engine's one non-span exponential, and the kernel
+door is the smallest possible.** DecisionPoint's "custom smoothing" is
+`α = 2/n`, not the span EMA's `2/(n+1)` — a different **rate**, not a
+different seed, so it cannot be expressed as a span. Measured on the oracle
+input, building both PMO stages on the span EMA instead puts the line
+**0.1060** away on a reading whose scale is **3.9058** (2.71%). So
+`kernels/moving-average.ts` gained `alphaEmaValues(values, alpha, minSamples)`
+and the engine's private `emaArrayValues` became
+`alphaEmaValues(v, 2/(n+1), n)` — one recursion, one seed rule, `α` supplied
+rather than derived. It is **not exported from the barrel**: a span is the
+vocabulary every other consumer should speak, and a study choosing its own
+`α` is exactly the private smoother the engine exists to prevent.
+
+Two more PMO facts worth keeping: its **signal is a plain span `EMA(10)`**,
+not a custom-smoothed one (DecisionPoint's own asymmetry — a custom-smoothed
+signal sits **0.0883** away), and the **×10 placement is immaterial** because
+every stage is homogeneous (before / between / after agree to **8.9e-16**), so
+the generator asserts _agreement_ there rather than separation.
+
+(6) **`stochasticRsi` needed a strict rolling-extremes kernel, and the oracle
+found the bug.** `highestLowestValues` composes on core's reducers and
+therefore **skips** a missing cell — right for a bar's high and low, which
+have no warm-up; wrong for a derived input. The RSI's first `rsiPeriod` rows
+are missing, so the skipping door emitted a "14-bar range of the RSI"
+computed from **two** values as soon as two existed, putting `%K` on bar
+**17** instead of **29** and disagreeing with `talib.STOCHRSI`. The fix is
+`rollingExtremesValues(values, period)` in `kernels/highest-lowest.ts`:
+`rollingMeanValues`' strict rule applied to an extreme, via two monotonic
+deques (O(N), flat in `period`, the `barsSinceExtremeValues` structure).
+Internal, not exported.
+
+Its `Number.isFinite` guard on the push is **redundant and stays anyway** —
+the `missing` counter already carries the whole rule, so mutating the guard
+away fails **zero** tests (measured). It preserves the deque's _invariant_
+(candidates strictly monotonic, no `NaN`s interleaved) rather than its answer,
+which is the same reason `barsSinceExtremeValues` carries it; the docstring
+says so, so the surviving mutation reads as a decision rather than an untested
+branch.
+
+(7) **TA-Lib's `STOCHRSI` returns `fastk`/`fastd`, not `%K`/`%D`, so the
+mapping is measured rather than assumed.** `stochRsiK` **is** TA-Lib's
+`fastd` (bar for bar, 9.9e-14, identical masks); the raw unsmoothed position,
+which the study does not emit, is its `fastk`; `stochRsiD` has **no** TA-Lib
+counterpart. Crossing the columns is a **45-point** error on the fixture, so
+the generator asserts the mismatch as well as the match — a case that only
+checked "close to something TA-Lib returns" would pass on the wrong column.
+
+The cost is a genuine name clash, documented rather than resolved: the option
+names are TradingView's, so **`stochPeriod` here is `stochastic`'s `kPeriod`
+and `kPeriod` here is its `slowing`**. A three-way mapping table sits on the
+docstring. Each study speaking its own vendor's vocabulary is defensible; a
+reviewer may reasonably prefer one vocabulary across both.
+
+(8) **`trueStrengthIndex` deleted a zero-denominator guard the first draft
+wrote**, which is #703's rule reaching a different conclusion than usual. The
+division _is_ at the output, which is normally what makes such a guard live —
+but the denominator is an EMA of absolute changes, so it is zero only on a
+perfectly flat column, and then `|num| ≤ den` forces the numerator to zero
+too. The division is a literal `0/0`, already `NaN`, already a missing cell.
+The mutation matrix showed the guard failing **zero** tests, so it went. Its
+options are also `longPeriod` / `shortPeriod` rather than the corpus'
+`long` / `short`: bare "long" is _position_ vocabulary in a financial package.
+
+(9) **`movingAverageDeviation` ships the points form ONLY, and that is a
+step-0 finding with a measurement behind it.** The corpus lists it as "points
+or percent"; the percent form is already shipped as `disparityIndex`, and
+`100·maDev/MA` and `disparity` agree **bit for bit** (`0.0`, not "to
+rounding") at both `(20, sma)` and `(14, ema)` — asserted in the generator. A
+`mode` flag would therefore be two indicators behind an option, one of them a
+duplicate export: the `keltner` precedent. The two studies are now a pair that
+point at each other, and `disparityIndex`'s own docstring was corrected — it
+had declined the absolute form as "`momentum`-shaped arithmetic anyone can
+write", which is not quite right (`momentum` subtracts a _lagged_ price, this
+a _smoothed_ one, measured 8.36 apart at `period 20`).
+
+(10) **Perf: the new studies' 1M-bar medians, and an honest note about what
+the before/after could not measure.** All from
+`scripts/perf-studies.mjs` at 1M rows, against `sma()` 21.2 ms, `ema()`
+6.6 ms, `bollinger()` 75.0 ms and `stochastic()` 192.9 ms on the same run:
+
+| study                                   | 1M median |
+| --------------------------------------- | --------- |
+| `guppy({ type: 'ema' })`                | 189.8 ms  |
+| `guppy({ type: 'sma' })`                | 258.6 ms  |
+| `rainbow({ period: 2 })`                | 230.7 ms  |
+| `rainbowOscillator({ 2, 10 })`          | 344.1 ms  |
+| `kst()`                                 | 125.6 ms  |
+| `priceMomentumOscillator()`             | 28.7 ms   |
+| `stochasticRsi({ 14, 14, 3, 3 })`       | 119.5 ms  |
+| `stochasticRsi({ stochPeriod: 200 })`   | 119.5 ms  |
+| `trueStrengthIndex({ 25, 13, 7 })`      | 38.6 ms   |
+| `movingAverageDeviation({ 20, 'sma' })` | 24.6 ms   |
+
+The two `stochasticRsi` rows are the point of that pair: identical to the
+reported precision at `period 14` and `period 200`, which is the monotonic
+deque being flat in `period`. `guppy` reads as roughly twelve engine calls
+plus twelve column appends, `rainbow` as ten chained array passes.
+
+**The study-level before/after for the `alphaEmaValues` refactor is not
+reportable on this runner.** Both sweeps were run (main's kernel with a
+standalone shim, then the refactor), and benchmarks the change _cannot touch_
+moved by −41% (`priceVolumeTrend`) and +43% (`movingAverage kama`) between
+them — the noise band swamps the signal. What _is_ measurable is the change
+in isolation: an interleaved micro-benchmark of the two forms over the same
+1M array (`scratchpad/stacks-perf-alpha.mjs`) puts the delegating form
+**12–14% above** the inlined one, **4.1–4.8 ms → 4.6–5.3 ms**, i.e. about
+**+0.55 ms per 1M rows** — ~3% of `movingAverage({ 20, 'ema' })`'s 16 ms.
+The first version of that benchmark ran the two forms in sequence and read a
+**160%** difference that was entirely allocation ordering; alternating which
+form goes first per iteration removed it. Duplicating the recursion instead
+of delegating would recover the 0.55 ms and was rejected: a second copy of
+the engine's EMA is precisely what the engine exists to prevent.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

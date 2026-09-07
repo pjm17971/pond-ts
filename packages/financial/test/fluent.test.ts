@@ -62,6 +62,14 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
   parabolicSar,
   superTrend,
   atrTrailingStop,
@@ -1003,5 +1011,124 @@ describe('fluent K6 state machines ([PND-SFOLD])', () => {
       col(slowKvo, 'kvo2')[50]!,
       6,
     );
+  });
+});
+
+describe('fluent: the moving-average stacks', () => {
+  const stackBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: closeSchema,
+      rows: Array.from({ length: 70 }, (_, i) => [
+        i,
+        100 + 6 * Math.sin(i / 4.1) + 0.15 * i,
+      ]) as Array<[number, number]>,
+    });
+
+  it('guppy through the fluent door equals the standalone function', () => {
+    const chained = stackBars().guppy();
+    const standalone = guppy(stackBars());
+    for (const name of ['gmmaS3', 'gmmaS15', 'gmmaL30', 'gmmaL60']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('rainbow and its oscillator equal the standalone functions', () => {
+    const chained = stackBars().rainbow().rainbowOscillator();
+    const standalone = rainbowOscillator(rainbow(stackBars()));
+    for (const name of [
+      'rainbow1',
+      'rainbow10',
+      'rbo',
+      'rboUpper',
+      'rboLower',
+    ]) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('kst through the fluent door equals the standalone function', () => {
+    const chained = stackBars().kst({ signalPeriod: 3 });
+    const standalone = kst(stackBars(), { signalPeriod: 3 });
+    for (const name of ['kst', 'kstSignal']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('priceMomentumOscillator through the fluent door equals the standalone', () => {
+    const long = () =>
+      new TimeSeries({
+        name: 'bars',
+        schema: closeSchema,
+        rows: Array.from({ length: 90 }, (_, i) => [
+          i,
+          100 + 6 * Math.sin(i / 4.1) + 0.15 * i,
+        ]) as Array<[number, number]>,
+      });
+    const chained = long().priceMomentumOscillator();
+    const standalone = priceMomentumOscillator(long());
+    for (const name of ['pmo', 'pmoSignal']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('stochasticRsi through the fluent door equals the standalone function', () => {
+    const chained = stackBars().stochasticRsi();
+    const standalone = stochasticRsi(stackBars());
+    for (const name of ['stochRsiK', 'stochRsiD']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('trueStrengthIndex through the fluent door equals the standalone', () => {
+    const chained = stackBars().trueStrengthIndex({
+      longPeriod: 10,
+      shortPeriod: 4,
+      signalPeriod: 3,
+    });
+    const standalone = trueStrengthIndex(stackBars(), {
+      longPeriod: 10,
+      shortPeriod: 4,
+      signalPeriod: 3,
+    });
+    for (const name of ['tsi', 'tsiSignal']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('movingAverageDeviation through the fluent door equals the standalone', () => {
+    const chained = stackBars().movingAverageDeviation({ period: 10 });
+    const standalone = movingAverageDeviation(stackBars(), { period: 10 });
+    expect(col(chained, 'maDev')).toEqual(col(standalone, 'maDev'));
+    expect(col(chained, 'maDev').some((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('honours prefix and type through the fluent door', () => {
+    const two = stackBars().guppy().guppy({ type: 'sma', prefix: 'gs' });
+    expect(col(two, 'gmmaS15')[40]).not.toBeCloseTo(col(two, 'gsS15')[40]!, 6);
   });
 });

@@ -66,6 +66,16 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
+  GUPPY_SHORT_PERIODS,
+  GUPPY_LONG_PERIODS,
   parabolicSar,
   superTrend,
   atrTrailingStop,
@@ -6845,10 +6855,12 @@ describe('the two-series oracle cases are in the fixture', () => {
         'utf8',
       ),
     ) as { cases: Array<{ study: string }> };
-    // 119 cases before the two-series batch, + 7 there, + 10 for the K6
-    // state machines. A case that silently disappears takes its study's only
-    // value check with it, and nothing else would notice.
-    expect(fixture.cases).toHaveLength(144);
+    // 119 cases before the two-series batch, + 7 there, + 8 K7 regression,
+    // + 10 K6 state machines, + 15 MA stacks (2 guppy, 4 rainbow, 2 kst,
+    // 1 pmo, 2 stochRsi, 2 tsi, 2 maDev). A case that silently disappears
+    // takes its study's only value check with it, and nothing else would
+    // notice.
+    expect(fixture.cases).toHaveLength(159);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -7469,5 +7481,944 @@ describe('klinger', () => {
     expect(() =>
       klinger(once as never, { fastPeriod: 2, slowPeriod: 3, signalPeriod: 2 }),
     ).toThrow(/collides/);
+  });
+});
+
+/* ==========================================================================
+ * The moving-average stacks (assessment 6.1): guppy.
+ * ========================================================================== */
+
+/** A rising close series — `sma` values are then hand-checkable. */
+const stackRising = (n: number) => Array.from({ length: n }, (_, i) => 100 + i);
+
+const GUPPY_COLUMNS = [
+  'gmmaS3',
+  'gmmaS5',
+  'gmmaS8',
+  'gmmaS10',
+  'gmmaS12',
+  'gmmaS15',
+  'gmmaL30',
+  'gmmaL35',
+  'gmmaL40',
+  'gmmaL45',
+  'gmmaL50',
+  'gmmaL60',
+] as const;
+
+describe('guppy', () => {
+  it('appends the fixed twelve, hand-checked on a rising series', () => {
+    const r = guppy(bars(stackRising(70)), { type: 'sma' });
+    // SMA(3) of 100, 101, 102 is 101; SMA(15) at bar 14 is the mean of
+    // 100..114 = 107; SMA(60) at bar 59 is the mean of 100..159 = 129.5.
+    expect(col(r, 'gmmaS3')[2]).toBeCloseTo(101, 10);
+    expect(col(r, 'gmmaS15')[14]).toBeCloseTo(107, 10);
+    expect(col(r, 'gmmaL60')[59]).toBeCloseTo(129.5, 10);
+    for (const name of GUPPY_COLUMNS) {
+      expect(col(r, name), name).toHaveLength(70);
+    }
+  });
+
+  it('each column IS movingAverage at its own period — the name mapping', () => {
+    // The one bug twelve plausible ribbons would hide: a column carrying the
+    // wrong period, or the short and long halves swapped.
+    const src = bars(k2Closes(80));
+    const periods = [...GUPPY_SHORT_PERIODS, ...GUPPY_LONG_PERIODS];
+    const r = guppy(src);
+    periods.forEach((period, i) => {
+      const name = GUPPY_COLUMNS[i]!;
+      const reference = col(
+        movingAverage(src, { period, type: 'ema', output: 'ref' }),
+        'ref',
+      );
+      expect(col(r, name), `${name} should be the ${period}-bar EMA`).toEqual(
+        reference,
+      );
+    });
+  });
+
+  it('the exported period lists match the column suffixes', () => {
+    expect(GUPPY_SHORT_PERIODS).toEqual([3, 5, 8, 10, 12, 15]);
+    expect(GUPPY_LONG_PERIODS).toEqual([30, 35, 40, 45, 50, 60]);
+    expect([
+      ...GUPPY_SHORT_PERIODS.map((p) => `gmmaS${p}`),
+      ...GUPPY_LONG_PERIODS.map((p) => `gmmaL${p}`),
+    ]).toEqual([...GUPPY_COLUMNS]);
+  });
+
+  it('warms up per column — the fast ribbon starts long before the slow', () => {
+    const r = guppy(bars(stackRising(70)));
+    expect(col(r, 'gmmaS3')[1]).toBeUndefined();
+    expect(col(r, 'gmmaS3')[2]).toBeDefined();
+    expect(col(r, 'gmmaL60')[58]).toBeUndefined();
+    expect(col(r, 'gmmaL60')[59]).toBeDefined();
+    // 57 bars of the fastest ribbon exist before the slowest one starts —
+    // the values a shared warm-up would have discarded.
+    const fast = col(r, 'gmmaS3').filter((x) => x !== undefined).length;
+    const slow = col(r, 'gmmaL60').filter((x) => x !== undefined).length;
+    expect(fast - slow).toBe(57);
+  });
+
+  it('a series shorter than 60 bars keeps its length, long ribbon empty', () => {
+    const r = guppy(bars(stackRising(20)));
+    expect(col(r, 'gmmaS3').filter((x) => x !== undefined).length).toBe(18);
+    for (const name of ['gmmaL30', 'gmmaL60']) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('renames every column with `prefix`', () => {
+    const r = guppy(bars(stackRising(70)), { prefix: 'g' });
+    expect(col(r, 'gS3')[2]).toBeDefined();
+    expect(col(r, 'gL60')[59]).toBeDefined();
+    expect(col(r, 'gmmaS3').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    expect(() =>
+      guppy(bars(stackRising(70)), { type: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    // Each half of the name guard, separately: the LAST name in each loop, so
+    // the guard has to run over the whole list before any average is taken
+    // rather than as each column is appended.
+    for (const name of ['gmmaS15', 'gmmaL60']) {
+      const clash = movingAverage(bars(stackRising(70)), {
+        period: 3,
+        output: name,
+      });
+      expect(() => guppy(clash as never), name).toThrow(/collides/);
+    }
+    // Options are validated BEFORE the series is inspected — a bad `type` on
+    // a colliding series reports the type, not the collision. (Without the
+    // study's own `assertMaType` the engine still throws the same message,
+    // but only after the twelve name checks have run, so this is what makes
+    // the eager guard observable.)
+    const both = movingAverage(bars(stackRising(70)), {
+      period: 3,
+      output: 'gmmaS3',
+    });
+    expect(() => guppy(both as never, { type: 'nope' as never })).toThrow(
+      /unknown moving-average type/,
+    );
+  });
+});
+
+const RAINBOW_COLUMNS = Array.from({ length: 10 }, (_, i) => `rainbow${i + 1}`);
+
+describe('rainbow', () => {
+  it('each stage smooths the PREVIOUS stage, hand-checked', () => {
+    // closes 10..14 at period 2: r1 = [_, 10.5, 11.5, 12.5, 13.5],
+    // r2 = [_, _, 11, 12, 13], r3 = [_, _, _, 11.5, 12.5].
+    const r = rainbow(bars([10, 11, 12, 13, 14]), { period: 2 });
+    expect(col(r, 'rainbow1')).toEqual([undefined, 10.5, 11.5, 12.5, 13.5]);
+    expect(col(r, 'rainbow2')).toEqual([undefined, undefined, 11, 12, 13]);
+    expect(col(r, 'rainbow3')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      11.5,
+      12.5,
+    ]);
+  });
+
+  it('stage k warms up at k · (period − 1)', () => {
+    for (const period of [2, 3]) {
+      const r = rainbow(bars(k2Closes(60)), { period });
+      RAINBOW_COLUMNS.forEach((name, i) => {
+        const v = col(r, name);
+        const expected = (i + 1) * (period - 1);
+        expect(v[expected - 1], `${name} p${period}`).toBeUndefined();
+        expect(v[expected], `${name} p${period}`).toBeDefined();
+      });
+    }
+  });
+
+  it('period 1 is the identity ten times over', () => {
+    const closes = k2Closes(20);
+    const r = rainbow(bars(closes), { period: 1 });
+    for (const name of RAINBOW_COLUMNS) {
+      expect(col(r, name), name).toEqual(closes);
+    }
+  });
+
+  it('renames every column with `prefix`', () => {
+    const r = rainbow(bars(k2Closes(30)), { prefix: 'rb' });
+    expect(col(r, 'rb1')[1]).toBeDefined();
+    expect(col(r, 'rb10')[10]).toBeDefined();
+    expect(col(r, 'rainbow1').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    expect(() => rainbow(bars(k2Closes(30)), { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() =>
+      rainbow(bars(k2Closes(30)), { type: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    for (const name of ['rainbow1', 'rainbow10']) {
+      const clash = movingAverage(bars(k2Closes(30)), {
+        period: 3,
+        output: name,
+      });
+      expect(() => rainbow(clash as never), name).toThrow(/collides/);
+    }
+  });
+});
+
+describe('rainbowOscillator', () => {
+  it('is the stack reduced against the range — pinned to `rainbow` itself', () => {
+    // The identity that keeps the two studies one definition: the line is
+    // 100·(close − mean(the ten)) / (HH − LL), and the band is the stack's
+    // own max − min over the same denominator.
+    const closes = k2Closes(60);
+    const stack = rainbow(bars(closes), { period: 2 });
+    const osc = rainbowOscillator(bars(closes), { period: 2, lookback: 10 });
+    const stages = RAINBOW_COLUMNS.map((n) => col(stack, n));
+    const line = col(osc, 'rbo');
+    const upper = col(osc, 'rboUpper');
+
+    for (let i = 20; i < closes.length; i += 1) {
+      const values = stages.map((s) => s[i]!);
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      const window = closes.slice(i - 9, i + 1);
+      const range = Math.max(...window) - Math.min(...window);
+      expect(line[i], `bar ${i}`).toBeCloseTo(
+        (100 * (closes[i]! - mean)) / range,
+        9,
+      );
+      expect(upper[i], `bar ${i}`).toBeCloseTo(
+        (100 * (Math.max(...values) - Math.min(...values))) / range,
+        9,
+      );
+    }
+  });
+
+  it('the lower band is the upper band negated, exactly', () => {
+    const osc = rainbowOscillator(bars(k2Closes(60)));
+    const upper = col(osc, 'rboUpper');
+    const lower = col(osc, 'rboLower');
+    for (let i = 0; i < upper.length; i += 1) {
+      if (upper[i] === undefined) expect(lower[i], `bar ${i}`).toBeUndefined();
+      else expect(lower[i], `bar ${i}`).toBe(-upper[i]!);
+    }
+  });
+
+  it('all three columns warm up on the same bar', () => {
+    // The deepest average's warm-up (10·(period−1)) or the range's
+    // (lookback−1), whichever is later — the bands read the same complete
+    // stack the line does.
+    const late = rainbowOscillator(bars(k2Closes(60)), {
+      period: 2,
+      lookback: 25,
+    });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(col(late, name)[23], name).toBeUndefined();
+      expect(col(late, name)[24], name).toBeDefined();
+    }
+    const early = rainbowOscillator(bars(k2Closes(60)), {
+      period: 2,
+      lookback: 5,
+    });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(col(early, name)[9], name).toBeUndefined();
+      expect(col(early, name)[10], name).toBeDefined();
+    }
+  });
+
+  it('a flat look-back window is undefined, and the numerators are NOT zero', () => {
+    // 20 rising bars, then a jump down to a level held for three. At the last
+    // bar the 3-bar range is 0 — but the stack reaches back past the window
+    // and still carries the rising leg, so neither numerator is anywhere near
+    // zero. The quotient is a real number over 0, not a 0/0, which is the
+    // stronger reason `undefined` is the only honest answer.
+    const closes = [
+      ...Array.from({ length: 20 }, (_, i) => 100 + 5 * i),
+      ...Array.from({ length: 3 }, () => 150),
+    ];
+    const osc = rainbowOscillator(bars(closes), { period: 2, lookback: 3 });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(col(osc, name)[22], name).toBeUndefined();
+      // The bar before the window goes flat still reads.
+      expect(col(osc, name)[21], name).toBeDefined();
+    }
+    const stack = rainbow(bars(closes), { period: 2 });
+    const values = RAINBOW_COLUMNS.map((n) => col(stack, n)[22]!);
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    expect(Math.abs(150 - mean)).toBeGreaterThan(10);
+    expect(Math.max(...values) - Math.min(...values)).toBeGreaterThan(10);
+  });
+
+  it('a flat window is still undefined when the stack HAS caught up', () => {
+    // The same shape with the flat run as long as the default look-back: the
+    // stack has converged to within 0.005 of the level, so the numerator is
+    // tiny — but tiny is not zero, and tiny-over-zero is an infinity, not a
+    // reading. (Measured: the stack's mean is 0.0044 from the flat level
+    // after ten flat bars at `period 2`.)
+    const closes = [
+      ...Array.from({ length: 20 }, (_, i) => 100 + 5 * i),
+      ...Array.from({ length: 10 }, () => 150),
+    ];
+    const osc = rainbowOscillator(bars(closes), { period: 2, lookback: 10 });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(col(osc, name)[29], name).toBeUndefined();
+    }
+    const stack = rainbow(bars(closes), { period: 2 });
+    const values = RAINBOW_COLUMNS.map((n) => col(stack, n)[29]!);
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    expect(Math.abs(150 - mean)).toBeGreaterThan(0);
+    expect(Math.abs(150 - mean)).toBeLessThan(0.01);
+  });
+
+  it('renames all three columns with `prefix`', () => {
+    const osc = rainbowOscillator(bars(k2Closes(40)), { prefix: 'rain' });
+    expect(col(osc, 'rain')[20]).toBeDefined();
+    expect(col(osc, 'rainUpper')[20]).toBeDefined();
+    expect(col(osc, 'rainLower')[20]).toBeDefined();
+    expect(col(osc, 'rbo').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    expect(() =>
+      rainbowOscillator(bars(k2Closes(40)), { lookback: 0 }),
+    ).toThrow(/lookback must be a positive integer/);
+    expect(() => rainbowOscillator(bars(k2Closes(40)), { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() =>
+      rainbowOscillator(bars(k2Closes(40)), { type: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      const clash = movingAverage(bars(k2Closes(40)), {
+        period: 3,
+        output: name,
+      });
+      expect(() => rainbowOscillator(clash as never), name).toThrow(/collides/);
+    }
+  });
+});
+
+describe('kst', () => {
+  it('is the weighted sum of four smoothed rates of change, hand-checked', () => {
+    // A constant 1% compounding series makes every percent rate of change
+    // exact: ROC(n) = (1.01^n − 1)·100, and an SMA of a constant is that
+    // constant. So the line is Σ wᵢ·(1.01^rocᵢ − 1)·100 on every bar past
+    // the warm-up, and the signal equals the line.
+    const closes = Array.from({ length: 70 }, (_, i) => 100 * 1.01 ** i);
+    const r = kst(bars(closes));
+    const roc = [10, 15, 20, 30];
+    const weights = [1, 2, 3, 4];
+    const expected = roc.reduce(
+      (acc, n, i) => acc + weights[i]! * (1.01 ** n - 1) * 100,
+      0,
+    );
+    expect(col(r, 'kst')[44]).toBeCloseTo(expected, 6);
+    expect(col(r, 'kst')[69]).toBeCloseTo(expected, 6);
+    expect(col(r, 'kstSignal')[69]).toBeCloseTo(expected, 6);
+  });
+
+  it('warms up at 44, the slowest term’s, and the signal 8 bars later', () => {
+    const r = kst(bars(k2Closes(70)));
+    expect(col(r, 'kst')[43]).toBeUndefined();
+    expect(col(r, 'kst')[44]).toBeDefined();
+    expect(col(r, 'kstSignal')[51]).toBeUndefined();
+    expect(col(r, 'kstSignal')[52]).toBeDefined();
+    expect(col(r, 'kst')).toHaveLength(70);
+  });
+
+  it('signalPeriod moves only the signal column', () => {
+    const closes = k2Closes(70);
+    const slow = kst(bars(closes));
+    const fast = kst(bars(closes), { signalPeriod: 3 });
+    expect(col(fast, 'kst')).toEqual(col(slow, 'kst'));
+    expect(col(fast, 'kstSignal')[46]).toBeDefined();
+    expect(col(slow, 'kstSignal')[46]).toBeUndefined();
+  });
+
+  it('is exactly the sum of shipped primitives — weights and smoothings', () => {
+    // The identity that pins all twelve constants at once: percentChange at
+    // each look-back, sma over each, weighted 1/2/3/4. Built from the
+    // package's own TA-Lib-verified pieces, so this cannot drift from them.
+    const closes = k2Closes(70);
+    const roc = [10, 15, 20, 30];
+    const smooth = [10, 10, 10, 15];
+    const weights = [1, 2, 3, 4];
+    const terms = roc.map((n, i) =>
+      col(
+        sma(
+          percentChange(bars(closes), { periods: n, output: 'roc' }) as never,
+          { period: smooth[i]!, column: 'roc' as never, output: 'term' },
+        ),
+        'term',
+      ),
+    );
+    const line = col(kst(bars(closes)), 'kst');
+    // From bar 44 on, every smoothing window is entirely finite, so `sma()`'s
+    // ROW-counting window and the study's VALUE-counting one agree and the
+    // identity is exact. Before it they deliberately do not — `sma()` over a
+    // column with a NaN head emits early, averaging the cells it has, which
+    // is exactly why the study smooths through `rollingMeanValues` instead.
+    for (let i = 0; i < 44; i += 1) {
+      expect(line[i], `bar ${i}`).toBeUndefined();
+    }
+    for (let i = 44; i < closes.length; i += 1) {
+      const expected = terms.reduce(
+        (acc, tm, k) => acc + weights[k]! * tm[i]!,
+        0,
+      );
+      expect(line[i], `bar ${i}`).toBeCloseTo(expected, 9);
+    }
+    expect(line.filter((x) => x !== undefined).length).toBe(70 - 44);
+    // And the difference is real, not a tie: the naive `sma()` route has a
+    // value on bar 43 where the study has none.
+    expect(terms[3]![43]).toBeDefined();
+  });
+
+  it('renames both columns with `prefix`', () => {
+    const r = kst(bars(k2Closes(70)), { prefix: 'pring' });
+    expect(col(r, 'pring')[50]).toBeDefined();
+    expect(col(r, 'pringSignal')[60]).toBeDefined();
+    expect(col(r, 'kst').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    expect(() => kst(bars(k2Closes(70)), { signalPeriod: 0 })).toThrow(
+      /signalPeriod must be a positive integer/,
+    );
+    for (const name of ['kst', 'kstSignal']) {
+      const clash = movingAverage(bars(k2Closes(70)), {
+        period: 3,
+        output: name,
+      });
+      expect(() => kst(clash as never), name).toThrow(/collides/);
+    }
+  });
+
+  it('a series shorter than the warm-up is all-undefined, length kept', () => {
+    const r = kst(bars(k2Closes(30)));
+    expect(col(r, 'kst')).toHaveLength(30);
+    expect(col(r, 'kst').every((x) => x === undefined)).toBe(true);
+    expect(col(r, 'kstSignal').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('priceMomentumOscillator', () => {
+  it('is two custom-smoothed stages of a 1-bar ROC, hand-checked', () => {
+    // A constant 1% compounding series: every 1-bar percent ROC is exactly 1,
+    // so both custom stages converge to 1 immediately (an EMA seeded on its
+    // first sample, fed a constant, IS that constant) and the line is
+    // 10 × 1 = 10 on every bar past the warm-up. The signal likewise.
+    const closes = Array.from({ length: 80 }, (_, i) => 100 * 1.01 ** i);
+    const r = priceMomentumOscillator(bars(closes));
+    expect(col(r, 'pmo')[54]).toBeCloseTo(10, 9);
+    expect(col(r, 'pmo')[79]).toBeCloseTo(10, 9);
+    expect(col(r, 'pmoSignal')[79]).toBeCloseTo(10, 9);
+  });
+
+  it('the custom rate is 2/n, NOT the span EMA’s 2/(n+1)', () => {
+    // Rebuild the same pipeline on the K2 engine's span EMA and require the
+    // answers to DIFFER — the whole reason `alphaEmaValues` exists. Measured
+    // on the oracle input the gap is 2.71% of scale; here it only has to be
+    // real.
+    const closes = k2Closes(90);
+    const line = col(priceMomentumOscillator(bars(closes)), 'pmo');
+    const viaSpan = col(
+      ema(
+        ema(
+          percentChange(bars(closes), { periods: 1, output: 'roc' }) as never,
+          {
+            period: 35,
+            column: 'roc' as never,
+            output: 'e1',
+          },
+        ) as never,
+        { period: 20, column: 'e1' as never, output: 'e2' },
+      ),
+      'e2',
+    );
+    let differed = 0;
+    for (let i = 54; i < closes.length; i += 1) {
+      if (Math.abs(line[i]! - 10 * viaSpan[i]!) > 1e-6) differed += 1;
+    }
+    expect(differed).toBe(closes.length - 54);
+  });
+
+  it('reconstructs bar-for-bar from the three explicit rates', () => {
+    // The strongest pin available without a vendor reference: rebuild the
+    // whole pipeline in the test with the three rates written out — 2/35,
+    // 2/20 and 2/11 — so a wrong alpha on EITHER stage fails here, not only
+    // in the oracle. (A test that compared against an all-span build would
+    // still pass if just one stage were wrong.)
+    const closes = k2Closes(90);
+    const custom = (
+      input: Array<number | undefined>,
+      alpha: number,
+      minSamples: number,
+    ) => {
+      const out: Array<number | undefined> = [];
+      let previous: number | undefined;
+      let seen = 0;
+      for (const v of input) {
+        if (v === undefined) {
+          out.push(undefined);
+          continue;
+        }
+        previous =
+          previous === undefined ? v : alpha * v + (1 - alpha) * previous;
+        seen += 1;
+        out.push(seen >= minSamples ? previous : undefined);
+      }
+      return out;
+    };
+    const roc = closes.map((c, i) =>
+      i === 0 ? undefined : (c / closes[i - 1]! - 1) * 100,
+    );
+    const stage1 = custom(roc, 2 / 35, 35);
+    const line = custom(
+      stage1.map((v) => (v === undefined ? undefined : 10 * v)),
+      2 / 20,
+      20,
+    );
+    const signal = custom(line, 2 / 11, 10);
+
+    const r = priceMomentumOscillator(bars(closes));
+    for (let i = 0; i < closes.length; i += 1) {
+      if (line[i] === undefined)
+        expect(col(r, 'pmo')[i], `bar ${i}`).toBeUndefined();
+      else expect(col(r, 'pmo')[i], `bar ${i}`).toBeCloseTo(line[i]!, 9);
+      if (signal[i] === undefined)
+        expect(col(r, 'pmoSignal')[i], `bar ${i}`).toBeUndefined();
+      else
+        expect(col(r, 'pmoSignal')[i], `bar ${i}`).toBeCloseTo(signal[i]!, 9);
+    }
+  });
+
+  it('the signal IS a span EMA of the line', () => {
+    // The asymmetry DecisionPoint specifies: custom smoothing for the two
+    // stages, a plain 10-period EMA for the signal. Pinned against the K2
+    // engine's own `ema` so the two cannot drift.
+    const closes = k2Closes(90);
+    const r = priceMomentumOscillator(bars(closes));
+    const line = col(r, 'pmo');
+    const signal = col(r, 'pmoSignal');
+    const alpha = 2 / 11;
+    let previous: number | undefined;
+    let seen = 0;
+    for (let i = 0; i < closes.length; i += 1) {
+      if (line[i] === undefined) continue;
+      previous =
+        previous === undefined
+          ? line[i]!
+          : alpha * line[i]! + (1 - alpha) * previous;
+      seen += 1;
+      if (seen >= 10) expect(signal[i], `bar ${i}`).toBeCloseTo(previous, 9);
+      else expect(signal[i], `bar ${i}`).toBeUndefined();
+    }
+  });
+
+  it('warms up at 54 on the line and 63 on the signal', () => {
+    const r = priceMomentumOscillator(bars(k2Closes(90)));
+    expect(col(r, 'pmo')[53]).toBeUndefined();
+    expect(col(r, 'pmo')[54]).toBeDefined();
+    expect(col(r, 'pmoSignal')[62]).toBeUndefined();
+    expect(col(r, 'pmoSignal')[63]).toBeDefined();
+    expect(col(r, 'pmo')).toHaveLength(90);
+  });
+
+  it('renames both columns with `prefix`', () => {
+    const r = priceMomentumOscillator(bars(k2Closes(90)), { prefix: 'dp' });
+    expect(col(r, 'dp')[60]).toBeDefined();
+    expect(col(r, 'dpSignal')[70]).toBeDefined();
+    expect(col(r, 'pmo').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its output names', () => {
+    for (const name of ['pmo', 'pmoSignal']) {
+      const clash = movingAverage(bars(k2Closes(90)), {
+        period: 3,
+        output: name,
+      });
+      expect(() => priceMomentumOscillator(clash as never), name).toThrow(
+        /collides/,
+      );
+    }
+  });
+
+  it('a series shorter than the warm-up is all-undefined, length kept', () => {
+    const r = priceMomentumOscillator(bars(k2Closes(40)));
+    expect(col(r, 'pmo')).toHaveLength(40);
+    expect(col(r, 'pmo').every((x) => x === undefined)).toBe(true);
+    expect(col(r, 'pmoSignal').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('stochasticRsi', () => {
+  it('is the stochastic construction over the RSI — pinned to `rsi` itself', () => {
+    // The identity that keeps this from being a second RSI: the raw range
+    // position is taken over the shipped `rsi`'s own output, and `%K` is its
+    // simple average.
+    const closes = k2Closes(70);
+    const r = col(rsi(bars(closes), { period: 14 }), 'rsi');
+    const out = stochasticRsi(bars(closes));
+    const k = col(out, 'stochRsiK');
+    for (let i = 40; i < closes.length; i += 1) {
+      const raws: number[] = [];
+      for (let j = i - 2; j <= i; j += 1) {
+        const window = r.slice(j - 13, j + 1) as number[];
+        const hh = Math.max(...window);
+        const ll = Math.min(...window);
+        raws.push((100 * (r[j]! - ll)) / (hh - ll));
+      }
+      expect(k[i], `bar ${i}`).toBeCloseTo(
+        raws.reduce((a, b) => a + b, 0) / 3,
+        9,
+      );
+    }
+  });
+
+  it('kPeriod 1 leaves %K as the raw range position (the fast form)', () => {
+    const closes = k2Closes(70);
+    const r = col(rsi(bars(closes), { period: 14 }), 'rsi');
+    const fast = col(stochasticRsi(bars(closes), { kPeriod: 1 }), 'stochRsiK');
+    for (let i = 30; i < closes.length; i += 1) {
+      const window = r.slice(i - 13, i + 1) as number[];
+      const hh = Math.max(...window);
+      const ll = Math.min(...window);
+      expect(fast[i], `bar ${i}`).toBeCloseTo(
+        (100 * (r[i]! - ll)) / (hh - ll),
+        9,
+      );
+    }
+  });
+
+  it('warms up at 29 and 31 at the defaults, per column', () => {
+    const out = stochasticRsi(bars(k2Closes(70)));
+    expect(col(out, 'stochRsiK')[28]).toBeUndefined();
+    expect(col(out, 'stochRsiK')[29]).toBeDefined();
+    expect(col(out, 'stochRsiD')[30]).toBeUndefined();
+    expect(col(out, 'stochRsiD')[31]).toBeDefined();
+    expect(col(out, 'stochRsiK')).toHaveLength(70);
+  });
+
+  it('rsiPeriod and stochPeriod are separate windows', () => {
+    // At the defaults both are 14, so the two knobs are indistinguishable —
+    // a study that fed `rsiPeriod` to the range would pass every
+    // default-shaped test. Pull them apart and the warm-up says which is
+    // which: rsi at 10, the 4-bar range at 13, %K at 15 (a 10-bar range
+    // would put it at 21).
+    const out = stochasticRsi(bars(k2Closes(70)), {
+      rsiPeriod: 10,
+      stochPeriod: 4,
+      kPeriod: 3,
+      dPeriod: 1,
+    });
+    expect(col(out, 'stochRsiK')[14]).toBeUndefined();
+    expect(col(out, 'stochRsiK')[15]).toBeDefined();
+  });
+
+  it('is bounded 0..100', () => {
+    const out = stochasticRsi(bars(k2Closes(120)));
+    for (const name of ['stochRsiK', 'stochRsiD']) {
+      for (const v of col(out, name)) {
+        if (v === undefined) continue;
+        expect(v, name).toBeGreaterThanOrEqual(-1e-9);
+        expect(v, name).toBeLessThanOrEqual(100 + 1e-9);
+      }
+    }
+  });
+
+  it('a flat RSI window is undefined, not 0 — and it is REACHABLE here', () => {
+    // A long unbroken run of gains pins the RSI at exactly 100, so its own
+    // range goes flat: the ratio is a genuine 0/0. (TA-Lib reports 0 there,
+    // which is also its value for "the RSI is at the bottom of its range".)
+    // This is the case a flat PRICE range mostly cannot reach on real data.
+    const closes = Array.from({ length: 60 }, (_, i) => 100 + i);
+    const out = stochasticRsi(bars(closes), {
+      rsiPeriod: 5,
+      stochPeriod: 5,
+      kPeriod: 1,
+      dPeriod: 1,
+    });
+    const r = col(rsi(bars(closes), { period: 5 }), 'rsi');
+    // The RSI really is flat at 100 across the window this bar reads.
+    expect(new Set(r.slice(40, 46)).size).toBe(1);
+    expect(r[45]).toBeCloseTo(100, 9);
+    expect(col(out, 'stochRsiK')[45]).toBeUndefined();
+    expect(col(out, 'stochRsiD')[45]).toBeUndefined();
+  });
+
+  it('leaves no scratch column on the result', () => {
+    const out = stochasticRsi(bars(k2Closes(70)));
+    expect(
+      (out as unknown as { schema: Array<{ name: string }> }).schema.map(
+        (c) => c.name,
+      ),
+    ).toEqual(['time', 'close', 'stochRsiK', 'stochRsiD']);
+  });
+
+  it('renames both columns with `prefix`', () => {
+    const out = stochasticRsi(bars(k2Closes(70)), { prefix: 'srsi' });
+    expect(col(out, 'srsiK')[40]).toBeDefined();
+    expect(col(out, 'srsiD')[40]).toBeDefined();
+    expect(col(out, 'stochRsiK').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    const b = bars(k2Closes(70));
+    expect(() => stochasticRsi(b, { rsiPeriod: 0 })).toThrow(
+      /rsiPeriod must be a positive integer/,
+    );
+    expect(() => stochasticRsi(b, { stochPeriod: 0 })).toThrow(
+      /stochPeriod must be a positive integer/,
+    );
+    expect(() => stochasticRsi(b, { kPeriod: 0 })).toThrow(
+      /kPeriod must be a positive integer/,
+    );
+    expect(() => stochasticRsi(b, { dPeriod: 0 })).toThrow(
+      /dPeriod must be a positive integer/,
+    );
+    for (const name of ['stochRsiK', 'stochRsiD']) {
+      const clash = movingAverage(b, { period: 3, output: name });
+      expect(() => stochasticRsi(clash as never), name).toThrow(/collides/);
+    }
+  });
+});
+
+describe('trueStrengthIndex', () => {
+  it('is +100 on an unbroken rise and −100 on an unbroken fall', () => {
+    // Every change has the same sign, so the numerator and the denominator
+    // smooth to the same magnitude and the ratio saturates. This is the
+    // reading the study is named for, and it pins the ×100 and the sign.
+    const up = trueStrengthIndex(
+      bars(Array.from({ length: 60 }, (_, i) => 100 + 2 * i)),
+    );
+    const down = trueStrengthIndex(
+      bars(Array.from({ length: 60 }, (_, i) => 200 - 2 * i)),
+    );
+    expect(col(up, 'tsi')[50]).toBeCloseTo(100, 9);
+    expect(col(up, 'tsiSignal')[50]).toBeCloseTo(100, 9);
+    expect(col(down, 'tsi')[50]).toBeCloseTo(-100, 9);
+  });
+
+  it('reconstructs bar-for-bar from two EMA chains — long first', () => {
+    // The order is the definition, so the reconstruction applies longPeriod
+    // to the raw change and shortPeriod to its output.
+    const closes = k2Closes(90);
+    const r = trueStrengthIndex(bars(closes));
+    const deltas = closes.map((c, i) =>
+      i === 0 ? undefined : c - closes[i - 1]!,
+    );
+    const chain = (input: Array<number | undefined>, span: number) => {
+      const alpha = 2 / (span + 1);
+      const out: Array<number | undefined> = [];
+      let previous: number | undefined;
+      let seen = 0;
+      for (const v of input) {
+        if (v === undefined) {
+          out.push(undefined);
+          continue;
+        }
+        previous =
+          previous === undefined ? v : alpha * v + (1 - alpha) * previous;
+        seen += 1;
+        out.push(seen >= span ? previous : undefined);
+      }
+      return out;
+    };
+    const num = chain(chain(deltas, 25), 13);
+    const den = chain(
+      chain(
+        deltas.map((d) => (d === undefined ? undefined : Math.abs(d))),
+        25,
+      ),
+      13,
+    );
+    for (let i = 0; i < closes.length; i += 1) {
+      if (num[i] === undefined) {
+        expect(col(r, 'tsi')[i], `bar ${i}`).toBeUndefined();
+        continue;
+      }
+      expect(col(r, 'tsi')[i], `bar ${i}`).toBeCloseTo(
+        (100 * num[i]!) / den[i]!,
+        9,
+      );
+    }
+  });
+
+  it('warms up at longPeriod + shortPeriod − 1, signal after that', () => {
+    const r = trueStrengthIndex(bars(k2Closes(90)));
+    expect(col(r, 'tsi')[36]).toBeUndefined();
+    expect(col(r, 'tsi')[37]).toBeDefined();
+    expect(col(r, 'tsiSignal')[42]).toBeUndefined();
+    expect(col(r, 'tsiSignal')[43]).toBeDefined();
+    expect(col(r, 'tsi')).toHaveLength(90);
+  });
+
+  it('longPeriod and shortPeriod are NOT interchangeable', () => {
+    // The swap keeps the shape and moves the values — measured 15.93 apart
+    // on the oracle input at the defaults.
+    const closes = k2Closes(90);
+    const straight = col(trueStrengthIndex(bars(closes)), 'tsi');
+    const swapped = col(
+      trueStrengthIndex(bars(closes), { longPeriod: 13, shortPeriod: 25 }),
+      'tsi',
+    );
+    let differed = 0;
+    for (let i = 37; i < closes.length; i += 1) {
+      if (Math.abs(straight[i]! - swapped[i]!) > 1e-6) differed += 1;
+    }
+    expect(differed).toBeGreaterThan(40);
+  });
+
+  it('a perfectly flat column reads undefined — the zero-denominator guard', () => {
+    // The denominator is an EMA of absolute changes, so it is zero only when
+    // every consumed change is zero; the numerator is then zero too. A
+    // genuine 0/0, and the guard is LIVE because the division is the output.
+    const flat = trueStrengthIndex(bars(Array.from({ length: 60 }, () => 100)));
+    expect(col(flat, 'tsi').every((x) => x === undefined)).toBe(true);
+    expect(col(flat, 'tsiSignal').every((x) => x === undefined)).toBe(true);
+    expect(col(flat, 'tsi')).toHaveLength(60);
+  });
+
+  it('is bounded −100..100', () => {
+    const r = trueStrengthIndex(bars(k2Closes(120)));
+    for (const name of ['tsi', 'tsiSignal']) {
+      for (const v of col(r, name)) {
+        if (v === undefined) continue;
+        expect(v, name).toBeGreaterThanOrEqual(-100 - 1e-9);
+        expect(v, name).toBeLessThanOrEqual(100 + 1e-9);
+      }
+    }
+  });
+
+  it('renames both columns with `prefix`', () => {
+    const r = trueStrengthIndex(bars(k2Closes(90)), { prefix: 'blau' });
+    expect(col(r, 'blau')[50]).toBeDefined();
+    expect(col(r, 'blauSignal')[60]).toBeDefined();
+    expect(col(r, 'tsi').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('validates its options', () => {
+    const b = bars(k2Closes(90));
+    expect(() => trueStrengthIndex(b, { longPeriod: 0 })).toThrow(
+      /longPeriod must be a positive integer/,
+    );
+    expect(() => trueStrengthIndex(b, { shortPeriod: 0 })).toThrow(
+      /shortPeriod must be a positive integer/,
+    );
+    expect(() => trueStrengthIndex(b, { signalPeriod: 0 })).toThrow(
+      /signalPeriod must be a positive integer/,
+    );
+    for (const name of ['tsi', 'tsiSignal']) {
+      const clash = movingAverage(b, { period: 3, output: name });
+      expect(() => trueStrengthIndex(clash as never), name).toThrow(/collides/);
+    }
+  });
+});
+
+describe('movingAverageDeviation', () => {
+  it('is price − MA, hand-checked', () => {
+    // SMA(3) of 10, 11, 12 is 11, so bar 2 reads 12 − 11 = 1; bar 3 reads
+    // 13 − 12 = 1 (a straight line sits a fixed distance above its own
+    // trailing average).
+    const r = movingAverageDeviation(bars([10, 11, 12, 13, 14]), { period: 3 });
+    expect(col(r, 'maDev')).toEqual([undefined, undefined, 1, 1, 1]);
+  });
+
+  it('its percent form IS disparityIndex — the step-0 identity', () => {
+    // The reason there is no `mode: percent` option: that study is already
+    // shipped, and the two agree exactly rather than to rounding.
+    const closes = k2Closes(60);
+    for (const maType of ['sma', 'ema'] as const) {
+      const dev = col(
+        movingAverageDeviation(bars(closes), { period: 14, maType }),
+        'maDev',
+      );
+      const ma = col(
+        movingAverage(bars(closes), { period: 14, type: maType, output: 'ma' }),
+        'ma',
+      );
+      const disparity = col(
+        disparityIndex(bars(closes), { period: 14, maType }),
+        'disparity',
+      );
+      for (let i = 0; i < closes.length; i += 1) {
+        if (dev[i] === undefined) {
+          expect(disparity[i], `${maType} bar ${i}`).toBeUndefined();
+          continue;
+        }
+        expect((100 * dev[i]!) / ma[i]!, `${maType} bar ${i}`).toBe(
+          disparity[i]!,
+        );
+      }
+    }
+  });
+
+  it('is NOT momentum — the reference is smoothed, not lagged', () => {
+    const closes = k2Closes(60);
+    const dev = col(
+      movingAverageDeviation(bars(closes), { period: 10 }),
+      'maDev',
+    );
+    const mom = col(momentum(bars(closes), { period: 10 }), 'momentum');
+    let differed = 0;
+    for (let i = 10; i < closes.length; i += 1) {
+      if (Math.abs(dev[i]! - mom[i]!) > 1e-6) differed += 1;
+    }
+    expect(differed).toBe(closes.length - 10);
+  });
+
+  it('defaults to a 20-bar SMA', () => {
+    // Every other test here passes an explicit period, so without this the
+    // default is unpinned — a mutation of it survives the whole suite.
+    const closes = k2Closes(60);
+    const bare = col(movingAverageDeviation(bars(closes)), 'maDev');
+    expect(bare).toEqual(
+      col(
+        movingAverageDeviation(bars(closes), { period: 20, maType: 'sma' }),
+        'maDev',
+      ),
+    );
+    expect(bare[18]).toBeUndefined();
+    expect(bare[19]).toBeDefined();
+  });
+
+  it('warms up with the average, per maType', () => {
+    const closes = k2Closes(60);
+    const sma20 = movingAverageDeviation(bars(closes), { period: 20 });
+    expect(col(sma20, 'maDev')[18]).toBeUndefined();
+    expect(col(sma20, 'maDev')[19]).toBeDefined();
+    // `dema` needs 2·period − 2 bars, per the K2 engine's table.
+    const dema = movingAverageDeviation(bars(closes), {
+      period: 10,
+      maType: 'dema',
+    });
+    expect(col(dema, 'maDev')[17]).toBeUndefined();
+    expect(col(dema, 'maDev')[18]).toBeDefined();
+  });
+
+  it('validates its options', () => {
+    const b = bars(k2Closes(60));
+    expect(() => movingAverageDeviation(b, { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() =>
+      movingAverageDeviation(b, { maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    const clash = movingAverage(b, { period: 3, output: 'maDev' });
+    expect(() => movingAverageDeviation(clash as never)).toThrow(/collides/);
+  });
+
+  it('period longer than the series is all-undefined, length kept', () => {
+    const v = col(
+      movingAverageDeviation(bars([1, 2, 3]), { period: 5 }),
+      'maDev',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

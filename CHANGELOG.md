@@ -70,6 +70,93 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the moving-average stacks and the smoothed-momentum
+  tail** (corpus §6.1 / §6.3) — seven studies in the uniform shape (a `column`
+  plus an `output` or `prefix`, bar-count periods, a length-preserving
+  per-column warm-up, a fluent method), each with oracle cases.
+  - **`guppy({ column = 'close', type = 'ema', prefix = 'gmma' })`** — Daryl
+    Guppy's Multiple Moving Average: the **fixed twelve** averages, short
+    `3, 5, 8, 10, 12, 15` as `gmmaS3 … gmmaS15` and long
+    `30, 35, 40, 45, 50, 60` as `gmmaL30 … gmmaL60`. There is deliberately no
+    "which periods" option — the twelve are the study — but `type` takes the
+    whole shared `MaType` menu. The periods are exported as
+    `GUPPY_SHORT_PERIODS` / `GUPPY_LONG_PERIODS` so a chart can label the
+    ribbon. Each column is checked against `talib.MA` **at its own period**
+    (exact for `sma`; for `ema` the formula on TA-Lib's SMA seed plus a
+    geometric-decay check on pond's first-sample seed). Warm-up is
+    **per column** — `gmmaS3` at bar 2, `gmmaL60` at bar 59, which is 57 real
+    values of the fast ribbon a shared warm-up would have discarded.
+  - **`rainbow({ column = 'close', period = 2, type = 'sma', prefix =
+'rainbow' })`** — Mel Widner's Rainbow Moving Average (TASC, July 1997):
+    ten **recursive** averages, each smoothing the previous one, as
+    `rainbow1 … rainbow10`. Stage `k` warms up at `k · (period − 1)`, so ten
+    2-bar averages are a ten-bar look-back. Deliberately **not** the
+    ten-increasing-lengths variant also published under the name: a recursive
+    2-bar mean is a binomial filter, and stage 10 sits **0.83** from the
+    11-bar SMA covering the same support (measured; the fixture's whole close
+    range is 19.4).
+  - **`rainbowOscillator({ column = 'close', period = 2, lookback = 10,
+prefix = 'rbo' })`** → `rbo`, `rboUpper`, `rboLower` — ChartIQ's:
+    `100·(price − mean of the ten)/(HH − LL)` over `lookback` bars of
+    `column`, with the stack's own `max − min` as bands mirrored about zero.
+    **F-AMBIG**, so the source is named and the alternatives measured: the
+    divide-by-price form is **67.27** away and a first-average numerator
+    **49.16**, against a reading spanning −68.6…63.8. A flat `lookback`
+    window reads `undefined` — nothing forces the numerators to zero, so it
+    is a real number over zero rather than a `0/0`.
+  - **`kst({ column = 'close', signalPeriod = 9, prefix = 'kst' })`** →
+    `kst`, `kstSignal` — Martin Pring's Know Sure Thing on his intermediate
+    **daily** set: four percent rates of change (look-backs 10 / 15 / 20 /
+    30), each smoothed by a simple average (10 / 10 / 10 / 15), weighted
+    1 / 2 / 3 / 4 and summed, with a simple-average signal. The twelve
+    constants are deliberately **not** options — Pring published several KSTs
+    (short daily, weekly, monthly) and they are different indicators, not one
+    with parameters — so only `signalPeriod` is exposed. The line warms up at
+    bar 44, the signal `signalPeriod − 1` later. Scale-invariant, not
+    shift-invariant.
+  - **`priceMomentumOscillator({ column = 'close', prefix = 'pmo' })`** →
+    `pmo`, `pmoSignal` — DecisionPoint's PMO. Its two smoothing stages use
+    DecisionPoint's **custom** multiplier `α = 2/n`, which is **not** the
+    span EMA's `2/(n+1)` and is the only non-span exponential in the package:
+    measured, building both stages on the span EMA instead puts the line
+    **0.106** away on a reading whose scale is 3.906 (2.7%). The **signal**
+    is a plain span `EMA(10)` — DecisionPoint's own asymmetry, and a
+    custom-smoothed signal would sit 0.088 away. No period options; the line
+    warms up at bar 54 and the signal at 63.
+  - **`stochasticRsi({ column = 'close', rsiPeriod = 14, stochPeriod = 14,
+kPeriod = 3, dPeriod = 3, prefix = 'stochRsi' })`** → `stochRsiK`,
+    `stochRsiD` — Chande & Kroll's Stochastic RSI, composed on the shipped
+    `rsi` rather than a private copy. **`stochRsiK` equals TA-Lib
+    `STOCHRSI`'s `fastd`** (not its `fastk`) bar-for-bar with identical
+    masks, measured to 9.9e-14; `stochRsiD` has no TA-Lib counterpart, since
+    `STOCHRSI` stops at `fastd`. Crossing the two columns is a 45-point error
+    on the oracle input, and the generator asserts both the match and the
+    mismatch. The option names are TradingView's, so **`stochPeriod` here is
+    `stochastic`'s `kPeriod`** and **`kPeriod` here is its `slowing`** — a
+    table in the docstring maps all three vocabularies.
+  - **`trueStrengthIndex({ column = 'close', longPeriod = 25, shortPeriod =
+13, signalPeriod = 7, prefix = 'tsi' })`** → `tsi`, `tsiSignal` — William
+    Blau's TSI: the bar-over-bar change double-smoothed, over its own
+    magnitude double-smoothed the same way, ×100. Bounded −100…100 by
+    construction. The smoothing **order is the definition** — `longPeriod`
+    first, `shortPeriod` to its output — and the swap sits **15.93** away on
+    a line spanning −28.7…80.7 (measured; the generator asserts it). A
+    perfectly flat column gives a zero denominator with the numerator forced
+    to zero, a genuine `0/0` → `undefined`. Scale- **and** shift-invariant,
+    unlike `kst` and `priceMomentumOscillator`. Options are named
+    `longPeriod` / `shortPeriod`, not `long` / `short`, which read as
+    position vocabulary in a financial package.
+  - **`movingAverageDeviation({ column = 'close', period = 20, maType =
+'sma', output = 'maDev' })`** — `price − MA`, in **price units**, over
+    the shared `MaType` menu. The corpus lists this study as "points **or**
+    percent"; the percent half is **already shipped** as `disparityIndex`,
+    and the two agree **bit for bit** (`100·maDev/MA === disparity`,
+    measured 0.0, asserted in the oracle), so only the points form ships and
+    there is no `mode` flag — two indicators behind an option is the
+    `keltner` precedent this package avoids. It is the one study in the pair
+    that is **shift-invariant** (the constant cancels between the price and
+    its own average) and the one with no division and so no
+    zero-denominator case.
 - `@pond-ts/financial`: **the K6 stateful-fold kernel and the state-machine
   studies** (corpus §6.4 / §6.6, gap **G2**) — one new public kernel and six
   studies in the uniform shape (`column` / `output` or a `prefix`, bar-count

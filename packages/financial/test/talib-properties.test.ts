@@ -102,6 +102,16 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
+  GUPPY_SHORT_PERIODS,
+  GUPPY_LONG_PERIODS,
   parabolicSar,
   superTrend,
   atrTrailingStop,
@@ -3528,5 +3538,508 @@ describe('[talib] all-missing in, all-missing out for every K6 study', () => {
         name,
       ).toBe(true);
     }
+  });
+});
+
+/* ==========================================================================
+ * The moving-average stacks (assessment 6.1).
+ *
+ * A stack of moving averages is LINEAR in its input, not scale-invariant:
+ * scaling every price scales every column and shifting every price shifts
+ * every column. Both halves matter — a study that read a CHANGE where it
+ * should read a LEVEL would keep the scale property and lose the shift one.
+ * ========================================================================== */
+
+const STACK_COLUMNS = [
+  ...GUPPY_SHORT_PERIODS.map((p) => `gmmaS${p}`),
+  ...GUPPY_LONG_PERIODS.map((p) => `gmmaL${p}`),
+];
+
+const stackWavy = (a = 1, b = 0) =>
+  Array.from(
+    { length: 80 },
+    (_, i) => (100 + 8 * Math.sin(i / 3.5) + 0.3 * i) * a + b,
+  );
+
+describe('[talib] the moving-average stacks are linear in price', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('guppy: every column scales with the input', () => {
+    const base = guppy(bars(stackWavy()));
+    const scaled = guppy(bars(stackWavy(K)));
+    for (const name of STACK_COLUMNS) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectLinear(b, col(scaled, name), K);
+    }
+  });
+
+  it('guppy: every column shifts with the input', () => {
+    const base = guppy(bars(stackWavy()));
+    const shifted = guppy(bars(stackWavy(1, SHIFT)));
+    for (const name of STACK_COLUMNS) {
+      const b = col(base, name);
+      const s = col(shifted, name);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i]! - SHIFT, `${name}[${i}]`).toBeCloseTo(b[i]!, 6);
+      }
+    }
+  });
+
+  it('guppy over another study composes its warm-up', () => {
+    const src = sma(bars(stackWavy()), { period: 3 });
+    const out = guppy(src as never, { column: 'sma' as never });
+    const fast = col(out, 'gmmaS3');
+    expect(fast).toHaveLength(80);
+    // sma(3) starts at bar 2; the 3-bar EMA of it then needs three finite
+    // values, so bar 4 — late, not empty.
+    expect(firstValid(fast)).toBe(4);
+    expect(fast.filter((x) => x !== undefined).length).toBeGreaterThan(70);
+  });
+
+  it('all-missing input yields all-missing guppy columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => [i, undefined]) as never,
+    });
+    const out = guppy(empty as never);
+    for (const name of STACK_COLUMNS) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(40);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+const RAINBOW_STAGES = Array.from({ length: 10 }, (_, i) => `rainbow${i + 1}`);
+
+describe('[talib] the rainbow stack is linear, its oscillator invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('rainbow: every stage scales and shifts with the input', () => {
+    const base = rainbow(bars(stackWavy()));
+    const scaled = rainbow(bars(stackWavy(K)));
+    const shifted = rainbow(bars(stackWavy(1, SHIFT)));
+    for (const name of RAINBOW_STAGES) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectLinear(b, col(scaled, name), K);
+      const s = col(shifted, name);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) expect(s[i], `${name}[${i}]`).toBeUndefined();
+        else expect(s[i]! - SHIFT, `${name}[${i}]`).toBeCloseTo(b[i]!, 6);
+      }
+    }
+  });
+
+  it('rainbowOscillator: all three columns are scale- AND shift-invariant', () => {
+    // Numerator and denominator are both differences of prices, so k·p + c
+    // leaves the reading alone — the opposite of the stack it is built on.
+    const base = rainbowOscillator(bars(stackWavy()));
+    const scaled = rainbowOscillator(bars(stackWavy(K)));
+    const shifted = rainbowOscillator(bars(stackWavy(1, SHIFT)));
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectSame(b, col(scaled, name));
+      expectSame(b, col(shifted, name));
+    }
+  });
+
+  it('the oscillator actually moves — the invariance above is not vacuous', () => {
+    const v = col(rainbowOscillator(bars(stackWavy())), 'rbo').filter(
+      (x) => x !== undefined,
+    ) as number[];
+    expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(20);
+    expect(Math.min(...v)).toBeLessThan(0);
+    expect(Math.max(...v)).toBeGreaterThan(0);
+  });
+
+  it('the rainbow studies compose over another study', () => {
+    const src = sma(bars(stackWavy()), { period: 3 });
+    const stack = rainbow(src as never, { column: 'sma' as never });
+    expect(col(stack, 'rainbow1')).toHaveLength(80);
+    // sma(3) starts at bar 2; each rainbow stage then adds one bar.
+    expect(firstValid(col(stack, 'rainbow1'))).toBe(3);
+    expect(firstValid(col(stack, 'rainbow10'))).toBe(12);
+    const osc = rainbowOscillator(src as never, { column: 'sma' as never });
+    expect(firstValid(col(osc, 'rbo'))).toBe(12);
+  });
+
+  it('all-missing input yields all-missing rainbow columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => [i, undefined]) as never,
+    });
+    const stack = rainbow(empty as never);
+    const osc = rainbowOscillator(empty as never);
+    for (const name of RAINBOW_STAGES) {
+      expect(
+        col(stack, name).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      const v = col(osc, name);
+      expect(v, name).toHaveLength(40);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] KST is scale-invariant but NOT shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const wavy = Array.from(
+    { length: 90 },
+    (_, i) => 100 + 8 * Math.sin(i / 5.5) + 0.3 * i,
+  );
+
+  it('scaling every price leaves both columns unchanged', () => {
+    const base = kst(bars(wavy));
+    const scaled = kst(bars(wavy.map((x) => x * K)));
+    for (const name of ['kst', 'kstSignal']) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectSame(b, col(scaled, name));
+    }
+  });
+
+  it('shifting every price MOVES it — the terms are ratios of levels', () => {
+    const base = col(kst(bars(wavy)), 'kst');
+    const shifted = col(kst(bars(wavy.map((x) => x + SHIFT))), 'kst');
+    let moved = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      if (Math.abs(shifted[i]! - base[i]!) > 1e-6) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(30);
+  });
+
+  it('the line is not constant — the invariance above is not vacuous', () => {
+    const v = col(kst(bars(wavy)), 'kst').filter(
+      (x) => x !== undefined,
+    ) as number[];
+    expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(10);
+  });
+
+  it('kst over another study composes its warm-up', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const out = kst(src as never, { column: 'sma' as never });
+    const line = col(out, 'kst');
+    expect(line).toHaveLength(90);
+    // sma(3) starts at bar 2, so every look-back and every smoothing window
+    // shifts by two — late, not empty.
+    expect(firstValid(line)).toBe(46);
+  });
+
+  it('all-missing input yields all-missing KST columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 90 }, (_, i) => [i, undefined]) as never,
+    });
+    const out = kst(empty as never);
+    for (const name of ['kst', 'kstSignal']) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(90);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] the PMO is scale-invariant but NOT shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const wavy = Array.from(
+    { length: 100 },
+    (_, i) => 100 + 8 * Math.sin(i / 5.5) + 0.3 * i,
+  );
+
+  it('scaling every price leaves both columns unchanged', () => {
+    const base = priceMomentumOscillator(bars(wavy));
+    const scaled = priceMomentumOscillator(bars(wavy.map((x) => x * K)));
+    for (const name of ['pmo', 'pmoSignal']) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectSame(b, col(scaled, name));
+    }
+  });
+
+  it('shifting every price MOVES it — the ROC is a ratio of levels', () => {
+    const base = col(priceMomentumOscillator(bars(wavy)), 'pmo');
+    const shifted = col(
+      priceMomentumOscillator(bars(wavy.map((x) => x + SHIFT))),
+      'pmo',
+    );
+    let moved = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      if (Math.abs(shifted[i]! - base[i]!) > 1e-6) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(30);
+  });
+
+  it('the line is not constant — the invariance above is not vacuous', () => {
+    const v = col(priceMomentumOscillator(bars(wavy)), 'pmo').filter(
+      (x) => x !== undefined,
+    ) as number[];
+    expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(1);
+  });
+
+  it('pmo over another study composes its warm-up', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const out = priceMomentumOscillator(src as never, {
+      column: 'sma' as never,
+    });
+    const line = col(out, 'pmo');
+    expect(line).toHaveLength(100);
+    // sma(3) starts at bar 2, so the whole chain shifts by two — late, not
+    // empty.
+    expect(firstValid(line)).toBe(56);
+  });
+
+  it('all-missing input yields all-missing PMO columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 100 }, (_, i) => [i, undefined]) as never,
+    });
+    const out = priceMomentumOscillator(empty as never);
+    for (const name of ['pmo', 'pmoSignal']) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(100);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] the Stochastic RSI is scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const wavy = Array.from(
+    { length: 80 },
+    (_, i) => 100 + 8 * Math.sin(i / 3.5) + 0.3 * i,
+  );
+
+  it('both columns are unchanged by scaling and by shifting', () => {
+    // It inherits this from the RSI beneath it, which is a ratio of averaged
+    // DIFFERENCES — so both a multiplicative and an additive change to the
+    // price leave it alone.
+    const base = stochasticRsi(bars(wavy));
+    const scaled = stochasticRsi(bars(wavy.map((x) => x * K)));
+    const shifted = stochasticRsi(bars(wavy.map((x) => x + SHIFT)));
+    for (const name of ['stochRsiK', 'stochRsiD']) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectSame(b, col(scaled, name));
+      expectSame(b, col(shifted, name));
+    }
+  });
+
+  it('the reading is not constant — the invariance above is not vacuous', () => {
+    const v = col(stochasticRsi(bars(wavy)), 'stochRsiK').filter(
+      (x) => x !== undefined,
+    ) as number[];
+    expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(50);
+  });
+
+  it('stochasticRsi over another study composes its warm-up', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const out = stochasticRsi(src as never, { column: 'sma' as never });
+    const k = col(out, 'stochRsiK');
+    expect(k).toHaveLength(80);
+    // sma(3) starts at bar 2, so the whole chain shifts by two.
+    expect(firstValid(k)).toBe(31);
+  });
+
+  it('all-missing input yields all-missing Stochastic RSI columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => [i, undefined]) as never,
+    });
+    const out = stochasticRsi(empty as never);
+    for (const name of ['stochRsiK', 'stochRsiD']) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(60);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] the True Strength Index is scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const wavy = Array.from(
+    { length: 90 },
+    (_, i) => 100 + 8 * Math.sin(i / 3.5) + 0.3 * i,
+  );
+
+  it('both columns are unchanged by scaling and by shifting', () => {
+    // Both legs are built from DIFFERENCES, and the ratio cancels the scale
+    // — the opposite of kst and the PMO, whose rates of change read levels.
+    const base = trueStrengthIndex(bars(wavy));
+    const scaled = trueStrengthIndex(bars(wavy.map((x) => x * K)));
+    const shifted = trueStrengthIndex(bars(wavy.map((x) => x + SHIFT)));
+    for (const name of ['tsi', 'tsiSignal']) {
+      const b = col(base, name);
+      expect(
+        b.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+      expectSame(b, col(scaled, name));
+      expectSame(b, col(shifted, name));
+    }
+  });
+
+  it('the line is not constant — the invariance above is not vacuous', () => {
+    const v = col(trueStrengthIndex(bars(wavy)), 'tsi').filter(
+      (x) => x !== undefined,
+    ) as number[];
+    expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(20);
+  });
+
+  it('trueStrengthIndex over another study composes its warm-up', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const out = trueStrengthIndex(src as never, { column: 'sma' as never });
+    const line = col(out, 'tsi');
+    expect(line).toHaveLength(90);
+    // sma(3) starts at bar 2, so the whole chain shifts by two.
+    expect(firstValid(line)).toBe(39);
+  });
+
+  it('all-missing input yields all-missing TSI columns', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 90 }, (_, i) => [i, undefined]) as never,
+    });
+    const out = trueStrengthIndex(empty as never);
+    for (const name of ['tsi', 'tsiSignal']) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(90);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] movingAverageDeviation is linear in price and shift-INVARIANT', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('scaling scales the reading', () => {
+    const base = col(movingAverageDeviation(bars(stackWavy())), 'maDev');
+    const scaled = col(movingAverageDeviation(bars(stackWavy(K))), 'maDev');
+    expect(base.some((x) => x !== undefined)).toBe(true);
+    expectLinear(base, scaled, K);
+  });
+
+  it('shifting leaves it ALONE — the constant cancels with its own average', () => {
+    // The half disparityIndex does not satisfy: its denominator moves under
+    // a shift while its numerator does not.
+    const base = col(movingAverageDeviation(bars(stackWavy())), 'maDev');
+    const shifted = col(
+      movingAverageDeviation(bars(stackWavy(1, SHIFT))),
+      'maDev',
+    );
+    expectSame(base, shifted);
+    const percentBase = col(disparityIndex(bars(stackWavy())), 'disparity');
+    const percentShifted = col(
+      disparityIndex(bars(stackWavy(1, SHIFT))),
+      'disparity',
+    );
+    let moved = 0;
+    for (let i = 0; i < percentBase.length; i += 1) {
+      if (percentBase[i] === undefined) continue;
+      if (Math.abs(percentShifted[i]! - percentBase[i]!) > 1e-6) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(30);
+  });
+
+  it('maDev over another study composes its warm-up', () => {
+    const src = sma(bars(stackWavy()), { period: 3 });
+    const out = movingAverageDeviation(src as never, {
+      column: 'sma' as never,
+      period: 5,
+    });
+    const v = col(out, 'maDev');
+    expect(v).toHaveLength(80);
+    // `sma` counts rows, so the average itself starts at bar 4; the
+    // subtraction then needs the source's own first value, at bar 2.
+    expect(firstValid(v)).toBe(4);
+  });
+
+  it('all-missing input yields an all-missing maDev', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => [i, undefined]) as never,
+    });
+    const v = col(movingAverageDeviation(empty as never), 'maDev');
+    expect(v).toHaveLength(40);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });

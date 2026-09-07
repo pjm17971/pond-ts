@@ -164,6 +164,27 @@ export type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-
 export { chandeForecastOscillator } from './studies/chande-forecast-oscillator.js';
 export type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
 export { centerOfGravity } from './studies/center-of-gravity.js';
+export type { GuppyOptions } from './studies/guppy.js';
+export {
+  guppy,
+  GUPPY_SHORT_PERIODS,
+  GUPPY_LONG_PERIODS,
+} from './studies/guppy.js';
+export type {
+  RainbowOptions,
+  RainbowOscillatorOptions,
+} from './studies/rainbow.js';
+export { rainbow, rainbowOscillator } from './studies/rainbow.js';
+export type { KstOptions } from './studies/kst.js';
+export { kst } from './studies/kst.js';
+export type { PriceMomentumOscillatorOptions } from './studies/price-momentum-oscillator.js';
+export { priceMomentumOscillator } from './studies/price-momentum-oscillator.js';
+export type { StochasticRsiOptions } from './studies/stochastic-rsi.js';
+export { stochasticRsi } from './studies/stochastic-rsi.js';
+export type { TrueStrengthIndexOptions } from './studies/true-strength-index.js';
+export { trueStrengthIndex } from './studies/true-strength-index.js';
+export type { MovingAverageDeviationOptions } from './studies/moving-average-deviation.js';
+export { movingAverageDeviation } from './studies/moving-average-deviation.js';
 export type { FoldStep } from './kernels/fold.js';
 export { foldRows } from './kernels/fold.js';
 export type { ParabolicSarOptions } from './studies/parabolic-sar.js';

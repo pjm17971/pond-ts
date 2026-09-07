@@ -22,6 +22,14 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
   directionalMovement,
   vortex,
   atrBands,
@@ -421,6 +429,41 @@ function scaleResults(length) {
       ),
       benchmark('rollingBivariateValues(200) [bare kernel]', () =>
         rollingBivariateValues(close, benchmarkColumn, 200),
+      ),
+      // The moving-average stacks (corpus 6.1). `guppy` is twelve K2 column
+      // calls and nothing else, so it should read as ~12x `ema()` — a
+      // materially higher number would mean the study grew work of its own.
+      benchmark('guppy({ type: ema }) [12 EMAs]', () => guppy(series)),
+      benchmark('guppy({ type: sma }) [12 SMAs]', () =>
+        guppy(series, { type: 'sma' }),
+      ),
+      // `rainbow` is ten CHAINED array-door averages, so it pays ten passes
+      // over a derived array rather than ten over the column; the oscillator
+      // adds one HH/LL scan and a ten-wide per-row reduce.
+      benchmark('rainbow({ period: 2 }) [10 recursive SMAs]', () =>
+        rainbow(series),
+      ),
+      benchmark('rainbowOscillator({ 2, 10 })', () =>
+        rainbowOscillator(series),
+      ),
+      // The smoothed-momentum tail (corpus 6.3). `kst` is four rate-of-change
+      // passes and five array SMAs; nothing here rescans a window.
+      benchmark('kst({ signalPeriod: 9 })', () => kst(series)),
+      benchmark('priceMomentumOscillator()', () =>
+        priceMomentumOscillator(series),
+      ),
+      // `stochasticRsi` is `rsi` plus the STRICT monotonic-deque extremes
+      // kernel and two array SMAs. The deque is flat in `period`, so the two
+      // entries below should read the same — that is what they are for.
+      benchmark('stochasticRsi({ 14, 14, 3, 3 })', () => stochasticRsi(series)),
+      benchmark('stochasticRsi({ stochPeriod: 200 })', () =>
+        stochasticRsi(series, { stochPeriod: 200 }),
+      ),
+      benchmark('trueStrengthIndex({ 25, 13, 7 })', () =>
+        trueStrengthIndex(series),
+      ),
+      benchmark('movingAverageDeviation({ 20, sma })', () =>
+        movingAverageDeviation(series),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

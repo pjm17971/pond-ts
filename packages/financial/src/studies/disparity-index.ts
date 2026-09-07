@@ -52,10 +52,15 @@ export interface DisparityIndexOptions<
  * convention worth naming is that it is a **percent** (×100), not a ratio,
  * which is what every published version plots.
  *
- * It is the percent sibling of the "moving average deviation" the corpus also
- * lists (`price − MA`, in price units). That absolute form is not a second
- * study here: it is `momentum`-shaped arithmetic anyone can write, and the
- * one form worth naming is the comparable one.
+ * It is the **percent sibling** of {@link movingAverageDeviation}, which is
+ * the same numerator in price units (`price − MA`). The two ship as separate
+ * studies rather than one with a `mode` flag — that would be two indicators
+ * behind an option, the {@link keltner} precedent this package avoids — and
+ * the identity `100·maDev/MA === disparity` is asserted in the oracle so
+ * they cannot drift. (An earlier version of this note declined the absolute
+ * form as "`momentum`-shaped arithmetic anyone can write"; that was wrong on
+ * the detail — {@link momentum} subtracts a *lagged price*, not a *smoothed*
+ * one — and the corpus names it as a study of its own.)
  *
  * ## Relationship to {@link priceOscillator}
  *

@@ -4,6 +4,7 @@ import {
   barsSinceExtremeValues,
   highestLowestValues,
   percentOfRangeValues,
+  rollingExtremesValues,
 } from '../src/kernels/highest-lowest.js';
 
 /*
@@ -235,5 +236,105 @@ describe('barsSinceExtremeValues', () => {
     expect(
       barsSinceExtremeValues(Float64Array.from([]), 3, 'min'),
     ).toHaveLength(0);
+  });
+});
+
+describe('rollingExtremesValues — the STRICT array door', () => {
+  it('takes both extremes over the window, hand-checked', () => {
+    // Extremes deliberately away from the window edges: an implementation
+    // reading the first or last cell passes a monotonic fixture.
+    const v = arr(5, 9, 3, 7, 4, 8, 2, 6);
+    const { highest, lowest } = rollingExtremesValues(v, 3);
+    expect(read(highest)).toEqual([undefined, undefined, 9, 9, 7, 8, 8, 8]);
+    expect(read(lowest)).toEqual([undefined, undefined, 3, 3, 3, 4, 2, 2]);
+  });
+
+  it('is STRICT — one missing cell blanks every window holding it', () => {
+    // The contrast with `highestLowestValues`, which skips and answers over
+    // whatever the window does hold. Here the gap costs `period` bars and
+    // then the answer comes back.
+    const v = arr(5, 9, NaN, 7, 4, 8, 2, 6);
+    const { highest, lowest } = rollingExtremesValues(v, 3);
+    expect(read(highest)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      8,
+      8,
+      8,
+    ]);
+    expect(read(lowest)[5]).toBe(4);
+  });
+
+  it('a leading run of gaps just delays the first value', () => {
+    // The `stochasticRsi` shape: the input is another study's output, so its
+    // head is missing. The window must wait for `period` finite values, not
+    // emit an extreme over two of them.
+    const v = arr(NaN, NaN, NaN, 10, 12, 11, 15, 9);
+    const { highest } = rollingExtremesValues(v, 3);
+    expect(read(highest)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      12,
+      15,
+      15,
+    ]);
+  });
+
+  it('period 1 is the identity, gaps included', () => {
+    const v = arr(5, NaN, 3);
+    const { highest, lowest } = rollingExtremesValues(v, 1);
+    expect(read(highest)).toEqual([5, undefined, 3]);
+    expect(read(lowest)).toEqual([5, undefined, 3]);
+  });
+
+  it('a window longer than the input is all-missing, length kept', () => {
+    const { highest, lowest } = rollingExtremesValues(arr(1, 2, 3), 5);
+    expect(read(highest)).toEqual([undefined, undefined, undefined]);
+    expect(lowest).toHaveLength(3);
+  });
+
+  it('repeated extremes and a flat run still read correctly', () => {
+    // Non-strict eviction on both deques means an equal value displaces the
+    // older candidate; the VALUE is unchanged either way, which is what this
+    // pins (contrast `barsSinceExtremeValues`, where the tie moves the age).
+    const v = arr(4, 4, 4, 4, 7, 4);
+    const { highest, lowest } = rollingExtremesValues(v, 3);
+    expect(read(highest)).toEqual([undefined, undefined, 4, 4, 7, 7]);
+    expect(read(lowest)).toEqual([undefined, undefined, 4, 4, 4, 4]);
+  });
+
+  it('agrees with a brute-force scan on a long random-ish input', () => {
+    // The deque is the whole point of the kernel, so it is checked against
+    // the naive O(N·period) answer it replaces — including gaps.
+    const n = 500;
+    const period = 17;
+    const v = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) {
+      v[i] =
+        i % 37 === 11
+          ? NaN
+          : 100 + 9 * Math.sin(i / 3.1) + 4 * Math.cos(i / 7.3);
+    }
+    const { highest, lowest } = rollingExtremesValues(v, period);
+    for (let i = 0; i < n; i += 1) {
+      if (i < period - 1) {
+        expect(Number.isNaN(highest[i]!), `bar ${i}`).toBe(true);
+        continue;
+      }
+      const window = Array.from(v.slice(i - period + 1, i + 1));
+      if (window.some((x) => Number.isNaN(x))) {
+        expect(Number.isNaN(highest[i]!), `bar ${i}`).toBe(true);
+        expect(Number.isNaN(lowest[i]!), `bar ${i}`).toBe(true);
+        continue;
+      }
+      expect(highest[i], `bar ${i}`).toBe(Math.max(...window));
+      expect(lowest[i], `bar ${i}`).toBe(Math.min(...window));
+    }
   });
 });

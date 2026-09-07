@@ -168,6 +168,26 @@ import type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-
 import { chandeForecastOscillator as chandeForecastOscillatorStudy } from './studies/chande-forecast-oscillator.js';
 import type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
 import { centerOfGravity as centerOfGravityStudy } from './studies/center-of-gravity.js';
+import type { GuppyOptions } from './studies/guppy.js';
+import { guppy as guppyStudy } from './studies/guppy.js';
+import type {
+  RainbowOptions,
+  RainbowOscillatorOptions,
+} from './studies/rainbow.js';
+import {
+  rainbow as rainbowStudy,
+  rainbowOscillator as rainbowOscillatorStudy,
+} from './studies/rainbow.js';
+import type { KstOptions } from './studies/kst.js';
+import { kst as kstStudy } from './studies/kst.js';
+import type { PriceMomentumOscillatorOptions } from './studies/price-momentum-oscillator.js';
+import { priceMomentumOscillator as priceMomentumOscillatorStudy } from './studies/price-momentum-oscillator.js';
+import type { StochasticRsiOptions } from './studies/stochastic-rsi.js';
+import { stochasticRsi as stochasticRsiStudy } from './studies/stochastic-rsi.js';
+import type { TrueStrengthIndexOptions } from './studies/true-strength-index.js';
+import { trueStrengthIndex as trueStrengthIndexStudy } from './studies/true-strength-index.js';
+import type { MovingAverageDeviationOptions } from './studies/moving-average-deviation.js';
+import { movingAverageDeviation as movingAverageDeviationStudy } from './studies/moving-average-deviation.js';
 import type { ParabolicSarOptions } from './studies/parabolic-sar.js';
 import { parabolicSar as parabolicSarStudy } from './studies/parabolic-sar.js';
 import type { SuperTrendOptions } from './studies/super-trend.js';
@@ -189,6 +209,20 @@ type AppendOpt<S extends SeriesSchema, Name extends string> = readonly [
   ...ValueColumnsForSchema<S>,
   OptionalNumberColumn<Name>,
 ];
+
+/** {@link AppendOpt} folded over a list of names — the same left-to-right
+ *  chain of `withColumn` calls a wide study makes, written once rather than
+ *  nested by hand. `guppy` appends twelve columns; the hand-nested form is
+ *  twelve levels deep and unreadable. */
+type AppendOptAll<
+  S extends SeriesSchema,
+  Names extends readonly string[],
+> = Names extends readonly [
+  infer Head extends string,
+  ...infer Rest extends readonly string[],
+]
+  ? AppendOptAll<AppendOpt<S, Head>, Rest>
+  : S;
 
 declare module 'pond-ts' {
   interface TimeSeries<S extends SeriesSchema> {
@@ -498,6 +532,77 @@ declare module 'pond-ts' {
     centerOfGravity<const Output extends string = 'cog'>(
       options?: CenterOfGravityOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Guppy Multiple Moving Average — the fixed twelve. */
+    guppy<const Prefix extends string = 'gmma'>(
+      options?: GuppyOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOptAll<
+        S,
+        [
+          `${Prefix}S3`,
+          `${Prefix}S5`,
+          `${Prefix}S8`,
+          `${Prefix}S10`,
+          `${Prefix}S12`,
+          `${Prefix}S15`,
+          `${Prefix}L30`,
+          `${Prefix}L35`,
+          `${Prefix}L40`,
+          `${Prefix}L45`,
+          `${Prefix}L50`,
+          `${Prefix}L60`,
+        ]
+      >
+    >;
+    /** Fluent Rainbow Moving Average — ten recursive averages. */
+    rainbow<const Prefix extends string = 'rainbow'>(
+      options?: RainbowOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOptAll<
+        S,
+        [
+          `${Prefix}1`,
+          `${Prefix}2`,
+          `${Prefix}3`,
+          `${Prefix}4`,
+          `${Prefix}5`,
+          `${Prefix}6`,
+          `${Prefix}7`,
+          `${Prefix}8`,
+          `${Prefix}9`,
+          `${Prefix}10`,
+        ]
+      >
+    >;
+    /** Fluent Know Sure Thing (line + signal). */
+    kst<const Prefix extends string = 'kst'>(
+      options?: KstOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Price Momentum Oscillator (DecisionPoint; line + signal). */
+    priceMomentumOscillator<const Prefix extends string = 'pmo'>(
+      options?: PriceMomentumOscillatorOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Stochastic RSI (`%K` / `%D` over the RSI's own range). */
+    stochasticRsi<const Prefix extends string = 'stochRsi'>(
+      options?: StochasticRsiOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}K`>, `${Prefix}D`>>;
+    /** Fluent True Strength Index (Blau; line + signal). */
+    trueStrengthIndex<const Prefix extends string = 'tsi'>(
+      options?: TrueStrengthIndexOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Moving Average Deviation (`price − MA`, in price units). */
+    movingAverageDeviation<const Output extends string = 'maDev'>(
+      options?: MovingAverageDeviationOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Rainbow Oscillator (line + mirrored bands). */
+    rainbowOscillator<const Prefix extends string = 'rbo'>(
+      options?: RainbowOscillatorOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Upper`>,
+        `${Prefix}Lower`
+      >
+    >;
     /** Fluent Parabolic SAR (`${prefix}` stop + `${prefix}Trend` side). */
     parabolicSar<const Prefix extends string = 'psar'>(
       options?: ParabolicSarOptions<S, Prefix>,
@@ -941,4 +1046,52 @@ proto.klinger = function (
   options?: KlingerOptions<SeriesSchema, string>,
 ) {
   return klingerStudy(this, options);
+};
+proto.guppy = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: GuppyOptions<SeriesSchema, string>,
+) {
+  return guppyStudy(this, options);
+};
+proto.rainbow = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RainbowOptions<SeriesSchema, string>,
+) {
+  return rainbowStudy(this, options);
+};
+proto.rainbowOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RainbowOscillatorOptions<SeriesSchema, string>,
+) {
+  return rainbowOscillatorStudy(this, options);
+};
+proto.kst = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: KstOptions<SeriesSchema, string>,
+) {
+  return kstStudy(this, options);
+};
+proto.priceMomentumOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceMomentumOscillatorOptions<SeriesSchema, string>,
+) {
+  return priceMomentumOscillatorStudy(this, options);
+};
+proto.stochasticRsi = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: StochasticRsiOptions<SeriesSchema, string>,
+) {
+  return stochasticRsiStudy(this, options);
+};
+proto.trueStrengthIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: TrueStrengthIndexOptions<SeriesSchema, string>,
+) {
+  return trueStrengthIndexStudy(this, options);
+};
+proto.movingAverageDeviation = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: MovingAverageDeviationOptions<SeriesSchema, string>,
+) {
+  return movingAverageDeviationStudy(this, options);
 };
