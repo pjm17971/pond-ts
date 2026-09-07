@@ -315,4 +315,72 @@ describe('rollingBivariateValues', () => {
       /row-aligned/,
     );
   });
+
+  it('rejects invalid periods at the API boundary — it is a public kernel', () => {
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 0)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), -1)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 1.5)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 1)).toThrow(
+      /period >= 2/,
+    );
+  });
+
+  it('a column that CHANGES has a positive variance — near-flat is not flat (reviewed 2026-09-07)', () => {
+    // The reverse-Welford removal can drive `m2` to 0 or below on a window
+    // whose values differ by ulps; the clamp then read 0 and the studies
+    // reported a false missing cell. The kernel now rebuilds such a window
+    // on demand, so the invariant "changes > 0 ⇒ variance > 0" holds on
+    // every complete window, and the correlation it feeds is finite.
+    const nextUp = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! + 1n;
+      return b[0]!;
+    };
+    const jitter = (length: number, base: number, seed: number) => {
+      const out = new Float64Array(length);
+      let s = seed;
+      for (let i = 0; i < length; i += 1) {
+        s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+        let v = base;
+        for (let j = 0; j < (s >>> 16) % 4; j += 1) v = nextUp(v);
+        out[i] = v;
+      }
+      return out;
+    };
+    let checked = 0;
+    for (const base of [3.003, 100, 1e6, 1e12]) {
+      for (const period of [2, 3, 5, 14]) {
+        const x = jitter(600, base, period + 11);
+        const y = jitter(600, base * 0.5, period + 29);
+        const m = rollingBivariateValues(x, y, period);
+        for (let i = period - 1; i < 600; i += 1) {
+          let cx = 0;
+          let cy = 0;
+          for (let k = i - period + 2; k <= i; k += 1) {
+            if (x[k] !== x[k - 1]) cx += 1;
+            if (y[k] !== y[k - 1]) cy += 1;
+          }
+          if (cx > 0) expect(m.varianceX[i], `varX[${i}]`).toBeGreaterThan(0);
+          else expect(m.varianceX[i], `varX[${i}]`).toBe(0);
+          if (cy > 0) expect(m.varianceY[i], `varY[${i}]`).toBeGreaterThan(0);
+          else expect(m.varianceY[i], `varY[${i}]`).toBe(0);
+          if (cx > 0 && cy > 0) {
+            checked += 1;
+            const corr =
+              m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!);
+            expect(Number.isFinite(corr), `corr[${i}] finite`).toBe(true);
+            expect(Math.abs(corr), `corr[${i}]`).toBeLessThanOrEqual(1 + 1e-9);
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(5000);
+  });
 });

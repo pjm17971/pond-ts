@@ -253,7 +253,43 @@ export function linearRegressionValues(
     // n·Σy² − (Σy)² is the window's own variance times n², translation-
     // invariant, so the shifted accumulators give it unchanged.
     const spread = period * sumZZ - sumZ * sumZ;
-    r2[i] = (numerator * numerator) / (denominator * spread);
+    if (spread <= 0) {
+      // Numerically degenerate, not flat: the window changes (the counter
+      // says so) but its values differ by so little that the rolling
+      // `n·Σz² − (Σz)²` cancelled to zero or below. A negative `spread`
+      // here put a negative r² into a column whose contract is 0 … 1
+      // (reviewed 2026-09-07, a 3-bar window at 3.002998998997 ± 1e-15).
+      // Recompute BOTH moments for this window two-pass and centred — no
+      // cancellation — so the ratio is a real r², not a ratio of residues.
+      // O(period), and only on a window this degenerate.
+      let meanZ = 0;
+      for (let k = low; k <= i; k += 1) meanZ += values[k]! - anchor;
+      meanZ /= period;
+      const meanXc = (period - 1) / 2;
+      let sxx = 0;
+      let sxz = 0;
+      let szz = 0;
+      for (let k = low; k <= i; k += 1) {
+        const dx = k - low - meanXc;
+        const dz = values[k]! - anchor - meanZ;
+        sxx += dx * dx;
+        sxz += dx * dz;
+        szz += dz * dz;
+      }
+      if (szz <= 0) {
+        // Still nothing to explain — treat as the flat case's 0/0.
+        continue;
+      }
+      // r² = Σ(dx·dz)² / (Σdx² · Σdz²) — the same ratio as below, on the
+      // centred sums (n·Σz² − (Σz)² is n·Σdz², and likewise for the others).
+      const r = (sxz * sxz) / (sxx * szz);
+      r2[i] = r > 1 ? 1 : r;
+      continue;
+    }
+    const r = (numerator * numerator) / (denominator * spread);
+    // r² is bounded by 1 in exact arithmetic; a last-ulp overshoot is not a
+    // reading, so it is pinned to the bound rather than reported.
+    r2[i] = r > 1 ? 1 : r;
   }
 
   return { slope, intercept, r2 };

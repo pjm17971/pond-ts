@@ -238,4 +238,100 @@ describe('linearRegressionAt', () => {
       12,
     ]);
   });
+
+  describe('numerically degenerate windows — near-flat, not flat', () => {
+    // Reviewed 2026-09-07: a window that CHANGES (the counter is > 0) but by
+    // ulps left the rolling `n·Σz² − (Σz)²` at −1e-24, and the closed-form
+    // ratio put a NEGATIVE r² into a column whose contract is 0 … 1. The
+    // exact-flat counter does not see this: it is numerical, not
+    // mathematical, degeneracy. The kernel now recomputes such a window
+    // two-pass and centred, and pins r² to its bound.
+    const nextUp = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! + 1n;
+      return b[0]!;
+    };
+    const nextDown = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! - 1n;
+      return b[0]!;
+    };
+    const jitter = (
+      length: number,
+      base: number,
+      ulps: number,
+      seed: number,
+    ) => {
+      const out = new Float64Array(length);
+      let s = seed;
+      for (let i = 0; i < length; i += 1) {
+        // A 32-bit LCG via Math.imul: `s * a` in doubles loses the low bits
+        // above 2^53 and the modulus then reads a constant.
+        s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+        const k = ((s >>> 16) % (2 * ulps + 1)) - ulps;
+        let v = base;
+        for (let j = 0; j < Math.abs(k); j += 1)
+          v = k > 0 ? nextUp(v) : nextDown(v);
+        out[i] = v;
+      }
+      return out;
+    };
+
+    it("the reviewer's window — 3.0029989989969996 then two of 3.0029989989979997 at period 3 — reads r² in [0, 1]", () => {
+      const v = arr(
+        3.0029989989969996,
+        3.0029989989979997,
+        3.0029989989979997,
+        3.0029989989979997,
+        3.0029989989969996,
+        3.0029989989979997,
+        3.0029989989979997,
+      );
+      const { r2 } = linearRegressionValues(v, 3);
+      let finite = 0;
+      for (let i = 2; i < v.length; i += 1) {
+        const r = r2[i]!;
+        if (Number.isNaN(r)) continue;
+        finite += 1;
+        expect(r, `r2[${i}]`).toBeGreaterThanOrEqual(0);
+        expect(r, `r2[${i}]`).toBeLessThanOrEqual(1);
+      }
+      expect(finite).toBeGreaterThan(0);
+    });
+
+    it('every finite r² over ulp-jittered near-flat input is within [0, 1], at several periods and magnitudes', () => {
+      let checked = 0;
+      let degenerate = 0;
+      for (const base of [3.003, 100, 1e6, 1e12]) {
+        for (const period of [2, 3, 5, 14]) {
+          const v = jitter(600, base, 3, period * 7 + 1);
+          const { r2, slope } = linearRegressionValues(v, period);
+          for (let i = period - 1; i < v.length; i += 1) {
+            let changes = 0;
+            for (let k = i - period + 2; k <= i; k += 1)
+              if (v[k] !== v[k - 1]) changes += 1;
+            const r = r2[i]!;
+            if (changes === 0) {
+              expect(slope[i], `slope[${i}] flat`).toBe(0);
+              expect(r, `r2[${i}] flat`).toBeNaN();
+              continue;
+            }
+            checked += 1;
+            if (Number.isNaN(r)) {
+              degenerate += 1;
+              continue;
+            }
+            expect(r, `r2[${i}] @${base}/${period}`).toBeGreaterThanOrEqual(0);
+            expect(r, `r2[${i}] @${base}/${period}`).toBeLessThanOrEqual(1);
+          }
+        }
+      }
+      expect(checked).toBeGreaterThan(5000);
+      // The centred recompute answers almost every degenerate window; a
+      // residual NaN is allowed only where the centred variance is itself 0.
+      expect(degenerate).toBeLessThan(checked / 100);
+    });
+  });
 });
