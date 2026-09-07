@@ -261,9 +261,49 @@ function smaValues(values: Float64Array, period: number): Float64Array {
  * definition rather than two.
  */
 function emaArrayValues(values: Float64Array, period: number): Float64Array {
+  return alphaEmaValues(values, 2 / (period + 1), period);
+}
+
+/**
+ * **An exponential average at a caller-chosen rate** — the recursion
+ * {@link movingAverageValues}' `ema` runs, with `α` supplied rather than
+ * derived from a span.
+ *
+ * `ema` is `alphaEmaValues(v, 2/(period+1), period)` and is the door every
+ * study should use: a *span* is the vocabulary the whole package and every
+ * vendor speaks, and a study that picked its own `α` would be a private
+ * smoother of exactly the kind the K2 engine exists to prevent.
+ *
+ * This exists for the one published definition that is **not** a span EMA:
+ * DecisionPoint's "custom smoothing", `α = 2/n` rather than `2/(n+1)`, which
+ * {@link priceMomentumOscillator} is built on. That is a different rate, not
+ * a different seed — at `n = 20` it is `0.1` against `0.0952`, and on this
+ * package's own oracle input the two PMOs sit **0.106 apart on a reading
+ * whose scale is 3.91** (measured, `scripts/oracle/generate.py`). So it
+ * cannot be expressed as a span, and rounding it to one would ship a
+ * differently-named indicator.
+ *
+ * `minSamples` is how many finite samples must have been consumed before a
+ * value is emitted — `period` for every caller so far, kept separate from
+ * `alpha` because nothing ties them once the rate is free.
+ *
+ * Same rules as the span form: seeded on the **first finite sample**, missing
+ * cells **skipped** (so a leading gap steps the seed over rather than
+ * poisoning it), length-preserving `NaN` warm-up. O(N), one pass.
+ */
+export function alphaEmaValues(
+  values: Float64Array,
+  alpha: number,
+  minSamples: number,
+): Float64Array {
+  if (!(alpha > 0) || alpha > 1) {
+    throw new TypeError(
+      `ema alpha must be in (0, 1]; got ${String(alpha)} — an alpha above 1 overshoots every bar and one at or below 0 never moves`,
+    );
+  }
+  assertPeriod(minSamples, 'minSamples');
   const length = values.length;
   const out = new Float64Array(length).fill(NaN);
-  const alpha = 2 / (period + 1);
   let previous = 0;
   let seeded = false;
   let seen = 0;
@@ -273,7 +313,7 @@ function emaArrayValues(values: Float64Array, period: number): Float64Array {
     previous = seeded ? alpha * raw + (1 - alpha) * previous : raw;
     seeded = true;
     seen += 1;
-    if (seen >= period) out[i] = previous;
+    if (seen >= minSamples) out[i] = previous;
   }
   return out;
 }

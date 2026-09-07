@@ -568,6 +568,29 @@ def percent_change(periods: int) -> dict:
     return {"pctChange": col(pc)}
 
 
+def _rsi_series(n: int) -> pd.Series:
+    """Wilder's RSI over the fixture's closes, as a Series -- factored out of
+    `rsi` so `stochasticRsi` reads the SAME RSI the TA-Lib-verified case
+    pins, rather than a second replication that could drift from it.
+
+    A flat window (no gains and no losses) is 0/0 and comes back NaN, which
+    is pond's answer and a documented delta from TA-Lib's 0; an all-gains
+    window divides by zero, giving +inf and therefore exactly 100, which is
+    the limit of the formula and matches pond.
+    """
+    d = s.diff()
+    up = d.clip(lower=0)
+    dn = (-d).clip(lower=0)
+    ag = pd.Series(math.nan, index=s.index, dtype="float64")
+    al = pd.Series(math.nan, index=s.index, dtype="float64")
+    ag.iloc[n] = up.iloc[1 : n + 1].mean()
+    al.iloc[n] = dn.iloc[1 : n + 1].mean()
+    for i in range(n + 1, len(s)):
+        ag.iloc[i] = (ag.iloc[i - 1] * (n - 1) + up.iloc[i]) / n
+        al.iloc[i] = (al.iloc[i - 1] * (n - 1) + dn.iloc[i]) / n
+    return 100 - 100 / (1 + ag / al)
+
+
 def rsi(n: int) -> dict:
     """Wilder's RSI, as TA-Lib defines it.
 
@@ -580,17 +603,7 @@ def rsi(n: int) -> dict:
     Computed in pandas here (so the fixture regenerates without the C
     library) and asserted against TA-Lib below when it is installed.
     """
-    d = s.diff()
-    up = d.clip(lower=0)
-    dn = (-d).clip(lower=0)
-    ag = pd.Series(math.nan, index=s.index, dtype="float64")
-    al = pd.Series(math.nan, index=s.index, dtype="float64")
-    ag.iloc[n] = up.iloc[1 : n + 1].mean()
-    al.iloc[n] = dn.iloc[1 : n + 1].mean()
-    for i in range(n + 1, len(s)):
-        ag.iloc[i] = (ag.iloc[i - 1] * (n - 1) + up.iloc[i]) / n
-        al.iloc[i] = (al.iloc[i - 1] * (n - 1) + dn.iloc[i]) / n
-    r = 100 - 100 / (1 + ag / al)
+    r = _rsi_series(n)
 
     if talib is not None:
         ref = pd.Series(talib.RSI(np.asarray(closes, dtype=float), timeperiod=n))
@@ -3563,6 +3576,709 @@ def klinger(fast: int = 34, slow: int = 55, signal: int = 13) -> dict:
     return {"kvo": col(line), "kvoSignal": col(sig)}
 
 
+# --------------------------------------------------------------------------
+# The moving-average stacks (assessment 6.1) and the smoothed-momentum tail
+# (6.3): guppy, rainbow / rainbowOscillator, kst, priceMomentumOscillator,
+# stochasticRsi, trueStrengthIndex, movingAverageDeviation.
+#
+# The stacks are pure K2 assemblies, so the checks reuse `_ma_over` (the
+# TA-Lib-verified engine replication) rather than a private smoother, and
+# every EMA-family case is split the `moving_average` way: the FORMULA on
+# TA-Lib's own SMA seed, then pond's seed transient bounded separately.
+# --------------------------------------------------------------------------
+
+GUPPY_SHORT = (3, 5, 8, 10, 12, 15)
+GUPPY_LONG = (30, 35, 40, 45, 50, 60)
+
+
+def _ema_seed_is_geometric(ours: pd.Series, ref, n: int, label: str) -> float:
+    """The pond-seed transient check for a SHORT fixture.
+
+    `moving_average` bounds pond's first-sample-seed transient at "under 0.5%
+    of scale over the last 20 shared bars". That test needs the transient to
+    have DECAYED, and at guppy's long periods it has not: at n = 60 only 21
+    of the 80 bars are shared, and across the twelve periods the worst
+    difference at the very LAST bar is still 0.367% of scale (measured).
+
+    So assert the exact statement instead. Two EMAs over the same input with
+    the same alpha and different seeds satisfy the same recursion, so their
+    DIFFERENCE satisfies d[k] = d[0] * (1-alpha)^k exactly -- a pure geometric
+    decay, at any period, however few bars are shared. Measured on this
+    fixture the residue is 1e-14..1e-12 relative for the correct alpha and
+    3.15 (n=15) / 0.459 (n=30) for a 2/n rate, so this discriminates a wrong
+    rate by twelve orders of magnitude while making no claim about how far the
+    transient has got.
+
+    Returns the last shared bar's difference as a fraction of scale (printed,
+    not asserted -- it is the number the 0.5% bound would have used).
+    """
+    o = np.asarray(ours, dtype=float)
+    r = np.asarray(ref, dtype=float)
+    m = ~np.isnan(r)
+    d = o[m] - r[m]
+    alpha = 2.0 / (n + 1.0)
+    predicted = d[0] * (1.0 - alpha) ** np.arange(len(d))
+    residue = float(np.max(np.abs(d - predicted)) / max(abs(float(d[0])), 1e-300))
+    assert residue < 1e-9, (
+        f"{label}: the pond-seed difference from TA-Lib is not a geometric "
+        f"decay at (1 - 2/(n+1)) -- relative residue {residue}, so the RATE "
+        "differs, not just the seed"
+    )
+    scale = float(np.nanmax(np.abs(r)))
+    return float(abs(d[-1]) / scale)
+
+
+def guppy(kind: str) -> dict:
+    """Guppy's Multiple Moving Average: the fixed twelve, 3/5/8/10/12/15 and
+    30/35/40/45/50/60, as gmmaS{n} and gmmaL{n}.
+
+    No TA-Lib GMMA exists, but TA-Lib HAS a moving average at every one of the
+    twelve periods, so each column is checked against `talib.MA` rather than
+    only the assembly. For `sma` that is exact; for `ema` it is the split
+    `moving_average` uses -- the formula on TA-Lib's SMA seed bit-exact, then
+    the seed transient (see `_ema_seed_is_geometric`, which replaces the tail
+    bound because 60 bars of warm-up leave too few shared bars for one).
+    """
+    out = {}
+    computed = {}
+    worst_tail = 0.0
+    worst_formula = 0.0
+    for half, periods in (("S", GUPPY_SHORT), ("L", GUPPY_LONG)):
+        for n in periods:
+            v = _ma_over(s, kind, n)
+            name = f"gmma{half}{n}"
+            label = f"guppy({kind}).{name}"
+            assert v.first_valid_index() == n - 1, (
+                f"{label} first valid at {v.first_valid_index()}, expected "
+                f"{n - 1} -- the column is not the {n}-bar average"
+            )
+            if talib is not None:
+                ref = pd.Series(
+                    talib.MA(
+                        np.asarray(closes, dtype=float),
+                        timeperiod=n,
+                        matype=_MA_TALIB[kind],
+                    )
+                )
+                assert list(v.isna()) == list(ref.isna()), (
+                    f"{label} warm-up differs from TA-Lib MA(matype="
+                    f"{_MA_TALIB[kind]}, timeperiod={n})"
+                )
+                if kind == "ema":
+                    formula = _ema_sma_seed(closes, n)
+                    refa = np.asarray(ref, dtype=float)
+                    fm = ~np.isnan(refa)
+                    fd = float(np.max(np.abs(formula[fm] - refa[fm])))
+                    assert fd < 1e-9, (
+                        f"{label}: SMA-seeded replication disagrees with "
+                        f"TA-Lib by {fd} - the formula, not the seed, is wrong"
+                    )
+                    worst_formula = max(worst_formula, fd)
+                    worst_tail = max(
+                        worst_tail, _ema_seed_is_geometric(v, ref, n, label)
+                    )
+                else:
+                    both = (~np.asarray(v.isna())) & (~np.asarray(ref.isna()))
+                    d = float(
+                        np.max(
+                            np.abs(
+                                np.asarray(v, dtype=float)[both]
+                                - np.asarray(ref, dtype=float)[both]
+                            )
+                        )
+                    )
+                    assert d < 1e-9, f"{label} disagrees with TA-Lib by {d}"
+                    worst_formula = max(worst_formula, d)
+            computed[name] = np.asarray(v, dtype=float)
+            out[name] = col(v)
+
+    # The twelve must be TWELVE, not one average copied: a study that read the
+    # same period into every column, or that swapped the short and long
+    # halves, would still produce twelve plausible ribbons.
+    names = list(computed)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            m = np.isfinite(computed[a]) & np.isfinite(computed[b])
+            assert m.any(), f"guppy({kind}): {a} and {b} never overlap"
+            sep = float(np.max(np.abs(computed[a][m] - computed[b][m])))
+            assert sep > 0.01, (
+                f"guppy({kind}): {a} and {b} agree to within {sep} on this "
+                "fixture - a duplicated period would pass"
+            )
+    print(
+        f"  guppy({kind}): twelve columns vs talib.MA(matype="
+        f"{_MA_TALIB[kind]}) at each period, masks identical, "
+        + (
+            f"formula on TA-Lib's seed to {worst_formula:.2g}, pond seed "
+            f"transient geometric (worst last-bar residue {worst_tail:.3%})"
+            if kind == "ema"
+            else f"values to {worst_formula:.2g}"
+        )
+    )
+    return out
+
+
+RAINBOW_DEPTH = 10
+
+
+def _rainbow_stack(kind: str, period: int):
+    """The ten RECURSIVE averages: each smooths the previous one, through the
+    ARRAY door (`_ma_over`), so each stage waits for `period` finite values
+    and steps over the previous stage's warm-up."""
+    stack = []
+    current = s
+    for _ in range(RAINBOW_DEPTH):
+        current = _ma_over(current, kind, period)
+        stack.append(current)
+    return stack
+
+
+def rainbow(period: int, kind: str) -> dict:
+    """Rainbow Moving Average (Mel Widner, TASC July 1997): ten recursive
+    averages, rainbow1..rainbow10.
+
+    No TA-Lib function. A pandas replication on the same `_ma_over` the
+    TA-Lib-verified K2 engine cases run, so what this case pins is the
+    RECURSION and its composed warm-up -- stage k first valid at
+    k * (period - 1).
+
+    The discriminating assert is against the OTHER thing published under
+    "rainbow": ten averages of INCREASING LENGTH over the same source. A
+    recursive 2-bar mean is a binomial filter, not a box, so it differs from
+    the SMA covering the same support -- measured 0.83 for stage 10 at
+    (period 2, sma) and 1.44 at (period 3, ema), against a fixture whose whole
+    close range is 19.36.
+    """
+    stack = _rainbow_stack(kind, period)
+    label = f"rainbow({period},{kind})"
+    for i, v in enumerate(stack):
+        expected = (i + 1) * (period - 1)
+        assert v.first_valid_index() == expected, (
+            f"{label} stage {i + 1} first valid at {v.first_valid_index()}, "
+            f"expected {expected} -- the stages do not compose their warm-up"
+        )
+    # Each stage must differ from the next, or a stack that dropped the
+    # recursion (ten copies of one average) would pass.
+    for i in range(RAINBOW_DEPTH - 1):
+        a = np.asarray(stack[i], dtype=float)
+        b = np.asarray(stack[i + 1], dtype=float)
+        m = np.isfinite(a) & np.isfinite(b)
+        sep = float(np.max(np.abs(a[m] - b[m])))
+        assert sep > 0.01, (
+            f"{label} stages {i + 1} and {i + 2} agree to within {sep} -- a "
+            "stack that dropped the recursion would pass"
+        )
+    support = RAINBOW_DEPTH * (period - 1) + 1
+    alt = s.rolling(support).mean()
+    a = np.asarray(stack[-1], dtype=float)
+    b = np.asarray(alt, dtype=float)
+    m = np.isfinite(a) & np.isfinite(b)
+    widths = float(np.max(np.abs(a[m] - b[m])))
+    assert widths > 0.5, (
+        f"{label} stage 10 sits only {widths} from the plain SMA({support}) "
+        "over the same support - the fixture cannot tell the recursive form "
+        "from the increasing-length one"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib Rainbow); stage k first "
+        f"valid at k*(period-1), {widths:.4f} from the SMA({support}) that "
+        "covers the same bars"
+    )
+    return {f"rainbow{i + 1}": col(v) for i, v in enumerate(stack)}
+
+
+def rainbow_oscillator(period: int, lookback: int, kind: str) -> dict:
+    """Rainbow Oscillator, ChartIQ's definition:
+
+        rbo      = 100 * (close - mean(stack)) / (HH - LL over lookback)
+        rboUpper = 100 * (max(stack) - min(stack)) / (HH - LL)
+        rboLower = -rboUpper
+
+    HH/LL are of the SOURCE COLUMN (close here), not of a bar's high and low.
+    No TA-Lib function and the indicator is genuinely ambiguous across
+    vendors, so the two nearest variants are measured and asserted far away:
+    normalising by the PRICE instead of the range, and taking the numerator
+    against the FIRST average instead of the stack's mean.
+    """
+    stack = _rainbow_stack(kind, period)
+    m = np.vstack([np.asarray(v, dtype=float) for v in stack])
+    mean10 = m.mean(axis=0)
+    hh = s.rolling(lookback).max().to_numpy()
+    ll = s.rolling(lookback).min().to_numpy()
+    rng = hh - ll
+    price = np.asarray(closes, dtype=float)
+
+    line = 100.0 * (price - mean10) / rng
+    band = 100.0 * (m.max(axis=0) - m.min(axis=0)) / rng
+    # A flat lookback window reads null, not 0. Nothing forces the numerators
+    # to zero -- the stack reaches back past the window -- so it is a real
+    # number over zero, i.e. an infinity rather than a 0/0. (Not reachable on
+    # this fixture; the study's unit tests pin it, measured at >10 points away
+    # with lookback 3 and still 0.0044 away with lookback 10.)
+    line = np.where(rng == 0, np.nan, line)
+    band = np.where(rng == 0, np.nan, band)
+
+    label = f"rainbowOscillator({period},{lookback},{kind})"
+    expected = max(RAINBOW_DEPTH * (period - 1), lookback - 1)
+    first = int(np.flatnonzero(np.isfinite(line))[0])
+    assert first == expected, (
+        f"{label} first valid at {first}, expected {expected} "
+        "(the deepest average's warm-up or the range's, whichever is later)"
+    )
+    assert int(np.flatnonzero(np.isfinite(band))[0]) == expected, (
+        f"{label} bands warm up on a different bar from the line"
+    )
+    assert np.nanmin(line) < 0 < np.nanmax(line), (
+        f"{label} never crosses zero on this fixture"
+    )
+    assert np.nanmin(band) > 0, f"{label} band is not strictly positive"
+
+    alt_price = 100.0 * (price - mean10) / price
+    alt_first = 100.0 * (price - m[0]) / rng
+    fm = np.isfinite(line)
+    sep_price = float(np.max(np.abs(line[fm] - alt_price[fm])))
+    sep_first = float(np.max(np.abs(line[fm] - alt_first[fm])))
+    assert sep_price > 10 and sep_first > 10, (
+        f"{label} sits {sep_price} from the divide-by-price variant and "
+        f"{sep_first} from the first-average numerator - too close for the "
+        "fixture to tell them apart"
+    )
+    print(
+        f"  {label}: pandas replication of ChartIQ's definition; first valid "
+        f"at {expected}, line {np.nanmin(line):.3f}..{np.nanmax(line):.3f}, "
+        f"{sep_price:.2f} from the divide-by-price variant and {sep_first:.2f} "
+        "from the first-average numerator"
+    )
+    return {
+        "rbo": col(pd.Series(line)),
+        "rboUpper": col(pd.Series(band)),
+        "rboLower": col(pd.Series(-band)),
+    }
+
+
+KST_ROC = (10, 15, 20, 30)
+KST_SMOOTHING = (10, 10, 10, 15)
+KST_WEIGHTS = (1, 2, 3, 4)
+
+
+def kst(signal_n: int) -> dict:
+    """Pring's Know Sure Thing, the intermediate DAILY set:
+
+        term_i = SMA(ROC(close, roc_i), smooth_i)      ROC in PERCENT
+        kst    = 1*term1 + 2*term2 + 3*term3 + 4*term4
+        signal = SMA(kst, signal_n)
+
+    with roc = 10/15/20/30 and smooth = 10/10/10/15. No TA-Lib function, so
+    this is a pandas replication on the same `pct_change` the TA-Lib-verified
+    percentChange case uses. The terms are SMAs of a DERIVED array, so each
+    waits for smooth_i finite VALUES (pandas' rolling does exactly that),
+    which is what puts the line at roc_4 + smooth_4 - 1 = 44 rather than
+    earlier.
+
+    Two discriminating separations, because the shape survives both wrong
+    turns: an EQUAL-weight sum, and a sum of UNSMOOTHED rates of change.
+    """
+    total = None
+    for roc_n, smooth_n, weight in zip(KST_ROC, KST_SMOOTHING, KST_WEIGHTS):
+        term = (s.pct_change(roc_n) * 100).rolling(smooth_n).mean() * weight
+        total = term if total is None else total + term
+    line = total
+    signal = line.rolling(signal_n).mean()
+
+    label = f"kst({signal_n})"
+    expected = max(r + m for r, m in zip(KST_ROC, KST_SMOOTHING)) - 1
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (the slowest term's roc + smooth - 1)"
+    )
+    assert signal.first_valid_index() == expected + signal_n - 1, (
+        f"{label} signal first valid at {signal.first_valid_index()}, "
+        f"expected {expected + signal_n - 1}"
+    )
+    assert line.min() < 0 < line.max(), (
+        f"{label} never crosses zero on this fixture - the reading the study "
+        "exists for would be untested"
+    )
+
+    equal = None
+    unsmoothed = None
+    for roc_n, smooth_n, weight in zip(KST_ROC, KST_SMOOTHING, KST_WEIGHTS):
+        e = (s.pct_change(roc_n) * 100).rolling(smooth_n).mean()
+        u = s.pct_change(roc_n) * 100 * weight
+        equal = e if equal is None else equal + e
+        unsmoothed = u if unsmoothed is None else unsmoothed + u
+    m = (~line.isna()) & (~equal.isna())
+    sep_equal = float(np.max(np.abs(line[m] - equal[m])))
+    m = (~line.isna()) & (~unsmoothed.isna())
+    sep_raw = float(np.max(np.abs(line[m] - unsmoothed[m])))
+    assert sep_equal > 10 and sep_raw > 10, (
+        f"{label} sits {sep_equal} from the equal-weight sum and {sep_raw} "
+        "from the unsmoothed one - the fixture cannot tell them apart"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib KST); first valid at "
+        f"{expected}, range {line.min():.4f}..{line.max():.4f}, "
+        f"{sep_equal:.2f} from the equal-weight sum and {sep_raw:.2f} from "
+        "the unsmoothed one"
+    )
+    return {"kst": col(line), "kstSignal": col(signal)}
+
+
+def _alpha_ema(values, alpha: float, min_samples: int) -> pd.Series:
+    """The exponential recursion at a caller-chosen ALPHA -- pond's
+    `alphaEmaValues`. Same seed rule as `_ema_first_seed` (first finite
+    sample, missing cells skipped, emitted once min_samples have been
+    consumed); only the rate is free. Exists for DecisionPoint's "custom
+    smoothing", which is 2/n rather than the span EMA's 2/(n+1)."""
+    x = np.asarray(values, dtype=float)
+    out = np.full(len(x), np.nan)
+    prev = None
+    seen = 0
+    for i, v in enumerate(x):
+        if not np.isfinite(v):
+            continue
+        prev = v if prev is None else alpha * v + (1.0 - alpha) * prev
+        seen += 1
+        if seen >= min_samples:
+            out[i] = prev
+    return pd.Series(out)
+
+
+PMO_FIRST, PMO_SECOND, PMO_SIGNAL, PMO_SCALE = 35, 20, 10, 10
+
+
+def price_momentum_oscillator() -> dict:
+    """DecisionPoint's Price Momentum Oscillator:
+
+        roc    = (close/close[-1] - 1) * 100
+        stage1 = customEMA(roc, 35)              alpha = 2/35
+        pmo    = customEMA(10 * stage1, 20)      alpha = 2/20
+        signal = EMA(pmo, 10)                    alpha = 2/11  (SPAN)
+
+    The two stages use DecisionPoint's "custom smoothing" (2/n), which is NOT
+    a span EMA; the SIGNAL is a plain span EMA, which is DecisionPoint's own
+    asymmetry. No TA-Lib function, so this is a pandas replication with the
+    analytic first valid bars asserted and three separations measured:
+
+      - both stages on the SPAN EMA instead of the custom rate
+      - a custom-smoothed SIGNAL instead of the span one
+      - the x10 moved to either end (must be IMMATERIAL - every stage is
+        homogeneous, so this one asserts AGREEMENT, not separation)
+
+    Note the study has no period options, so there is one case; the fixture's
+    PMO does not cross zero (the series drifts up throughout), so the assert
+    is on its spread rather than on a sign change.
+    """
+    roc = (s / s.shift(1) - 1) * 100
+    stage1 = _alpha_ema(roc, 2.0 / PMO_FIRST, PMO_FIRST)
+    line = _alpha_ema(stage1 * PMO_SCALE, 2.0 / PMO_SECOND, PMO_SECOND)
+    signal = _ema_first_seed(line, PMO_SIGNAL)
+
+    label = "priceMomentumOscillator()"
+    expected = 1 + PMO_FIRST - 1 + PMO_SECOND - 1
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (a 1-bar ROC then two custom stages)"
+    )
+    assert signal.first_valid_index() == expected + PMO_SIGNAL - 1, (
+        f"{label} signal first valid at {signal.first_valid_index()}, "
+        f"expected {expected + PMO_SIGNAL - 1}"
+    )
+
+    # (a) the custom rate is not the span rate.
+    span_stages = _ema_first_seed(
+        _ema_first_seed(roc, PMO_FIRST) * PMO_SCALE, PMO_SECOND
+    )
+    m = (~line.isna()) & (~span_stages.isna())
+    sep_span = float(np.max(np.abs(line[m] - span_stages[m])))
+    scale = float(np.nanmax(np.abs(line)))
+    assert sep_span / scale > 0.01, (
+        f"{label} sits {sep_span} ({sep_span / scale:.2%} of scale) from the "
+        "span-EMA build - too close for the fixture to tell 2/n from 2/(n+1)"
+    )
+    # (b) the signal is a SPAN ema, not a custom-smoothed one.
+    custom_signal = _alpha_ema(line, 2.0 / PMO_SIGNAL, PMO_SIGNAL)
+    m = (~signal.isna()) & (~custom_signal.isna())
+    sep_signal = float(np.max(np.abs(signal[m] - custom_signal[m])))
+    assert sep_signal / scale > 0.01, (
+        f"{label} signal sits {sep_signal} from the custom-smoothed one - "
+        "the fixture cannot tell which smoothing the signal uses"
+    )
+    # (c) the x10 placement is IMMATERIAL - every stage is homogeneous.
+    early = _alpha_ema(
+        _alpha_ema(roc * PMO_SCALE, 2.0 / PMO_FIRST, PMO_FIRST),
+        2.0 / PMO_SECOND,
+        PMO_SECOND,
+    )
+    late = (
+        _alpha_ema(
+            _alpha_ema(roc, 2.0 / PMO_FIRST, PMO_FIRST),
+            2.0 / PMO_SECOND,
+            PMO_SECOND,
+        )
+        * PMO_SCALE
+    )
+    m = ~line.isna()
+    placement = max(
+        float(np.max(np.abs(line[m] - early[m]))),
+        float(np.max(np.abs(line[m] - late[m]))),
+    )
+    assert placement < 1e-12, (
+        f"{label}: moving the x10 changed the answer by {placement} - the "
+        "stages are not homogeneous after all"
+    )
+    spread = float(np.nanmax(line) - np.nanmin(line))
+    assert spread > 1.0, f"{label} barely moves on this fixture ({spread})"
+
+    print(
+        f"  {label}: pandas replication (no TA-Lib PMO); first valid at "
+        f"{expected}, signal at {expected + PMO_SIGNAL - 1}, range "
+        f"{np.nanmin(line):.5f}..{np.nanmax(line):.5f}; {sep_span:.4f} "
+        f"({sep_span / scale:.2%} of scale) from the span-EMA build, "
+        f"{sep_signal:.4f} from a custom-smoothed signal, x10 placement "
+        f"immaterial to {placement:.2g}"
+    )
+    return {"pmo": col(line), "pmoSignal": col(signal)}
+
+
+def stochastic_rsi(rsi_n: int, stoch_n: int, k_n: int, d_n: int) -> dict:
+    """Stochastic RSI (Chande & Kroll): the stochastic construction over the
+    RSI rather than over price.
+
+        r    = rsi(close, rsi_n)                    [the TA-Lib-verified rsi]
+        raw  = 100 * (r - LL(r, stoch_n)) / (HH(r, stoch_n) - LL(...))
+        K    = SMA(raw, k_n)
+        D    = SMA(K, d_n)
+
+    TA-Lib HAS this one, but STOCHRSI returns **fastk and fastd**, not a
+    slowed %K and %D, so the correspondence is NOT the obvious one. Measured
+    on this fixture at the defaults, and asserted below:
+
+        our K        == talib fastd (fastk_period=stoch_n, fastd_period=k_n)
+        the raw (unemitted) position == talib fastk
+        our D        has NO TA-Lib counterpart
+
+    The generator asserts BOTH directions - the match and the mismatch -
+    because crossing the two is a 45-point error on this fixture rather than
+    a rounding one, and a case that only checked "close to something TA-Lib
+    returns" would pass on the wrong column.
+    """
+    r = _rsi_series(rsi_n)
+    hh = r.rolling(stoch_n).max()
+    ll = r.rolling(stoch_n).min()
+    rng = hh - ll
+    raw = 100.0 * (r - ll) / rng
+    # A flat RSI window is 0/0 -> null here and 0.0 in TA-Lib; the shared
+    # kernel rule (percentOfRangeValues). Not reachable on this fixture.
+    raw = raw.where(rng != 0)
+    k = raw.rolling(k_n).mean()
+    d = k.rolling(d_n).mean()
+
+    label = f"stochasticRsi({rsi_n},{stoch_n},{k_n},{d_n})"
+    expected_k = rsi_n + stoch_n - 1 + k_n - 1
+    assert k.first_valid_index() == expected_k, (
+        f"{label} %K first valid at {k.first_valid_index()}, expected "
+        f"{expected_k} (rsi_n + stoch_n - 1 + k_n - 1)"
+    )
+    assert d.first_valid_index() == expected_k + d_n - 1, (
+        f"{label} %D first valid at {d.first_valid_index()}, expected "
+        f"{expected_k + d_n - 1}"
+    )
+    lo_v, hi_v = float(k.min()), float(k.max())
+    assert -1e-9 <= lo_v and hi_v <= 100 + 1e-9, (
+        f"{label} %K left 0..100 ({lo_v}..{hi_v})"
+    )
+
+    if talib is not None:
+        fastk, fastd = talib.STOCHRSI(
+            np.asarray(closes, dtype=float),
+            timeperiod=rsi_n,
+            fastk_period=stoch_n,
+            fastd_period=k_n,
+            fastd_matype=0,
+        )
+        fastk = pd.Series(fastk)
+        fastd = pd.Series(fastd)
+        # (a) our %K IS TA-Lib's fastd, mask included.
+        assert list(k.isna()) == list(fastd.isna()), (
+            f"{label} %K warm-up differs from TA-Lib fastd: ours first valid "
+            f"{k.first_valid_index()}, TA-Lib {fastd.first_valid_index()}"
+        )
+        m = ~fastd.isna()
+        d_k = float(np.max(np.abs(np.asarray(k)[m] - np.asarray(fastd)[m])))
+        assert d_k < 1e-9, f"{label} %K disagrees with TA-Lib fastd by {d_k}"
+        # (b) the RAW position is TA-Lib's fastk (which TA-Lib masks back to
+        #     fastd's first bar, as STOCH masks %K back to %D's).
+        m = ~fastk.isna()
+        d_raw = float(np.max(np.abs(np.asarray(raw)[m] - np.asarray(fastk)[m])))
+        assert d_raw < 1e-9, (
+            f"{label} the raw range position disagrees with TA-Lib fastk by "
+            f"{d_raw}"
+        )
+        # (c) and the columns are NOT interchangeable - crossing them is a
+        #     real error, so the fixture has to be able to see it.
+        crossed = float(np.max(np.abs(np.asarray(k)[m] - np.asarray(fastk)[m])))
+        if k_n > 1:
+            assert crossed > 1.0, (
+                f"{label} %K and TA-Lib's fastk agree to within {crossed} on "
+                "this fixture - a study that emitted the unsmoothed position "
+                "would pass"
+            )
+        else:
+            # kPeriod 1 IS the fast form: %K is the raw position, so all
+            # three (our %K, fastk, fastd) coincide by definition. Assert
+            # that rather than a separation which cannot exist here.
+            assert crossed < 1e-9, (
+                f"{label} at kPeriod 1 should BE the raw position, but sits "
+                f"{crossed} from TA-Lib's fastk"
+            )
+        print(
+            f"  {label}: %K == talib.STOCHRSI fastd to {d_k:.2g} (masks "
+            f"identical); the unemitted raw position == fastk to {d_raw:.2g}; "
+            f"crossing them is {crossed:.1f} apart. %D has no TA-Lib "
+            f"counterpart - pandas replication, first valid at "
+            f"{expected_k + d_n - 1}"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"stochRsiK": col(k), "stochRsiD": col(d)}
+
+
+def true_strength_index(long_n: int, short_n: int, sig_n: int) -> dict:
+    """William Blau's True Strength Index:
+
+        d    = close.diff()
+        tsi  = 100 * EMA(EMA(d, long_n), short_n)
+                   / EMA(EMA(|d|, long_n), short_n)
+        sig  = EMA(tsi, sig_n)
+
+    No TA-Lib TSI. What the case CAN borrow from TA-Lib is the smoothing
+    itself: an EMA stage rebuilt on TA-Lib's own SMA seed over the change
+    array is required to match talib.EMA bit-exactly, so the stage
+    arithmetic is vendor-checked even though the assembly is not. The EMAs
+    in the fixture are POND's (first-sample seed), the macd precedent.
+
+    The discriminating assert is the smoothing ORDER: long first, then
+    short. Swapping them keeps the shape and moves the values.
+    """
+    d = s.diff()
+    num = _ema_first_seed(_ema_first_seed(d, long_n), short_n)
+    den = _ema_first_seed(_ema_first_seed(d.abs(), long_n), short_n)
+    line = 100.0 * num / den
+    line = line.where(den != 0)
+    signal = _ema_first_seed(line, sig_n)
+
+    label = f"trueStrengthIndex({long_n},{short_n},{sig_n})"
+    expected = long_n + short_n - 1
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (a 1-bar difference then two EMA stages)"
+    )
+    assert signal.first_valid_index() == expected + sig_n - 1, (
+        f"{label} signal first valid at {signal.first_valid_index()}, "
+        f"expected {expected + sig_n - 1}"
+    )
+    lo_v, hi_v = float(line.min()), float(line.max())
+    assert -100 - 1e-9 <= lo_v and hi_v <= 100 + 1e-9, (
+        f"{label} left -100..100 ({lo_v}..{hi_v})"
+    )
+    assert lo_v < 0 < hi_v, (
+        f"{label} never crosses zero on this fixture - the reading the study "
+        "is used for would be untested"
+    )
+
+    swapped = 100.0 * _ema_first_seed(
+        _ema_first_seed(d, short_n), long_n
+    ) / _ema_first_seed(_ema_first_seed(d.abs(), short_n), long_n)
+    m = (~line.isna()) & (~swapped.isna())
+    sep = float(np.max(np.abs(line[m] - swapped[m])))
+    # Measured against the reading's OWN spread rather than a fixed number.
+    # Short spans saturate the ratio near +/-100, so the spread grows while
+    # the swap's effect shrinks: an absolute threshold that discriminates at
+    # (25, 13) is unreachable at short spans. Measured on this fixture, the
+    # swap as a fraction of the line's own spread: 14.56% at (25, 13),
+    # 3.99% at (20, 6), 1.64% at (12, 4), 0.40% at (8, 3) - so 2% sits ~2x
+    # clear of the second case and the very short pairs are not used.
+    spread = hi_v - lo_v
+    assert sep > 0.02 * spread, (
+        f"{label} sits {sep} from the SWAPPED smoothing order, inside "
+        f"{0.005 * spread} of its own {spread} spread - the fixture cannot "
+        "tell which span is applied first"
+    )
+
+    if talib is not None:
+        # The stage arithmetic against TA-Lib, on TA-Lib's own seed: the
+        # change array from bar 1 on is finite, so talib.EMA takes it
+        # directly.
+        deltas = np.asarray(d, dtype=float)[1:]
+        ref = talib.EMA(deltas, timeperiod=long_n)
+        mine = _ema_sma_seed(deltas, long_n)
+        fm = ~np.isnan(ref)
+        stage = float(np.max(np.abs(mine[fm] - ref[fm])))
+        assert stage < 1e-9, (
+            f"{label}: the EMA stage on TA-Lib's seed disagrees with "
+            f"talib.EMA by {stage}"
+        )
+        print(
+            f"  {label}: pandas replication (no TA-Lib TSI); the EMA stage "
+            f"matches talib.EMA on its own seed to {stage:.2g}; first valid "
+            f"at {expected}, range {lo_v:.4f}..{hi_v:.4f}, {sep:.2f} from the "
+            f"swapped smoothing order ({sep / (hi_v - lo_v):.2%} of its own "
+            "spread)"
+        )
+    else:
+        print(f"  {label}: pandas only - TA-Lib not installed, cross-check SKIPPED")
+
+    return {"tsi": col(line), "tsiSignal": col(signal)}
+
+
+def moving_average_deviation(n: int, kind: str) -> dict:
+    """Moving Average Deviation: close - MA(n), in PRICE UNITS.
+
+    The corpus lists this study as "points or percent". The PERCENT form is
+    already shipped as disparityIndex, and this case asserts that identity
+    exactly -- 100 * maDev / MA == disparity, bit for bit -- which is why
+    only the points form ships and there is no `mode` flag.
+
+    The discriminating separation is from `momentum` (close - close[-n]),
+    the wrong turn that leaves the shape intact: a lagged price rather than
+    a smoothed one.
+    """
+    ma = _ma_values(kind, n)
+    v = s - ma
+
+    label = f"movingAverageDeviation({n},{kind})"
+    expected = int(ma.first_valid_index())
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected the "
+        f"average's own {expected}"
+    )
+    # The identity with disparityIndex, exact.
+    disparity = 100 * (s - ma) / ma
+    m = ~v.isna()
+    identity = float(np.max(np.abs((100 * v[m] / ma[m]) - disparity[m])))
+    assert identity == 0.0, (
+        f"{label}: 100 * maDev / MA differs from disparityIndex by "
+        f"{identity} - the percent form is supposed to BE that study"
+    )
+    # ... and the separation from `momentum`, which is close - close[-n].
+    lagged = s - s.shift(n)
+    m = (~v.isna()) & (~lagged.isna())
+    sep = float(np.max(np.abs(v[m] - lagged[m])))
+    assert sep > 1.0, (
+        f"{label} sits {sep} from momentum({n}) (close - close[-n]) - the "
+        "fixture cannot tell a smoothed reference from a lagged one"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib function); first valid at "
+        f"{expected}, range {v.min():.4f}..{v.max():.4f}; "
+        f"100*maDev/MA == disparityIndex exactly ({identity}), {sep:.4f} from "
+        f"momentum({n})"
+    )
+    return {"maDev": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -4091,6 +4807,90 @@ cases = [
         "params": {"fastPeriod": 5, "slowPeriod": 13, "signalPeriod": 4},
         "expected": klinger(5, 13, 4),
     },
+    {"study": "guppy", "params": {"type": "ema"}, "expected": guppy("ema")},
+    {
+        # The seedless type, where TA-Lib parity is exact at all twelve
+        # periods rather than split into formula + transient.
+        "study": "guppy",
+        "params": {"type": "sma"},
+        "expected": guppy("sma"),
+    },
+    {"study": "rainbow", "params": {"period": 2}, "expected": rainbow(2, "sma")},
+    {
+        # A longer stage, so the composed warm-up (k*(period-1)) is told
+        # apart from a flat k, and an EMA stage so the recursion is checked
+        # on a type that carries state rather than a window.
+        "study": "rainbow",
+        "params": {"period": 3, "type": "ema"},
+        "expected": rainbow(3, "ema"),
+    },
+    {
+        "study": "rainbowOscillator",
+        "params": {"period": 2, "lookback": 10},
+        "expected": rainbow_oscillator(2, 10, "sma"),
+    },
+    {
+        # The stack deeper than the range window at the defaults, so this
+        # case puts the RANGE on the late side of the warm-up instead.
+        "study": "rainbowOscillator",
+        "params": {"period": 2, "lookback": 25},
+        "expected": rainbow_oscillator(2, 25, "sma"),
+    },
+    {"study": "kst", "params": {}, "expected": kst(9)},
+    {
+        # A shorter signal, so the second column's own warm-up is told apart
+        # from the line's rather than sitting a fixed 8 bars later.
+        "study": "kst",
+        "params": {"signalPeriod": 3},
+        "expected": kst(3),
+    },
+    {
+        # One case only: the study has no period options at all (see the
+        # study's docstring for why), so there is no second shape to check.
+        "study": "priceMomentumOscillator",
+        "params": {},
+        "expected": price_momentum_oscillator(),
+    },
+    {
+        "study": "stochasticRsi",
+        "params": {"rsiPeriod": 14, "stochPeriod": 14, "kPeriod": 3, "dPeriod": 3},
+        "expected": stochastic_rsi(14, 14, 3, 3),
+    },
+    {
+        # rsiPeriod != stochPeriod and kPeriod = 1 (the FAST form, %K left as
+        # the raw range position) - the shape the defaults cannot tell apart.
+        "study": "stochasticRsi",
+        "params": {"rsiPeriod": 8, "stochPeriod": 5, "kPeriod": 1, "dPeriod": 4},
+        "expected": stochastic_rsi(8, 5, 1, 4),
+    },
+    {
+        "study": "trueStrengthIndex",
+        "params": {"longPeriod": 25, "shortPeriod": 13, "signalPeriod": 7},
+        "expected": true_strength_index(25, 13, 7),
+    },
+    {
+        # Shorter spans, so the two stages' warm-ups sit close together and
+        # a build that applied one span twice would still be caught. Not
+        # SHORTER than this: at (8, 3) the ratio saturates near +/-100 and
+        # the swapped order is only 0.40% of the line's own spread away, so
+        # the fixture could no longer tell the two apart (measured).
+        "study": "trueStrengthIndex",
+        "params": {"longPeriod": 20, "shortPeriod": 6, "signalPeriod": 4},
+        "expected": true_strength_index(20, 6, 4),
+    },
+    {
+        "study": "movingAverageDeviation",
+        "params": {"period": 20, "maType": "sma"},
+        "expected": moving_average_deviation(20, "sma"),
+    },
+    {
+        # The same two shapes disparityIndex is checked at, so the identity
+        # between the two studies is asserted on both an SMA and an EMA
+        # centre (the EMA also carries pond's first-sample seed).
+        "study": "movingAverageDeviation",
+        "params": {"period": 14, "maType": "ema"},
+        "expected": moving_average_deviation(14, "ema"),
+    },
 ]
 
 out = {
@@ -4590,6 +5390,121 @@ out = {
                 "genuine 0/0 -> undefined. The volume force starts at bar 1, "
                 "so kvo lands at `slow` and the signal at slow+signal-1. "
                 "pandas replication - no TA-Lib Klinger"
+            ),
+            "guppy": (
+                "Daryl Guppy's GMMA: the FIXED twelve moving averages, short "
+                "3/5/8/10/12/15 as gmmaS{n} and long 30/35/40/45/50/60 as "
+                "gmmaL{n}, default type ema. No TA-Lib GMMA, but each column "
+                "is checked against talib.MA at its own period (exact for "
+                "sma; for ema the formula on TA-Lib's SMA seed plus a "
+                "GEOMETRIC-decay check on pond's first-sample seed, because "
+                "at n = 60 only 21 of the 80 bars are shared and the "
+                "transient is still 0.367% of scale at the last one). "
+                "Per-column warm-up: n-1 each, so gmmaS3 starts at bar 2 and "
+                "gmmaL60 at bar 59. All twelve asserted pairwise distinct"
+            ),
+            "rainbow": (
+                "Mel Widner's Rainbow (TASC July 1997): TEN RECURSIVE "
+                "averages, each smoothing the PREVIOUS one, rainbow1.."
+                "rainbow10; defaults period 2 / sma. Through the ARRAY door, "
+                "so stage k first valid at k*(period-1) - the composed "
+                "warm-up is the case's main claim. pandas replication (no "
+                "TA-Lib Rainbow), separated from the increasing-LENGTH "
+                "variant: stage 10 is 0.83 (period 2, sma) / 1.44 (period 3, "
+                "ema) from "
+                "the plain SMA covering the same support, on a fixture whose "
+                "close range is 19.36"
+            ),
+            "rainbowOscillator": (
+                "ChartIQ's: 100*(close - mean(stack))/(HH - LL over "
+                "lookback), with bands +/-100*(max(stack) - min(stack))/"
+                "(HH - LL); defaults period 2 / lookback 10. HH/LL are of the "
+                "SOURCE COLUMN, not a bar's high and low. All three columns "
+                "warm up together at max(10*(period-1), lookback-1). A flat "
+                "lookback window is null: nothing forces the numerators to "
+                "zero (the stack reaches back past the window), so it is a "
+                "real number over zero rather than a 0/0 - measured >10 "
+                "points away at lookback 3 and still 0.0044 away at lookback "
+                "10. Not reachable on this fixture; unit-tested instead. "
+                "F-AMBIG, so the two nearest variants are measured: 67.27 "
+                "from the divide-by-PRICE form and 49.16 from the "
+                "first-average numerator, against a reading that spans "
+                "-68.6..63.8"
+            ),
+            "kst": (
+                "Martin Pring's Know Sure Thing, the intermediate DAILY set: "
+                "1*SMA(ROC(10),10) + 2*SMA(ROC(15),10) + 3*SMA(ROC(20),10) + "
+                "4*SMA(ROC(30),15), signal = SMA(kst, 9). ROC is PERCENT "
+                "((x/x[-n] - 1)*100), matching percentChange / TA-Lib ROC - "
+                "the ratio form would shift the line by 1000. The twelve "
+                "numbers are NOT options (Pring published several KSTs; they "
+                "are different studies), only signalPeriod is. Line first "
+                "valid at 44, signal at 44 + signalPeriod - 1. pandas "
+                "replication - no TA-Lib KST - separated from the "
+                "equal-weight sum (80.61) and from the unsmoothed one "
+                "(68.53), on a line spanning -56.91..125.44"
+            ),
+            "priceMomentumOscillator": (
+                "DecisionPoint's PMO: customEMA(10*customEMA(1-bar percent "
+                "ROC, 35), 20) with a SPAN EMA(10) signal. 'Custom smoothing' "
+                "is alpha = 2/n, NOT the span EMA's 2/(n+1) - the one "
+                "non-span exponential in the package, which is why the kernel "
+                "has a raw-alpha door. Measured: the span-EMA build sits "
+                "0.1060 away (2.71% of a 3.906 scale) and a custom-smoothed "
+                "SIGNAL 0.0883 away, while moving the x10 to either end "
+                "changes nothing (8.9e-16 - every stage is homogeneous). No "
+                "period options; line first valid at 54, signal at 63. pandas "
+                "replication - no TA-Lib PMO. The fixture's PMO does not "
+                "cross zero (the series drifts up throughout), so the assert "
+                "is on its spread"
+            ),
+            "stochasticRsi": (
+                "Chande & Kroll's: the stochastic construction over the RSI. "
+                "raw = 100*(r - LL)/(HH - LL) over stochPeriod bars of the "
+                "rsi, K = SMA(raw, kPeriod), D = SMA(K, dPeriod); defaults 14 "
+                "/ 14 / 3 / 3. TA-Lib STOCHRSI returns fastk and fastd, NOT a "
+                "slowed %K and %D, so the mapping is measured rather than "
+                "assumed: our K == talib fastd (fastk_period=stochPeriod, "
+                "fastd_period=kPeriod) bar-for-bar with identical masks, the "
+                "unemitted raw position == talib fastk, and our D has no "
+                "TA-Lib counterpart. Crossing K with fastk is 45 points on "
+                "this fixture, and the generator asserts that too. Option "
+                "names are TradingView's: stochPeriod here is `stochastic`'s "
+                "kPeriod, and kPeriod here is its `slowing`. A flat RSI "
+                "window is null (TA-Lib says 0) - the shared "
+                "percentOfRangeValues rule"
+            ),
+            "trueStrengthIndex": (
+                "William Blau's TSI: 100 * EMA(EMA(diff, longPeriod), "
+                "shortPeriod) / EMA(EMA(|diff|, longPeriod), shortPeriod), "
+                "signal = EMA(tsi, signalPeriod); defaults 25 / 13 / 7. The "
+                "ORDER is the definition - long first, then short - and the "
+                "swap sits 15.93 away on a line spanning -28.70..80.69, which "
+                "the generator asserts. No TA-Lib TSI, so a pandas "
+                "replication; the EMA STAGE is nonetheless checked against "
+                "talib.EMA on TA-Lib's own SMA seed (5.6e-16). Bounded "
+                "-100..100 by |num| <= den; a flat column gives den = 0 with "
+                "num forced to 0, so the division is a literal 0/0 -> null "
+                "with NO guard in the study (one would be dead code - "
+                "measured). First valid at "
+                "longPeriod + shortPeriod - 1 = 37, signal at 43. Options are "
+                "longPeriod / shortPeriod, not long / short - bare 'long' is "
+                "position vocabulary in a financial package"
+            ),
+            "movingAverageDeviation": (
+                "close - MA(n) in PRICE UNITS, defaults 20 / sma, MA-type. "
+                "The corpus lists this study as 'points or percent'; the "
+                "PERCENT form is already shipped as disparityIndex, and the "
+                "case asserts 100*maDev/MA == disparity EXACTLY (0.0, bit for "
+                "bit), which is why only the points form ships and there is "
+                "no `mode` flag - two indicators behind an option is the "
+                "keltner precedent this package avoids. Separated from "
+                "momentum(n) = close - close[-n], the wrong turn that leaves "
+                "the shape intact. First valid at the average's own bar; no "
+                "division anywhere, so no zero-denominator case. Linear in "
+                "price AND shift-INVARIANT (the constant cancels between the "
+                "price and its own average), which is exactly what the "
+                "percent form is not"
             ),
         },
     },

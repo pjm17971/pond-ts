@@ -1269,7 +1269,13 @@ pandas-oracle-verified) have shipped. Plan:
   other kernels but **not promoted to core**; what a core
   `scanRows` would additionally need is recorded in the financial plan so
   that promotion starts from evidence rather than a guess.
-  **Sixty-five studies shipped.** What remains of the corpus is the
+  Batch five's second half added the **moving-average stacks and smoothed
+  momentum tail** (§6.1/§6.3): `guppy` (the fixed twelve), `rainbow` +
+  `rainbowOscillator`, `kst`, `priceMomentumOscillator` (DecisionPoint's
+  `2/n` smoothing via an internal raw-alpha EMA), `stochasticRsi` (TA-Lib
+  `STOCHRSI`, on a new O(N) deque extremes kernel), `trueStrengthIndex`,
+  `movingAverageDeviation` (points; the percent form is `disparityIndex`).
+  **Seventy-three studies shipped.** What remains of the corpus is the
   repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
   live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /

@@ -76,6 +76,14 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
   parabolicSar,
   superTrend,
   atrTrailingStop,
@@ -113,6 +121,9 @@ interface OracleCase {
     emaPeriod?: number;
     sumPeriod?: number;
     stdevPeriod?: number;
+    lookback?: number;
+    rsiPeriod?: number;
+    stochPeriod?: number;
     benchmark?: string;
     step?: number;
     maxStep?: number;
@@ -407,6 +418,43 @@ function run(c: OracleCase): unknown {
       return timeSeriesForecast(series(), p as { period?: number });
     case 'chandeForecastOscillator':
       return chandeForecastOscillator(series(), p as { period?: number });
+    case 'guppy':
+      return guppy(series(), p as { type?: MaType });
+    case 'rainbow':
+      return rainbow(series(), p as { period?: number; type?: MaType });
+    case 'movingAverageDeviation':
+      return movingAverageDeviation(
+        series(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'trueStrengthIndex':
+      return trueStrengthIndex(
+        series(),
+        p as {
+          longPeriod?: number;
+          shortPeriod?: number;
+          signalPeriod?: number;
+        },
+      );
+    case 'stochasticRsi':
+      return stochasticRsi(
+        series(),
+        p as {
+          rsiPeriod?: number;
+          stochPeriod?: number;
+          kPeriod?: number;
+          dPeriod?: number;
+        },
+      );
+    case 'priceMomentumOscillator':
+      return priceMomentumOscillator(series(), p as Record<string, never>);
+    case 'kst':
+      return kst(series(), p as { signalPeriod?: number });
+    case 'rainbowOscillator':
+      return rainbowOscillator(
+        series(),
+        p as { period?: number; lookback?: number; type?: MaType },
+      );
     case 'centerOfGravity':
       return centerOfGravity(series(), p as { period?: number });
     case 'parabolicSar':

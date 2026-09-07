@@ -60,6 +60,14 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  guppy,
+  rainbow,
+  rainbowOscillator,
+  kst,
+  priceMomentumOscillator,
+  stochasticRsi,
+  trueStrengthIndex,
+  movingAverageDeviation,
   parabolicSar,
   superTrend,
   atrTrailingStop,
@@ -2095,5 +2103,229 @@ describe('[PND-SFOLD] the K6 state machines', () => {
         name,
       ).toBe(false);
     }
+  });
+});
+
+describe('[PND-STUDYBOX] the moving-average stacks: where the missing rows are', () => {
+  const wavy = Array.from(
+    { length: 70 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + 0.3 * i,
+  );
+
+  const gappy = (gapAt: number | undefined) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: wavy.map((c, i) => [
+        i * MINUTE,
+        i === gapAt ? undefined : c,
+      ]) as never,
+    });
+
+  it('guppy: each of the twelve warms up at its own period − 1', () => {
+    const out = guppy(gappy(undefined));
+    expect(nullCountOf(out, 'gmmaS3')).toBe(2);
+    expect(nullCountOf(out, 'gmmaS15')).toBe(14);
+    expect(nullCountOf(out, 'gmmaL30')).toBe(29);
+    expect(nullCountOf(out, 'gmmaL60')).toBe(59);
+    expect(typeof cells(out, 'gmmaL60')[59]).toBe('number');
+  });
+
+  it('guppy: a leading gap shifts every ema column by one bar', () => {
+    const out = guppy(gappy(0));
+    // The `ema` recursion steps over a leading gap rather than seeding on it,
+    // so each column starts one bar later and the gap bar itself is missing.
+    expect(nullCountOf(out, 'gmmaS3')).toBe(3);
+    expect(nullCountOf(out, 'gmmaL30')).toBe(30);
+    expect(cells(out, 'gmmaS3')[2]).toBeUndefined();
+    expect(typeof cells(out, 'gmmaS3')[3]).toBe('number');
+  });
+
+  it('guppy: an interior gap costs that bar only — the ema skip', () => {
+    const out = guppy(gappy(65));
+    for (const name of ['gmmaS3', 'gmmaS15', 'gmmaL30']) {
+      const v = cells(out, name);
+      expect(v[64], name).toBeDefined();
+      expect(v[65], name).toBeUndefined();
+      expect(v[66], name).toBeDefined();
+    }
+    // gmmaL60 starts at bar 59, so it has values on both sides of the hole.
+    expect(nullCountOf(out, 'gmmaL60')).toBe(59 + 1);
+  });
+
+  it('rainbow: stage k warms up at k · (period − 1), all ten kept', () => {
+    const out = rainbow(gappy(undefined), { period: 2 });
+    expect(nullCountOf(out, 'rainbow1')).toBe(1);
+    expect(nullCountOf(out, 'rainbow5')).toBe(5);
+    expect(nullCountOf(out, 'rainbow10')).toBe(10);
+    expect(typeof cells(out, 'rainbow10')[10]).toBe('number');
+  });
+
+  it('rainbow: a leading gap shifts EVERY stage, `sma` included', () => {
+    // Unlike guppy's column door, the array door counts finite VALUES, so
+    // there is no `sma` exception here.
+    const out = rainbow(gappy(0), { period: 2 });
+    expect(nullCountOf(out, 'rainbow1')).toBe(2);
+    expect(nullCountOf(out, 'rainbow10')).toBe(11);
+  });
+
+  it('rainbow: an interior gap costs one more bar per stage', () => {
+    const out = rainbow(gappy(40), { period: 2 });
+    // Stage 1 loses the gap bar and the one after (its window holds it);
+    // each further stage carries the hole one bar further along.
+    expect(cells(out, 'rainbow1')[39]).toBeDefined();
+    expect(cells(out, 'rainbow1')[40]).toBeUndefined();
+    expect(cells(out, 'rainbow1')[41]).toBeUndefined();
+    expect(cells(out, 'rainbow1')[42]).toBeDefined();
+    expect(nullCountOf(out, 'rainbow1')).toBe(1 + 2);
+    expect(nullCountOf(out, 'rainbow10')).toBe(10 + 11);
+  });
+
+  it('rainbowOscillator: one head for all three columns, one hole for all three', () => {
+    const clean = rainbowOscillator(gappy(undefined), {
+      period: 2,
+      lookback: 10,
+    });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(nullCountOf(clean, name), name).toBe(10);
+    }
+    // A missing close costs the stack (every window and stage carrying it)
+    // but NOT the range, which skips a missing cell — core's reducer policy.
+    const hole = rainbowOscillator(gappy(40), { period: 2, lookback: 10 });
+    for (const name of ['rbo', 'rboUpper', 'rboLower']) {
+      expect(cells(hole, name)[39], name).toBeDefined();
+      expect(cells(hole, name)[40], name).toBeUndefined();
+      expect(cells(hole, name)[51], name).toBeDefined();
+      expect(nullCountOf(hole, name), name).toBe(10 + 11);
+    }
+  });
+
+  it('kst: a 44-bar head on the line, signalPeriod − 1 more on the signal', () => {
+    const out = kst(gappy(undefined));
+    expect(nullCountOf(out, 'kst')).toBe(44);
+    expect(nullCountOf(out, 'kstSignal')).toBe(52);
+    expect(typeof cells(out, 'kst')[44]).toBe('number');
+    expect(typeof cells(out, 'kstSignal')[52]).toBe('number');
+  });
+
+  it('kst: one gap blanks the bar, four look-backs, and their windows', () => {
+    // A missing close costs its own four rates of change and the four that
+    // read it as a base (bars +10, +15, +20, +30); each smoothing window
+    // holding one of those is then blank too. Nothing propagates to the end
+    // — there is no recursion anywhere in the study.
+    const out = kst(gappy(20));
+    const v = cells(out, 'kst');
+    // term 3 (ROC 20, smoothed 10) blanks bars 40..49; term 4 (ROC 30,
+    // smoothed 15) blanks 50..64. Bar 65 is the first clean one again.
+    expect(v[49]).toBeUndefined();
+    expect(v[60]).toBeUndefined();
+    expect(typeof v[65]).toBe('number');
+    expect(nullCountOf(out, 'kst')).toBe(65);
+  });
+
+  it('pmo: heads at 54 and 63; an interior gap costs two bars, not the tail', () => {
+    const long = Array.from(
+      { length: 90 },
+      (_, i) => 100 + 6 * Math.sin(i / 2.5) + 0.3 * i,
+    );
+    const withGap = (gapAt: number | undefined) =>
+      new TimeSeries({
+        name: 'bars',
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'close', kind: 'number', required: false },
+        ] as const,
+        rows: long.map((c, i) => [
+          i * MINUTE,
+          i === gapAt ? undefined : c,
+        ]) as never,
+      });
+
+    const clean = priceMomentumOscillator(withGap(undefined));
+    expect(nullCountOf(clean, 'pmo')).toBe(54);
+    expect(nullCountOf(clean, 'pmoSignal')).toBe(63);
+
+    // The ROC reads a predecessor, so a hole costs its own bar and the next;
+    // both recursions then SKIP it and carry on (the `ema` rule), so the
+    // column comes back rather than dying at the gap. The two stages also
+    // each consume one fewer sample, which pushes the head one bar later.
+    const hole = priceMomentumOscillator(withGap(70));
+    const v = cells(hole, 'pmo');
+    expect(typeof v[69]).toBe('number');
+    expect(v[70]).toBeUndefined();
+    expect(v[71]).toBeUndefined();
+    expect(typeof v[72]).toBe('number');
+    expect(nullCountOf(hole, 'pmo')).toBe(54 + 2);
+  });
+
+  it('stochasticRsi: heads at 29 and 31; an interior gap kills the tail', () => {
+    const clean = stochasticRsi(gappy(undefined));
+    expect(nullCountOf(clean, 'stochRsiK')).toBe(29);
+    expect(nullCountOf(clean, 'stochRsiD')).toBe(31);
+
+    // The underlying RSI is a Wilder recursion, so a hole makes its state
+    // unknown forever — this study inherits that rather than recovering the
+    // way a pure window study does.
+    const hole = stochasticRsi(gappy(40));
+    const v = cells(hole, 'stochRsiK');
+    expect(typeof v[39]).toBe('number');
+    expect(v.slice(40).every((x) => x === undefined)).toBe(true);
+  });
+
+  it('tsi: heads compose; an interior gap costs two bars, then recovers', () => {
+    const clean = trueStrengthIndex(gappy(undefined), {
+      longPeriod: 6,
+      shortPeriod: 3,
+      signalPeriod: 4,
+    });
+    expect(nullCountOf(clean, 'tsi')).toBe(8);
+    expect(nullCountOf(clean, 'tsiSignal')).toBe(11);
+
+    // The difference reads a predecessor, so a hole costs its own bar and
+    // the next; the EMA family then SKIPS it (not Wilder, so nothing
+    // propagates to the end) and each stage's head shifts by one.
+    const hole = trueStrengthIndex(gappy(40), {
+      longPeriod: 6,
+      shortPeriod: 3,
+      signalPeriod: 4,
+    });
+    const v = cells(hole, 'tsi');
+    expect(typeof v[39]).toBe('number');
+    expect(v[40]).toBeUndefined();
+    expect(v[41]).toBeUndefined();
+    expect(typeof v[42]).toBe('number');
+    expect(nullCountOf(hole, 'tsi')).toBe(8 + 2);
+  });
+
+  it('maDev: the average\u2019s head, and a gap costs the bar plus its windows', () => {
+    const clean = movingAverageDeviation(gappy(undefined), { period: 5 });
+    expect(nullCountOf(clean, 'maDev')).toBe(4);
+
+    // `sma` counts ROWS, so the window averages what it has and only the
+    // gap bar itself loses its price — one missing cell, not five.
+    const hole = movingAverageDeviation(gappy(30), { period: 5 });
+    expect(cells(hole, 'maDev')[30]).toBeUndefined();
+    expect(typeof cells(hole, 'maDev')[31]).toBe('number');
+    expect(nullCountOf(hole, 'maDev')).toBe(4 + 1);
+
+    // `ema` skips the missing bar in the recursion but still loses that
+    // bar's own price, and its head shifts by one.
+    const emaHole = movingAverageDeviation(gappy(30), {
+      period: 5,
+      maType: 'ema',
+    });
+    expect(cells(emaHole, 'maDev')[30]).toBeUndefined();
+    expect(typeof cells(emaHole, 'maDev')[31]).toBe('number');
+  });
+
+  it('guppy: with `type: sma` the window recovers and the head does not shift', () => {
+    // `sma` keeps `sma()`'s row-counting window (the column door's documented
+    // asymmetry), so a LEADING gap does not move the first value at all.
+    const out = guppy(gappy(0), { type: 'sma' });
+    expect(nullCountOf(out, 'gmmaS3')).toBe(2);
+    expect(typeof cells(out, 'gmmaS3')[2]).toBe('number');
   });
 });

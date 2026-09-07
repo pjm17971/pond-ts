@@ -178,7 +178,9 @@ export function barsSinceExtremeValues(
 ): Float64Array {
   const length = values.length;
   const out = new Float64Array(length).fill(NaN);
-  const capacity = period + 1;
+  // The ring never holds more indices than the window has rows, so a period
+  // longer than the series (all-NaN output) need not reserve `period` slots.
+  const capacity = Math.max(1, Math.min(period + 1, length));
   const ring = new Int32Array(capacity);
   const wantMax = mode === 'max';
   let head = 0;
@@ -214,4 +216,122 @@ export function barsSinceExtremeValues(
     if (i >= period && missing === 0) out[i] = i - ring[head]!;
   }
   return out;
+}
+
+/**
+ * **Highest and lowest of a raw array over a STRICT window** — the same pair
+ * {@link highestLowestValues} produces, but over a derived `Float64Array` and
+ * with the opposite missing-cell rule: every one of the `period` cells must
+ * be finite, or the bar reads `NaN`.
+ *
+ * ## Why this exists rather than another `highestLowestValues` call
+ *
+ * That one composes on core's reducers and therefore **skips** a missing
+ * cell, taking the extreme over whatever the window does hold. That is the
+ * right answer for a bar's `high` and `low`, which have no warm-up: a window
+ * with one absent bar still has an honest highest high.
+ *
+ * It is the wrong answer for a **derived** input, and {@link stochasticRsi}
+ * is where that bites. Its range is taken over the RSI, whose first
+ * `rsiPeriod` rows are missing, so the skipping form emits a "14-bar range of
+ * the RSI" computed from **two** values as soon as two exist. Measured on the
+ * package's own oracle input at the defaults, that put `%K` on bar **17**
+ * instead of bar **29** — twelve bars of confident readings over a window
+ * that was mostly empty, and a straight disagreement with `talib.STOCHRSI`.
+ *
+ * So this is {@link rollingMeanValues}' rule applied to an extreme: a
+ * statistic named for `period` bars is not that statistic over fewer. The two
+ * doors stay separate rather than one growing a flag, because each is right
+ * for its own kind of input.
+ *
+ * ## Cost — O(N), one pass, independent of `period`
+ *
+ * Two monotonic deques over ring buffers, the structure
+ * {@link barsSinceExtremeValues} already uses: each index is pushed and
+ * popped at most once, so the kernel is amortised O(N) and flat in `period`,
+ * with two `Int32Array(period)` rings and the two outputs as its only
+ * allocations.
+ *
+ * Ties are immaterial here — the deques carry the extreme's **value**, not
+ * its age — so eviction is non-strict on both sides, matching
+ * {@link barsSinceExtremeValues}.
+ *
+ * ## The `Number.isFinite` guard on the push is REDUNDANT, deliberately
+ *
+ * The `missing` counter already carries the whole rule: a `NaN` at index `j`
+ * leaves the deque (by index) on exactly the bar it leaves the window's
+ * missing count, so a `NaN` can never sit at a deque's head while
+ * `missing === 0`. Removing the guard therefore changes **no output**, and a
+ * mutation of it survives every test — measured, not assumed.
+ *
+ * It stays because it preserves the deque's *invariant* rather than its
+ * answer: with it, the candidates are strictly monotonic and hold only real
+ * values; without it they can interleave `NaN`s, and correctness then rests
+ * entirely on the `missing` counter being right. That is a worse thing for
+ * the next editor to have to re-derive, and it is the same guard
+ * {@link barsSinceExtremeValues} carries for the same reason. Recorded here
+ * so the surviving mutation reads as a decision, not an untested branch.
+ */
+export function rollingExtremesValues(
+  values: Float64Array,
+  period: number,
+): { highest: Float64Array; lowest: Float64Array } {
+  const length = values.length;
+  const highest = new Float64Array(length).fill(NaN);
+  const lowest = new Float64Array(length).fill(NaN);
+  // Each deque holds at most one index per window row, so its ring is
+  // `min(period, length)` slots — a `period` longer than the series reserves
+  // nothing it cannot use (Layer-2 review of #709: 5e7 on 100 bars was 400 MB
+  // to return all-NaN).
+  const capacity = Math.max(1, Math.min(period, length));
+  const maxRing = new Int32Array(capacity);
+  const minRing = new Int32Array(capacity);
+  let maxHead = 0;
+  let maxCount = 0;
+  let minHead = 0;
+  let minCount = 0;
+  let missing = 0;
+
+  for (let i = 0; i < length; i += 1) {
+    const value = values[i]!;
+    // The window is [i - period + 1, i]; count the non-finite cells in it.
+    const leaving = i - period;
+    if (leaving >= 0 && !Number.isFinite(values[leaving]!)) missing -= 1;
+    if (!Number.isFinite(value)) missing += 1;
+
+    while (maxCount > 0 && maxRing[maxHead]! <= i - period) {
+      maxHead = (maxHead + 1) % capacity;
+      maxCount -= 1;
+    }
+    while (minCount > 0 && minRing[minHead]! <= i - period) {
+      minHead = (minHead + 1) % capacity;
+      minCount -= 1;
+    }
+    // A non-finite cell is never a candidate; `missing` is what makes the
+    // windows holding it report nothing at all.
+    if (Number.isFinite(value)) {
+      while (
+        maxCount > 0 &&
+        values[maxRing[(maxHead + maxCount - 1) % capacity]!]! <= value
+      ) {
+        maxCount -= 1;
+      }
+      maxRing[(maxHead + maxCount) % capacity] = i;
+      maxCount += 1;
+      while (
+        minCount > 0 &&
+        values[minRing[(minHead + minCount - 1) % capacity]!]! >= value
+      ) {
+        minCount -= 1;
+      }
+      minRing[(minHead + minCount) % capacity] = i;
+      minCount += 1;
+    }
+
+    if (i >= period - 1 && missing === 0) {
+      highest[i] = values[maxRing[maxHead]!]!;
+      lowest[i] = values[minRing[minHead]!]!;
+    }
+  }
+  return { highest, lowest };
 }
