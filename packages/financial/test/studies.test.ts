@@ -8478,6 +8478,44 @@ const momGappy = (
   });
 
 describe('stochasticMomentumIndex', () => {
+  it('stays within −100 … 100 when close has a gap after a wide bar (Layer-2 review of #710)', () => {
+    // One wide bar, then thirteen bars with no close: the numerator's EMAs
+    // skipped bars the denominator's did not, the term-wise |M| ≤ H argument
+    // broke, and the line read 3268. The denominator now blanks the same
+    // bars as the numerator, so the bound holds on gapped input too.
+    const rows: Array<[number, number, number | undefined]> = [];
+    for (let i = 0; i < 40; i += 1) {
+      const wide = i === 12;
+      const high = wide ? 200 : 101 + Math.sin(i / 3);
+      const low = wide ? 1 : 99 + Math.sin(i / 3);
+      const close = i >= 13 && i <= 25 ? undefined : 100 + Math.sin(i / 3);
+      rows.push([high, low, close]);
+    }
+    const s = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: rows.map(([h, l, c], i) => [i, h, l, c]) as never,
+    });
+    const r = stochasticMomentumIndex(s, {
+      period: 3,
+      longPeriod: 4,
+      shortPeriod: 2,
+    });
+    const v = col(r, 'smi');
+    let seen = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (v[i] === undefined) continue;
+      seen += 1;
+      expect(Math.abs(v[i]!), `smi[${i}]`).toBeLessThanOrEqual(100 + 1e-9);
+    }
+    expect(seen).toBeGreaterThan(10);
+  });
+
   it('is 100·M/H once both smoothings are the identity, hand-computed', () => {
     // Span-1 EMAs have α = 2/(1+1) = 1, so both stages are the identity and
     // the study reduces to the raw reading — which is what makes the

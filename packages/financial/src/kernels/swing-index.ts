@@ -39,11 +39,11 @@
  * number — a tape that has not moved for two bars. The numerator is *not*
  * forced to zero by that condition (it also reads today's close and open,
  * which this kernel never checks against today's range — a `close`
- * redirected at a smoothed column is outside it by construction), so the
- * division is a real number over zero rather than a `0/0`, and there is no
- * value it takes in the limit: `K` is zero on exactly the same bars, so the
- * expression is `50·N·0/(0·T)` however it is grouped. `undefined` is the
- * answer, per the flat-window rule in the studies README.
+ * redirected at a smoothed column is outside it by construction) — but `K`
+ * *is* zero on exactly the same bars, so the whole expression is
+ * `50·N·0/(0·T)`: a `0/0` however it is grouped, with no value it takes in
+ * the limit. `undefined` is the answer, per the flat-window rule in the
+ * studies README (the study's docstring says the same).
  *
  * Note the consequence for {@link accumulativeSwingIndex}: a running sum has
  * no local answer after an unknown term ({@link cumulativeValues}), so a

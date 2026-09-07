@@ -54,7 +54,9 @@ export interface StochasticMomentumIndexOptions<
  *
  * Appends two columns, bounded **−100 … +100** (`|M| ≤ H` on every bar, and
  * an EMA has non-negative weights, so the smoothed numerator cannot exceed
- * the smoothed denominator). `+100` is a close at the top of the range,
+ * the smoothed denominator — *provided the two EMAs step over the same
+ * bars*, which is why a bar whose `close` is missing is blanked in the
+ * denominator too; see the loop). `+100` is a close at the top of the range,
  * `−100` at the bottom, `0` exactly at the midpoint — where the classic
  * {@link stochastic} reads 50. The midpoint reference is the point of the
  * study: it makes the reading signed, so the zero line means something, and
@@ -174,14 +176,20 @@ export function stochasticMomentumIndex<
   const length = close.length;
 
   // A warming-up or missing extreme is NaN and propagates through both
-  // derivations on its own ([PND-STUDYBOX]), so neither loop needs a branch.
+  // derivations on its own ([PND-STUDYBOX]). A missing CLOSE only reaches
+  // the numerator, so the denominator's bar is blanked to match: the two
+  // double-EMAs must step over the same bars for the term-wise `|M| ≤ H`
+  // argument — and so the −100 … 100 bound — to survive a gap. Without
+  // this, one wide bar followed by a run of missing closes read
+  // `smi = 3268` (Layer-2 review of #710).
   const distance = new Float64Array(length);
   const halfRange = new Float64Array(length);
   for (let i = 0; i < length; i += 1) {
     const hh = highest[i]!;
     const ll = lowest[i]!;
-    distance[i] = close[i]! - (hh + ll) / 2;
-    halfRange[i] = (hh - ll) / 2;
+    const c = close[i]!;
+    distance[i] = c - (hh + ll) / 2;
+    halfRange[i] = Number.isFinite(c) ? (hh - ll) / 2 : NaN;
   }
 
   // Long first, then short — the same order (and the same array door)
