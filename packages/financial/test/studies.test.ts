@@ -57,6 +57,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -5708,6 +5712,426 @@ describe('relativeVolatilityIndex', () => {
       }),
       'relVol',
     );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('linearRegression', () => {
+  // Closes 10, 12, 11, 15 at period 3, x = 0, 1, 2 over the window.
+  //   bar 2: Σy = 33, Σxy = 34, num = 3·34 − 3·33 = 3, den = 3·5 − 3² = 6
+  //          slope = 0.5, intercept = (33 − 0.5·3)/3 = 10.5,
+  //          value = 10.5 + 0.5·2 = 11.5, r² = 3²/(6·(3·365 − 33²)) = 0.25
+  //   bar 3: Σy = 38, Σxy = 41, num = 9, slope = 1.5,
+  //          intercept = (38 − 4.5)/3 = 67/6, value = 67/6 + 3 = 85/6,
+  //          r² = 81/(6·(3·490 − 38²)) = 81/156
+  const hand = () => linearRegression(bars([10, 12, 11, 15]), { period: 3 });
+
+  it('is the OLS fit of the window against the bar index, hand-computed', () => {
+    const r = hand();
+    expect(col(r, 'linregSlope')).toEqual([undefined, undefined, 0.5, 1.5]);
+    expect(col(r, 'linregIntercept')[2]).toBeCloseTo(10.5, 12);
+    expect(col(r, 'linregIntercept')[3]).toBeCloseTo(67 / 6, 12);
+    expect(col(r, 'linregValue')[2]).toBeCloseTo(11.5, 12);
+    expect(col(r, 'linregValue')[3]).toBeCloseTo(85 / 6, 12);
+    expect(col(r, 'linregR2')[2]).toBeCloseTo(0.25, 12);
+    expect(col(r, 'linregR2')[3]).toBeCloseTo(81 / 156, 12);
+  });
+
+  it('appends five columns that all warm up on bar period − 1', () => {
+    const r = linearRegression(bars(wavyCloses));
+    for (const name of [
+      'linregValue',
+      'linregSlope',
+      'linregIntercept',
+      'linregAngle',
+      'linregR2',
+    ]) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(wavyCloses.length);
+      expect(
+        v.slice(0, 13).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(v[13], name).toBeDefined();
+    }
+  });
+
+  it('the angle is degrees, and the value is the intercept `period − 1` bars on', () => {
+    const r = hand();
+    const slope = col(r, 'linregSlope');
+    const angle = col(r, 'linregAngle');
+    const value = col(r, 'linregValue');
+    const intercept = col(r, 'linregIntercept');
+    for (const i of [2, 3]) {
+      expect(angle[i]).toBeCloseTo((Math.atan(slope[i]!) * 180) / Math.PI, 12);
+      expect(value[i]).toBeCloseTo(intercept[i]! + slope[i]! * 2, 12);
+    }
+    // 0.5 price units per bar reads as 26.57°, not 45° — the angle carries
+    // the price's units (see the study's docstring).
+    expect(angle[2]).toBeCloseTo(26.565051177077986, 9);
+  });
+
+  it('an exactly straight window reads slope = b, R² = 1 and the line back', () => {
+    // p[t] = 40 + 0.25·t. The shifted frame makes every accumulator exact on
+    // a line, so these are `toBe`-exact rather than close-to (measured over
+    // 1000 bars at periods 5, 14 and 200: zero error on all three).
+    const line = Array.from({ length: 30 }, (_, i) => 40 + 0.25 * i);
+    const r = linearRegression(bars(line), { period: 5 });
+    for (let i = 4; i < 30; i += 1) {
+      expect(col(r, 'linregSlope')[i], `slope ${i}`).toBe(0.25);
+      expect(col(r, 'linregR2')[i], `r2 ${i}`).toBe(1);
+      expect(col(r, 'linregValue')[i], `value ${i}`).toBe(line[i]);
+    }
+  });
+
+  it('a flat window: slope EXACTLY 0, R² undefined — not a residue ratio', () => {
+    // The window [3, 5] is flat at 193.5. Without the kernel's change count
+    // the accumulator residue reads slope = −2.1e-14 and, far worse,
+    // R² = −13.5 — outside [0, 1] entirely. Measured; this is the test that
+    // kills that mutation.
+    const r = linearRegression(
+      bars([186.6, 154.81, 103.74, 193.5, 193.5, 193.5, 193.5]),
+      { period: 3 },
+    );
+    expect(col(r, 'linregSlope')[5]).toBe(0);
+    expect(col(r, 'linregSlope')[6]).toBe(0);
+    expect(col(r, 'linregIntercept')[5]).toBe(193.5);
+    expect(col(r, 'linregValue')[5]).toBe(193.5);
+    expect(col(r, 'linregR2')[5]).toBeUndefined();
+    expect(col(r, 'linregR2')[6]).toBeUndefined();
+  });
+
+  it('R² stays inside [0, 1] on a non-degenerate series', () => {
+    const v = col(
+      linearRegression(bars(wavyCloses), { period: 5 }),
+      'linregR2',
+    );
+    const seen = v.filter((x) => x !== undefined);
+    expect(seen.length).toBeGreaterThan(20);
+    for (const x of seen) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('defaults to period 14 and the `linreg` prefix; honours column and prefix', () => {
+    const b = bars(wavyCloses);
+    expect(col(linearRegression(b), 'linregSlope')).toEqual(
+      col(linearRegression(b, { period: 14 }), 'linregSlope'),
+    );
+    const renamed = linearRegression(sma(b, { period: 3, output: 'fast' }), {
+      period: 4,
+      column: 'fast',
+      prefix: 'fit',
+    });
+    expect(col(renamed, 'fitSlope')[20]).toBeDefined();
+    expect(col(renamed, 'fitR2')[20]).toBeDefined();
+  });
+
+  it('rejects period < 2, a bad period and a colliding output', () => {
+    const b = bars(wavyCloses);
+    expect(() => linearRegression(b, { period: 0 })).toThrow(TypeError);
+    expect(() => linearRegression(b, { period: 1.5 })).toThrow(TypeError);
+    // One point does not determine a line — the denominator is 0 at n = 1.
+    // The message names the STUDY, not the kernel underneath it.
+    expect(() => linearRegression(b, { period: 1 })).toThrow(
+      /linearRegression period must be at least 2/,
+    );
+    // A prefix family collides on its own appended names, so running it
+    // twice under one prefix is the case that has to throw.
+    expect(() => linearRegression(linearRegression(b))).toThrow(/collides/);
+  });
+
+  it('reads all-missing for a misnamed column, and when period > length', () => {
+    expect(
+      col(
+        linearRegression(bars(wavyCloses), {
+          period: 3,
+          column: 'nope' as never,
+        }),
+        'linregSlope',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+    const v = col(
+      linearRegression(bars([10, 12, 11]), { period: 5 }),
+      'linregValue',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('timeSeriesForecast', () => {
+  it('projects the fit one bar PAST the window, hand-computed', () => {
+    // Same fit as linearRegression's hand case: bar 2 slope 0.5, intercept
+    // 10.5 → 10.5 + 0.5·3 = 12; bar 3 slope 1.5, intercept 67/6 → 67/6 + 4.5.
+    const v = col(
+      timeSeriesForecast(bars([10, 12, 11, 15]), { period: 3 }),
+      'tsf',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo(12, 12);
+    expect(v[3]).toBeCloseTo(67 / 6 + 4.5, 12);
+  });
+
+  it('is exactly one slope past linearRegression’s in-window endpoint', () => {
+    const b = bars(wavyCloses);
+    const fit = linearRegression(b, { period: 6 });
+    const value = col(fit, 'linregValue');
+    const slope = col(fit, 'linregSlope');
+    const tsf = col(timeSeriesForecast(b, { period: 6 }), 'tsf');
+    for (let i = 5; i < wavyCloses.length; i += 1) {
+      expect(tsf[i], `bar ${i}`).toBeCloseTo(value[i]! + slope[i]!, 12);
+    }
+  });
+
+  it('reads an exact line’s NEXT value back, exactly', () => {
+    const line = Array.from({ length: 30 }, (_, i) => 40 + 0.25 * i);
+    const v = col(timeSeriesForecast(bars(line), { period: 5 }), 'tsf');
+    for (let i = 4; i < 30; i += 1) {
+      expect(v[i], `bar ${i}`).toBe(40 + 0.25 * (i + 1));
+    }
+  });
+
+  it('a flat window forecasts the flat level, exactly', () => {
+    const v = col(
+      timeSeriesForecast(bars([9, 4, 7, 7, 7, 7]), { period: 3 }),
+      'tsf',
+    );
+    expect(v[4]).toBe(7);
+    expect(v[5]).toBe(7);
+  });
+
+  it('defaults to period 14 and the `tsf` column; honours column and output', () => {
+    const b = bars(wavyCloses);
+    const v = col(timeSeriesForecast(b), 'tsf');
+    expect(v.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(v[13]).toBeDefined();
+    expect(v).toEqual(col(timeSeriesForecast(b, { period: 14 }), 'tsf'));
+    const renamed = timeSeriesForecast(sma(b, { period: 3, output: 'fast' }), {
+      period: 4,
+      column: 'fast',
+      output: 'tsfFast',
+    });
+    expect(col(renamed, 'tsfFast')[20]).toBeDefined();
+  });
+
+  it('rejects period < 2, a bad period and a colliding output', () => {
+    const b = bars(wavyCloses);
+    expect(() => timeSeriesForecast(b, { period: 0 })).toThrow(TypeError);
+    expect(() => timeSeriesForecast(b, { period: 1 })).toThrow(
+      /timeSeriesForecast period must be at least 2/,
+    );
+    expect(() => timeSeriesForecast(b, { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(timeSeriesForecast(bars([10, 12, 11]), { period: 5 }), 'tsf');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('chandeForecastOscillator', () => {
+  it('is 100·(price − TSF)/price, hand-computed', () => {
+    // Same fit again: bar 2 TSF 12 against a close of 11, bar 3 TSF 67/6+4.5
+    // against 15.
+    const v = col(
+      chandeForecastOscillator(bars([10, 12, 11, 15]), { period: 3 }),
+      'cfo',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo((100 * (11 - 12)) / 11, 12);
+    expect(v[3]).toBeCloseTo((100 * (15 - (67 / 6 + 4.5))) / 15, 12);
+  });
+
+  it('divides by the PRICE, not by the forecast', () => {
+    // The two agree only where the numerator is zero, so one bar pins it.
+    const b = bars([10, 12, 11, 15]);
+    const cfo = col(chandeForecastOscillator(b, { period: 3 }), 'cfo')[2]!;
+    const byForecast = (100 * (11 - 12)) / 12;
+    expect(cfo).not.toBeCloseTo(byForecast, 6);
+  });
+
+  it('a flat window reads exactly 0 — the price IS its forecast', () => {
+    const v = col(
+      chandeForecastOscillator(bars([9, 4, 7, 7, 7, 7]), { period: 3 }),
+      'cfo',
+    );
+    expect(v[4]).toBe(0);
+    expect(v[5]).toBe(0);
+  });
+
+  it('a zero price reads undefined rather than ±Infinity', () => {
+    // Reachable only over a column that crosses zero. The forecast at bar 3
+    // is not zero, so the numerator is NOT forced to zero with the
+    // denominator — the guard is what stops an Infinity reaching withColumn.
+    const v = col(
+      chandeForecastOscillator(bars([3, 2, 1, 0, -1, -2]), { period: 3 }),
+      'cfo',
+    );
+    expect(v).toHaveLength(6);
+    expect(v[3]).toBeUndefined();
+    // A NEGATIVE price still produces a number (the `percentChange` rule).
+    expect(v[4]).toBeDefined();
+    expect(v[5]).toBeDefined();
+  });
+
+  it('defaults to period 14 and the `cfo` column; honours column and output', () => {
+    const b = bars(wavyCloses);
+    const v = col(chandeForecastOscillator(b), 'cfo');
+    expect(v.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(v[13]).toBeDefined();
+    expect(v).toEqual(col(chandeForecastOscillator(b, { period: 14 }), 'cfo'));
+    const renamed = chandeForecastOscillator(
+      sma(b, { period: 3, output: 'fast' }),
+      { period: 4, column: 'fast', output: 'cfoFast' },
+    );
+    expect(col(renamed, 'cfoFast')[20]).toBeDefined();
+  });
+
+  it('rejects period < 2, a bad period and a colliding output', () => {
+    const b = bars(wavyCloses);
+    expect(() => chandeForecastOscillator(b, { period: 0 })).toThrow(TypeError);
+    expect(() => chandeForecastOscillator(b, { period: 1 })).toThrow(
+      /chandeForecastOscillator period must be at least 2/,
+    );
+    expect(() => chandeForecastOscillator(b, { output: 'close' })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(
+      chandeForecastOscillator(bars([10, 12, 11]), { period: 5 }),
+      'cfo',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('centerOfGravity', () => {
+  it('is the position-weighted balance point, hand-computed', () => {
+    // Closes 10, 12, 11, 15 at period 3. The NEWEST bar carries weight 1.
+    //   bar 2: −(1·11 + 2·12 + 3·10)/(11 + 12 + 10) = −65/33
+    //   bar 3: −(1·15 + 2·11 + 3·12)/(15 + 11 + 12) = −73/38
+    const v = col(
+      centerOfGravity(bars([10, 12, 11, 15]), { period: 3 }),
+      'cog',
+    );
+    expect(v).toHaveLength(4);
+    expect(v.slice(0, 2).every((x) => x === undefined)).toBe(true);
+    expect(v[2]).toBeCloseTo(-65 / 33, 12);
+    expect(v[3]).toBeCloseTo(-73 / 38, 12);
+  });
+
+  it('matches the naive O(N·period) definition it is an identity for', () => {
+    // The study ships `(n+1)·(wma/(2·sma) − 1)` rather than the two sums;
+    // this is the test that lets a future editor check the shortcut instead
+    // of trusting it.
+    const naive = (values: number[], period: number) =>
+      values.map((_, t) => {
+        if (t < period - 1) return undefined;
+        let num = 0;
+        let den = 0;
+        for (let k = 0; k < period; k += 1) {
+          num += (k + 1) * values[t - k]!;
+          den += values[t - k]!;
+        }
+        return -num / den;
+      });
+    for (const period of [2, 3, 10, 20]) {
+      const v = col(centerOfGravity(bars(wavyCloses), { period }), 'cog');
+      const want = naive(wavyCloses, period);
+      for (let i = 0; i < wavyCloses.length; i += 1) {
+        if (want[i] === undefined) {
+          expect(v[i], `period ${period} bar ${i}`).toBeUndefined();
+        } else {
+          expect(v[i], `period ${period} bar ${i}`).toBeCloseTo(want[i]!, 11);
+        }
+      }
+    }
+  });
+
+  it('a flat window balances exactly in the middle, at −(period + 1)/2', () => {
+    const v = col(
+      centerOfGravity(bars([9, 4, 7, 7, 7, 7]), { period: 3 }),
+      'cog',
+    );
+    expect(v[4]).toBeCloseTo(-2, 12);
+    expect(v[5]).toBeCloseTo(-2, 12);
+  });
+
+  it('stays inside [−period, −1] and moves UP as the newest bars get heavier', () => {
+    const period = 5;
+    const v = col(centerOfGravity(bars(wavyCloses), { period }), 'cog');
+    const seen = v.filter((x) => x !== undefined);
+    expect(seen.length).toBeGreaterThan(20);
+    for (const x of seen) {
+      expect(x).toBeGreaterThanOrEqual(-period);
+      expect(x).toBeLessThanOrEqual(-1);
+    }
+    // A rising window puts more weight on the newest (lightest) bars, so the
+    // balance point sits ABOVE the flat −(period+1)/2 = −3; a falling one
+    // below it.
+    const rising = col(
+      centerOfGravity(bars([1, 2, 3, 4, 9]), { period }),
+      'cog',
+    );
+    const falling = col(
+      centerOfGravity(bars([9, 4, 3, 2, 1]), { period }),
+      'cog',
+    );
+    expect(rising[4]!).toBeGreaterThan(-3);
+    expect(falling[4]!).toBeLessThan(-3);
+  });
+
+  it('a zero-sum window reads undefined rather than ±Infinity', () => {
+    // [1, −1] sums to 0 with a weighted sum of −1, so the numerator is NOT
+    // forced to zero with the denominator and the guard is load-bearing.
+    const v = col(centerOfGravity(bars([5, 1, -1, 4]), { period: 2 }), 'cog');
+    expect(v).toHaveLength(4);
+    expect(v[2]).toBeUndefined();
+    expect(v[1]).toBeDefined();
+    expect(v[3]).toBeDefined();
+  });
+
+  it('defaults to period 10 and the `cog` column; honours column and output', () => {
+    const b = bars(wavyCloses);
+    const v = col(centerOfGravity(b), 'cog');
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+    expect(v).toEqual(col(centerOfGravity(b, { period: 10 }), 'cog'));
+    const renamed = centerOfGravity(sma(b, { period: 3, output: 'fast' }), {
+      period: 4,
+      column: 'fast',
+      output: 'cogFast',
+    });
+    expect(col(renamed, 'cogFast')[20]).toBeDefined();
+  });
+
+  it('accepts period 1 — a one-bar balance point is −1, not a 0/0', () => {
+    // Unlike the three regression studies: CG takes a moment, not a fit, so
+    // there is nothing degenerate about a single bar.
+    const v = col(centerOfGravity(bars([10, 12, 11]), { period: 1 }), 'cog');
+    expect(v).toEqual([-1, -1, -1]);
+  });
+
+  it('rejects a bad period and a colliding output', () => {
+    const b = bars(wavyCloses);
+    expect(() => centerOfGravity(b, { period: 0 })).toThrow(TypeError);
+    expect(() => centerOfGravity(b, { period: 1.5 })).toThrow(TypeError);
+    expect(() => centerOfGravity(b, { output: 'close' })).toThrow(/collides/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const v = col(centerOfGravity(bars([10, 12, 11]), { period: 5 }), 'cog');
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
   });

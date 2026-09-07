@@ -70,6 +70,76 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the rolling linear-regression family** (corpus §6.7,
+  plus the two §6.3 studies that hang off it) — one new public kernel and four
+  studies in the uniform shape (a `column` / `output` or `prefix`, bar-count
+  periods, a length-preserving warm-up, a fluent method), each with oracle
+  cases at two periods.
+  - **`linearRegressionValues(values, period)`** (kernel **K7**) — the rolling
+    ordinary-least-squares fit of a raw `Float64Array` against the bar index,
+    returning `{ slope, intercept, r2 }` in **one O(N) pass that is flat in
+    `period`** (measured at 1M bars: 29 ms at `period 14`, 29 ms at
+    `period 200`). `x` is deterministic, so `Σx` and `Σx²` are closed forms and
+    only `Σy`, `Σxy` and `Σy²` roll. Exported alongside its `RollingRegression`
+    result type.
+  - **`linearRegression({ period = 14, column = 'close', prefix = 'linreg' })`**
+    → `linregValue`, `linregSlope`, `linregIntercept`, `linregAngle`,
+    `linregR2` — five readings of **one** fit, all warming up together at
+    `period − 1`. Four are **exact against TA-Lib** (`LINEARREG`,
+    `LINEARREG_SLOPE`, `LINEARREG_INTERCEPT`, `LINEARREG_ANGLE`; measured
+    ≤ 1.3e-12 at `period 14`, masks identical); `linregR2` has no TA-Lib
+    equivalent and is a pandas replication.
+    - **`linregIntercept` is the fit at the window's FIRST bar** (`x = 0`),
+      TA-Lib's convention — `linregValue` is the fit at its last. On the
+      oracle input at `period 14` the two differ by up to **13.68 points** on
+      a series whose entire range is 19.4, so reading one for the other is a
+      real error rather than a rounding one.
+    - **`linregAngle` is scale-DEPENDENT**, and deliberately so: TA-Lib's
+      `LINEARREG_ANGLE` is `atan(slope)` in degrees with no normalisation, so
+      the same instrument quoted in cents reads a different angle. Stated on
+      the study and pinned by a property test that asserts scaling **moves**
+      it.
+  - **`timeSeriesForecast({ period = 14, column, output = 'tsf' })`** — the
+    same fit projected one bar past the window (`intercept + slope·period`),
+    **exact against TA-Lib `TSF`** (≤ 2.1e-13). Also known as the "time series
+    moving average" and deliberately **not** added to the K2 `MaType` menu:
+    every type there is the identity at `period 1`, and a one-bar window has
+    no slope.
+  - **`chandeForecastOscillator({ period = 14, column, output = 'cfo' })`** —
+    `100 · (price − TSF) / price` (Tushar Chande). No TA-Lib function; the
+    oracle is a pandas replication on the TA-Lib-checked `TSF`, separated from
+    the version that subtracts the in-window endpoint (0.89 at `period 14`).
+    Scale-invariant, **not** shift-invariant.
+  - **`centerOfGravity({ period = 10, column, output = 'cog' })`** — Ehlers'
+    position-weighted balance point (_Stocks & Commodities_, May 2002),
+    `−Σ(k+1)·price[i−k] / Σprice[i−k]` with the **newest** bar carrying weight
+    1. Negative and bounded `[−period, −1]` on positive prices (a
+       zero-crossing source column can read outside it), and a flat window balances at
+       `−(period+1)/2`. This is **TradingView's uncentred `ta.cog`**; Ehlers' own
+       EasyLanguage adds `(period+1)/2` to re-centre on zero, a constant offset
+       the oracle pins. It needs no new kernel: the descending weights are the
+       ascending ones subtracted from a constant, so the study is exactly
+       `(period + 1)·(WMA/(2·SMA) − 1)` over the K2 engine's `wma` and
+       `rollingMeanValues` — an identity pinned by a test against the naive
+       `O(N·period)` definition.
+  - **All four run the strict window**: a bar is emitted only when all
+    `period` cells are finite, because `x` names a _position_ and dropping a
+    cell would fit the line against the wrong abscissa (the `wma` rule). A
+    leading gap shifts the start; an interior gap blanks `period` bars and
+    then recovers.
+  - **A flat window: `slope` exactly `0`, `linregR2` `undefined`.** The
+    slope's numerator is forced to zero by the same condition that empties
+    the window, so `0` is a real reading; `R²` is a genuine `0/0` and is
+    missing. Both are decided by an O(1) count of the changes inside the
+    window rather than computed — without it the accumulator residue reads
+    `slope = −2.1e-14` and **`R² = −13.5`**, outside the statistic's own
+    range (measured).
+  - The regression periods must be **at least 2** (`n²(n²−1)/12` is `0` at
+    `n = 1`); `centerOfGravity` takes a moment rather than a fit, so it
+    accepts `period 1` and reads `−1`.
+
+### Added
+
 - `@pond-ts/financial`: **the Wilder directional group** (corpus §6.4) — three
   studies and two new public kernels, in the uniform shape (redirectable bar
   inputs, bar-count periods, length-preserving warm-up, a fluent method), each

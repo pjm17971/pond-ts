@@ -94,6 +94,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -2662,5 +2666,269 @@ describe('[talib] all-missing input yields all-missing volatility-tail studies',
         'relVol',
       ),
     );
+  });
+});
+
+/*
+ * The regression family's property matrix, written out study by study.
+ *
+ * A loop over "these are all scale-invariant" would be wrong for five of
+ * the eight columns here: `linregValue` / `linregIntercept` / `tsf` are
+ * EQUIVARIANT to both scale and shift, `linregSlope` is equivariant to
+ * scale and INVARIANT to shift, `linregAngle` is invariant to shift and
+ * genuinely DEPENDENT on scale (TA-Lib applies no normalisation), `linregR2`
+ * is invariant to both, and `cfo` / `cog` are scale-invariant but not
+ * shift-invariant. Each claim is its own assertion.
+ */
+describe('[talib] the regression family: one property claim per column', () => {
+  const wavy = Array.from(
+    { length: 40 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + i * 0.1,
+  );
+  const P = 6;
+  const K = 2.5;
+  const B = -40;
+  const scaled = wavy.map((x) => x * K);
+  const shifted = wavy.map((x) => x + B);
+  const pairs = (
+    a: Array<number | undefined>,
+    b: Array<number | undefined>,
+  ) => {
+    expect(firstValid(b)).toBe(firstValid(a));
+    let seen = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === undefined) {
+        expect(b[i], `bar ${i}`).toBeUndefined();
+      } else {
+        seen += 1;
+      }
+    }
+    expect(seen).toBeGreaterThan(20);
+  };
+
+  it('linregSlope: scales with the price, and is unmoved by a shift', () => {
+    const base = col(
+      linearRegression(bars(wavy), { period: P }),
+      'linregSlope',
+    );
+    const up = col(
+      linearRegression(bars(scaled), { period: P }),
+      'linregSlope',
+    );
+    const over = col(
+      linearRegression(bars(shifted), { period: P }),
+      'linregSlope',
+    );
+    pairs(base, up);
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(up[i], `scaled ${i}`).toBeCloseTo(base[i]! * K, 9);
+      expect(over[i], `shifted ${i}`).toBeCloseTo(base[i]!, 9);
+    }
+  });
+
+  it('linregValue and linregIntercept: equivariant to BOTH (a·y + b)', () => {
+    for (const name of ['linregValue', 'linregIntercept']) {
+      const base = col(linearRegression(bars(wavy), { period: P }), name);
+      const mapped = col(
+        linearRegression(bars(wavy.map((x) => x * K + B)), { period: P }),
+        name,
+      );
+      pairs(base, mapped);
+      for (let i = 0; i < base.length; i += 1) {
+        if (base[i] === undefined) continue;
+        expect(mapped[i], `${name} bar ${i}`).toBeCloseTo(base[i]! * K + B, 8);
+      }
+    }
+  });
+
+  it('linregAngle: unmoved by a shift, and genuinely MOVED by a scale', () => {
+    const base = col(
+      linearRegression(bars(wavy), { period: P }),
+      'linregAngle',
+    );
+    const over = col(
+      linearRegression(bars(shifted), { period: P }),
+      'linregAngle',
+    );
+    const up = col(
+      linearRegression(bars(scaled), { period: P }),
+      'linregAngle',
+    );
+    let moved = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(over[i], `shifted ${i}`).toBeCloseTo(base[i]!, 9);
+      // atan(k·m) ≠ atan(m) for every non-zero slope: the angle carries the
+      // price's UNITS. This is the assertion the docstring's warning rests
+      // on, so it is a real inequality rather than "different somewhere".
+      expect(up[i], `scaled ${i}`).toBeCloseTo(
+        (Math.atan(Math.tan((base[i]! * Math.PI) / 180) * K) * 180) / Math.PI,
+        8,
+      );
+      if (Math.abs(up[i]! - base[i]!) > 1) moved += 1;
+    }
+    expect(moved, 'scaling must move the angle on most bars').toBeGreaterThan(
+      20,
+    );
+  });
+
+  it('linregR2: invariant to both — the one column comparable across instruments', () => {
+    const base = col(linearRegression(bars(wavy), { period: P }), 'linregR2');
+    const mapped = col(
+      linearRegression(bars(wavy.map((x) => x * K + B)), { period: P }),
+      'linregR2',
+    );
+    pairs(base, mapped);
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(mapped[i], `bar ${i}`).toBeCloseTo(base[i]!, 9);
+    }
+  });
+
+  it('tsf: equivariant to both, like any linear filter', () => {
+    const base = col(timeSeriesForecast(bars(wavy), { period: P }), 'tsf');
+    const mapped = col(
+      timeSeriesForecast(bars(wavy.map((x) => x * K + B)), { period: P }),
+      'tsf',
+    );
+    pairs(base, mapped);
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(mapped[i], `bar ${i}`).toBeCloseTo(base[i]! * K + B, 8);
+    }
+  });
+
+  it('cfo: scale-INVARIANT, and shift-DEPENDENT (it divides by the price)', () => {
+    const base = col(
+      chandeForecastOscillator(bars(wavy), { period: P }),
+      'cfo',
+    );
+    const up = col(
+      chandeForecastOscillator(bars(scaled), { period: P }),
+      'cfo',
+    );
+    const over = col(
+      chandeForecastOscillator(bars(wavy.map((x) => x + 400)), { period: P }),
+      'cfo',
+    );
+    pairs(base, up);
+    let shrank = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(up[i], `scaled ${i}`).toBeCloseTo(base[i]!, 9);
+      // Adding a constant moves the BASE of the percentage without moving
+      // its numerator, so every reading shrinks toward zero. Asserted as a
+      // direction, not merely "different" — a study that normalised by the
+      // wrong thing would pass the weaker claim.
+      expect(Math.abs(over[i]!), `shifted ${i}`).toBeLessThan(
+        Math.abs(base[i]!) + 1e-12,
+      );
+      if (Math.abs(over[i]!) < Math.abs(base[i]!) * 0.5) shrank += 1;
+    }
+    expect(shrank, 'a +400 shift must visibly shrink cfo').toBeGreaterThan(20);
+  });
+
+  it('cog: scale-INVARIANT, and shift-DEPENDENT (a shift drags it to the middle)', () => {
+    const base = col(centerOfGravity(bars(wavy), { period: P }), 'cog');
+    const up = col(centerOfGravity(bars(scaled), { period: P }), 'cog');
+    const over = col(
+      centerOfGravity(bars(wavy.map((x) => x + 400)), { period: P }),
+      'cog',
+    );
+    pairs(base, up);
+    const middle = -(P + 1) / 2;
+    let dragged = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(up[i], `scaled ${i}`).toBeCloseTo(base[i]!, 9);
+      // A shift adds the same constant to every term of both sums, which
+      // pulls the balance point toward the flat-window middle.
+      expect(Math.abs(over[i]! - middle), `shifted ${i}`).toBeLessThanOrEqual(
+        Math.abs(base[i]! - middle) + 1e-12,
+      );
+      if (Math.abs(over[i]! - middle) < Math.abs(base[i]! - middle) * 0.5) {
+        dragged += 1;
+      }
+    }
+    expect(
+      dragged,
+      'a +400 shift must drag cog toward the middle',
+    ).toBeGreaterThan(20);
+  });
+});
+
+describe('[talib] the regression family over another study composes its warm-up', () => {
+  const wavy = Array.from(
+    { length: 40 },
+    (_, i) => 100 + 6 * Math.sin(i / 2.5) + i * 0.1,
+  );
+
+  it('linearRegression over sma starts late rather than coming back empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const r = linearRegression(src, { column: 'sma', period: 4 });
+    for (const name of ['linregValue', 'linregSlope', 'linregR2']) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(wavy.length);
+      // sma(3) first valid at 2; the strict window then needs 4 finite
+      // values, so the fit lands at 2 + 4 − 1 = 5.
+      expect(firstValid(v), name).toBe(5);
+      expect(
+        v.slice(5).every((x) => x !== undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('timeSeriesForecast, cfo and cog over sma start late rather than empty', () => {
+    const src = sma(bars(wavy), { period: 3 });
+    const tsf = col(
+      timeSeriesForecast(src, { column: 'sma', period: 4 }),
+      'tsf',
+    );
+    expect(firstValid(tsf)).toBe(5);
+    const cfo = col(
+      chandeForecastOscillator(src, { column: 'sma', period: 4 }),
+      'cfo',
+    );
+    expect(firstValid(cfo)).toBe(5);
+    // CG's two halves are both strict-window array doors, so it composes the
+    // same way — `wma` and `rollingMeanValues` agree on the mask.
+    const cog = col(centerOfGravity(src, { column: 'sma', period: 4 }), 'cog');
+    expect(firstValid(cog)).toBe(5);
+    expect(cog.slice(5).every((x) => x !== undefined)).toBe(true);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing regression studies', () => {
+  const allMissing = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [i, undefined]) as never,
+  });
+  const empty = (v: Array<number | undefined>) => {
+    expect(v).toHaveLength(20);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  };
+
+  it('all five linearRegression columns, tsf, cfo and cog', () => {
+    const r = linearRegression(allMissing as never, { period: 5 });
+    for (const name of [
+      'linregValue',
+      'linregSlope',
+      'linregIntercept',
+      'linregAngle',
+      'linregR2',
+    ]) {
+      empty(col(r, name));
+    }
+    empty(col(timeSeriesForecast(allMissing as never, { period: 5 }), 'tsf'));
+    empty(
+      col(chandeForecastOscillator(allMissing as never, { period: 5 }), 'cfo'),
+    );
+    empty(col(centerOfGravity(allMissing as never, { period: 5 }), 'cog'));
   });
 });

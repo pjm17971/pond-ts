@@ -1027,6 +1027,196 @@ log study (it cancels); a high/low mode on `relativeVolatilityIndex` (two calls
 and an average); and fixing the `rollingValues` missing-column asymmetry, which
 is recorded above as a kernel-level carry-forward.
 
+**Landed — the regression family (§6.7).** `linearRegression`,
+`timeSeriesForecast`, `chandeForecastOscillator` and `centerOfGravity` — four
+studies over **one** new kernel, `kernels/linear-regression.ts` (**K7**). The
+batch's defining property is the opposite of the volatility tail's: TA-Lib
+implements **five** of the eight columns here exactly (`LINEARREG`,
+`LINEARREG_SLOPE`, `LINEARREG_INTERCEPT`, `LINEARREG_ANGLE`, `TSF`), so the
+oracle could hold the fit itself to bar-for-bar vendor agreement (≤ 1.3e-12 at
+`period 14`, masks identical) and spend its separation asserts on the three
+columns that have no vendor at all (`linregR2`, `cfo`, `cog`). Decisions:
+
+(1) **One kernel, one pass, and every reading is a projection of it.**
+`linearRegressionValues(values, period)` returns `{ slope, intercept, r2 }`;
+`linearRegressionAt(fit, x)` reads the fitted line at one `x`, and that is the
+only place the projection arithmetic lives — `x = period − 1` is TA-Lib's
+`LINEARREG`, `x = period` is `TSF`, `x = 0` is the intercept the kernel already
+returns. Five studies-worth of vocabulary, three call sites, no duplicated
+formula. The fit is **O(N) and flat in `period`** because `x` is the bar index:
+`Σx` and `Σx²` are closed forms of `period`, and the denominator
+`n²(n²−1)/12` is a positive constant — which is also why the slope needs **no
+zero-denominator guard at all**, a third category beside #703's live/dead pair
+(there is nothing to guard: the denominator cannot be zero for `period ≥ 2`,
+and `period 1` is rejected). Measured at 1M bars: the kernel is **29 ms at
+`period 14` and 29 ms at `period 200`**.
+
+(2) **`x = 0` is the window's OLDEST bar, so the intercept is its FIRST bar.**
+That is TA-Lib's convention and it is the single most confusable thing in this
+batch: a reader who takes "intercept" for "the line's value now" is off by
+`slope·(period − 1)`, which on the oracle input at `period 14` is up to
+**13.68 points** on a series whose entire range is 19.4. Both ends ship as
+columns (`linregIntercept` and `linregValue`) rather than one, the identity
+`Value = Intercept + Slope·(period − 1)` is asserted in the generator, and the
+kernel's docstring leads with the convention.
+
+(3) **`linregAngle` is scale-dependent, and it ships anyway.** TA-Lib's
+`LINEARREG_ANGLE` is `atan(slope)` in degrees with **no** normalisation, so the
+same instrument quoted in cents reads a different angle and a $400 stock and a
+$4 stock moving the same percentage do not agree. Normalising it (by price, by
+σ, by anything) would have been a different indicator wearing TA-Lib's name, so
+the column matches TA-Lib bar-for-bar and the property is stated on the study
+instead — and **pinned as an assertion that scaling MOVES it**, to the exact
+`atan(k·tan(θ))` value. It is the one column in this package whose property test
+asserts a dependence rather than an invariance, which is why the batch's
+property matrix is written out column by column: a loop over "these are all
+scale-invariant" would have been wrong for five of the eight.
+
+(4) **The flat-window counter, and why it is not the `ulcerIndex` finding
+twice.** A flat window is a genuine `0/0` for `r2` (a line explaining all of
+zero variance) and a forced zero for `slope` — the #699 test, applied twice with
+opposite answers. What is new is the _magnitude_ of getting it wrong. Ulcer's
+residue was a small wrong number (1.6e-9 where 0 was right); here `r2` is a
+**ratio of two residues**, so it is not small, not bounded, and not signed the
+right way: measured on `[186.6, 154.81, 103.74, 193.5, 193.5, 193.5, 193.5]` at
+`period 3`, the flat window reads `slope = −2.1e-14` and **`r2 = −13.5`** —
+outside the statistic's own `[0, 1]` range. A running count of the changes
+inside the window (`y[j] !== y[j−1]`) is O(1) per bar, is integer arithmetic so
+it needs no rebuild, and decides both exactly. Two mutations kill it (deleting
+the branch; reporting `r2 = 0` instead of `undefined`), so it is load-bearing in
+both directions.
+
+(5) **The shifted frame is not optional here, and the failure is louder than
+`zScore`'s.** `n·Σxy − Σx·Σy` differences two `O(n²·ȳ)` quantities whose
+difference is `O(n²·σ)`. Measured over 200k rows of `base + 0.01·i + 3·sin(i/7)`
+at `period 20`, against a two-pass reference, with the same kernel anchored at 0
+as the control:
+
+| base   | slope (raw → shifted) | r² (raw → shifted)      |
+| ------ | --------------------- | ----------------------- |
+| `1e6`  | 2.97e-5 → **0**       | 1.56e-2 → **5.1e-15**   |
+| `1e12` | 27.8 → **0**          | `Infinity` → **1.0e-7** |
+
+The raw frame does not merely lose precision at 1e12 — its `r²` leaves `[0, 1]`
+and reaches `Infinity`, because the two cancelling moment differences round to
+different signs. Above ~1e13 the _input_ stops carrying the answer (a ±3 window
+at 1e15 spans ~48 ulps, so `y − anchor` is quantised to ~2% of the spread) and
+no arrangement of the arithmetic recovers it; that is recorded as a
+representation limit rather than papered over. The rebuild is `ranged.ts`'
+aligned `i % period === 0`, which also guarantees the anchor row is always
+_inside_ the current window.
+
+(6) **`linreg` / `tsf` were considered for the K2 `MaType` menu and left
+out — with a reason, not a shrug.** The Time Series Forecast is a smoother and
+vendors do list it in their MA menus, and it composes on this kernel in one
+`case`. What it cannot do is keep the engine's contract: **every type in the
+menu is the identity at `period 1`**, and a one-bar window has no slope (the
+denominator is `0` at `n = 1`). Adding it would mean a per-type minimum period —
+a change to the engine's shape, its fan-out tests and every study that exposes a
+`type` option, not one `case`. So the regression smooth ships as a study, the
+engine's `MaType` is unchanged, and the reason is on `timeSeriesForecast`'s
+docstring where a future reader will look for it.
+
+(7) **`centerOfGravity` needed no kernel, because its weights are `wma`'s
+subtracted from a constant.** Neither existing weighted-mean helper fits:
+`rollingWeightedMeanValues` takes per-**row** weights (VWAP's volume), not
+positional ones, and `symmetricWeightedValues` is the fixed 4-bar `(1,2,2,1)`.
+But CG's descending weights `n … 1` are `(n + 1)` minus `wma`'s ascending
+`1 … n`, so with `u` the position in the window
+`Σ(n−u)·p = (n+1)·n·SMA − WMA·n(n+1)/2`, and dividing by `Σp = n·SMA` collapses
+the whole study to **`(period + 1)·(WMA/(2·SMA) − 1)`** — the K2 engine's `wma`
+over `rollingMeanValues`, both already O(N), both already carrying the
+rebuild-every-`period` numerics and the strict-window mask, so their masks agree
+by construction. Writing a `centerOfGravityValues` kernel instead would have
+duplicated `wma`'s recurrence and its rebuild for a second place to get the same
+numerics wrong. The identity is exact algebra, not an approximation, and it is
+**pinned by a test against the naive `O(N·period)` definition** at four periods
+(agreement ≤ 1.1e-14; measured, not pinned, 8.0e-15 to 2.5e-14 over 50k bars
+at a price of 1e12 depending on the series) so a future
+editor can check the shortcut rather than trust it.
+
+(8) **CG's zero line is TradingView's, not Ehlers'.** Ehlers' own EasyLanguage
+adds `(Length + 1)/2` at the end, re-centring a flat window on `0`;
+TradingView's `ta.cog` leaves it off, so a flat window reads `−(period + 1)/2`
+(`−5.5` at the default 10). The uncentred form ships because more consumers plot
+it; the two differ by a constant that depends only on `period`, so the _shape_
+is identical and the generator asserts exactly that. The sign convention (newest
+bar weight 1, so the reading is negative and rises as the price does) is pinned
+by a separation from the ascending-weight reading — and that separation is
+asserted **against the reading's own spread** rather than a fixed number,
+because CG barely moves: 0.049 against a 0.045 spread at `period 5`, 0.173
+against 0.162 at 10, 0.515 against 0.458 at 20. An absolute threshold would have
+been arbitrary at one period and unreachable at another.
+
+(9) **Two live zero-denominator guards, and they are live for the #703 reason.**
+`chandeForecastOscillator` divides by the price and `centerOfGravity` by the
+window's sum; both divisions are their study's **last** step, so an unguarded
+`x / 0` reaches `withColumn` as `±Infinity`, which throws rather than mapping to
+a gap. Neither numerator is forced to zero with its denominator (a window can
+forecast a non-zero level for a bar printing `0`; `[1, −1]` sums to `0` with a
+weighted sum of `−1`), so both guards are reachable, unit-tested, and killed by
+their own mutations. Unreachable on prices, reachable over another study's
+output that crosses zero — the `ulcerIndex` shape, on the live side of the line
+this time.
+
+(10) **The strict window, uniformly, across all four.** `x` names a _position_,
+so dropping a missing cell would fit the line against the wrong abscissa: the
+`wma` / `trima` / `hull` rule rather than `sma`'s rows-not-contributors. A
+leading gap shifts the start (so the family composes over another study's
+warm-up rather than coming back empty), an interior gap blanks the gap bar and
+the `period − 1` after it, and then all four recover. That uniformity is worth
+noting after the volatility tail, where three studies answered a gap three
+different ways.
+
+(11) **`period ≥ 2` is named per caller, and the mutation matrix is why.**
+`assertRegressionPeriod(period, name)` takes the caller's name so
+`linearRegression({ period: 1 })` says `linearRegression period must be at
+least 2` rather than naming the kernel. The first matrix run reported the
+study-level guard as a **survivor** — the kernel's own throw covered it, and the
+test only matched `/at least 2/`. The fix was to pin the message that a caller
+actually sees; three mutations (one per study) now die on it. `centerOfGravity`
+deliberately does **not** take the restriction: it computes a moment, not a fit,
+so `period 1` is a well-defined `−1`.
+
+Perf at 1M bars (medians of 5, run twice, agreeing within 15%):
+`linearRegressionValues` **29 ms at both `period 14` and `period 200`**,
+`timeSeriesForecast` 46–54 ms, `chandeForecastOscillator` 63–68 ms,
+`centerOfGravity` 72–78 ms (10 and 200 within noise of each other),
+`linearRegression` 93–106 ms — against `ema` 11 ms, `sma` 35 ms, `rsi` 50 ms,
+`bollinger` 103 ms, `donchian` 236 ms and a hand-rolled `Float64Array` SMA floor
+of 8.7 ms on the same runs. The bare kernel sits **below `sma`** and 3.3× the
+floor, which is the shape the analysis predicts (one pass, three O(1)
+accumulator updates, one amortised rebuild); the studies' extra cost is
+`withColumn` appends and nothing else, which is why the five-column
+`linearRegression` reads like the three-column `bollinger` rather than like its
+own kernel. Every entry is flat in `period` — the 14/200 pairs are the evidence,
+and a caller who wants only the slope can call the exported kernel and skip the
+four appends.
+
+**Mutation matrix**: 36 mutations, one per shipped decision (the `x` origin and
+its sign, each of the three accumulator recurrences, the shifted frame, the
+rebuild cadence, the flat-window counter in both directions, the strict window,
+the warm-up index, each projection's `x`, the angle's units, each default
+period, each `period ≥ 2` guard, each zero-denominator guard, CG's sign,
+normaliser, `/2`, centring convention and its `wma`-vs-`sma` half). **Zero
+survivors** after the `period ≥ 2` message fix in (11). Killed-test counts ran
+from 1 (a changed default, which only the defaults test reads) to 21 (dropping
+the intercept from the projection, which every study and every oracle case
+sees).
+
+**Considered and not built**: a column-selection option on `linearRegression`
+(five projections of one fit, all warming up together — a knob to append fewer
+columns is `withColumn` bookkeeping, and the kernel is exported for a caller who
+wants one array); separate `linearRegSlope` / `linearRegAngle` studies (each
+would re-run the same O(N) fit — the `macd` / `directionalMovement` family
+rule); a `centred` option on `centerOfGravity` (a constant offset, documented
+and addable by the caller); clamping `r2` into `[0, 1]` (measured: it never
+exceeds 1 even on an exactly straight line at `period 200`, so the guard would
+have been dead — the residue case it would have caught is the flat window,
+which the change counter handles exactly); a normalised "angle" (a different
+indicator wearing TA-Lib's name); and adding `linreg`/`tsf` to `MaType`, whose
+reason is (6).
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

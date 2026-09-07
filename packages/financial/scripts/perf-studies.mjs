@@ -12,6 +12,11 @@ import {
   accumulationDistribution,
   aroon,
   barsSinceExtremeValues,
+  linearRegressionValues,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
   directionalMovement,
   vortex,
   atrBands,
@@ -330,6 +335,38 @@ function scaleResults(length) {
       ),
       benchmark('relativeVolatilityIndex({ 14, 10 })', () =>
         relativeVolatilityIndex(series),
+      ),
+      // The K7 regression family. The kernel is one pass with three O(1)
+      // accumulator updates and an amortised rebuild, so every entry here
+      // must be FLAT in `period` — the 14 / 200 pair is what shows that —
+      // and `linearRegression` should sit near `sma`, whose substrate is the
+      // same shape (one rolling accumulator over one column).
+      benchmark('linearRegressionValues(14) [kernel]', () =>
+        linearRegressionValues(close, 14),
+      ),
+      benchmark('linearRegressionValues(200) [kernel]', () =>
+        linearRegressionValues(close, 200),
+      ),
+      benchmark('linearRegression({ period: 14 })', () =>
+        linearRegression(series, { period: 14 }),
+      ),
+      benchmark('linearRegression({ period: 200 })', () =>
+        linearRegression(series, { period: 200 }),
+      ),
+      benchmark('timeSeriesForecast({ period: 14 })', () =>
+        timeSeriesForecast(series, { period: 14 }),
+      ),
+      benchmark('timeSeriesForecast({ period: 200 })', () =>
+        timeSeriesForecast(series, { period: 200 }),
+      ),
+      benchmark('chandeForecastOscillator({ period: 14 })', () =>
+        chandeForecastOscillator(series, { period: 14 }),
+      ),
+      benchmark('centerOfGravity({ period: 10 })', () =>
+        centerOfGravity(series, { period: 10 }),
+      ),
+      benchmark('centerOfGravity({ period: 200 })', () =>
+        centerOfGravity(series, { period: 200 }),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

@@ -27,6 +27,11 @@ export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
 export { percentChangeValues } from './kernels/rate-of-change.js';
 export { directionalMovementValues } from './kernels/directional-movement.js';
 export { barsSinceExtremeValues } from './kernels/highest-lowest.js';
+export type { RollingRegression } from './kernels/linear-regression.js';
+export {
+  linearRegressionValues,
+  linearRegressionAt,
+} from './kernels/linear-regression.js';
 export type {
   MovingAverageOptions,
   MovingAverageTypeOptions,
@@ -141,3 +146,11 @@ export type { AroonOptions } from './studies/aroon.js';
 export { aroon } from './studies/aroon.js';
 export type { VortexOptions } from './studies/vortex.js';
 export { vortex } from './studies/vortex.js';
+export type { LinearRegressionOptions } from './studies/linear-regression.js';
+export { linearRegression } from './studies/linear-regression.js';
+export type { TimeSeriesForecastOptions } from './studies/time-series-forecast.js';
+export { timeSeriesForecast } from './studies/time-series-forecast.js';
+export type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-oscillator.js';
+export { chandeForecastOscillator } from './studies/chande-forecast-oscillator.js';
+export type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
+export { centerOfGravity } from './studies/center-of-gravity.js';

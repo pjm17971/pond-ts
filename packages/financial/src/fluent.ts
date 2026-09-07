@@ -152,6 +152,14 @@ import type { AroonOptions } from './studies/aroon.js';
 import { aroon as aroonStudy } from './studies/aroon.js';
 import type { VortexOptions } from './studies/vortex.js';
 import { vortex as vortexStudy } from './studies/vortex.js';
+import type { LinearRegressionOptions } from './studies/linear-regression.js';
+import { linearRegression as linearRegressionStudy } from './studies/linear-regression.js';
+import type { TimeSeriesForecastOptions } from './studies/time-series-forecast.js';
+import { timeSeriesForecast as timeSeriesForecastStudy } from './studies/time-series-forecast.js';
+import type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-oscillator.js';
+import { chandeForecastOscillator as chandeForecastOscillatorStudy } from './studies/chande-forecast-oscillator.js';
+import type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
+import { centerOfGravity as centerOfGravityStudy } from './studies/center-of-gravity.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -425,6 +433,33 @@ declare module 'pond-ts' {
     /** Fluent Relative Volatility Index (RSI's form on σ; column `relVol`). */
     relativeVolatilityIndex<const Output extends string = 'relVol'>(
       options?: RelativeVolatilityIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent rolling linear regression (value / slope / intercept / angle / R²). */
+    linearRegression<const Prefix extends string = 'linreg'>(
+      options?: LinearRegressionOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<
+          AppendOpt<
+            AppendOpt<AppendOpt<S, `${Prefix}Value`>, `${Prefix}Slope`>,
+            `${Prefix}Intercept`
+          >,
+          `${Prefix}Angle`
+        >,
+        `${Prefix}R2`
+      >
+    >;
+    /** Fluent Time Series Forecast (the regression one bar past the window). */
+    timeSeriesForecast<const Output extends string = 'tsf'>(
+      options?: TimeSeriesForecastOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Chande Forecast Oscillator (`100·(price − TSF)/price`). */
+    chandeForecastOscillator<const Output extends string = 'cfo'>(
+      options?: ChandeForecastOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Center of Gravity (Ehlers' position-weighted balance point). */
+    centerOfGravity<const Output extends string = 'cog'>(
+      options?: CenterOfGravityOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -761,4 +796,28 @@ proto.relativeVolatilityIndex = function (
   options?: RelativeVolatilityIndexOptions<SeriesSchema, string>,
 ) {
   return relativeVolatilityIndexStudy(this, options);
+};
+proto.linearRegression = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: LinearRegressionOptions<SeriesSchema, string>,
+) {
+  return linearRegressionStudy(this, options);
+};
+proto.timeSeriesForecast = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: TimeSeriesForecastOptions<SeriesSchema, string>,
+) {
+  return timeSeriesForecastStudy(this, options);
+};
+proto.chandeForecastOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ChandeForecastOscillatorOptions<SeriesSchema, string>,
+) {
+  return chandeForecastOscillatorStudy(this, options);
+};
+proto.centerOfGravity = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: CenterOfGravityOptions<SeriesSchema, string>,
+) {
+  return centerOfGravityStudy(this, options);
 };

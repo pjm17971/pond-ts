@@ -52,6 +52,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -1617,5 +1621,125 @@ describe('[PND-STUDYBOX] the volatility tail: where the missing rows are', () =>
     expect(nullCountOf(ulcerIndex(crossesZero, { period: 2 }), 'ulcer')).toBe(
       3,
     );
+  });
+});
+
+describe('[PND-STUDYBOX] the regression family: WHERE the missing rows are', () => {
+  // A positional regressor cannot skip a cell — `x` names a position in the
+  // window, so a gap would re-index every bar after it. All four studies
+  // here therefore run the STRICT window (`wma`'s rule): a gap blanks the
+  // gap bar and the `period − 1` bars after it, and then they recover. That
+  // uniformity is the point of this block — contrast the volatility tail
+  // above, where three studies answered a gap three different ways.
+  const regSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+
+  const regBars = (closes: Array<number | undefined>) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: regSchema,
+      rows: closes.map((c, i) => [i * MINUTE, c]) as never,
+    });
+
+  const regCloses = [10, 12, 11, 15, 14, 18, 17, 21, 20, 24, 23, 27];
+  const holedCloses = [...regCloses];
+  holedCloses[5] = undefined as never;
+  const clean = regBars(regCloses);
+  const holed = regBars(holedCloses);
+
+  it('linearRegression: all five columns warm up together at period − 1', () => {
+    const out = linearRegression(clean, { period: 3 });
+    for (const name of [
+      'linregValue',
+      'linregSlope',
+      'linregIntercept',
+      'linregAngle',
+      'linregR2',
+    ]) {
+      const v = cells(out, name);
+      expect(
+        v.slice(0, 2).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(typeof v[2], name).toBe('number');
+      expect(nullCountOf(out, name), name).toBe(2);
+      expect(
+        v.some((x) => typeof x === 'number' && Number.isNaN(x)),
+        name,
+      ).toBe(false);
+    }
+  });
+
+  it('linearRegression: an interior gap blanks bars 5–7 and then recovers', () => {
+    const out = linearRegression(holed, { period: 3 });
+    for (const name of ['linregValue', 'linregSlope', 'linregR2']) {
+      const v = cells(out, name);
+      expect(typeof v[4], `${name} before the gap`).toBe('number');
+      // The gap bar and the two windows that still contain it.
+      expect(v[5], `${name} bar 5`).toBeUndefined();
+      expect(v[6], `${name} bar 6`).toBeUndefined();
+      expect(v[7], `${name} bar 7`).toBeUndefined();
+      expect(typeof v[8], `${name} recovers at 8`).toBe('number');
+      // 2 warm-up + 3 gap rows.
+      expect(nullCountOf(out, name), name).toBe(5);
+    }
+  });
+
+  it('timeSeriesForecast, cfo and cog lose exactly the same rows', () => {
+    for (const [label, out, name] of [
+      ['tsf', timeSeriesForecast(holed, { period: 3 }), 'tsf'],
+      ['cfo', chandeForecastOscillator(holed, { period: 3 }), 'cfo'],
+      ['cog', centerOfGravity(holed, { period: 3 }), 'cog'],
+    ] as const) {
+      const v = cells(out, name);
+      expect(typeof v[4], `${label} before the gap`).toBe('number');
+      expect(
+        v.slice(5, 8).every((x) => x === undefined),
+        label,
+      ).toBe(true);
+      expect(typeof v[8], `${label} recovers at 8`).toBe('number');
+      expect(nullCountOf(out, name), label).toBe(5);
+    }
+  });
+
+  it('a LEADING gap shifts the start rather than emptying the fit', () => {
+    const late = regBars([undefined, undefined, ...regCloses.slice(2)]);
+    for (const [label, out, name] of [
+      ['linreg', linearRegression(late, { period: 3 }), 'linregSlope'],
+      ['tsf', timeSeriesForecast(late, { period: 3 }), 'tsf'],
+      ['cfo', chandeForecastOscillator(late, { period: 3 }), 'cfo'],
+      ['cog', centerOfGravity(late, { period: 3 }), 'cog'],
+    ] as const) {
+      const v = cells(out, name);
+      expect(
+        v.slice(0, 4).every((x) => x === undefined),
+        label,
+      ).toBe(true);
+      expect(typeof v[4], label).toBe('number');
+      expect(
+        v.slice(4).every((x) => typeof x === 'number'),
+        label,
+      ).toBe(true);
+    }
+  });
+
+  it('the zero-denominator guards report missing, not ±Infinity', () => {
+    // Both divisions sit at their study's OUTPUT, so without the guards an
+    // Infinity would reach `withColumn`, which rejects it outright — "the
+    // study returns at all" is half the assertion here.
+    const crossesZero = regBars([3, 2, 1, 0, -1, -2]);
+    const cfo = cells(
+      chandeForecastOscillator(crossesZero, { period: 3 }),
+      'cfo',
+    );
+    expect(cfo[3]).toBeUndefined(); // the zero price
+    expect(typeof cfo[4]).toBe('number'); // a negative price still reads
+    // A window summing to exactly zero with a non-zero weighted sum.
+    const sumsToZero = regBars([5, 1, -1, 4]);
+    const cog = cells(centerOfGravity(sumsToZero, { period: 2 }), 'cog');
+    expect(cog[2]).toBeUndefined();
+    expect(typeof cog[3]).toBe('number');
   });
 });

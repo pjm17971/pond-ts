@@ -2692,6 +2692,237 @@ def relative_volatility_index(n: int, sd_n: int) -> dict:
     return {"relVol": col(v)}
 
 
+# --------------------------------------------------------------------------
+# K7: the rolling linear-regression family (corpus 6.7) plus the two studies
+# in 6.3 that hang off it.
+#
+# x runs 0..n-1 over the window with x = 0 the OLDEST bar, which is TA-Lib's
+# convention: LINEARREG_INTERCEPT is the fit at the window's FIRST bar and
+# LINEARREG is the fit at its LAST. The four TA-Lib functions are asserted
+# exactly (mask then values); R-squared has no TA-Lib equivalent (its CORREL
+# is between two series, not against the bar index) and is a pandas/numpy
+# replication.
+# --------------------------------------------------------------------------
+
+
+def _ols(values, n: int):
+    """Rolling OLS of `values` against x = 0..n-1. Returns (slope, intercept
+    at x=0, r2). The naive two-pass reference the O(N) kernel must match."""
+    y = np.asarray(values, dtype=float)
+    slope = np.full(len(y), np.nan)
+    inter = np.full(len(y), np.nan)
+    r2 = np.full(len(y), np.nan)
+    x = np.arange(n, dtype=float)
+    mx = x.mean()
+    sxx = float(((x - mx) ** 2).sum())
+    for i in range(n - 1, len(y)):
+        w = y[i - n + 1 : i + 1]
+        my = w.mean()
+        dy = w - my
+        sxy = float(((x - mx) * dy).sum())
+        syy = float((dy * dy).sum())
+        m = sxy / sxx
+        slope[i] = m
+        inter[i] = my - m * mx
+        # A flat window is a genuine 0/0 for r2 and undefined; the slope's
+        # numerator is forced to zero with it, so the slope is 0.
+        r2[i] = np.nan if syy == 0 else (sxy * sxy) / (sxx * syy)
+    return pd.Series(slope), pd.Series(inter), pd.Series(r2)
+
+
+def linear_regression(n: int) -> dict:
+    """LINEARREG / _SLOPE / _INTERCEPT / _ANGLE plus R-squared, one fit."""
+    slope, inter, r2 = _ols(closes, n)
+    value = inter + slope * (n - 1)
+    angle = pd.Series(np.degrees(np.arctan(slope.to_numpy())))
+    label = f"linearRegression({n})"
+
+    for name, v in (("value", value), ("slope", slope), ("r2", r2)):
+        assert v.first_valid_index() == n - 1, (
+            f"{label} {name} first valid at {v.first_valid_index()}, "
+            f"expected {n - 1}"
+        )
+    lo_r, hi_r = float(np.nanmin(r2)), float(np.nanmax(r2))
+    assert -1e-12 <= lo_r and hi_r <= 1 + 1e-12, (
+        f"{label} r2 left [0, 1] ({lo_r}..{hi_r})"
+    )
+    # The un-squared |correlation| is the plausible slip and lives in the same
+    # band, so the fixture has to be able to tell them apart.
+    sep_r = float(np.nanmax(np.abs(r2 - np.sqrt(r2))))
+    assert sep_r > 0.1, (
+        f"{label} r2 sits within {sep_r} of |corr| - the fixture cannot tell "
+        "the squaring apart"
+    )
+    # The intercept is the window's FIRST bar, not its last: a reader who
+    # takes it for "the line now" is off by slope*(n-1), and this is how far.
+    gap = float(np.nanmax(np.abs(value - inter)))
+    assert gap > 1.0, (
+        f"{label}: value and intercept sit within {gap} - the fixture cannot "
+        "tell the two ends of the window apart"
+    )
+
+    talib_note = "no TA-Lib cross-check (pandas only)"
+    if talib is not None:
+        c = np.asarray(closes, dtype=float)
+        worst = 0.0
+        for name, ours, ref in (
+            ("linregValue", value, pd.Series(talib.LINEARREG(c, timeperiod=n))),
+            ("linregSlope", slope, pd.Series(talib.LINEARREG_SLOPE(c, timeperiod=n))),
+            (
+                "linregIntercept",
+                inter,
+                pd.Series(talib.LINEARREG_INTERCEPT(c, timeperiod=n)),
+            ),
+            ("linregAngle", angle, pd.Series(talib.LINEARREG_ANGLE(c, timeperiod=n))),
+        ):
+            assert list(ours.isna()) == list(ref.isna()), (
+                f"{label} {name} warm-up differs from TA-Lib: ours first valid "
+                f"{ours.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+            )
+            d = float(np.nanmax(np.abs(ours - ref)))
+            assert d < 1e-9, f"{label} {name} disagrees with TA-Lib by {d}"
+            worst = max(worst, d)
+        talib_note = f"matches TA-Lib LINEARREG/_SLOPE/_INTERCEPT/_ANGLE to {worst:.3g}"
+    print(
+        f"  {label}: {talib_note}; first valid at {n - 1}, r2 in "
+        f"{lo_r:.4f}..{hi_r:.4f} ({sep_r:.3f} from |corr|), value and "
+        f"intercept up to {gap:.2f} apart"
+    )
+    return {
+        "linregValue": col(value),
+        "linregSlope": col(slope),
+        "linregIntercept": col(inter),
+        "linregAngle": col(angle),
+        "linregR2": col(r2),
+    }
+
+
+def time_series_forecast(n: int) -> dict:
+    """TA-Lib TSF: the fit projected one bar PAST the window (x = n)."""
+    slope, inter, _ = _ols(closes, n)
+    v = inter + slope * n
+    label = f"timeSeriesForecast({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    # The in-window endpoint (LINEARREG) is the off-by-one this study invites.
+    endpoint = inter + slope * (n - 1)
+    sep = float(np.nanmax(np.abs(v - endpoint)))
+    assert sep > 0.05, (
+        f"{label} sits within {sep} of the in-window endpoint (LINEARREG) - "
+        "the fixture cannot tell the projection apart"
+    )
+
+    talib_note = "no TA-Lib cross-check (pandas only)"
+    if talib is not None:
+        ref = pd.Series(talib.TSF(np.asarray(closes, dtype=float), timeperiod=n))
+        assert list(v.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{v.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        d = float(np.nanmax(np.abs(v - ref)))
+        assert d < 1e-9, f"{label} disagrees with TA-Lib TSF by {d}"
+        talib_note = f"matches TA-Lib TSF to {d:.3g} (warm-ups identical)"
+    print(
+        f"  {label}: {talib_note}; first valid at {n - 1}, {sep:.3f} from the "
+        "in-window endpoint (LINEARREG)"
+    )
+    return {"tsf": col(v)}
+
+
+def chande_forecast_oscillator(n: int) -> dict:
+    """Chande's CFO: 100*(close - TSF)/close. No TA-Lib function."""
+    slope, inter, _ = _ols(closes, n)
+    tsf = inter + slope * n
+    v = 100 * (s - tsf) / s
+    label = f"chandeForecastOscillator({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    # Subtracting the IN-WINDOW endpoint instead of the one-bar-ahead forecast
+    # is the slip: same shape, every value different.
+    wrong = 100 * (s - (inter + slope * (n - 1))) / s
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.05, (
+        f"{label} sits within {sep} of the LINEARREG-based version - the "
+        "fixture cannot tell the projection apart"
+    )
+    # Dividing by the FORECAST rather than the price is the other one.
+    by_forecast = 100 * (s - tsf) / tsf
+    sep2 = float(np.nanmax(np.abs(v - by_forecast)))
+    assert sep2 > 1e-6, (
+        f"{label} sits within {sep2} of the divide-by-forecast version"
+    )
+    assert float(np.nanmin(s)) > 0, (
+        f"{label}: the fixture has a non-positive close - the zero-price "
+        "guard would then need its own oracle note rather than a unit test"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no CFO) on the "
+        f"TA-Lib-checked TSF; first valid at {n - 1}, range "
+        f"{float(np.nanmin(v)):.4f}..{float(np.nanmax(v)):.4f}, {sep:.3f} "
+        f"from the LINEARREG-based version, {sep2:.2e} from the "
+        "divide-by-forecast version"
+    )
+    return {"cfo": col(v)}
+
+
+def center_of_gravity(n: int) -> dict:
+    """Ehlers' CG, TradingView's UNCENTRED convention: the newest bar carries
+    weight 1 and the oldest carries n, so a flat window reads -(n+1)/2."""
+    y = np.asarray(closes, dtype=float)
+    out = np.full(len(y), np.nan)
+    for i in range(n - 1, len(y)):
+        w = y[i - n + 1 : i + 1]          # oldest .. newest
+        weights = np.arange(n, 0, -1, dtype=float)  # n .. 1
+        out[i] = -float((weights * w).sum()) / float(w.sum())
+    v = pd.Series(out)
+    label = f"centerOfGravity({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert -n - 1e-9 <= lo_v and hi_v <= -1 + 1e-9, (
+        f"{label} left [-{n}, -1] ({lo_v}..{hi_v})"
+    )
+    # The weighting DIRECTION is the slip that leaves the shape intact.
+    asc = np.full(len(y), np.nan)
+    for i in range(n - 1, len(y)):
+        w = y[i - n + 1 : i + 1]
+        asc[i] = -float((np.arange(1, n + 1, dtype=float) * w).sum()) / float(w.sum())
+    sep = float(np.nanmax(np.abs(v - pd.Series(asc))))
+    # Measured against the reading's OWN spread rather than a fixed number:
+    # CG barely moves (it is a balance point, not a price), so an absolute
+    # threshold would be arbitrary at one period and unreachable at another.
+    # What matters is that the wrong direction is further away than the whole
+    # range the right one covers -- which holds at every period on this
+    # fixture, and by a margin that grows with it (0.049 vs a 0.045 spread at
+    # n = 5, 0.173 vs 0.162 at n = 10, 0.515 vs 0.458 at n = 20).
+    spread = hi_v - lo_v
+    assert sep > spread, (
+        f"{label} sits {sep} from the ascending-weight (oldest lightest) "
+        f"reading, inside its own {spread} spread - the fixture cannot tell "
+        "the direction apart"
+    )
+    # Ehlers' own EasyLanguage adds (n+1)/2 to re-centre on zero; we ship
+    # TradingView's uncentred form, and the offset is exactly that constant.
+    centred = v + (n + 1) / 2
+    offset = float(np.nanmax(np.abs((centred - v) - (n + 1) / 2)))
+    assert offset < 1e-12, f"{label}: the centring offset is not constant"
+    print(
+        f"  {label}: pandas replication (TA-Lib has no CG); first valid at "
+        f"{n - 1}, range {lo_v:.4f}..{hi_v:.4f} (flat would read "
+        f"{-(n + 1) / 2}), {sep:.3f} from the ascending-weight reading "
+        f"against its own {spread:.3f} spread; "
+        f"Ehlers' centred form is exactly {(n + 1) / 2} higher"
+    )
+    return {"cog": col(v)}
+
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -3095,6 +3326,46 @@ cases = [
     {"study": "aroon", "params": {"period": 5}, "expected": aroon(5)},
     {"study": "vortex", "params": {"period": 14}, "expected": vortex(14)},
     {"study": "vortex", "params": {"period": 6}, "expected": vortex(6)},
+    {
+        "study": "linearRegression",
+        "params": {"period": 14},
+        "expected": linear_regression(14),
+    },
+    {
+        "study": "linearRegression",
+        "params": {"period": 5},
+        "expected": linear_regression(5),
+    },
+    {
+        "study": "timeSeriesForecast",
+        "params": {"period": 14},
+        "expected": time_series_forecast(14),
+    },
+    {
+        "study": "timeSeriesForecast",
+        "params": {"period": 5},
+        "expected": time_series_forecast(5),
+    },
+    {
+        "study": "chandeForecastOscillator",
+        "params": {"period": 14},
+        "expected": chande_forecast_oscillator(14),
+    },
+    {
+        "study": "chandeForecastOscillator",
+        "params": {"period": 5},
+        "expected": chande_forecast_oscillator(5),
+    },
+    {
+        "study": "centerOfGravity",
+        "params": {"period": 10},
+        "expected": center_of_gravity(10),
+    },
+    {
+        "study": "centerOfGravity",
+        "params": {"period": 5},
+        "expected": center_of_gravity(5),
+    },
 ]
 
 out = {
@@ -3409,6 +3680,45 @@ out = {
                 "Scale-ADDITIVE rather than scale-invariant: scaling every "
                 "price by k shifts the reading by exactly ln(k)/ln(n), which "
                 "the generator asserts. n must be >= 2"
+            ),
+            "linearRegression": (
+                "one rolling OLS fit of the column against the bar index "
+                "x = 0..n-1 with x = 0 the OLDEST bar (TA-Lib's convention), "
+                "default 14, five columns off it: linregValue = the fit at "
+                "x = n-1 (TA-Lib LINEARREG), linregSlope (LINEARREG_SLOPE), "
+                "linregIntercept = the fit at x = 0, i.e. the window's FIRST "
+                "bar (LINEARREG_INTERCEPT), linregAngle = degrees(atan(slope)) "
+                "(LINEARREG_ANGLE - SCALE-DEPENDENT, TA-Lib applies no "
+                "normalisation) and linregR2 = corr(x, y)^2, which TA-Lib has "
+                "no function for. The four TA-Lib readings are asserted exact, "
+                "mask and values; all five warm up together at n-1. A flat "
+                "window: slope 0 (the numerator is forced to zero) but r2 null "
+                "(a genuine 0/0)"
+            ),
+            "timeSeriesForecast": (
+                "intercept + slope*period - the same fit projected one bar "
+                "PAST the window (x = n), default 14; cross-checked against "
+                "TA-Lib TSF, mask and values. Deliberately NOT a member of the "
+                "K2 MaType menu: every type there is the identity at period 1 "
+                "and a one-bar window has no slope"
+            ),
+            "chandeForecastOscillator": (
+                "100 * (close - TSF)/close, default 14 (Tushar Chande); "
+                "pandas replication on the TA-Lib-checked TSF - no TA-Lib CFO "
+                "exists - first valid at n-1, separated from the version that "
+                "subtracts the IN-WINDOW endpoint (LINEARREG) and from the "
+                "divide-by-forecast version. A zero price reads null (the "
+                "division is at the output, so the guard is live)"
+            ),
+            "centerOfGravity": (
+                "-sum((k+1)*close[i-k], k = 0..n-1) / sum(close[i-k]), "
+                "default 10 (John Ehlers, Stocks & Commodities May 2002). The "
+                "NEWEST bar carries weight 1, so the reading is negative and a "
+                "flat window balances at -(n+1)/2; this is TradingView's "
+                "ta.cog convention, not Ehlers' own EasyLanguage, which adds "
+                "(n+1)/2 to re-centre on zero (a constant offset, asserted). "
+                "pandas replication - no TA-Lib CG - first valid at n-1, "
+                "bounded [-n, -1], separated from the ascending-weight reading"
             ),
             "relativeVolatilityIndex": (
                 "100*U/(U+D) where U = Wilder(sigma on up bars, period), "

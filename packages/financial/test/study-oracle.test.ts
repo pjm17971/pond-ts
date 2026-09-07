@@ -68,6 +68,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -345,6 +349,14 @@ function run(c: OracleCase): unknown {
       return aroon(ohlcSeries(), p as { period?: number });
     case 'vortex':
       return vortex(ohlcSeries(), p as { period?: number });
+    case 'linearRegression':
+      return linearRegression(series(), p as { period?: number });
+    case 'timeSeriesForecast':
+      return timeSeriesForecast(series(), p as { period?: number });
+    case 'chandeForecastOscillator':
+      return chandeForecastOscillator(series(), p as { period?: number });
+    case 'centerOfGravity':
+      return centerOfGravity(series(), p as { period?: number });
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.
