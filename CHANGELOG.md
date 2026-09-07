@@ -146,9 +146,88 @@ column, output = 'stc' })`** — Doug Schaff's STC: a stochastic of the MACD,
     there are no period options (the `kst` decision). **Warm-up 724 bars** —
     a series shorter than 725 comes back entirely `undefined`, with the row
     count preserved.
-
-### Added
-
+- `@pond-ts/financial`: **the prime studies and Bill Williams' Market
+  Facilitation Index** (corpus §6.2 / §6.3 / §6.6) — three per-bar studies with
+  no window, no warm-up and no parameters beyond their column names.
+  - **`primeNumberBands({ high?, low?, prefix = 'pnb' })`** → `pnbUpper`,
+    `pnbLower` — the smallest prime at or above the bar's high and the largest
+    at or below its low, so the bands **contain** the bar. A step function of
+    the price _level_: it holds flat inside a prime gap and jumps across one,
+    and two instruments at the same price have identical bands.
+  - **`primeNumberOscillator({ column = 'close', output = 'pno' })`** —
+    `price − nearestPrime(price)`, positive when the price sits above the prime
+    nearest it and exactly `0` when it **is** an integer prime. Both open
+    conventions are pinned: the sign is `price − prime`, and an **equidistant
+    tie goes to the lower prime** (so `pno(6) = +1`).
+  - Both: **a price below 2 is outside the domain** and reads `undefined` — two
+    is the smallest prime, so there is nothing to bracket with. **Neither is
+    scale- nor shift-equivariant**, and the property tests assert that
+    _absence_ rather than skipping the check. **Cost grows with the price
+    magnitude**, the only operators in the package that do: measured at 1M
+    bars, ~78 ms and ~55 ms at ordinary equity prices and **~6.5 s each at
+    ~1e7**. There is no sieve; the kernel documents why and what would change
+    it.
+  - **`marketFacilitationIndex({ high?, low?, volume?, output = 'bwmfi' })`** —
+    Bill Williams' `(high − low) / volume`, the raw ratio with **no `scale`
+    option** (no vendor constant is standard, unlike `easeOfMovement`'s
+    published `100_000_000`). The default output is **`bwmfi`, not `mfi`**:
+    `moneyFlowIndex` — a different indicator published under the same
+    abbreviation — already owns that name, and both must be able to sit on one
+    series. A zero-volume bar reads `undefined`; a flat bar reads `0`.
+- `@pond-ts/financial`: **the bands and channels tail** (corpus §6.2) — four
+  studies in the uniform shape, each with oracle cases and a fluent method.
+  - **`starcBands({ period = 20, atrPeriod = 15, multiplier = 2, maType =
+'sma', high?, low?, close?, prefix = 'starc' })`** → `starcMiddle`,
+    `starcUpper`, `starcLower` — Manning Stoller's channel: a moving average
+    of the **close** with bands a multiple of the ATR away. The close-centred
+    sibling of `keltner` (typical-price centre) and of `atrBands` (bands
+    around an existing column, no centre). It **is** `movingAverage` followed
+    by `atrBands` around that average, pinned bit-for-bit by a test; it ships
+    for the name and the centre column. Per-column warm-up: centre at the
+    MA's own bar, bands at `max(centre, ATR)`.
+  - **`highLowBands({ period = 10, percent = 1, maType = 'trima', high?, low?,
+prefix = 'hlb' })`** → `hlbMiddle`, `hlbUpper`, `hlbLower` — a moving
+    average of the **median price** with bands `± percent`. It **is**
+    `envelope` over a `medianPrice` column, pinned bit-for-bit.
+  - **`bollingerBandwidth({ period = 20, stdDev = 2, column?, output =
+'bbWidth' })`** — `100·(upper − lower)/middle`, the **×100** StockCharts /
+    ChartIQ form rather than Bollinger's bare ratio. A **flat window reads
+    `0`**, not `undefined`: the numerator is `2·stdDev·σ`, forced to zero,
+    over a non-zero centre — so on a flat stretch it is deliberately **not**
+    recoverable from `bollinger`'s (missing) band columns, while everywhere
+    else it is bit-for-bit.
+  - **`bollingerPercentB({ period = 20, stdDev = 2, column?, output =
+'percentB' })`** — `(price − lower)/(upper − lower)`, the **decimal** form
+    (`0` = lower band, `1` = upper), unbounded so an out-of-band price still
+    reads. A flat window is a genuine `0/0` and reads `undefined` — the
+    opposite answer from BandWidth's on the same window, and the clearest
+    illustration of the "is the numerator _forced_ to zero?" test.
+- `@pond-ts/financial`: **the K3 price transforms and Balance of Power**
+  (corpus §6.8) — five studies in the uniform shape (each bar-column named by
+  its own option defaulting to its `DEFAULT_OHLCV` name, an `output`, a
+  fluent method), all five **exact** against TA-Lib bar-for-bar.
+  - **`typicalPrice({ high?, low?, close?, output = 'typicalPrice' })`**
+    (`(h+l+c)/3`, TA-Lib `TYPPRICE`),
+    **`medianPrice({ high?, low?, output = 'medianPrice' })`** (`(h+l)/2`,
+    `MEDPRICE`),
+    **`weightedClose({ high?, low?, close?, output = 'weightedClose' })`**
+    (`(h+l+2c)/4`, `WCLPRICE`) and
+    **`averagePrice({ open?, high?, low?, close?, output = 'averagePrice' })`**
+    (`(o+h+l+c)/4`, `AVGPRICE`). These are the per-bar summaries `vwap`, `cci`,
+    `mfi`, `keltner` and the Awesome Oscillator derive privately, now available
+    as **columns** so a caller can chart one or run another study over it
+    (`sma({ column: 'typicalPrice' })`). **No warm-up at all** — a bar's own
+    prices are all any of them reads, so bar 0 carries a value.
+  - **`balanceOfPower({ period?, maType?, open?, high?, low?, close?, output =
+'bop' })`** — Igor Livshin's `(close − open) / (high − low)`, the body over
+    the range, bounded −1…1. **Raw by default** (exact against TA-Lib `BOP`);
+    the optional `period` is ChartIQ's smoothed form over the shared `MaType`
+    menu. **F-AMBIG** — both conventions are published, and the one an oracle
+    can pin ships as the default. Passing `maType` without a `period` **throws**
+    rather than silently doing nothing. A **flat bar reads `0`, not
+    `undefined`**: a bar with no range traded at one price, so the numerator is
+    forced to zero (the `clvValues` rule from the volume group), which is
+    TA-Lib's answer too.
 - `@pond-ts/financial`: **the moving-average stacks and the smoothed-momentum
   tail** (corpus §6.1 / §6.3) — seven studies in the uniform shape (a `column`
   plus an `output` or `prefix`, bar-count periods, a length-preserving

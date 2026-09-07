@@ -76,6 +76,18 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
   stochasticMomentumIndex,
   fisherTransform,
   schaffTrendCycle,
@@ -1260,5 +1272,163 @@ describe('fluent: the momentum and trend leftovers', () => {
       col(two, 'slowHigh')[40]!,
       6,
     );
+  });
+});
+
+describe('fluent: the price transforms and Balance of Power', () => {
+  const ohlcBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c - 0.5 * Math.cos(i / 1.7),
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.5 - 0.6 * Math.abs(Math.cos(i / 2.5)),
+          c,
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('all four transforms chain and match the standalone functions', () => {
+    const chained = ohlcBars()
+      .typicalPrice()
+      .medianPrice()
+      .weightedClose()
+      .averagePrice();
+    const standalone = averagePrice(
+      weightedClose(medianPrice(typicalPrice(ohlcBars()))),
+    );
+    for (const name of [
+      'typicalPrice',
+      'medianPrice',
+      'weightedClose',
+      'averagePrice',
+    ]) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).every((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('balanceOfPower through the fluent door equals the standalone, raw and smoothed', () => {
+    const raw = ohlcBars().balanceOfPower();
+    expect(col(raw, 'bop')).toEqual(col(balanceOfPower(ohlcBars()), 'bop'));
+    const smoothed = ohlcBars().balanceOfPower({
+      period: 5,
+      maType: 'ema',
+      output: 'bopSlow',
+    });
+    expect(col(smoothed, 'bopSlow')).toEqual(
+      col(
+        balanceOfPower(ohlcBars(), {
+          period: 5,
+          maType: 'ema',
+          output: 'bopSlow',
+        }),
+        'bopSlow',
+      ),
+    );
+    // …and the two are genuinely different lines.
+    expect(col(raw, 'bop')[30]).not.toBeCloseTo(
+      col(smoothed, 'bopSlow')[30]!,
+      6,
+    );
+  });
+
+  it('the bands tail chains and matches the standalone functions', () => {
+    const chained = ohlcBars()
+      .starcBands({ period: 8, atrPeriod: 5 })
+      .highLowBands({ period: 6, percent: 2 })
+      .bollingerBandwidth({ period: 10 })
+      .bollingerPercentB({ period: 10 });
+    const standalone = bollingerPercentB(
+      bollingerBandwidth(
+        highLowBands(starcBands(ohlcBars(), { period: 8, atrPeriod: 5 }), {
+          period: 6,
+          percent: 2,
+        }),
+        { period: 10 },
+      ),
+      { period: 10 },
+    );
+    for (const name of [
+      'starcMiddle',
+      'starcUpper',
+      'starcLower',
+      'hlbMiddle',
+      'hlbUpper',
+      'hlbLower',
+      'bbWidth',
+      'percentB',
+    ]) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('honours prefix through the fluent door on both band families', () => {
+    const two = ohlcBars()
+      .starcBands({ period: 5 })
+      .starcBands({ period: 25, prefix: 'starcSlow' });
+    expect(col(two, 'starcMiddle')[35]).not.toBeCloseTo(
+      col(two, 'starcSlowMiddle')[35]!,
+      6,
+    );
+  });
+
+  it('the prime studies and Bill Williams’ MFI chain and match the standalones', () => {
+    const withVolume = () =>
+      new TimeSeries({
+        name: 'bars',
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'high', kind: 'number' },
+          { name: 'low', kind: 'number' },
+          { name: 'close', kind: 'number' },
+          { name: 'volume', kind: 'number' },
+        ] as const,
+        rows: Array.from({ length: 40 }, (_, i) => {
+          const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+          return [i, c + 0.5, c - 0.5, c, 1000 + 100 * (i % 7)];
+        }) as Array<[number, number, number, number, number]>,
+      });
+    const chained = withVolume()
+      .primeNumberBands()
+      .primeNumberOscillator()
+      .marketFacilitationIndex();
+    const standalone = marketFacilitationIndex(
+      primeNumberOscillator(primeNumberBands(withVolume())),
+    );
+    for (const name of ['pnbUpper', 'pnbLower', 'pno', 'bwmfi']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).every((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('a transform composes into a downstream study through the chain', () => {
+    // The reason these studies append a COLUMN: another study can then read
+    // it. `sma({ column: 'typicalPrice' })` is the whole point.
+    const chained = ohlcBars()
+      .typicalPrice()
+      .sma({ period: 5, column: 'typicalPrice', output: 'tpSma' });
+    expect(col(chained, 'tpSma')[4]).toBeDefined();
+    expect(col(chained, 'tpSma')[3]).toBeUndefined();
   });
 });

@@ -200,6 +200,37 @@ export {
 } from './studies/volume-index.js';
 export type { KlingerOptions } from './studies/klinger.js';
 export { klinger } from './studies/klinger.js';
+export type {
+  PriceTransformOptions,
+  AveragePriceOptions,
+} from './studies/price-transform.js';
+export {
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+} from './studies/price-transform.js';
+export type { BalanceOfPowerOptions } from './studies/balance-of-power.js';
+export { balanceOfPower } from './studies/balance-of-power.js';
+export type { StarcBandsOptions } from './studies/starc-bands.js';
+export { starcBands } from './studies/starc-bands.js';
+export type { HighLowBandsOptions } from './studies/high-low-bands.js';
+export { highLowBands } from './studies/high-low-bands.js';
+export type { BollingerDerivedOptions } from './studies/bollinger-derived.js';
+export {
+  bollingerBandwidth,
+  bollingerPercentB,
+} from './studies/bollinger-derived.js';
+export type {
+  PrimeNumberBandsOptions,
+  PrimeNumberOscillatorOptions,
+} from './studies/prime-number.js';
+export {
+  primeNumberBands,
+  primeNumberOscillator,
+} from './studies/prime-number.js';
+export type { MarketFacilitationIndexOptions } from './studies/market-facilitation-index.js';
+export { marketFacilitationIndex } from './studies/market-facilitation-index.js';
 export type { StochasticMomentumIndexOptions } from './studies/stochastic-momentum-index.js';
 export { stochasticMomentumIndex } from './studies/stochastic-momentum-index.js';
 export type { FisherTransformOptions } from './studies/fisher-transform.js';

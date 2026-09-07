@@ -1283,7 +1283,15 @@ pandas-oracle-verified) have shipped. Plan:
   multi-horizon window, shipped `O(N·period)` on a kernel of its own), `ravi`,
   `trendIntensityIndex` and `specialK` — whose 724-bar warm-up is why the
   oracle fixture now carries a second, 900-bar close-only input.
-  **Eighty-three studies shipped.** What remains of the corpus is the
+  Batch six's second half added the **bands and price-transform tail**
+  (§6.2/§6.8): `typicalPrice`, `medianPrice`, `weightedClose`,
+  `averagePrice` and `balanceOfPower` (all TA-Lib exact), `starcBands`,
+  `highLowBands` (spelled `percent` like `envelope`), `bollingerBandwidth`
+  and `bollingerPercentB` (one rolling pass each, cheaper than `bollinger`),
+  `primeNumberBands` / `primeNumberOscillator` (trial division; ~6.5 s per
+  1M bars at 1e7 prices, documented) and Bill Williams'
+  `marketFacilitationIndex` (output `bwmfi` — `mfi` is money flow).
+  **Ninety-five studies shipped.** What remains of the corpus is the
   repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
   live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /

@@ -201,6 +201,37 @@ import {
 } from './studies/volume-index.js';
 import type { KlingerOptions } from './studies/klinger.js';
 import { klinger as klingerStudy } from './studies/klinger.js';
+import type {
+  PriceTransformOptions,
+  AveragePriceOptions,
+} from './studies/price-transform.js';
+import {
+  typicalPrice as typicalPriceStudy,
+  medianPrice as medianPriceStudy,
+  weightedClose as weightedCloseStudy,
+  averagePrice as averagePriceStudy,
+} from './studies/price-transform.js';
+import type { BalanceOfPowerOptions } from './studies/balance-of-power.js';
+import { balanceOfPower as balanceOfPowerStudy } from './studies/balance-of-power.js';
+import type { StarcBandsOptions } from './studies/starc-bands.js';
+import { starcBands as starcBandsStudy } from './studies/starc-bands.js';
+import type { HighLowBandsOptions } from './studies/high-low-bands.js';
+import { highLowBands as highLowBandsStudy } from './studies/high-low-bands.js';
+import type { BollingerDerivedOptions } from './studies/bollinger-derived.js';
+import {
+  bollingerBandwidth as bollingerBandwidthStudy,
+  bollingerPercentB as bollingerPercentBStudy,
+} from './studies/bollinger-derived.js';
+import type {
+  PrimeNumberBandsOptions,
+  PrimeNumberOscillatorOptions,
+} from './studies/prime-number.js';
+import {
+  primeNumberBands as primeNumberBandsStudy,
+  primeNumberOscillator as primeNumberOscillatorStudy,
+} from './studies/prime-number.js';
+import type { MarketFacilitationIndexOptions } from './studies/market-facilitation-index.js';
+import { marketFacilitationIndex as marketFacilitationIndexStudy } from './studies/market-facilitation-index.js';
 import type { StochasticMomentumIndexOptions } from './studies/stochastic-momentum-index.js';
 import { stochasticMomentumIndex as stochasticMomentumIndexStudy } from './studies/stochastic-momentum-index.js';
 import type { FisherTransformOptions } from './studies/fisher-transform.js';
@@ -688,6 +719,64 @@ declare module 'pond-ts' {
     specialK<const Output extends string = 'specialK'>(
       options?: SpecialKOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent typical price — `(high + low + close) / 3`. */
+    typicalPrice<const Output extends string = 'typicalPrice'>(
+      options?: PriceTransformOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent median price — `(high + low) / 2`. */
+    medianPrice<const Output extends string = 'medianPrice'>(
+      options?: PriceTransformOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent weighted close — `(high + low + 2·close) / 4`. */
+    weightedClose<const Output extends string = 'weightedClose'>(
+      options?: PriceTransformOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent average price — `(open + high + low + close) / 4`. */
+    averagePrice<const Output extends string = 'averagePrice'>(
+      options?: AveragePriceOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Balance of Power — `(close − open) / (high − low)`. */
+    balanceOfPower<const Output extends string = 'bop'>(
+      options?: BalanceOfPowerOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent STARC Bands — MA(close) ± multiplier·ATR. */
+    starcBands<const Prefix extends string = 'starc'>(
+      options?: StarcBandsOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, `${Prefix}Middle`>, `${Prefix}Upper`>,
+        `${Prefix}Lower`
+      >
+    >;
+    /** Fluent High Low Bands — MA(median price) × (1 ± shift%). */
+    highLowBands<const Prefix extends string = 'hlb'>(
+      options?: HighLowBandsOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOpt<
+        AppendOpt<AppendOpt<S, `${Prefix}Middle`>, `${Prefix}Upper`>,
+        `${Prefix}Lower`
+      >
+    >;
+    /** Fluent Bollinger BandWidth — `100·(upper − lower)/middle`. */
+    bollingerBandwidth<const Output extends string = 'bbWidth'>(
+      options?: BollingerDerivedOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Bollinger %B — `(price − lower)/(upper − lower)`. */
+    bollingerPercentB<const Output extends string = 'percentB'>(
+      options?: BollingerDerivedOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Prime Number Bands — the primes bracketing each bar. */
+    primeNumberBands<const Prefix extends string = 'pnb'>(
+      options?: PrimeNumberBandsOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Upper`>, `${Prefix}Lower`>>;
+    /** Fluent Prime Number Oscillator — `price − nearestPrime(price)`. */
+    primeNumberOscillator<const Output extends string = 'pno'>(
+      options?: PrimeNumberOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Market Facilitation Index — `(high − low)/volume`. */
+    marketFacilitationIndex<const Output extends string = 'bwmfi'>(
+      options?: MarketFacilitationIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
 
@@ -1107,6 +1196,78 @@ proto.klinger = function (
   options?: KlingerOptions<SeriesSchema, string>,
 ) {
   return klingerStudy(this, options);
+};
+proto.typicalPrice = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceTransformOptions<SeriesSchema, string>,
+) {
+  return typicalPriceStudy(this, options);
+};
+proto.medianPrice = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceTransformOptions<SeriesSchema, string>,
+) {
+  return medianPriceStudy(this, options);
+};
+proto.weightedClose = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PriceTransformOptions<SeriesSchema, string>,
+) {
+  return weightedCloseStudy(this, options);
+};
+proto.averagePrice = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AveragePriceOptions<SeriesSchema, string>,
+) {
+  return averagePriceStudy(this, options);
+};
+proto.balanceOfPower = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: BalanceOfPowerOptions<SeriesSchema, string>,
+) {
+  return balanceOfPowerStudy(this, options);
+};
+proto.starcBands = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: StarcBandsOptions<SeriesSchema, string>,
+) {
+  return starcBandsStudy(this, options);
+};
+proto.highLowBands = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: HighLowBandsOptions<SeriesSchema, string>,
+) {
+  return highLowBandsStudy(this, options);
+};
+proto.bollingerBandwidth = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: BollingerDerivedOptions<SeriesSchema, string>,
+) {
+  return bollingerBandwidthStudy(this, options);
+};
+proto.bollingerPercentB = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: BollingerDerivedOptions<SeriesSchema, string>,
+) {
+  return bollingerPercentBStudy(this, options);
+};
+proto.primeNumberBands = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PrimeNumberBandsOptions<SeriesSchema, string>,
+) {
+  return primeNumberBandsStudy(this, options);
+};
+proto.primeNumberOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PrimeNumberOscillatorOptions<SeriesSchema, string>,
+) {
+  return primeNumberOscillatorStudy(this, options);
+};
+proto.marketFacilitationIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: MarketFacilitationIndexOptions<SeriesSchema, string>,
+) {
+  return marketFacilitationIndexStudy(this, options);
 };
 proto.guppy = function (
   this: TimeSeries<SeriesSchema>,

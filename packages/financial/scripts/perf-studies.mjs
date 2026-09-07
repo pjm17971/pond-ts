@@ -90,11 +90,28 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
 } from '../dist/index.js';
 
 const PERIOD = 20;
 
-function makeBars(length) {
+/** `priceScale` multiplies every price column and leaves volume alone. It
+ *  exists for the two prime studies, whose per-bar cost is the only one in
+ *  this package that grows with the MAGNITUDE of the data rather than its
+ *  length — a 1x and a 1e5x run are what make that growth visible instead
+ *  of assumed. Every other benchmark uses the default 1. */
+function makeBars(length, priceScale = 1) {
   const time = new Float64Array(length);
   const open = new Float64Array(length);
   const high = new Float64Array(length);
@@ -113,13 +130,13 @@ function makeBars(length) {
   for (let i = 0; i < length; i += 1) {
     time[i] = 1_700_000_000_000 + i * 60_000;
     px += Math.sin(i * 0.001) * 0.3 + ((i * 2654435761) % 97) / 970 - 0.05;
-    close[i] = px;
+    close[i] = px * priceScale;
     // The open leans off the close by a varying amount, so the candle body
     // QStick averages changes sign rather than being a constant offset.
-    open[i] = px - 0.25 * Math.cos(i / 3.1);
+    open[i] = (px - 0.25 * Math.cos(i / 3.1)) * priceScale;
     // Varying half-widths, so the range studies never see a flat window.
-    high[i] = px + 0.2 + 0.3 * Math.abs(Math.sin(i / 4));
-    low[i] = px - 0.2 - 0.3 * Math.abs(Math.cos(i / 3));
+    high[i] = (px + 0.2 + 0.3 * Math.abs(Math.sin(i / 4))) * priceScale;
+    low[i] = (px - 0.2 - 0.3 * Math.abs(Math.cos(i / 3))) * priceScale;
     volume[i] = 1_000 + ((i * 40_503) % 5_000);
     bx += Math.sin(i * 0.001) * 0.18 + ((i * 40_503) % 89) / 890 - 0.05;
     benchmark[i] = bx;
@@ -214,6 +231,8 @@ function scaleResults(length) {
   // `benchmarkColumn`, not `benchmark` — the local `benchmark()` timing
   // helper below owns that name.
   const { series, close, benchmark: benchmarkColumn } = makeBars(length);
+  // ~1e7 prices, for the two prime studies whose cost grows with magnitude.
+  const pricesX1e5 = makeBars(length, 1e5).series;
   return {
     length,
     results: [
@@ -511,6 +530,67 @@ function scaleResults(length) {
       benchmark('negativeVolumeIndex()', () => negativeVolumeIndex(series)),
       benchmark('positiveVolumeIndex()', () => positiveVolumeIndex(series)),
       benchmark('klinger({ 34, 55, 13 })', () => klinger(series)),
+      // The K3 price transforms (corpus 6.8). Each is ONE per-bar pass over
+      // two to four columns and a `withColumn`, with no window and no
+      // recursion — the cheapest study shape in the package. They are the
+      // floor every other bar study pays on top of, so they should read
+      // close to the hand-rolled reference, not to `sma()`.
+      benchmark('typicalPrice()', () => typicalPrice(series)),
+      benchmark('medianPrice()', () => medianPrice(series)),
+      benchmark('weightedClose()', () => weightedClose(series)),
+      benchmark('averagePrice()', () => averagePrice(series)),
+      // Balance of Power: the same shape plus a division and the flat-bar
+      // branch (raw), then one K2 engine call on the derived array
+      // (smoothed) — so the pair shows what the optional smoothing costs.
+      benchmark('balanceOfPower() [raw]', () => balanceOfPower(series)),
+      benchmark('balanceOfPower({ period: 14 })', () =>
+        balanceOfPower(series, { period: 14 }),
+      ),
+      // The bands tail (corpus 6.2). `starcBands` is one MA plus one ATR
+      // plus two adds, so it should read as `keltner` less the typical
+      // price; `highLowBands` is a median price, one MA and two multiplies,
+      // so it should read near `envelope`. The two Bollinger derivatives
+      // run the SAME avg+stdev rolling pass `bollinger` makes and then one
+      // per-row division, so each should sit just above `bollinger()` — a
+      // number materially higher would mean the σ was being computed twice.
+      benchmark('starcBands({ 20, 15, 2, sma })', () => starcBands(series)),
+      benchmark('highLowBands({ 10, 1%, trima })', () => highLowBands(series)),
+      benchmark('bollingerBandwidth({ period: 20 })', () =>
+        bollingerBandwidth(series),
+      ),
+      benchmark('bollingerPercentB({ period: 20 })', () =>
+        bollingerPercentB(series),
+      ),
+      // Bill Williams' MFI is a range and a division — the same shape as the
+      // price transforms, so it should read with them.
+      benchmark('marketFacilitationIndex()', () =>
+        marketFacilitationIndex(series),
+      ),
+      // The prime studies. These are the ONLY operators in the package whose
+      // per-bar cost depends on the MAGNITUDE of the data: primality is
+      // trial division to √n and the search walks the local prime gap, so
+      // both grow roughly as √p / log p. The 1x / 1e5x pairs below are the
+      // measurement of that, not a formality — `pricesX1e5` puts the series
+      // at ~1e7, the top of the range the corpus assessment names.
+      // The 1e7 entries run FEWER repeats on purpose: at 1M bars each pass
+      // is seconds, and five of them would make this script's runtime about
+      // the two of them. Three samples is enough to read an 80x gap.
+      benchmark('primeNumberBands() [price ~1e2]', () =>
+        primeNumberBands(series),
+      ),
+      benchmark(
+        'primeNumberBands() [price ~1e7]',
+        () => primeNumberBands(pricesX1e5),
+        3,
+      ),
+      benchmark('primeNumberOscillator() [price ~1e2]', () =>
+        primeNumberOscillator(series),
+      ),
+      benchmark(
+        'primeNumberOscillator() [price ~1e7]',
+        () => primeNumberOscillator(pricesX1e5),
+        3,
+      ),
       // The momentum and trend leftovers (assessment 6.3 / 6.4 / 6.1).
       // Everything here is a compose-only study except `randomWalkIndex`,
       // whose kernel is the one deliberately O(N·period) walk in the batch:
