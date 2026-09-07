@@ -70,6 +70,62 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the K6 stateful-fold kernel and the state-machine
+  studies** (corpus §6.4 / §6.6, gap **G2**) — one new public kernel and six
+  studies in the uniform shape (`column` / `output` or a `prefix`, bar-count
+  periods, a length-preserving warm-up, a fluent method), each with oracle
+  cases.
+  - **`foldRows(inputs, outputCount, state, step)`** (kernel **K6**,
+    [PND-SFOLD]) — a per-bar fold with carried state over several row-aligned
+    `Float64Array` columns, the one shape the rolling kernels and core's
+    single-column `scan` cannot express. One O(N·k) pass, outputs allocated
+    and **NaN-filled** by the kernel, the state object the study's own and
+    mutated in place — no per-bar allocation. Exported with its `FoldStep`
+    type. Measured at 1M bars: **11.3 ms** for a two-column fold over a no-op
+    step, against `ema()`'s 6.3 ms and a 5.2 ms floor for the same scan with
+    no callback.
+    - **A missing cell RESETS the machine.** The step is offered only complete
+      rows, with `run` = how many consecutive complete rows end here; an
+      incomplete row leaves the outputs `undefined` and restarts `run` at 1.
+      The alternative — holding the state across the gap — was rejected: a
+      Parabolic SAR that did not see a bar cannot know whether it flipped, and
+      a recursion carried on the wrong side never recovers. `run` doubles as
+      the seeded flag, which is why there is no separate `seed` hook.
+  - **`parabolicSar({ step = 0.02, maxStep = 0.2, high?, low?, prefix = 'psar' })`**
+    → `psar` + `psarTrend` — Wilder's stop-and-reverse, **bar-for-bar
+    identical to TA-Lib `SAR`** (measured 0.0 maximum absolute difference at
+    `(0.02, 0.2)`, `(0.05, 0.5)` and `(0.01, 0.1)`, masks identical, first
+    value at bar 1). The three prose-ambiguous details — the `−DM` seed side,
+    the first bar's "yesterday is today" clamp, and the clamp against the last
+    two bars on a reversal — are pinned to TA-Lib's reading and **probed**
+    against it in the oracle generator.
+  - **`superTrend({ period = 10, multiplier = 3, high?, low?, close?, prefix = 'st' })`**
+    → `st` + `stTrend` — Olivier Seban's ratcheting ATR band, as TradingView's
+    `ta.supertrend` implements it, on the same Wilder `atrValues` `atr` and
+    `keltner` read. The two bands are **not** emitted: `st` already is
+    whichever one is live.
+  - **`atrTrailingStop({ period = 14, multiplier = 3, high?, low?, close?, prefix = 'ats' })`**
+    → `ats` + `atsTrend` — the close-anchored ratcheting stop (Vervoort's).
+    The **Chandelier** anchor (rolling extreme rather than the close) is a
+    different study, reachable as `donchian` + `atr`, and deliberately not a
+    knob here.
+  - **`negativeVolumeIndex` / `positiveVolumeIndex`
+    (`{ column = 'close', volume?, output = 'nvi' | 'pvi', start = 1000 }`)** —
+    Fosback's conditional cumulative indices. No period and no warm-up. A
+    **flat volume holds on both**, so the two do not partition the bars; a
+    zero previous close ends the index rather than inventing a level.
+  - **`klinger({ fastPeriod = 34, slowPeriod = 55, signalPeriod = 13, high?, low?, close?, volume?, prefix = 'kvo' })`**
+    → `kvo` + `kvoSignal` — Klinger's **original** volume force
+    (`volume × |2 × (dm/cm − 1)| × trend × 100`, with `cm` accumulating over
+    the trend leg) through an EMA pair plus a signal EMA. **F-AMBIG**:
+    TradingView's `ta.kvo`, which drops the `dm/cm` factor entirely, is a
+    different indicator sharing the name and is documented rather than offered
+    as an option.
+  - **The three stop machines append `${prefix}` and `${prefix}Trend`**, the
+    value under the bare prefix rather than `${prefix}Line`, with `+1` meaning
+    the line sits **below** price. The side is a separate column because it is
+    not recoverable from the value — all three clamp, so the line can print
+    exactly on an extreme or on the close.
 - `@pond-ts/financial`: **the rolling linear-regression family** (corpus §6.7,
   plus the two §6.3 studies that hang off it) — one new public kernel and four
   studies in the uniform shape (a `column` / `output` or `prefix`, bar-count

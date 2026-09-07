@@ -66,6 +66,12 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -6839,9 +6845,10 @@ describe('the two-series oracle cases are in the fixture', () => {
         'utf8',
       ),
     ) as { cases: Array<{ study: string }> };
-    // 119 cases before this batch + 7. A case that silently disappears takes
-    // its study's only value check with it, and nothing else would notice.
-    expect(fixture.cases).toHaveLength(134);
+    // 119 cases before the two-series batch, + 7 there, + 10 for the K6
+    // state machines. A case that silently disappears takes its study's only
+    // value check with it, and nothing else would notice.
+    expect(fixture.cases).toHaveLength(144);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -6850,5 +6857,617 @@ describe('the two-series oracle cases are in the fixture', () => {
     expect(counts.get('beta')).toBe(2);
     expect(counts.get('priceRelative')).toBe(1);
     expect(counts.get('performanceIndex')).toBe(2);
+    expect(counts.get('parabolicSar')).toBe(2);
+    expect(counts.get('superTrend')).toBe(2);
+    expect(counts.get('atrTrailingStop')).toBe(2);
+    expect(counts.get('negativeVolumeIndex')).toBe(1);
+    expect(counts.get('positiveVolumeIndex')).toBe(1);
+    expect(counts.get('klinger')).toBe(2);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* K6 — the stateful row fold ([PND-SFOLD]) and its five studies.              */
+/*                                                                             */
+/* One shared fixture: `workedBars`' five bars plus two that break the up-leg, */
+/* so every machine here reverses at least once on it. Derived quantities,     */
+/* all hand-computed and re-checked against TA-Lib / a pandas replication      */
+/* (scratchpad/sfold-unit-values.py):                                          */
+/*                                                                             */
+/*  i  h     l     c    v    TR   ATR(2)                                       */
+/*  0  10    8     9    100   –      –                                         */
+/*  1  12    9     11   200   3      –                                         */
+/*  2  11    7     8    300   4    3.5                                         */
+/*  3  13    10    12   400   5    4.25                                        */
+/*  4  13.5  10.5  13   500   3    3.625                                       */
+/*  5  10    6     7    600   7    5.3125                                      */
+/*  6  9     5     6    700   4    4.65625                                     */
+/* -------------------------------------------------------------------------- */
+
+const k6Rows: Array<[number, number, number]> = [
+  [10, 8, 9],
+  [12, 9, 11],
+  [11, 7, 8],
+  [13, 10, 12],
+  [13.5, 10.5, 13],
+  [10, 6, 7],
+  [9, 5, 6],
+];
+const k6Volumes = [100, 200, 300, 400, 500, 600, 700];
+const k6Bars = () => hlcBars(k6Rows);
+const k6Ohlcv = () =>
+  ohlcv(k6Rows.map(([h, l, c], i) => [h, l, c, k6Volumes[i]!]));
+
+describe('parabolicSar', () => {
+  // Hand-worked at step = maxStep = 0.5, so the acceleration factor is pinned
+  // at 0.5 from the first bar and every advance is exactly halfway to the
+  // extreme point. Highs 10,12,13,11,10,12,14 / lows 8,9,10,7,6,9,11:
+  //
+  //  seed  bar 1: −DM = low[0]−low[1] = −1, not > 0, so the side opens LONG;
+  //               ep = high[1] = 12, sar = low[0] = 8.
+  //  bar 1 print 8; advance 8 + 0.5·(12−8) = 10, clamped to prevLow 9.
+  //  bar 2 print 9; new high 13 → ep = 13; advance 9 + 0.5·(13−9) = 11,
+  //               clamped to prevLow 9.
+  //  bar 3 low 7 ≤ sar 9 → REVERSE: print the up-leg's ep, 13, trend −1.
+  //  bar 4 print 13 (13 ≥ high 10, no reverse); ep → low 6.
+  //  bar 5 high 12 ≥ sar 11 → REVERSE: print the down-leg's ep, 6, trend +1.
+  //  bar 6 print 6.
+  const sarHigh = [10, 12, 13, 11, 10, 12, 14];
+  const sarLow = [8, 9, 10, 7, 6, 9, 11];
+  const sarBars = () =>
+    hlcBars(sarHigh.map((h, i) => [h, sarLow[i]!, (h + sarLow[i]!) / 2]));
+
+  it('is Wilder’s stop-and-reverse, hand-computed, reversing twice', () => {
+    const r = parabolicSar(sarBars(), { step: 0.5, maxStep: 0.5 });
+    expect(col(r, 'psar')).toEqual([undefined, 8, 9, 13, 13, 6, 6]);
+    expect(col(r, 'psarTrend')).toEqual([undefined, 1, 1, -1, -1, 1, 1]);
+  });
+
+  it('the acceleration cap binds: a smaller maxStep moves the numbers', () => {
+    // Same data, af capped at 0.02 instead of climbing to 0.5 — the advance
+    // is 25× slower, so the first reversal lands on a different bar.
+    const fast = col(
+      parabolicSar(sarBars(), { step: 0.5, maxStep: 0.5 }),
+      'psarTrend',
+    );
+    const slow = col(
+      parabolicSar(sarBars(), { step: 0.02, maxStep: 0.02 }),
+      'psarTrend',
+    );
+    expect(slow).not.toEqual(fast);
+  });
+
+  it('opens SHORT when the low fell further than the high rose (the −DM seed)', () => {
+    // Bar 1 here moves the low down 1.0 and the high up only 0.2, so Wilder's
+    // −DM is positive and TA-Lib opens the machine SHORT — sar = high[0] = 10,
+    // which bar 1's high of 10.2 immediately takes out, printing the down-leg's
+    // ep (low[1] = 8). A machine that always seeded LONG would print low[0] = 9
+    // advanced to 10.2 instead. Both readings are measured against `talib.SAR`
+    // (scratchpad/sfold-survivor-values.py); this fixture is the one that
+    // separates them, and the oracle's own input opens long, so nothing else
+    // would notice.
+    const bars = hlcBars(
+      [10, 10.2, 10.3, 10.4, 10.1, 9.7, 9.9].map(
+        (h, i) =>
+          [h, [9, 8, 8.1, 8.2, 8, 7.6, 7.8][i]!, h - 0.05] as [
+            number,
+            number,
+            number,
+          ],
+      ),
+    );
+    const v = col(parabolicSar(bars), 'psar');
+    expect(v[1]).toBeCloseTo(8, 12); // short seed → the ep, not 10.2
+    expect(v[2]).toBeCloseTo(8, 12);
+    expect(v[4]).toBeCloseTo(10.4, 12);
+    expect(v[6]).toBeCloseTo(10.288, 12);
+  });
+
+  it('a low landing exactly ON the stop reverses (the ≤ tie)', () => {
+    // With step = maxStep = 0.5 the stop sits at exactly 9 going into bar 3,
+    // whose low is also exactly 9. TA-Lib's test is `low <= sar`, so it
+    // reverses and prints the up-leg's ep (13); a `<` would print 9 and stay
+    // long. Measured against `talib.SAR` on this fixture.
+    const tie = hlcBars([
+      [10, 8, 9],
+      [12, 9, 11],
+      [13, 10, 12],
+      [11, 9, 10],
+    ]);
+    const r = parabolicSar(tie, { step: 0.5, maxStep: 0.5 });
+    expect(col(r, 'psar')).toEqual([undefined, 8, 9, 13]);
+    expect(col(r, 'psarTrend')).toEqual([undefined, 1, 1, -1]);
+  });
+
+  it('has a one-bar warm-up on both columns and keeps the row count', () => {
+    const r = parabolicSar(k6Bars());
+    expect(col(r, 'psar')).toHaveLength(7);
+    expect(col(r, 'psar')[0]).toBeUndefined();
+    expect(col(r, 'psarTrend')[0]).toBeUndefined();
+    expect(col(r, 'psar')[1]).toBeDefined();
+    expect(col(r, 'psarTrend')[1]).toBeDefined();
+  });
+
+  it('the trend column is only ever +1 or −1', () => {
+    const t = col(parabolicSar(wavyOhlc()), 'psarTrend').slice(1);
+    expect(t.every((x) => x === 1 || x === -1)).toBe(true);
+    expect(new Set(t)).toEqual(new Set([1, -1]));
+  });
+
+  it('reads only high and low — the close plays no part', () => {
+    const moved = k6Rows.map(([h, l]) => [h, l, h] as [number, number, number]);
+    expect(col(parabolicSar(hlcBars(moved)), 'psar')).toEqual(
+      col(parabolicSar(k6Bars()), 'psar'),
+    );
+  });
+
+  it('defaults to the `psar` prefix; honours a custom one and the inputs', () => {
+    const named = parabolicSar(k6Bars(), {
+      prefix: 'sar',
+      high: 'high',
+      low: 'low',
+    });
+    expect(col(named, 'sar')[3]).toBeDefined();
+    expect(col(named, 'sarTrend')[3]).toBeDefined();
+    expect(
+      col(parabolicSar(k6Bars(), { low: 'nope' as never }), 'psar').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a bad step / maxStep and a colliding prefix column', () => {
+    const b = k6Bars();
+    expect(() => parabolicSar(b, { step: 0 })).toThrow(TypeError);
+    expect(() => parabolicSar(b, { step: -0.02 })).toThrow(/step/);
+    expect(() => parabolicSar(b, { maxStep: 0 })).toThrow(/maxStep/);
+    expect(() => parabolicSar(b, { maxStep: Infinity })).toThrow(/maxStep/);
+    expect(() => parabolicSar(b, { step: 0.5, maxStep: 0.2 })).toThrow(
+      /at least step/,
+    );
+    const once = parabolicSar(b);
+    expect(() => parabolicSar(once as never)).toThrow(/collides/);
+  });
+
+  it('a one-bar series is all-undefined, length kept, and does not throw', () => {
+    const r = parabolicSar(hlcBars([[10, 8, 9]]));
+    expect(col(r, 'psar')).toEqual([undefined]);
+    expect(col(r, 'psarTrend')).toEqual([undefined]);
+  });
+});
+
+describe('superTrend', () => {
+  it('ratchets the bands and flips on the close, hand-computed', () => {
+    // period 2, multiplier 1, so the band half-width IS the ATR above:
+    //  bar 2 seed: mid 9, half 3.5 → bands 5.5 / 12.5; the side opens DOWN
+    //              (TradingView's seed), so the line is the UPPER band 12.5.
+    //  bar 3: mid 11.5, half 4.25 → basic 7.25 / 15.75. The upper does not
+    //         ratchet (15.75 > 12.5, and the previous close 8 did not close
+    //         through 12.5); close 12 ≤ 12.5, still down → 12.5.
+    //  bar 4: mid 12, half 3.625 → basic 8.375 / 15.625; upper still 12.5;
+    //         close 13 > 12.5 → FLIP up, line = the lower band 8.375.
+    //  bar 5: mid 8, half 5.3125 → basic 2.6875 / 13.3125. The lower band
+    //         releases (previous close 13 > … no) — 2.6875 < 8.375 so it
+    //         holds at 8.375; close 7 < 8.375 → FLIP down, line = upper.
+    //         The upper released because the previous close 13 closed above
+    //         it, so it is the basic 13.3125.
+    //  bar 6: mid 7, half 4.65625 → basic 2.34375 / 11.65625; the upper
+    //         ratchets down to 11.65625; close 6 ≤ it, still down.
+    const r = superTrend(k6Bars(), { period: 2, multiplier: 1 });
+    const line = col(r, 'st');
+    const trend = col(r, 'stTrend');
+    expect(line[0]).toBeUndefined();
+    expect(line[1]).toBeUndefined();
+    expect(line[2]).toBeCloseTo(12.5, 12);
+    expect(line[3]).toBeCloseTo(12.5, 12);
+    expect(line[4]).toBeCloseTo(8.375, 12);
+    expect(line[5]).toBeCloseTo(13.3125, 12);
+    expect(line[6]).toBeCloseTo(11.65625, 12);
+    expect(trend).toEqual([undefined, undefined, -1, -1, 1, -1, -1]);
+  });
+
+  it('the line is always the LIVE band, so it sits on the right side of price', () => {
+    const r = superTrend(wavyOhlc(), { period: 5, multiplier: 2 });
+    const line = col(r, 'st');
+    const trend = col(r, 'stTrend');
+    const close = col(wavyOhlc(), 'close');
+    for (let i = 0; i < line.length; i += 1) {
+      if (line[i] === undefined) continue;
+      // Up ⇒ the line is the lower band and is at or below the close; down ⇒
+      // the upper band, at or above it. This is what makes the second column
+      // a drawing instruction rather than a decoration.
+      if (trend[i] === 1)
+        expect(line[i]!, `bar ${i}`).toBeLessThanOrEqual(close[i]!);
+      else expect(line[i]!, `bar ${i}`).toBeGreaterThanOrEqual(close[i]!);
+    }
+  });
+
+  it('the ratchet only tightens while the side holds', () => {
+    const r = superTrend(wavyOhlc(), { period: 5, multiplier: 2 });
+    const line = col(r, 'st');
+    const trend = col(r, 'stTrend');
+    for (let i = 1; i < line.length; i += 1) {
+      if (line[i] === undefined || line[i - 1] === undefined) continue;
+      if (trend[i] !== trend[i - 1]) continue;
+      if (trend[i] === 1)
+        expect(line[i]!, `bar ${i}`).toBeGreaterThanOrEqual(line[i - 1]!);
+      else expect(line[i]!, `bar ${i}`).toBeLessThanOrEqual(line[i - 1]!);
+    }
+  });
+
+  it('a close landing exactly ON the lower band HOLDS the up side (the tie)', () => {
+    // period 1 makes the ATR the bar's own true range, and multiplier 0.25
+    // puts the ratcheted lower band at exactly 17 on bar 3 — which is also
+    // that bar's close. The test is `not (close < lower)`, so the side holds
+    // up and the line stays on the lower band; a `close > lower` would flip
+    // down and print the upper band (19) instead.
+    const tie = hlcBars([
+      [11, 9, 10],
+      [12, 8, 10],
+      [20, 18, 20],
+      [20, 16, 17],
+    ]);
+    const r = superTrend(tie, { period: 1, multiplier: 0.25 });
+    expect(col(r, 'st')).toEqual([undefined, 11, 16.5, 17]);
+    expect(col(r, 'stTrend')).toEqual([undefined, -1, 1, 1]);
+  });
+
+  it('warms up on the ATR’s first bar, both columns together', () => {
+    const r = superTrend(wavyOhlc(), { period: 6 });
+    const line = col(r, 'st');
+    expect(line.slice(0, 6).every((x) => x === undefined)).toBe(true);
+    expect(line[6]).toBeDefined();
+    expect(col(r, 'stTrend')[6]).toBe(-1); // the seed side is DOWN
+    expect(
+      col(r, 'stTrend')
+        .slice(0, 6)
+        .every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('honours the prefix, the multiplier and the input names', () => {
+    const wide = superTrend(k6Bars(), {
+      period: 2,
+      multiplier: 2,
+      prefix: 'sup',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    // Twice the half-width: the seed's upper band is mid + 2·3.5 = 16.
+    expect(col(wide, 'sup')[2]).toBeCloseTo(16, 12);
+    expect(col(wide, 'supTrend')[2]).toBe(-1);
+    expect(
+      col(superTrend(k6Bars(), { high: 'nope' as never }), 'st').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a bad period / multiplier and a colliding prefix column', () => {
+    const b = k6Bars();
+    expect(() => superTrend(b, { period: 0 })).toThrow(TypeError);
+    expect(() => superTrend(b, { period: 2.5 })).toThrow(TypeError);
+    expect(() => superTrend(b, { period: 2, multiplier: 0 })).toThrow(
+      /multiplier/,
+    );
+    expect(() => superTrend(b, { period: 2, multiplier: NaN })).toThrow(
+      /multiplier/,
+    );
+    const once = superTrend(b, { period: 2 });
+    expect(() => superTrend(once as never, { period: 2 })).toThrow(/collides/);
+  });
+
+  it('is all-undefined when the period exceeds the series, length kept', () => {
+    const r = superTrend(k6Bars(), { period: 9 });
+    expect(col(r, 'st')).toHaveLength(7);
+    expect(col(r, 'st').every((x) => x === undefined)).toBe(true);
+    expect(col(r, 'stTrend').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('atrTrailingStop', () => {
+  it('ratchets the stop and flips on the close, hand-computed', () => {
+    // period 2, multiplier 1, so d IS the ATR above:
+    //  bar 2 seed LONG: 8 − 3.5 = 4.5.
+    //  bar 3: close 12 and previous close 8 are both above 4.5 → ratchet up,
+    //         max(4.5, 12 − 4.25) = 7.75.
+    //  bar 4: max(7.75, 13 − 3.625) = 9.375.
+    //  bar 5: close 7 < 9.375 but the PREVIOUS close 13 was above it, so this
+    //         is the crossing case → flip short at 7 + 5.3125 = 12.3125.
+    //  bar 6: both closes below → ratchet down, min(12.3125, 6 + 4.65625).
+    const r = atrTrailingStop(k6Bars(), { period: 2, multiplier: 1 });
+    const stop = col(r, 'ats');
+    expect(stop[0]).toBeUndefined();
+    expect(stop[1]).toBeUndefined();
+    expect(stop[2]).toBeCloseTo(4.5, 12);
+    expect(stop[3]).toBeCloseTo(7.75, 12);
+    expect(stop[4]).toBeCloseTo(9.375, 12);
+    expect(stop[5]).toBeCloseTo(12.3125, 12);
+    expect(stop[6]).toBeCloseTo(10.65625, 12);
+    expect(col(r, 'atsTrend')).toEqual([undefined, undefined, 1, 1, 1, -1, -1]);
+  });
+
+  it('the stop only ever moves towards price while the side holds', () => {
+    const r = atrTrailingStop(wavyOhlc(), { period: 5, multiplier: 2 });
+    const stop = col(r, 'ats');
+    const trend = col(r, 'atsTrend');
+    for (let i = 1; i < stop.length; i += 1) {
+      if (stop[i] === undefined || stop[i - 1] === undefined) continue;
+      if (trend[i] !== trend[i - 1]) continue;
+      if (trend[i] === 1)
+        expect(stop[i]!, `bar ${i}`).toBeGreaterThanOrEqual(stop[i - 1]!);
+      else expect(stop[i]!, `bar ${i}`).toBeLessThanOrEqual(stop[i - 1]!);
+    }
+  });
+
+  it('a close landing exactly ON the stop flips SHORT (the `otherwise` tie)', () => {
+    // period 1 makes the ATR the bar's own true range: the seed stop is
+    // 10 − 4 = 6, and bar 2's close is exactly 6. Neither ratchet branch
+    // applies (`c > prev` and `c < prev` are both false) and the third needs a
+    // strict `c > prev`, so the fourth — `otherwise` — runs: the stop flips
+    // short to 6 + 5 = 11. A `c >= prev` in the third branch would flip LONG
+    // to 6 − 5 = 1 instead.
+    const tie = hlcBars([
+      [11, 9, 10],
+      [12, 8, 10],
+      [7, 5, 6],
+    ]);
+    const r = atrTrailingStop(tie, { period: 1, multiplier: 1 });
+    expect(col(r, 'ats')).toEqual([undefined, 6, 11]);
+    expect(col(r, 'atsTrend')).toEqual([undefined, 1, -1]);
+  });
+
+  it('warms up on the ATR’s first bar and seeds LONG', () => {
+    const r = atrTrailingStop(wavyOhlc(), { period: 6 });
+    expect(
+      col(r, 'ats')
+        .slice(0, 6)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(r, 'ats')[6]).toBeDefined();
+    expect(col(r, 'atsTrend')[6]).toBe(1);
+  });
+
+  it('honours the prefix, the multiplier and the input names', () => {
+    const wide = atrTrailingStop(k6Bars(), {
+      period: 2,
+      multiplier: 2,
+      prefix: 'stop',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    expect(col(wide, 'stop')[2]).toBeCloseTo(8 - 2 * 3.5, 12);
+    expect(col(wide, 'stopTrend')[2]).toBe(1);
+    expect(
+      col(atrTrailingStop(k6Bars(), { close: 'nope' as never }), 'ats').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a bad period / multiplier and a colliding prefix column', () => {
+    const b = k6Bars();
+    expect(() => atrTrailingStop(b, { period: 0 })).toThrow(TypeError);
+    expect(() => atrTrailingStop(b, { period: 2, multiplier: -1 })).toThrow(
+      /multiplier/,
+    );
+    const once = atrTrailingStop(b, { period: 2 });
+    expect(() => atrTrailingStop(once as never, { period: 2 })).toThrow(
+      /collides/,
+    );
+  });
+});
+
+describe('negativeVolumeIndex / positiveVolumeIndex', () => {
+  // closes 100 → 110 → 121 → 99 → 108.9, volumes 500, 400, 400, 600, 300.
+  //  bar 1: volume fell → NVI compounds +10% → 1100; PVI holds.
+  //  bar 2: volume UNCHANGED → both hold, even though the close rose 10%.
+  //  bar 3: volume rose → PVI compounds 99/121 → 818.18…; NVI holds.
+  //  bar 4: volume fell → NVI compounds +10% → 1210; PVI holds.
+  const viCloses = [100, 110, 121, 99, 108.9];
+  const viVolumes = [500, 400, 400, 600, 300];
+  const viBars = () => cv(viCloses, viVolumes);
+
+  it('compounds only on its own side of the volume change, hand-computed', () => {
+    const nvi = col(negativeVolumeIndex(viBars()), 'nvi');
+    const pvi = col(positiveVolumeIndex(viBars()), 'pvi');
+    expect(nvi[0]).toBe(1000);
+    expect(nvi[1]).toBeCloseTo(1100, 10);
+    expect(nvi[2]).toBeCloseTo(1100, 10);
+    expect(nvi[3]).toBeCloseTo(1100, 10);
+    expect(nvi[4]).toBeCloseTo(1210, 10);
+    expect(pvi[0]).toBe(1000);
+    expect(pvi[1]).toBe(1000);
+    expect(pvi[2]).toBe(1000);
+    expect(pvi[3]).toBeCloseTo(99000 / 121, 10);
+    expect(pvi[4]).toBeCloseTo(99000 / 121, 10);
+  });
+
+  it('an UNCHANGED volume holds on both indices — they do not partition bars', () => {
+    // Bar 2 has the same volume as bar 1 and an 10% close move. A PVI written
+    // with `>=` would compound it to 1100; Fosback's strict `>` holds.
+    expect(col(positiveVolumeIndex(viBars()), 'pvi')[2]).toBe(1000);
+    expect(col(negativeVolumeIndex(viBars()), 'nvi')[2]).toBeCloseTo(1100, 10);
+  });
+
+  it('has no warm-up: bar 0 is the base, and the base is a knob', () => {
+    expect(col(negativeVolumeIndex(cv([5], [42])), 'nvi')).toEqual([1000]);
+    const based = negativeVolumeIndex(viBars(), { start: 100 });
+    expect(col(based, 'nvi')[0]).toBe(100);
+    expect(col(based, 'nvi')[4]).toBeCloseTo(121, 10);
+  });
+
+  it('a zero previous close ends the index rather than inventing a level', () => {
+    // The division is at the OUTPUT, so the guard is live; and because the
+    // recursion multiplies, the undefined carries to the end on its own.
+    const v = col(
+      negativeVolumeIndex(cv([100, 0, 50, 60], [500, 400, 300, 200])),
+      'nvi',
+    );
+    expect(v[0]).toBe(1000);
+    expect(v[1]).toBe(0);
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined();
+  });
+
+  it('the zero-base guard is LIVE: without it the index would read ±Infinity', () => {
+    // The companion to the case above, and the one that makes the guard
+    // testable. Here the zero close arrives on a bar the index HOLDS (volume
+    // rose, so NVI does not compound it), so the level is still 1000 when the
+    // next bar divides by it. `1000 · (1 + 50/0)` is `Infinity`, not `NaN` —
+    // an infinity is a number to `withColumn`, so it would reach a reader as
+    // a value rather than as a gap.
+    const v = col(
+      negativeVolumeIndex(cv([100, 0, 50, 60], [400, 500, 300, 200])),
+      'nvi',
+    );
+    expect(v[0]).toBe(1000);
+    expect(v[1]).toBe(1000); // held: volume rose
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined();
+  });
+
+  it('honours output, column and volume; a misnamed input reads all-missing', () => {
+    const named = negativeVolumeIndex(viBars(), {
+      output: 'smart',
+      column: 'close',
+      volume: 'volume',
+    });
+    expect(col(named, 'smart')[4]).toBeCloseTo(1210, 10);
+    expect(
+      col(
+        positiveVolumeIndex(viBars(), { volume: 'nope' as never }),
+        'pvi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('rejects a non-positive start and a colliding output column', () => {
+    const b = viBars();
+    expect(() => negativeVolumeIndex(b, { start: 0 })).toThrow(/start/);
+    expect(() => positiveVolumeIndex(b, { start: -1 })).toThrow(/start/);
+    expect(() => negativeVolumeIndex(b, { start: NaN })).toThrow(/start/);
+    const once = negativeVolumeIndex(b);
+    expect(() => negativeVolumeIndex(once as never)).toThrow(/collides/);
+  });
+});
+
+describe('klinger', () => {
+  it('is the trend-state volume force through two EMAs, hand-computed', () => {
+    // dm = high − low; cm accumulates dm while the HLC-sum trend holds and
+    // re-bases on dm[i−1] + dm[i] when it turns (which is also the seed):
+    //  bar 1: HLC 32 > 27 → +1 (a turn from "unset") → cm = 2 + 3 = 5;
+    //         vf = 200·|2·(3/5 − 1)|·(+1)·100 = 16000.
+    //  bar 2: HLC 26 < 32 → −1, a turn → cm = 3 + 4 = 7;
+    //         vf = 300·|2·(4/7 − 1)|·(−1)·100 = −180000/7.
+    //  bar 3: HLC 35 > 26 → +1, a turn → cm = 4 + 3 = 7;
+    //         vf = 400·(8/7)·100 = 320000/7.
+    //  bar 4: HLC 37 > 35 → +1, held → cm = 7 + 3 = 10;
+    //         vf = 500·1.4·100 = 70000.
+    // Then EMA(2) − EMA(3) of that, both on pond's first-sample seed, so the
+    // line lands at bar 3 (= slowPeriod) and the signal at bar 4.
+    const r = klinger(k6Ohlcv(), {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      signalPeriod: 2,
+    });
+    const line = col(r, 'kvo');
+    const signal = col(r, 'kvoSignal');
+    expect(line.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    expect(line[3]).toBeCloseTo(6111.111111111111, 6);
+    expect(line[4]).toBeCloseTo(10298.9417989418, 6);
+    expect(signal.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(signal[4]).toBeCloseTo(8902.99823633157, 6);
+  });
+
+  it('warms up per column: the line at slowPeriod, the signal signal−1 later', () => {
+    const r = klinger(
+      ohlcv(wavyBars(60).map(([h, l, c], i) => [h, l, c, 1000 + 10 * i])),
+      {
+        fastPeriod: 3,
+        slowPeriod: 8,
+        signalPeriod: 4,
+      },
+    );
+    const line = col(r, 'kvo');
+    const signal = col(r, 'kvoSignal');
+    expect(line.slice(0, 8).every((x) => x === undefined)).toBe(true);
+    expect(line[8]).toBeDefined();
+    expect(signal.slice(0, 11).every((x) => x === undefined)).toBe(true);
+    expect(signal[11]).toBeDefined();
+  });
+
+  it('a leg of zero-range bars is a genuine 0/0, not a forced zero', () => {
+    // dm = 0 on every bar, so cm = 0 too — and |2·(dm/cm − 1)| is 2 at
+    // dm/cm = 0 and 0 at dm/cm = 1, so the numerator does NOT force the
+    // answer. Undefined, and the EMAs carry it.
+    const flat = ohlcv([
+      [10, 10, 10, 100],
+      [10, 10, 11, 200],
+      [10, 10, 12, 300],
+      [10, 10, 13, 400],
+    ]);
+    const r = klinger(flat, { fastPeriod: 2, slowPeriod: 3, signalPeriod: 2 });
+    expect(col(r, 'kvo').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('an UNCHANGED HLC sum is a DOWN bar, not an up one', () => {
+    // Bars 0 and 1 both sum to 27, so the trend flag is decided by the
+    // comparison's strictness alone. Strict `>` reads bar 1 as −1, which
+    // makes bar 2 a trend CHANGE and re-bases cm on dm[1] + dm[2] = 6;
+    // a `>=` would read +1, hold the trend, and accumulate cm to 8 —
+    // different force, different oscillator.
+    //   vf[1] = 300·|2·(4/6) − 2|·(−1)·100 = −20000
+    //   vf[2] = 200·|2·(2/6) − 2|·(+1)·100 = 80000/3
+    //   EMA(1) is the identity, EMA(2) seeds on vf[1]:
+    //   kvo[2] = 80000/3 − (2/3·80000/3 + 1/3·−20000) = 140000/9
+    const flat = ohlcv([
+      [10, 8, 9, 100],
+      [11, 7, 9, 300],
+      [12, 10, 11, 200],
+    ]);
+    const r = klinger(flat, { fastPeriod: 1, slowPeriod: 2, signalPeriod: 1 });
+    expect(col(r, 'kvo')[2]).toBeCloseTo(140000 / 9, 6);
+  });
+
+  it('honours the prefix and the four input names', () => {
+    const named = klinger(k6Ohlcv(), {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      signalPeriod: 2,
+      prefix: 'klg',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      volume: 'volume',
+    });
+    expect(col(named, 'klg')[3]).toBeCloseTo(6111.111111111111, 6);
+    expect(col(named, 'klgSignal')[4]).toBeCloseTo(8902.99823633157, 6);
+    expect(
+      col(
+        klinger(k6Ohlcv(), {
+          fastPeriod: 2,
+          slowPeriod: 3,
+          volume: 'nope' as never,
+        }),
+        'kvo',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('rejects bad periods, fast ≥ slow, and a colliding prefix column', () => {
+    const b = k6Ohlcv();
+    expect(() => klinger(b, { fastPeriod: 0 })).toThrow(TypeError);
+    expect(() => klinger(b, { slowPeriod: 1.5 })).toThrow(TypeError);
+    expect(() => klinger(b, { signalPeriod: -1 })).toThrow(TypeError);
+    expect(() => klinger(b, { fastPeriod: 10, slowPeriod: 10 })).toThrow(
+      /shorter than slowPeriod/,
+    );
+    const once = klinger(b, { fastPeriod: 2, slowPeriod: 3, signalPeriod: 2 });
+    expect(() =>
+      klinger(once as never, { fastPeriod: 2, slowPeriod: 3, signalPeriod: 2 }),
+    ).toThrow(/collides/);
   });
 });

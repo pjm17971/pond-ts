@@ -65,6 +65,13 @@ import {
   trix,
   vwap,
   williamsR,
+  foldRows,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../dist/index.js';
 
 const PERIOD = 20;
@@ -422,6 +429,35 @@ function scaleResults(length) {
           { minSamples: PERIOD },
         ),
       ),
+      // The K6 stateful fold ([PND-SFOLD]). The bare kernel is one finite
+      // test per input cell plus one call per complete row, so the two-column
+      // entry is the floor every state machine pays and should read near
+      // `ema()` (~2.5 ms), not near `sma()`. `parabolicSar` is that floor plus
+      // its own arithmetic and TWO output columns; `superTrend` and
+      // `atrTrailingStop` add one `atrValues` pass each (true range + Wilder),
+      // so they should read as fold + `atr()`. `klinger` pays the fold, two
+      // EMA passes over the derived force and a third over the line.
+      benchmark('foldRows(2 cols, no-op) [bare kernel]', () =>
+        foldRows([close, benchmarkColumn], 1, null, () => {}),
+      ),
+      benchmark('foldRows(4 cols, no-op) [bare kernel]', () =>
+        foldRows(
+          [close, benchmarkColumn, close, benchmarkColumn],
+          1,
+          null,
+          () => {},
+        ),
+      ),
+      benchmark('parabolicSar()', () => parabolicSar(series)),
+      benchmark('superTrend({ period: 10, multiplier: 3 })', () =>
+        superTrend(series),
+      ),
+      benchmark('atrTrailingStop({ period: 14, multiplier: 3 })', () =>
+        atrTrailingStop(series),
+      ),
+      benchmark('negativeVolumeIndex()', () => negativeVolumeIndex(series)),
+      benchmark('positiveVolumeIndex()', () => positiveVolumeIndex(series)),
+      benchmark('klinger({ 34, 55, 13 })', () => klinger(series)),
     ],
   };
 }

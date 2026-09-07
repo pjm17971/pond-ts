@@ -62,6 +62,12 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -887,5 +893,115 @@ describe('fluent two-series family (corpus §6.7)', () => {
       .correlation({ benchmark: 'bench', period: 5 })
       .correlation({ benchmark: 'bench', period: 20, output: 'corrSlow' });
     expect(col(two, 'corr')[25]).not.toBeCloseTo(col(two, 'corrSlow')[25]!, 6);
+  });
+});
+
+describe('fluent K6 state machines ([PND-SFOLD])', () => {
+  const k6Bars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [
+          i,
+          c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          c - 0.4 - 0.6 * Math.abs(Math.cos(i / 2.4)),
+          c,
+          1000 + 130 * ((i * 7) % 5),
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('chains all six and matches the standalone functions bar for bar', () => {
+    const fluent = k6Bars()
+      .parabolicSar({ step: 0.02, maxStep: 0.2 })
+      .superTrend({ period: 6, multiplier: 2 })
+      .atrTrailingStop({ period: 6, multiplier: 2 })
+      .negativeVolumeIndex()
+      .positiveVolumeIndex()
+      .klinger({ fastPeriod: 4, slowPeriod: 9, signalPeriod: 3 });
+    const functional = klinger(
+      positiveVolumeIndex(
+        negativeVolumeIndex(
+          atrTrailingStop(
+            superTrend(parabolicSar(k6Bars(), { step: 0.02, maxStep: 0.2 }), {
+              period: 6,
+              multiplier: 2,
+            }),
+            { period: 6, multiplier: 2 },
+          ),
+        ),
+      ),
+      { fastPeriod: 4, slowPeriod: 9, signalPeriod: 3 },
+    );
+    for (const name of [
+      'psar',
+      'psarTrend',
+      'st',
+      'stTrend',
+      'ats',
+      'atsTrend',
+      'nvi',
+      'pvi',
+      'kvo',
+      'kvoSignal',
+    ]) {
+      const v = col(fluent, name);
+      expect(v, name).toEqual(col(functional, name));
+      expect(
+        v.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('passes the options through, not just the defaults', () => {
+    // A mount that dropped the options object would still produce numbers.
+    const slowSar = k6Bars().parabolicSar({ step: 0.01, maxStep: 0.02 });
+    const fastSar = k6Bars().parabolicSar({
+      step: 0.2,
+      maxStep: 0.4,
+      prefix: 'fast',
+    });
+    expect(col(slowSar, 'psar')[40]).not.toBeCloseTo(
+      col(fastSar, 'fast')[40]!,
+      6,
+    );
+    const tight = k6Bars().superTrend({ period: 5, multiplier: 1 });
+    const wide = k6Bars().superTrend({
+      period: 5,
+      multiplier: 4,
+      prefix: 'wide',
+    });
+    expect(col(tight, 'st')[40]).not.toBeCloseTo(col(wide, 'wide')[40]!, 6);
+    const nearStop = k6Bars().atrTrailingStop({ period: 5, multiplier: 1 });
+    const farStop = k6Bars().atrTrailingStop({
+      period: 5,
+      multiplier: 4,
+      prefix: 'far',
+    });
+    expect(col(nearStop, 'ats')[40]).not.toBeCloseTo(
+      col(farStop, 'far')[40]!,
+      6,
+    );
+    const based = k6Bars().negativeVolumeIndex({ start: 500, output: 'nvi5' });
+    expect(col(based, 'nvi5')[0]).toBe(500);
+    const fastKvo = k6Bars().klinger({ fastPeriod: 3, slowPeriod: 7 });
+    const slowKvo = k6Bars().klinger({
+      fastPeriod: 10,
+      slowPeriod: 21,
+      prefix: 'kvo2',
+    });
+    expect(col(fastKvo, 'kvo')[50]).not.toBeCloseTo(
+      col(slowKvo, 'kvo2')[50]!,
+      6,
+    );
   });
 });

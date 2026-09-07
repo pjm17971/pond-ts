@@ -164,3 +164,18 @@ export type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-
 export { chandeForecastOscillator } from './studies/chande-forecast-oscillator.js';
 export type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
 export { centerOfGravity } from './studies/center-of-gravity.js';
+export type { FoldStep } from './kernels/fold.js';
+export { foldRows } from './kernels/fold.js';
+export type { ParabolicSarOptions } from './studies/parabolic-sar.js';
+export { parabolicSar } from './studies/parabolic-sar.js';
+export type { SuperTrendOptions } from './studies/super-trend.js';
+export { superTrend } from './studies/super-trend.js';
+export type { AtrTrailingStopOptions } from './studies/atr-trailing-stop.js';
+export { atrTrailingStop } from './studies/atr-trailing-stop.js';
+export type { VolumeIndexOptions } from './studies/volume-index.js';
+export {
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+} from './studies/volume-index.js';
+export type { KlingerOptions } from './studies/klinger.js';
+export { klinger } from './studies/klinger.js';

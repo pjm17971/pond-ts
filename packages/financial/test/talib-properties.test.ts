@@ -102,6 +102,12 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -3247,5 +3253,280 @@ describe('[talib] all-missing input yields all-missing two-series studies', () =
         'perf',
       ),
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* [PND-SFOLD] — the K6 state machines' scale and shift behaviour.             */
+/*                                                                             */
+/* Every one of these is worked out from the definition rather than copied     */
+/* from a neighbour, because the five studies do NOT share an answer:          */
+/*                                                                             */
+/*  parabolicSar / superTrend / atrTrailingStop  price-EQUIVARIANT in both     */
+/*      scale and shift (they are stop LEVELS, in the units of the price), and */
+/*      the trend column is invariant under both.                              */
+/*  negativeVolumeIndex / positiveVolumeIndex    price-scale INVARIANT (the    */
+/*      term is a ratio) but NOT price-shift invariant (a shift moves the      */
+/*      return's denominator); volume-scale AND volume-shift invariant (only   */
+/*      the comparison is read).                                               */
+/*  klinger                                      volume-EQUIVARIANT (the force */
+/*      is linear in volume) and price-scale AND price-shift INVARIANT: dm/cm  */
+/*      is a ratio of ranges, and the trend flag compares two HLC sums, which  */
+/*      moves both sides equally under either transform.                       */
+/* -------------------------------------------------------------------------- */
+
+const k6PropSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+  { name: 'volume', kind: 'number' },
+] as const;
+
+/** Wavy OHLCV bars. `k` scales every PRICE, `shift` adds to every price;
+ *  `vk` scales every volume and `vShift` adds to it. */
+const k6PropBars = (n = 50, k = 1, shift = 0, vk = 1, vShift = 0) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: k6PropSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 8 * Math.sin(i / 3.1) + 0.25 * i;
+      return [
+        i,
+        (c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2))) * k + shift,
+        (c - 0.5 - 0.6 * Math.abs(Math.cos(i / 2.5))) * k + shift,
+        c * k + shift,
+        (1000 + 130 * ((i * 7) % 5) + 40 * (i % 3)) * vk + vShift,
+      ];
+    }) as Array<[number, number, number, number, number]>,
+  });
+
+const allMissingK6 = (n = 20) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: n }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as never,
+  });
+
+describe('[talib] the K6 stop machines are price-equivariant', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+
+  it('parabolicSar scales LINEARLY and shifts by the same constant', () => {
+    const base = col(parabolicSar(k6PropBars()), 'psar');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(40);
+    expectLinear(base, col(parabolicSar(k6PropBars(50, K)), 'psar'), K);
+    const shifted = col(parabolicSar(k6PropBars(50, 1, SHIFT)), 'psar');
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) expect(shifted[i], `bar ${i}`).toBeUndefined();
+      else expect(shifted[i]! - SHIFT, `bar ${i}`).toBeCloseTo(base[i]!, 6);
+    }
+  });
+
+  it('parabolicSar’s TREND column is invariant under both transforms', () => {
+    const base = col(parabolicSar(k6PropBars()), 'psarTrend');
+    expect(new Set(base.filter((x) => x !== undefined))).toEqual(
+      new Set([1, -1]),
+    );
+    expectSame(base, col(parabolicSar(k6PropBars(50, K)), 'psarTrend'));
+    expectSame(base, col(parabolicSar(k6PropBars(50, 1, SHIFT)), 'psarTrend'));
+  });
+
+  it('superTrend scales LINEARLY and shifts, trend unchanged', () => {
+    const o = { period: 6, multiplier: 2 } as const;
+    const base = col(superTrend(k6PropBars(), o), 'st');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(40);
+    expectLinear(base, col(superTrend(k6PropBars(50, K), o), 'st'), K);
+    const shifted = col(superTrend(k6PropBars(50, 1, SHIFT), o), 'st');
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) expect(shifted[i], `bar ${i}`).toBeUndefined();
+      else expect(shifted[i]! - SHIFT, `bar ${i}`).toBeCloseTo(base[i]!, 6);
+    }
+    const trend = col(superTrend(k6PropBars(), o), 'stTrend');
+    expectSame(trend, col(superTrend(k6PropBars(50, K), o), 'stTrend'));
+    expectSame(trend, col(superTrend(k6PropBars(50, 1, SHIFT), o), 'stTrend'));
+    expect(new Set(trend.filter((x) => x !== undefined))).toEqual(
+      new Set([1, -1]),
+    );
+  });
+
+  it('atrTrailingStop scales LINEARLY and shifts, trend unchanged', () => {
+    const o = { period: 6, multiplier: 2 } as const;
+    const base = col(atrTrailingStop(k6PropBars(), o), 'ats');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(40);
+    expectLinear(base, col(atrTrailingStop(k6PropBars(50, K), o), 'ats'), K);
+    const shifted = col(atrTrailingStop(k6PropBars(50, 1, SHIFT), o), 'ats');
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) expect(shifted[i], `bar ${i}`).toBeUndefined();
+      else expect(shifted[i]! - SHIFT, `bar ${i}`).toBeCloseTo(base[i]!, 6);
+    }
+    const trend = col(atrTrailingStop(k6PropBars(), o), 'atsTrend');
+    expectSame(trend, col(atrTrailingStop(k6PropBars(50, K), o), 'atsTrend'));
+    expect(new Set(trend.filter((x) => x !== undefined))).toEqual(
+      new Set([1, -1]),
+    );
+  });
+
+  it('the stop machines are unchanged by scaling VOLUME — they never read it', () => {
+    expectSame(
+      col(parabolicSar(k6PropBars()), 'psar'),
+      col(parabolicSar(k6PropBars(50, 1, 0, 77)), 'psar'),
+    );
+    expectSame(
+      col(superTrend(k6PropBars(), { period: 6 }), 'st'),
+      col(superTrend(k6PropBars(50, 1, 0, 77), { period: 6 }), 'st'),
+    );
+  });
+});
+
+describe('[talib] NVI / PVI are invariant in both price scale and volume', () => {
+  const K = 1000;
+
+  it('scaling every PRICE leaves both indices unchanged (the term is a ratio)', () => {
+    for (const [name, run] of [
+      ['nvi', negativeVolumeIndex],
+      ['pvi', positiveVolumeIndex],
+    ] as const) {
+      const base = col(run(k6PropBars()), name);
+      expect(base.filter((x) => x !== undefined).length).toBe(50);
+      expect(new Set(base).size, name).toBeGreaterThan(5); // it actually moves
+      expectSame(base, col(run(k6PropBars(50, K)), name));
+    }
+  });
+
+  it('SHIFTING every price does NOT leave them unchanged (the denominator moves)', () => {
+    // The companion assertion: a study that dropped the division by the
+    // previous close would pass the scale test above and fail this one.
+    const base = col(negativeVolumeIndex(k6PropBars()), 'nvi');
+    const shifted = col(negativeVolumeIndex(k6PropBars(50, 1, 5000)), 'nvi');
+    expect(shifted.at(-1)).not.toBeCloseTo(base.at(-1)!, 6);
+  });
+
+  it('scaling or shifting VOLUME leaves both unchanged (only the comparison is read)', () => {
+    for (const [name, run] of [
+      ['nvi', negativeVolumeIndex],
+      ['pvi', positiveVolumeIndex],
+    ] as const) {
+      const base = col(run(k6PropBars()), name);
+      expectSame(base, col(run(k6PropBars(50, 1, 0, 1e6)), name));
+      expectSame(base, col(run(k6PropBars(50, 1, 0, 1, 1e6)), name));
+    }
+  });
+
+  it('`start` scales the whole line and nothing else', () => {
+    const base = col(negativeVolumeIndex(k6PropBars()), 'nvi');
+    const based = col(negativeVolumeIndex(k6PropBars(), { start: 250 }), 'nvi');
+    for (let i = 0; i < base.length; i += 1) {
+      expect(based[i]! * 4, `bar ${i}`).toBeCloseTo(base[i]!, 6);
+    }
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    // The `rsi(sma(...))` shape. NVI's `column` is a price column, so an SMA
+    // output is a legal source; the index must start at the SMA's first bar
+    // rather than coming back empty.
+    const chained = negativeVolumeIndex(
+      sma(k6PropBars(), { period: 5, output: 'smaClose' }),
+      { column: 'smaClose' },
+    );
+    const v = col(chained, 'nvi');
+    expect(v).toHaveLength(50);
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBe(1000); // re-based on the SMA's first bar
+    expect(v.filter((x) => x !== undefined).length).toBe(46);
+  });
+});
+
+describe('[talib] klinger is linear in volume and invariant in price', () => {
+  const o = { fastPeriod: 4, slowPeriod: 9, signalPeriod: 3 } as const;
+
+  it('scaling VOLUME scales both columns by the same factor', () => {
+    for (const name of ['kvo', 'kvoSignal']) {
+      const base = col(klinger(k6PropBars(), o), name);
+      expect(base.filter((x) => x !== undefined).length, name).toBeGreaterThan(
+        35,
+      );
+      expectLinear(base, col(klinger(k6PropBars(50, 1, 0, 500), o), name), 500);
+    }
+  });
+
+  it('scaling or shifting PRICE leaves both columns unchanged', () => {
+    // dm/cm is a ratio of RANGES, so a scale cancels; and the trend flag
+    // compares two `high + low + close` sums, which a scale (k > 0) and a
+    // shift (+3c on both sides) both preserve.
+    //
+    // Compared RELATIVELY: the force is `volume x ... x 100`, so these
+    // columns run to 1e5, where an absolute 1e-8 tolerance is below one ulp
+    // of the arithmetic. The residual measured here is ~1.4e-13 relative,
+    // i.e. the reassociation the transform forces, not a term that moved.
+    const near = (
+      base: Array<number | undefined>,
+      other: Array<number | undefined>,
+      label: string,
+    ) => {
+      for (let i = 0; i < base.length; i += 1) {
+        if (base[i] === undefined) {
+          expect(other[i], `${label}[${i}]`).toBeUndefined();
+        } else {
+          expect(
+            Math.abs(other[i]! - base[i]!) / Math.max(1, Math.abs(base[i]!)),
+            `${label}[${i}]`,
+          ).toBeLessThan(1e-11);
+        }
+      }
+    };
+    for (const name of ['kvo', 'kvoSignal']) {
+      const base = col(klinger(k6PropBars(), o), name);
+      near(base, col(klinger(k6PropBars(50, 1000), o), name), `${name} scaled`);
+      near(
+        base,
+        col(klinger(k6PropBars(50, 1, 5000), o), name),
+        `${name} shifted`,
+      );
+    }
+  });
+
+  it('SHIFTING volume is NOT invariant — it moves the force, not just the flags', () => {
+    // The companion assertion to the volume-scale one: the force multiplies
+    // by volume, so adding a constant to every volume is not a no-op (unlike
+    // NVI, which only compares them).
+    const base = col(klinger(k6PropBars(), o), 'kvo');
+    const shifted = col(klinger(k6PropBars(50, 1, 0, 1, 5000), o), 'kvo');
+    expect(shifted.at(-1)).not.toBeCloseTo(base.at(-1)!, 3);
+  });
+});
+
+describe('[talib] all-missing in, all-missing out for every K6 study', () => {
+  it('none of the five throws, and none invents a value', () => {
+    const empty = allMissingK6();
+    for (const [name, out] of [
+      ['psar', parabolicSar(empty as never)],
+      ['psarTrend', parabolicSar(empty as never)],
+      ['st', superTrend(empty as never, { period: 3 })],
+      ['ats', atrTrailingStop(empty as never, { period: 3 })],
+      ['nvi', negativeVolumeIndex(empty as never)],
+      ['pvi', positiveVolumeIndex(empty as never)],
+      ['kvo', klinger(empty as never, { fastPeriod: 2, slowPeriod: 4 })],
+      ['kvoSignal', klinger(empty as never, { fastPeriod: 2, slowPeriod: 4 })],
+    ] as const) {
+      const v = col(out, name);
+      expect(v, name).toHaveLength(20);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
   });
 });
