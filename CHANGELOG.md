@@ -69,9 +69,82 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ## [Unreleased]
 
+### Added
+
+- `@pond-ts/financial`: **the session-anchored studies** (corpus §6.6 / §6.9 —
+  the **G4** pair the trading calendar was gating). Both take the session as a
+  first-class input through one shared option shape, `SessionAnchorOptions`:
+  exactly one of **`sessions`** (a `TradingCalendar` or a `Session[]` — the
+  primary door, narrowed with `sessionsInRange` and walked once, `O(N +
+sessions)`) or **`session`** (the name of a session-id column, what
+  `TradingCalendar.tagSessions` appends — the door for a series already
+  partitioned by session), plus `stamped: 'open' | 'close'` on the calendar
+  door. A bar in **closed time** — between sessions, a weekend print on a 24/7
+  feed, outside the schedule — reads `undefined` in both studies. Both doors
+  run the **same** `sessionIdValues` walk `tagSessions` now runs, so they are
+  the same anchoring by construction, and a test pins the two routes equal
+  under both stamp conventions.
+  - **`sessionVwap({ sessions | session, stamped, high, low, close, volume,
+output = 'svwap' })`** — the VWAP an intraday desk means: `Σ tp·vol / Σ vol`
+    accumulated from each session's open and **reset at the next**. This is the
+    third VWAP form `vwap` named and deliberately left open. It composes on
+    `anchoredVwap`'s arithmetic literally rather than by resemblance — both
+    studies now call one `anchoredVwapValues(typical, volume, anchors)` kernel
+    and differ only in what they pass as the anchor group. An interior gap ends
+    **that session's** line (`obv`'s rule; the two sums are blanked together so
+    a bar with volume but a missing `high` cannot bias the average) and the
+    next session open re-seeds — the reset is the recovery `anchoredVwap` makes
+    the caller do by hand. `Σ vol = 0` → `undefined`, live at the output.
+  - **`pivotPoints({ sessions | session, stamped, method = 'standard', high,
+low, close, prefix = 'pp' })`** — each session's support/resistance ladder
+    from the **previous session's** aggregate high / low / close, held flat
+    across the session. Four formula sets, all reading the same three inputs
+    and differing in constants: `'standard'` (floor-trader), `'fibonacci'`
+    (0.382 / 0.618 / 1.000 of the range), `'woodie'` (the standard ladder over
+    the close-weighted centre `(H + L + 2C)/4`) and `'camarilla'` (Nick Scott's
+    1.1/12, 1.1/6, 1.1/4, 1.1/2, measured from the **close**, not the pivot).
+    **The column set follows `method`**: seven columns (`${prefix}Pivot`,
+    `R1–R3`, `S1–S3`) for the first three and **nine** for Camarilla, which is
+    the only set defining a fourth pair — the return type is conditional on
+    `method` rather than shipping three methods with two permanently-`undefined`
+    columns. The first session with bars and every closed-time bar read
+    `undefined`; "previous session" means the previous session **with bars in
+    this series**, not the previous entry on the calendar.
+  - Two deliberate definition deltas, both documented on the study: Woodie's
+    ships the previous-**close** centre `(H + L + 2C)/4` rather than the
+    current-open variant also in circulation, and Camarilla's levels are
+    centred on the close rather than on the pivot (which is the definition, and
+    is what makes its ladder asymmetric about `ppPivot`).
+  - Oracle: five new cases on a new **session-keyed** input
+    (`input.sessionTimes`) — the same 80 OHLCV bars re-keyed onto a real
+    09:30–16:00 America/New_York 30-minute grid over six sessions, with two
+    bars in no session. The references are pandas `groupby`-`cumsum` and
+    `groupby().agg().shift(1).reindex()`, a different formulation from our
+    sequential loops; the vitest side rebuilds the calendar from the same rules
+    rather than from a table, so a Temporal/`zoneinfo` disagreement about a
+    session boundary fails the case rather than hiding.
+
+### Changed
+
+- `@pond-ts/financial`: **`TradingCalendar.tagSessions` is ~4.7× faster** and
+  its output is unchanged on every row. It was materializing `series.toArray()`
+  and reading `event.begin()` — one `Event` plus one data object per row, the
+  cost PR #536 removed from the study kernel — where it now reads
+  `keyColumn().begin` columnar through the shared `sessionIdValues` walk the
+  session-anchored studies use. Measured at 1M bars: **120.90 ms → 25.69 ms**.
+  The session column it appends is now a `Float64Array` rather than an
+  `Array<number | undefined>`; `withColumn` maps `NaN` to missing, so readers
+  still see `number | undefined` and the declared `TaggedSchema` is unchanged.
+- `@pond-ts/financial`: `anchoredVwap` now runs the shared
+  `anchoredVwapValues` kernel rather than composing two `cumulativeValues`
+  passes over two blanked arrays. Bit-identical output; the kernel arithmetic
+  measures **23.51 ms → 16.62 ms** at 1M rows.
+
 ## [0.66.0] — 2026-09-07
 
 ### Added
+
+### Changed
 
 - `@pond-ts/financial`: **the volume and miscellaneous leftovers** (corpus
   §6.6 / §6.4 / §6.1) — six studies in the uniform shape (bar columns plus an

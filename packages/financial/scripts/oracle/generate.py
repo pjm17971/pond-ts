@@ -32,9 +32,11 @@ pandas here, documenting any definition delta (bar-for-bar vendor parity is a
 non-goal).
 """
 
+import datetime as dt
 import json
 import math
 import pathlib
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -234,6 +236,83 @@ assert (_long_dev > 0).sum() > 200 and (_long_dev < 0).sum() > 200, (
     "often -- a one-sided series pins the Trend Intensity Index at 0 or 100 "
     "and cannot tell the sum form from the count form"
 )
+
+# A SESSION-KEYED clock for the same 80 bars, for the session-anchored studies
+# (assessment 6.9, the G4 pair: sessionVwap and pivotPoints).
+#
+# Every other case keys bar `i` at `i` MILLISECONDS -- bar-indexed, which is all
+# a window study needs and which no trading calendar can be laid over: 80ms is
+# not a trading week. So these two cases carry their own timestamp array
+# (`input.sessionTimes`, cases marked `"input": "session"`) and REUSE the
+# existing OHLCV arrays, which is what keeps this from becoming a second
+# fixture: the prices, ranges and volume spikes the other 200-odd cases are
+# checked against are exactly the ones these are checked against.
+#
+# The grid is a real one: 30-minute bars stamped at their OPEN on a 09:30-16:00
+# America/New_York session, six sessions, plus TWO bars that fall in NO session
+# --
+#   * bar 13 is stamped at Monday's CLOSE instant, which under the default
+#     `[open, close)` stamping is closed time (the next session has not opened);
+#   * bar 66 is a Saturday noon print, inside a gap widened by a holiday on
+#     Monday 2024-01-15.
+# Without them the fixture could not tell a study that reads `undefined` in
+# closed time from one that carries the last session's value across the gap.
+# 6 * 13 + 2 = 80, so the row count still matches every other input.
+_ET = ZoneInfo("America/New_York")
+_SESSION_DATES = [
+    "2024-01-08",  # Mon
+    "2024-01-09",
+    "2024-01-10",
+    "2024-01-11",
+    "2024-01-12",  # Fri
+    "2024-01-16",  # Tue -- 2024-01-15 is a holiday in the rules
+]
+BARS_PER_SESSION = 13  # 09:30 .. 15:30 on a 30-minute grid
+BAR_MS = 30 * 60 * 1000
+
+
+def _et_ms(date_str: str, hour: int, minute: int) -> int:
+    """A local wall-clock instant in the exchange zone -> epoch milliseconds."""
+    d = dt.date.fromisoformat(date_str)
+    return int(
+        dt.datetime(d.year, d.month, d.day, hour, minute, tzinfo=_ET).timestamp()
+        * 1000
+    )
+
+
+sessions_table = [
+    {"date": d, "open": _et_ms(d, 9, 30), "close": _et_ms(d, 16, 0)}
+    for d in _SESSION_DATES
+]
+session_times: list[int] = []
+for _si, _s in enumerate(sessions_table):
+    session_times.extend(_s["open"] + k * BAR_MS for k in range(BARS_PER_SESSION))
+    if _si == 0:
+        session_times.append(_s["close"])  # exactly at the close -> closed time
+    if _si == 4:
+        session_times.append(_et_ms("2024-01-13", 12, 0))  # a Saturday print
+assert len(session_times) == N, (
+    f"the session grid must cover the same {N} bars as every other input; "
+    f"got {len(session_times)}"
+)
+assert session_times == sorted(session_times), "bar times must ascend"
+
+
+def _session_id(t: int):
+    """The `[open, close)` session containing `t`, by its open instant."""
+    for sess in sessions_table:
+        if sess["open"] <= t < sess["close"]:
+            return sess["open"]
+    return math.nan
+
+
+session_ids = [_session_id(t) for t in session_times]
+assert sum(1 for x in session_ids if not math.isnan(x)) == N - 2, (
+    "exactly two of the fixture's bars must fall outside every session"
+)
+assert len(set(x for x in session_ids if not math.isnan(x))) == len(_SESSION_DATES)
+
+sid_s = pd.Series(session_ids, dtype="float64")
 
 
 def col(series: pd.Series) -> list:
@@ -5874,6 +5953,160 @@ def market_facilitation_index() -> dict:
     return {"bwmfi": col(v)}
 
 
+# --------------------------------------------------------------------------
+# The session-anchored pair (assessment 6.9 -- the G4 studies).
+#
+# Both run on the SESSION-KEYED clock above. Neither has a TA-Lib function; the
+# references below are pandas GROUPBY replications -- `groupby(sid).cumsum()`
+# for the VWAP and `groupby(sid).agg(...).shift(1)` reindexed onto the bars for
+# the pivots -- which is a genuinely different formulation from our sequential
+# reset loop, not a transcription of it. A bar in closed time carries a NaN
+# session key, which pandas' groupby drops, so it reads null for free.
+# --------------------------------------------------------------------------
+
+_session_df = pd.DataFrame(
+    {
+        "sid": sid_s,
+        "high": h,
+        "low": low_s,
+        "close": s,
+        "volume": vol,
+    }
+)
+_session_df["tp"] = (_session_df["high"] + _session_df["low"] + _session_df["close"]) / 3
+
+
+def session_vwap() -> dict:
+    """cumsum(tp*v) / cumsum(v), reset at each session, null in closed time."""
+    df = _session_df
+    g = df.groupby("sid", sort=False)
+    num = (df["tp"] * df["volume"]).groupby(df["sid"], sort=False).cumsum()
+    den = g["volume"].cumsum()
+    v = num / den
+
+    # The RESET is the whole study: each session's first bar must read that
+    # bar's own typical price, or the line is running across the boundary.
+    firsts = df.dropna(subset=["sid"]).groupby("sid", sort=False).head(1).index
+    assert len(firsts) == len(_SESSION_DATES)
+    for i in firsts:
+        assert abs(float(v.iloc[i]) - float(df["tp"].iloc[i])) < 1e-9, (
+            f"session VWAP must open at bar {i}'s own typical price"
+        )
+    assert int(v.notna().sum()) == N - 2, "closed-time bars must read null"
+
+    # Separated from the two builds it must not be confused with: the
+    # NON-resetting cumulative form (which is `anchoredVwap` from bar 0) and
+    # the UNWEIGHTED per-session cumulative mean of typical price.
+    flat = (df["tp"] * df["volume"]).cumsum() / df["volume"].cumsum()
+    flat = flat.where(df["sid"].notna())
+    unweighted = g["tp"].cumsum() / g.cumcount().add(1)
+    d_flat = float((v - flat).abs().max())
+    d_unw = float((v - unweighted).abs().max())
+    assert d_flat > 0.5, f"the reset is invisible on this fixture ({d_flat:.4f})"
+    assert d_unw > 0.1, f"the weighting is invisible on this fixture ({d_unw:.4f})"
+    print(
+        f"  sessionVwap: pandas groupby-cumsum (no TA-Lib); {int(v.notna().sum())} "
+        f"of {N} bars in session, separated from the non-resetting form by "
+        f"{d_flat:.4f} and from the unweighted session mean by {d_unw:.4f}"
+    )
+    return {"svwap": col(v)}
+
+
+_PIVOT_ORDER = ["Pivot", "R1", "R2", "R3", "S1", "S2", "S3"]
+_PIVOT_ORDER_CAMARILLA = ["Pivot", "R1", "R2", "R3", "R4", "S1", "S2", "S3", "S4"]
+
+
+def _pivot_levels(method: str, hi, lo, cl) -> dict:
+    """The four formula sets, over the previous session's aggregates."""
+    rng = hi - lo
+    p = (hi + lo + 2 * cl) / 4 if method == "woodie" else (hi + lo + cl) / 3
+    out = {"Pivot": p}
+    if method == "fibonacci":
+        out["R1"], out["S1"] = p + 0.382 * rng, p - 0.382 * rng
+        out["R2"], out["S2"] = p + 0.618 * rng, p - 0.618 * rng
+        out["R3"], out["S3"] = p + rng, p - rng
+    elif method == "camarilla":
+        for level, k in ((1, 1.1 / 12), (2, 1.1 / 6), (3, 1.1 / 4), (4, 1.1 / 2)):
+            out[f"R{level}"] = cl + rng * k
+            out[f"S{level}"] = cl - rng * k
+    else:  # 'standard' and 'woodie' share the ladder; only `p` differs
+        out["R1"], out["S1"] = 2 * p - lo, 2 * p - hi
+        out["R2"], out["S2"] = p + rng, p - rng
+        out["R3"], out["S3"] = hi + 2 * (p - lo), lo - 2 * (hi - p)
+    return out
+
+
+def _previous_session_hlc():
+    """Each session's (max high, min low, last close), SHIFTED one session and
+    broadcast back onto its bars -- pandas' own hold-broadcast."""
+    df = _session_df
+    agg = df.dropna(subset=["sid"]).groupby("sid", sort=False).agg(
+        H=("high", "max"), L=("low", "min"), C=("close", "last")
+    )
+    prev = agg.shift(1)
+    held = prev.reindex(df["sid"]).reset_index(drop=True)
+    return held["H"], held["L"], held["C"]
+
+
+def pivot_points(method: str) -> dict:
+    hi, lo, cl = _previous_session_hlc()
+    levels = _pivot_levels(method, hi, lo, cl)
+    names = _PIVOT_ORDER_CAMARILLA if method == "camarilla" else _PIVOT_ORDER
+    assert set(names) == set(levels), f"{method}: column set mismatch"
+
+    pivot = levels["Pivot"]
+    # The first session has no previous one, and the two closed-time bars have
+    # no session at all: 13 + 2 nulls, and every other bar defined.
+    assert int(pivot.isna().sum()) == BARS_PER_SESSION + 2, (
+        f"{method}: expected {BARS_PER_SESSION + 2} null bars, "
+        f"got {int(pivot.isna().sum())}"
+    )
+    assert pivot.first_valid_index() == BARS_PER_SESSION + 1
+    # Levels are FLAT within a session -- that is what makes them levels.
+    for sid, group in pivot.groupby(_session_df["sid"], sort=False):
+        assert group.nunique(dropna=True) <= 1, f"{method}: levels move inside {sid}"
+    # The ladder must be ORDERED on every defined bar, or a swapped pair would
+    # pass unnoticed. Camarilla's levels are centred on the previous CLOSE
+    # rather than on the pivot, so its two halves are checked separately --
+    # nothing places its pivot inside its own ladder.
+    ladders = (
+        [["S4", "S3", "S2", "S1"], ["R1", "R2", "R3", "R4"]]
+        if method == "camarilla"
+        else [["S3", "S2", "S1", "Pivot", "R1", "R2", "R3"]]
+    )
+    for ladder in ladders:
+        for a, b in zip(ladder, ladder[1:]):
+            assert (levels[a].dropna() <= levels[b].dropna() + 1e-9).all(), (
+                f"{method}: {a} must not sit above {b}"
+            )
+    print(
+        f"  pivotPoints({method}): pandas groupby-shift-reindex (no TA-Lib); "
+        f"{len(names)} columns, first valid bar {BARS_PER_SESSION + 1}, "
+        f"pivot range {float(pivot.min()):.4f}..{float(pivot.max()):.4f}"
+    )
+    return {f"pp{name}": col(levels[name]) for name in names}
+
+
+# The four methods must be genuinely different lines, or the menu is
+# decoration. Checked on R1, which every set defines.
+_hi_p, _lo_p, _cl_p = _previous_session_hlc()
+_pp_r1 = {
+    m: _pivot_levels(m, _hi_p, _lo_p, _cl_p)["R1"]
+    for m in ("standard", "fibonacci", "woodie", "camarilla")
+}
+_pp_seps = {}
+for _a, _b in (
+    ("standard", "fibonacci"),
+    ("standard", "woodie"),
+    ("standard", "camarilla"),
+    ("fibonacci", "camarilla"),
+):
+    _sep = float((_pp_r1[_a] - _pp_r1[_b]).abs().max())
+    _pp_seps[f"{_a}/{_b}"] = round(_sep, 4)
+    assert _sep > 0.05, f"pivot methods {_a}/{_b} are only {_sep:.4f} apart"
+print(f"  pivotPoints: method separations on R1 {_pp_seps}")
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -6782,6 +7015,21 @@ cases = [
         "params": {"anchor": 0},
         "expected": anchored_vwap(0),
     },
+    # The session-anchored pair. These are the only cases on the SESSION clock
+    # (`"input": "session"`) -- same 80 bars of OHLCV, keyed onto a real
+    # 09:30-16:00 America/New_York grid; the vitest side rebuilds the calendar
+    # from the same rules, so a Temporal/zoneinfo disagreement about a session
+    # boundary fails these cases rather than hiding.
+    {"study": "sessionVwap", "params": {}, "input": "session", "expected": session_vwap()},
+    *[
+        {
+            "study": "pivotPoints",
+            "params": {"method": method},
+            "input": "session",
+            "expected": pivot_points(method),
+        }
+        for method in ("standard", "fibonacci", "woodie", "camarilla")
+    ],
 ]
 
 out = {
@@ -7570,6 +7818,34 @@ out = {
                 "bar, and the two provably coincide (asserted at 0.0). No "
                 "TA-Lib anchored VWAP"
             ),
+            "sessionVwap": (
+                "cumsum(typicalPrice * volume) / cumsum(volume) RESET at each "
+                "session open, null in closed time. Run on the SESSION clock "
+                "(input.sessionTimes): the same 80 bars keyed onto a "
+                "09:30-16:00 America/New_York 30-minute grid, six sessions "
+                "plus two bars in no session (one stamped exactly at a close, "
+                "one on a Saturday inside a holiday-widened gap). A pandas "
+                "groupby-cumsum, which is a different formulation from our "
+                "sequential reset loop. Separated from the NON-resetting "
+                "cumulative form and from the unweighted per-session mean of "
+                "typical price; the generator prints both distances. No "
+                "TA-Lib session VWAP"
+            ),
+            "pivotPoints": (
+                "The previous session's (max high, min low, last close), "
+                "shifted one session and held across the next -- a pandas "
+                "groupby().agg().shift(1).reindex(sid). Four formula sets: "
+                "standard/floor, Fibonacci (0.382 / 0.618 / 1.000 of the "
+                "range), Woodie's ((H+L+2C)/4 centre, standard ladder) and "
+                "Camarilla (1.1/12, 1.1/6, 1.1/4, 1.1/2 measured from the "
+                "CLOSE, and the only set with a fourth pair, so it appends 9 "
+                "columns where the others append 7). First valid bar is the "
+                "second session's first (13 + 2 nulls: the first session has "
+                "no predecessor, the two closed-time bars have no session). "
+                "The generator asserts the levels are FLAT within a session, "
+                "the ladder is ordered, and the four methods are separated on "
+                "R1. No TA-Lib pivot points"
+            ),
         },
     },
     "input": {
@@ -7580,6 +7856,7 @@ out = {
         "lows": lows,
         "volumes": volumes,
         "benchmarks": benchmarks,
+        "sessionTimes": session_times,
     },
     "cases": cases,
 }

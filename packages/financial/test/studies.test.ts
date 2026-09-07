@@ -105,6 +105,11 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
+  generateSessions,
+  PIVOT_METHODS,
   accumulativeSwingIndex,
   randomWalkIndex,
   ravi,
@@ -6889,10 +6894,11 @@ describe('the two-series oracle cases are in the fixture', () => {
     // + 7 price transforms & BoP (1 each for the four transforms,
     // 3 balanceOfPower), + 8 bands (2 starc, 2 highLow, 2 bandwidth, 2 %B),
     // + 3 per-bar (prime bands, prime oscillator, Bill Williams' MFI), + 13
-    // volume/misc leftovers (2 tmf, 2 tvi, 2 sir, 2 elder, 3 cross, 2 avwap).
+    // volume/misc leftovers (2 tmf, 2 tvi, 2 sir, 2 elder, 3 cross, 2 avwap),
+    // + 5 session-anchored (1 sessionVwap, 4 pivotPoints — one per method).
     // A case that silently disappears takes its study's only value check
     // with it, and nothing else would notice.
-    expect(fixture.cases).toHaveLength(208);
+    expect(fixture.cases).toHaveLength(213);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -6919,6 +6925,8 @@ describe('the two-series oracle cases are in the fixture', () => {
     expect(counts.get('primeNumberBands')).toBe(1);
     expect(counts.get('primeNumberOscillator')).toBe(1);
     expect(counts.get('marketFacilitationIndex')).toBe(1);
+    expect(counts.get('sessionVwap')).toBe(1);
+    expect(counts.get('pivotPoints')).toBe(4);
   });
 });
 
@@ -11310,5 +11318,411 @@ describe('anchoredVwap', () => {
         'avwap',
       ).every((x) => x === undefined),
     ).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The session-anchored pair (assessment 6.9 — the G4 studies).                */
+/*                                                                             */
+/* One fixture for both: a real two-session calendar generated from            */
+/* 09:30–16:00 America/New_York rules, three 1-hour bars per session, and a    */
+/* bar stamped exactly at the first session's CLOSE — which under the default  */
+/* `[open, close)` stamping is closed time, so every "a bar in no session      */
+/* reads undefined" claim has something to fire on.                            */
+/* -------------------------------------------------------------------------- */
+
+const SESSION_RULES = {
+  timeZone: 'America/New_York',
+  open: '09:30',
+  close: '16:00',
+} as const;
+const HOUR = 3_600_000;
+
+/** Mon 2024-01-08 and Tue 2024-01-09, 09:30–16:00 ET (14:30–21:00 UTC). */
+const twoSessions = () =>
+  generateSessions(SESSION_RULES, { from: '2024-01-08', to: '2024-01-09' });
+
+/** Typical prices 11, 12, 15 on session 1 and 9, 10⅔, 8⅔ on session 2; the
+ *  closed-time bar sits far above both so a build that let it leak in would
+ *  be visibly wrong rather than marginally so. */
+const sessionBarRows: Array<[number, number, number, number]> = [
+  [12, 10, 11, 100],
+  [14, 10, 12, 200],
+  [16, 14, 15, 300],
+  [20, 19, 19.5, 400], // stamped at session 1's close → closed time
+  [10, 8, 9, 400],
+  [13, 9, 10, 100],
+  [11, 7, 8, 200],
+];
+
+const sessionBarTimes = () => {
+  const [a, b] = twoSessions();
+  return [
+    a!.open,
+    a!.open + HOUR,
+    a!.open + 2 * HOUR,
+    a!.close,
+    b!.open,
+    b!.open + HOUR,
+    b!.open + 2 * HOUR,
+  ];
+};
+
+/** The fixture series. `rows` overrides the bar table (for the gap cases). */
+const sessionBars = (
+  rows: Array<[number, number, number, number]> = sessionBarRows,
+  times: number[] = sessionBarTimes(),
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: ohlcvSchema,
+    rows: rows.map(([h, l, c, v], i) => [times[i]!, h, l, c, v]) as Array<
+      [number, number, number, number, number]
+    >,
+  });
+
+describe('sessionVwap', () => {
+  const cal = () => TradingCalendar.fromSessions(twoSessions());
+
+  it('accumulates from each session open and resets at the next, hand-computed', () => {
+    const v = col(sessionVwap(sessionBars(), { sessions: cal() }), 'svwap');
+    // Session 1: typical prices 11, 12, 15 on volumes 100, 200, 300.
+    expect(v[0]).toBeCloseTo(11, 12);
+    expect(v[1]).toBeCloseTo((11 * 100 + 12 * 200) / 300, 12);
+    expect(v[2]).toBeCloseTo((11 * 100 + 12 * 200 + 15 * 300) / 600, 12);
+    // The bar stamped at the close belongs to no session.
+    expect(v[3]).toBeUndefined();
+    // Session 2 opens fresh — not carrying session 1's 8000/600.
+    expect(v[4]).toBeCloseTo(9, 12);
+    expect(v[5]).toBeCloseTo((9 * 400 + (32 / 3) * 100) / 500, 12);
+    expect(v[6]).toBeCloseTo(
+      (9 * 400 + (32 / 3) * 100 + (26 / 3) * 200) / 700,
+      12,
+    );
+  });
+
+  it('a raw Session[] is the same door as a TradingCalendar', () => {
+    expect(
+      col(sessionVwap(sessionBars(), { sessions: twoSessions() }), 'svwap'),
+    ).toEqual(col(sessionVwap(sessionBars(), { sessions: cal() }), 'svwap'));
+  });
+
+  it('the session-COLUMN door equals the calendar door, both stampings', () => {
+    for (const stamped of ['open', 'close'] as const) {
+      const viaCalendar = col(
+        sessionVwap(sessionBars(), { sessions: cal(), stamped }),
+        'svwap',
+      );
+      const tagged = cal().tagSessions(sessionBars(), { stamped });
+      const viaColumn = col(
+        sessionVwap(tagged, { session: 'session' }),
+        'svwap',
+      );
+      expect(viaColumn, stamped).toEqual(viaCalendar);
+    }
+  });
+
+  it("stamped:'close' moves the bar at the close into the session that closed", () => {
+    const v = col(
+      sessionVwap(sessionBars(), { sessions: cal(), stamped: 'close' }),
+      'svwap',
+    );
+    // Bar 0 is stamped at session 1's OPEN, which under close-stamping is the
+    // previous bar's close — and nothing precedes it, so it reads closed.
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(12, 12);
+    // Bar 3 is now session 1's last bar rather than closed time; its typical
+    // price is (20 + 19 + 19.5) / 3.
+    expect(v[3]).toBeCloseTo(
+      (12 * 200 + 15 * 300 + (58.5 / 3) * 400) / 900,
+      12,
+    );
+  });
+
+  it('an empty session list leaves every bar missing — not an error', () => {
+    const v = col(sessionVwap(sessionBars(), { sessions: [] }), 'svwap');
+    expect(v).toHaveLength(7);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('sessions that do not cover the series leave every bar missing', () => {
+    const elsewhere = generateSessions(SESSION_RULES, {
+      from: '2023-06-01',
+      to: '2023-06-02',
+    });
+    const v = col(sessionVwap(sessionBars(), { sessions: elsewhere }), 'svwap');
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('overlapping sessions throw rather than anchoring on whichever comes first', () => {
+    const [a, b] = twoSessions();
+    const overlapping = [a!, { ...b!, open: a!.close - HOUR }];
+    expect(() => sessionVwap(sessionBars(), { sessions: overlapping })).toThrow(
+      /overlap/,
+    );
+  });
+
+  it('needs exactly one of the two doors', () => {
+    expect(() => sessionVwap(sessionBars(), {} as never)).toThrow(
+      /exactly one of 'sessions'/,
+    );
+    expect(() =>
+      sessionVwap(cal().tagSessions(sessionBars()), {
+        sessions: cal(),
+        session: 'session',
+      }),
+    ).toThrow(/got both/);
+  });
+
+  it("rejects 'stamped' beside the column door, where it would be a lie", () => {
+    expect(() =>
+      sessionVwap(cal().tagSessions(sessionBars()), {
+        session: 'session',
+        stamped: 'close',
+      }),
+    ).toThrow(/tagSessions/);
+  });
+
+  it('rejects an unknown stamp convention', () => {
+    expect(() =>
+      sessionVwap(sessionBars(), {
+        sessions: cal(),
+        stamped: 'middle' as never,
+      }),
+    ).toThrow(/'open' or 'close'/);
+  });
+
+  it('throws on a session column that is not there — it is a required option', () => {
+    expect(() =>
+      sessionVwap(sessionBars(), { session: 'sess' as never }),
+    ).toThrow(/session column 'sess' is not on the series/);
+  });
+
+  it('honours output and rejects a collision', () => {
+    const named = sessionVwap(sessionBars(), {
+      sessions: cal(),
+      output: 'todayVwap',
+    });
+    expect(col(named, 'todayVwap')[0]).toBeCloseTo(11, 12);
+    expect(() =>
+      sessionVwap(sessionBars(), { sessions: cal(), output: 'close' }),
+    ).toThrow(/collides/);
+  });
+
+  it('the calendar narrowing keeps the sessions at BOTH range edges', () => {
+    // The `sessions` door asks the calendar for `sessionsInRange` over the
+    // series' own keys, and `sessionsInRange` is half-open — so both edges
+    // are off-by-one candidates, and both are reachable:
+    //
+    //  - a close-stamped series whose FIRST bar sits exactly on a session's
+    //    close belongs to that session, whose `close` equals the range start;
+    //  - any series whose LAST bar sits exactly on a session's open belongs
+    //    to that session, whose `open` equals the range end.
+    const [a, b] = twoSessions();
+    const cal2 = TradingCalendar.fromSessions([a!, b!]);
+    const rows: Array<[number, number, number, number]> = [
+      sessionBarRows[0]!,
+      sessionBarRows[1]!,
+    ];
+
+    const atFirstClose = sessionBars(rows, [a!.close, b!.open + HOUR]);
+    expect(
+      col(
+        sessionVwap(atFirstClose, { sessions: cal2, stamped: 'close' }),
+        'svwap',
+      )[0],
+    ).toBeCloseTo(11, 12);
+
+    const atLastOpen = sessionBars(rows, [a!.open, b!.open]);
+    expect(
+      col(sessionVwap(atLastOpen, { sessions: cal2 }), 'svwap')[1],
+    ).toBeCloseTo(12, 12);
+  });
+
+  it('an empty series is an empty column, not a crash', () => {
+    // The `sessions` door reads the key column's first and last instant to
+    // narrow the calendar; with no rows there is nothing to read.
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: ohlcvSchema,
+      rows: [] as never,
+    });
+    expect(sessionVwap(empty, { sessions: cal() }).length).toBe(0);
+    expect(pivotPoints(empty, { sessions: cal() }).length).toBe(0);
+  });
+
+  it('reads the columns it is pointed at', () => {
+    // High and low aimed at the close makes the typical price the close.
+    const v = col(
+      sessionVwap(sessionBars(), {
+        sessions: cal(),
+        high: 'close',
+        low: 'close',
+      }),
+      'svwap',
+    );
+    expect(v[0]).toBeCloseTo(11, 12);
+    expect(v[1]).toBeCloseTo((11 * 100 + 12 * 200) / 300, 12);
+  });
+});
+
+describe('pivotPoints', () => {
+  const cal = () => TradingCalendar.fromSessions(twoSessions());
+  // Session 1 aggregates: high 16, low 10, last close 15 — the closed-time
+  // bar's 20 / 19 / 19.5 must not reach them.
+  const H1 = 16;
+  const L1 = 10;
+  const C1 = 15;
+  const RANGE = H1 - L1;
+
+  it('holds the previous session levels flat, hand-computed (standard)', () => {
+    const r = pivotPoints(sessionBars(), { sessions: cal() });
+    const p = (H1 + L1 + C1) / 3;
+    // The first session has no predecessor; the closed-time bar has no session.
+    for (const name of ['ppPivot', 'ppR1', 'ppS3'] as const) {
+      expect(col(r, name).slice(0, 4), name).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]);
+    }
+    for (let i = 4; i < 7; i += 1) {
+      expect(col(r, 'ppPivot')[i]).toBeCloseTo(p, 12);
+      expect(col(r, 'ppR1')[i]).toBeCloseTo(2 * p - L1, 12);
+      expect(col(r, 'ppS1')[i]).toBeCloseTo(2 * p - H1, 12);
+      expect(col(r, 'ppR2')[i]).toBeCloseTo(p + RANGE, 12);
+      expect(col(r, 'ppS2')[i]).toBeCloseTo(p - RANGE, 12);
+      expect(col(r, 'ppR3')[i]).toBeCloseTo(H1 + 2 * (p - L1), 12);
+      expect(col(r, 'ppS3')[i]).toBeCloseTo(L1 - 2 * (H1 - p), 12);
+    }
+  });
+
+  it('fibonacci scales the range by 38.2 / 61.8 / 100 %', () => {
+    const r = pivotPoints(sessionBars(), {
+      sessions: cal(),
+      method: 'fibonacci',
+    });
+    const p = (H1 + L1 + C1) / 3;
+    expect(col(r, 'ppPivot')[4]).toBeCloseTo(p, 12);
+    expect(col(r, 'ppR1')[4]).toBeCloseTo(p + 0.382 * RANGE, 12);
+    expect(col(r, 'ppR2')[4]).toBeCloseTo(p + 0.618 * RANGE, 12);
+    expect(col(r, 'ppR3')[4]).toBeCloseTo(p + RANGE, 12);
+    expect(col(r, 'ppS1')[4]).toBeCloseTo(p - 0.382 * RANGE, 12);
+    expect(col(r, 'ppS3')[4]).toBeCloseTo(p - RANGE, 12);
+  });
+
+  it('woodie weights the previous close: (H + L + 2C) / 4', () => {
+    const r = pivotPoints(sessionBars(), { sessions: cal(), method: 'woodie' });
+    expect(col(r, 'ppPivot')[4]).toBeCloseTo((16 + 10 + 30) / 4, 12);
+    expect(col(r, 'ppPivot')[4]).toBeCloseTo(14, 12);
+    // Same ladder as 'standard', different centre.
+    expect(col(r, 'ppR1')[4]).toBeCloseTo(2 * 14 - L1, 12);
+  });
+
+  it('camarilla appends a fourth pair, measured from the CLOSE', () => {
+    const r = pivotPoints(sessionBars(), {
+      sessions: cal(),
+      method: 'camarilla',
+    });
+    expect(col(r, 'ppR1')[4]).toBeCloseTo(C1 + (RANGE * 1.1) / 12, 12);
+    expect(col(r, 'ppR2')[4]).toBeCloseTo(C1 + (RANGE * 1.1) / 6, 12);
+    expect(col(r, 'ppR3')[4]).toBeCloseTo(C1 + (RANGE * 1.1) / 4, 12);
+    expect(col(r, 'ppR4')[4]).toBeCloseTo(C1 + (RANGE * 1.1) / 2, 12);
+    expect(col(r, 'ppS4')[4]).toBeCloseTo(C1 - (RANGE * 1.1) / 2, 12);
+    // 18.3 and 11.7 — symmetric about the close, not about the pivot.
+    expect(col(r, 'ppR4')[4]).toBeCloseTo(18.3, 12);
+    expect(col(r, 'ppS4')[4]).toBeCloseTo(11.7, 12);
+  });
+
+  it('the COLUMN SET follows the method — no dead R4/S4 on the other three', () => {
+    const names = (r: unknown) =>
+      (r as { schema: ReadonlyArray<{ name: string }> }).schema
+        .map((c) => c.name)
+        .filter((n) => n.startsWith('pp'));
+    for (const method of PIVOT_METHODS) {
+      const r = pivotPoints(sessionBars(), { sessions: cal(), method });
+      expect(names(r), method).toEqual(
+        method === 'camarilla'
+          ? [
+              'ppPivot',
+              'ppR1',
+              'ppR2',
+              'ppR3',
+              'ppR4',
+              'ppS1',
+              'ppS2',
+              'ppS3',
+              'ppS4',
+            ]
+          : ['ppPivot', 'ppR1', 'ppR2', 'ppR3', 'ppS1', 'ppS2', 'ppS3'],
+      );
+    }
+  });
+
+  it('the previous session is the previous one WITH BARS, not on the calendar', () => {
+    // Three calendar sessions, bars only in the first and the third: the
+    // third's levels come from the first, because the second never traded
+    // here and has no aggregate to read.
+    const three = generateSessions(SESSION_RULES, {
+      from: '2024-01-08',
+      to: '2024-01-10',
+    });
+    const times = [
+      three[0]!.open,
+      three[0]!.open + HOUR,
+      three[0]!.open + 2 * HOUR,
+      three[2]!.open,
+    ];
+    const rows: Array<[number, number, number, number]> = [
+      sessionBarRows[0]!,
+      sessionBarRows[1]!,
+      sessionBarRows[2]!,
+      sessionBarRows[4]!,
+    ];
+    const r = pivotPoints(sessionBars(rows, times), {
+      sessions: TradingCalendar.fromSessions(three),
+    });
+    expect(col(r, 'ppPivot')[3]).toBeCloseTo((H1 + L1 + C1) / 3, 12);
+  });
+
+  it('the two doors agree', () => {
+    const viaCalendar = pivotPoints(sessionBars(), { sessions: cal() });
+    const tagged = cal().tagSessions(sessionBars());
+    const viaColumn = pivotPoints(tagged, { session: 'session' });
+    for (const name of ['ppPivot', 'ppR1', 'ppR3', 'ppS1', 'ppS3'] as const) {
+      expect(col(viaColumn, name), name).toEqual(col(viaCalendar, name));
+    }
+  });
+
+  it('honours the prefix and rejects a collision', () => {
+    const r = pivotPoints(sessionBars(), { sessions: cal(), prefix: 'floor' });
+    expect(col(r, 'floorPivot')[4]).toBeCloseTo((H1 + L1 + C1) / 3, 12);
+    // The collision is checked on the LAST-appended name, so a guard that only
+    // looked at the first column would not pass this.
+    const clash = sessionBars().withColumn('ppS3', [1, 2, 3, 4, 5, 6, 7]);
+    expect(() => pivotPoints(clash as never, { sessions: cal() })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('rejects an unknown method', () => {
+    expect(() =>
+      pivotPoints(sessionBars(), {
+        sessions: cal(),
+        method: 'demark' as never,
+      }),
+    ).toThrow(/pivot method must be one of/);
+  });
+
+  it('needs exactly one of the two doors', () => {
+    expect(() => pivotPoints(sessionBars(), {} as never)).toThrow(
+      /exactly one of 'sessions'/,
+    );
+  });
+
+  it('an empty session list leaves every level missing', () => {
+    const r = pivotPoints(sessionBars(), { sessions: [] });
+    expect(col(r, 'ppPivot').every((x) => x === undefined)).toBe(true);
   });
 });

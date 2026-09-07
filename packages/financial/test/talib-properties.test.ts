@@ -147,7 +147,13 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
+  generateSessions,
+  PIVOT_METHODS,
 } from '../src/index.js';
+import type { PivotMethod } from '../src/index.js';
 
 const closeSchema = [
   { name: 'time', kind: 'time' },
@@ -5433,5 +5439,276 @@ describe('[talib] anchoredVwap scales with price and not with volume', () => {
     );
     expect(v).toHaveLength(40);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/*  The session-anchored pair (assessment 6.9 — the G4 studies).              */
+/*                                                                            */
+/*  sessionVwap   price-EQUIVARIANT (it is an average price) and volume-scale */
+/*      invariant (the weights cancel) — `anchoredVwap`'s properties, which    */
+/*      it inherits by running the same kernel. It is NOT shift-equivariant    */
+/*      in the same trivial way as a plain mean would be — adding a constant   */
+/*      to every price adds it to every typical price, so the weighted mean    */
+/*      moves by exactly that constant; that IS asserted, because a build      */
+/*      that mixed a level into the weights would break it.                    */
+/*  pivotPoints   scale- AND shift-equivariant on every column: each level is  */
+/*      an affine combination of H, L and C whose coefficients sum to 1.       */
+/* ========================================================================== */
+
+const sessionRules = {
+  timeZone: 'America/New_York',
+  open: '09:30',
+  close: '16:00',
+} as const;
+const sessionList = generateSessions(sessionRules, {
+  from: '2024-01-08',
+  to: '2024-01-10',
+});
+const sessionCal = TradingCalendar.fromSessions(sessionList);
+const BARS_PER = 8;
+
+/** Three sessions of eight hourly bars, plus a bar in closed time after each
+ *  of the first two — long enough that both studies have plenty of defined
+ *  rows and both blank regions are exercised. `k` scales every price, `shift`
+ *  adds to every price, `vk` scales every volume. */
+const sessionScaleBars = (k = 1, shift = 0, vk = 1) => {
+  const times: number[] = [];
+  for (const [si, s] of sessionList.entries()) {
+    for (let b = 0; b < BARS_PER; b += 1) times.push(s.open + b * 1_800_000);
+    if (si < 2) times.push(s.close);
+  }
+  return new TimeSeries({
+    name: 'bars',
+    schema: volMiscSchema,
+    rows: times.map((t, i) => {
+      const c = 100 + 9 * Math.sin(i / 3.7) + 4 * Math.sin(i / 1.9) + 0.3 * i;
+      const o = c - 0.8 * Math.cos(i / 2.1);
+      return [
+        t,
+        o * k + shift,
+        (Math.max(o, c) + 0.5 + 0.7 * Math.abs(Math.sin(i / 2.3))) * k + shift,
+        (Math.min(o, c) - 0.5 - 0.7 * Math.abs(Math.cos(i / 1.9))) * k + shift,
+        c * k + shift,
+        (1200 + 300 * ((i * 3) % 7) + 55 * (i % 4)) * vk,
+      ];
+    }) as Array<[number, number, number, number, number, number]>,
+  });
+};
+
+/** The same rows with every OHLCV cell missing. */
+const emptySessionBars = () =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 3 * BARS_PER }, (_, i) => [
+      sessionList[Math.floor(i / BARS_PER)]!.open + (i % BARS_PER) * 1_800_000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as never,
+  });
+
+describe('[talib] sessionVwap scales with price and not with volume', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const opts = { sessions: sessionCal } as const;
+
+  it('scaling every price scales the line', () => {
+    const base = col(sessionVwap(sessionScaleBars() as never, opts), 'svwap');
+    // 24 in-session bars, 2 in closed time.
+    expect(base.filter((x) => x !== undefined).length).toBe(3 * BARS_PER);
+    expectLinear(
+      base,
+      col(sessionVwap(sessionScaleBars(K) as never, opts), 'svwap'),
+      K,
+    );
+  });
+
+  it('scaling every volume leaves it unchanged (the weights cancel)', () => {
+    expectSame(
+      col(sessionVwap(sessionScaleBars() as never, opts), 'svwap'),
+      col(sessionVwap(sessionScaleBars(1, 0, 1e6) as never, opts), 'svwap'),
+    );
+  });
+
+  it('shifting every price shifts the line by the same constant', () => {
+    const base = col(sessionVwap(sessionScaleBars() as never, opts), 'svwap');
+    const shifted = col(
+      sessionVwap(sessionScaleBars(1, SHIFT) as never, opts),
+      'svwap',
+    );
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) expect(shifted[i], `bar ${i}`).toBeUndefined();
+      else expect(shifted[i]! - base[i]!, `bar ${i}`).toBeCloseTo(SHIFT, 6);
+    }
+  });
+
+  it('sits inside the range of the typical prices of ITS OWN session', () => {
+    // A weighted mean cannot leave the convex hull of its values — and the
+    // hull is the session's, not the series', which is what a build that
+    // failed to reset would break.
+    const bars = sessionScaleBars();
+    const v = col(sessionVwap(bars as never, opts), 'svwap');
+    const rows = (
+      bars as never as { events: Array<{ data(): Record<string, number> }> }
+    ).events.map((e) => e.data());
+    for (let s = 0; s < 3; s += 1) {
+      const from = s * (BARS_PER + 1);
+      const tp = rows
+        .slice(from, from + BARS_PER)
+        .map((d) => (d.high! + d.low! + d.close!) / 3);
+      const lo = Math.min(...tp);
+      const hi = Math.max(...tp);
+      for (let i = from; i < from + BARS_PER; i += 1) {
+        expect(v[i]!, `bar ${i}`).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(v[i]!, `bar ${i}`).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    }
+  });
+
+  it('the reset is what makes it differ from `anchoredVwap` over the same bars', () => {
+    // Anchored at the FIRST session's open, the two agree through session 1
+    // and then diverge — the anchored line keeps accumulating across the
+    // boundary where this one starts over.
+    const bars = sessionScaleBars();
+    const session = col(sessionVwap(bars as never, opts), 'svwap');
+    const anchored = col(
+      anchoredVwap(bars as never, { anchor: sessionList[0]!.open }),
+      'avwap',
+    );
+    for (let i = 0; i < BARS_PER; i += 1) {
+      expect(session[i]!, `bar ${i}`).toBeCloseTo(anchored[i]!, 9);
+    }
+    const last = 3 * BARS_PER + 1;
+    expect(Math.abs(session[last]! - anchored[last]!)).toBeGreaterThan(0.5);
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(sessionVwap(emptySessionBars() as never, opts), 'svwap');
+    expect(v).toHaveLength(3 * BARS_PER);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] pivotPoints is scale- and shift-EQUIVARIANT on every column', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const columns = (method: PivotMethod) =>
+    method === 'camarilla'
+      ? [
+          'ppPivot',
+          'ppR1',
+          'ppR2',
+          'ppR3',
+          'ppR4',
+          'ppS1',
+          'ppS2',
+          'ppS3',
+          'ppS4',
+        ]
+      : ['ppPivot', 'ppR1', 'ppR2', 'ppR3', 'ppS1', 'ppS2', 'ppS3'];
+
+  for (const method of PIVOT_METHODS) {
+    const opts = { sessions: sessionCal, method } as const;
+
+    it(`${method}: scaling every price scales every level`, () => {
+      for (const name of columns(method)) {
+        const base = col(pivotPoints(sessionScaleBars() as never, opts), name);
+        expect(base.filter((x) => x !== undefined).length, name).toBe(
+          2 * BARS_PER,
+        );
+        expectLinear(
+          base,
+          col(pivotPoints(sessionScaleBars(K) as never, opts), name),
+          K,
+        );
+      }
+    });
+
+    it(`${method}: shifting every price shifts every level by the same constant`, () => {
+      // Every level is an affine combination of H, L and C whose coefficients
+      // sum to exactly 1 — that is the invariant, and a transposed constant
+      // (0.382 where 0.618 belongs, say) would still satisfy it, which is why
+      // the oracle carries the values.
+      for (const name of columns(method)) {
+        const base = col(pivotPoints(sessionScaleBars() as never, opts), name);
+        const shifted = col(
+          pivotPoints(sessionScaleBars(1, SHIFT) as never, opts),
+          name,
+        );
+        for (let i = 0; i < base.length; i += 1) {
+          if (base[i] === undefined)
+            expect(shifted[i], `${name} bar ${i}`).toBeUndefined();
+          else
+            expect(shifted[i]! - base[i]!, `${name} bar ${i}`).toBeCloseTo(
+              SHIFT,
+              6,
+            );
+        }
+      }
+    });
+
+    it(`${method}: the levels are flat inside a session and step at the open`, () => {
+      const v = col(pivotPoints(sessionScaleBars() as never, opts), 'ppR1');
+      // Session 2 runs at rows 9..16 and session 3 at 18..25 (each session is
+      // followed by one closed-time bar except the last).
+      for (const from of [BARS_PER + 1, 2 * (BARS_PER + 1)]) {
+        for (let i = from + 1; i < from + BARS_PER; i += 1) {
+          expect(v[i], `bar ${i}`).toBe(v[from]);
+        }
+      }
+      expect(v[BARS_PER + 1]).not.toBe(v[2 * (BARS_PER + 1)]);
+    });
+
+    it(`${method}: scaling the VOLUME cannot move a level (it reads none)`, () => {
+      expectSame(
+        col(pivotPoints(sessionScaleBars() as never, opts), 'ppPivot'),
+        col(pivotPoints(sessionScaleBars(1, 0, 1e6) as never, opts), 'ppPivot'),
+      );
+    });
+
+    it(`${method}: all-missing input yields all-missing columns`, () => {
+      for (const name of columns(method)) {
+        const v = col(pivotPoints(emptySessionBars() as never, opts), name);
+        expect(v, name).toHaveLength(3 * BARS_PER);
+        expect(
+          v.every((x) => x === undefined),
+          name,
+        ).toBe(true);
+      }
+    });
+  }
+
+  it('the four methods are genuinely different ladders', () => {
+    const r1 = Object.fromEntries(
+      PIVOT_METHODS.map((method) => [
+        method,
+        col(
+          pivotPoints(sessionScaleBars() as never, {
+            sessions: sessionCal,
+            method,
+          }),
+          'ppR1',
+        ),
+      ]),
+    ) as Record<PivotMethod, Array<number | undefined>>;
+    const apart = (a: PivotMethod, b: PivotMethod) =>
+      Math.max(
+        ...r1[a].map((x, i) => (x === undefined ? 0 : Math.abs(x - r1[b][i]!))),
+      );
+    expect(apart('standard', 'fibonacci')).toBeGreaterThan(0.1);
+    expect(apart('standard', 'woodie')).toBeGreaterThan(0.1);
+    expect(apart('standard', 'camarilla')).toBeGreaterThan(0.1);
+    expect(apart('fibonacci', 'camarilla')).toBeGreaterThan(0.1);
   });
 });

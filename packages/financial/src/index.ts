@@ -261,3 +261,18 @@ export type { MovingAverageCrossOptions } from './studies/moving-average-cross.j
 export { movingAverageCross } from './studies/moving-average-cross.js';
 export type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
 export { anchoredVwap } from './studies/anchored-vwap.js';
+export type {
+  SessionSource,
+  SessionAnchorOptions,
+} from './contract/session-anchor.js';
+export type { SessionVwapOptions } from './studies/session-vwap.js';
+export { sessionVwap } from './studies/session-vwap.js';
+export type { PivotMethod } from './kernels/pivot.js';
+export { PIVOT_METHODS } from './kernels/pivot.js';
+export type {
+  PivotPointsOptions,
+  PivotPointsSchema,
+  CamarillaPivotPointsSchema,
+  PivotPointsResult,
+} from './studies/pivot-points.js';
+export { pivotPoints } from './studies/pivot-points.js';

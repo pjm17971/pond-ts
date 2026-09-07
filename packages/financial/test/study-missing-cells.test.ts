@@ -97,6 +97,10 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
+  generateSessions,
   accumulativeSwingIndex,
   randomWalkIndex,
   ravi,
@@ -3115,5 +3119,160 @@ describe('[PND-STUDYBOX] the volume and miscellaneous leftovers: where the missi
       anchor: 20 * MINUTE,
     });
     expect(nullCountOf(early, 'avwap')).toBe(20);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The session-anchored pair — where their missing rows are.                   */
+/*                                                                             */
+/* Both blank the same two things for structural reasons (a bar in closed time */
+/* has no session; the first session has no predecessor), and then differ on   */
+/* what a HOLE does: the VWAP's running sums end that session's line, while    */
+/* the pivots' max/min/last simply skip the missing cell.                      */
+/* -------------------------------------------------------------------------- */
+describe('the session-anchored studies place their gaps', () => {
+  const RULES = {
+    timeZone: 'America/New_York',
+    open: '09:30',
+    close: '16:00',
+  } as const;
+  const sessions = generateSessions(RULES, {
+    from: '2024-01-08',
+    to: '2024-01-09',
+  });
+  const cal = TradingCalendar.fromSessions(sessions);
+  const PER = 6; // bars per session, on a 1-hour grid
+
+  /** Six bars per session plus a bar stamped at session 1's close (closed
+   *  time), 13 rows. `hole` blanks one cell. */
+  const sessionBars = (hole?: {
+    at: number;
+    column: 'high' | 'low' | 'close' | 'volume';
+  }) => {
+    const times = [
+      ...Array.from(
+        { length: PER },
+        (_, k) => sessions[0]!.open + k * 3_600_000,
+      ),
+      sessions[0]!.close,
+      ...Array.from(
+        { length: PER },
+        (_, k) => sessions[1]!.open + k * 3_600_000,
+      ),
+    ];
+    return new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+        { name: 'volume', kind: 'number', required: false },
+      ] as const,
+      rows: times.map((t, i) => {
+        const c = 100 + 5 * Math.sin(i / 2.1) + 0.4 * i;
+        const row: Array<number | undefined> = [
+          t,
+          c + 0.6 + 0.4 * Math.abs(Math.sin(i / 1.7)),
+          c - 0.6 - 0.4 * Math.abs(Math.cos(i / 1.3)),
+          c,
+          900 + 130 * ((i * 3) % 7),
+        ];
+        if (hole !== undefined && hole.at === i) {
+          row[{ high: 1, low: 2, close: 3, volume: 4 }[hole.column]] =
+            undefined;
+        }
+        return row;
+      }) as never,
+    });
+  };
+
+  it('svwap: closed time is missing, and a hole ends THAT SESSION only', () => {
+    const clean = sessionVwap(sessionBars() as never, { sessions: cal });
+    // Exactly one missing row — the bar stamped at the close.
+    expect(nullCountOf(clean, 'svwap')).toBe(1);
+    expect(cells(clean, 'svwap')[PER]).toBeUndefined();
+
+    for (const column of ['high', 'low', 'close', 'volume'] as const) {
+      const holed = sessionVwap(sessionBars({ at: 2, column }) as never, {
+        sessions: cal,
+      });
+      const v = cells(holed, 'svwap');
+      expect(typeof v[1], column).toBe('number');
+      // The hole ends session 1's line …
+      expect(v[2], column).toBeUndefined();
+      expect(v[PER - 1], column).toBeUndefined();
+      // … and the RESET at the next open is the recovery, which is the whole
+      // difference from `anchoredVwap`, where the caller must re-anchor.
+      expect(typeof v[PER + 1], column).toBe('number');
+    }
+  });
+
+  it('svwap: a hole on a session\u2019s FIRST bar shifts that session\u2019s start', () => {
+    const holed = sessionVwap(
+      sessionBars({ at: PER + 1, column: 'close' }) as never,
+      {
+        sessions: cal,
+      },
+    );
+    const v = cells(holed, 'svwap');
+    expect(v[PER + 1]).toBeUndefined();
+    expect(typeof v[PER + 2]).toBe('number');
+  });
+
+  it('pivots: the first session and closed time are missing, together', () => {
+    const r = pivotPoints(sessionBars() as never, { sessions: cal });
+    for (const name of [
+      'ppPivot',
+      'ppR1',
+      'ppR2',
+      'ppR3',
+      'ppS1',
+      'ppS2',
+      'ppS3',
+    ]) {
+      const v = cells(r, name);
+      // Six bars of session 1 plus the closed-time bar.
+      expect(nullCountOf(r, name), name).toBe(PER + 1);
+      for (let i = 0; i <= PER; i += 1)
+        expect(v[i], `${name}[${i}]`).toBeUndefined();
+      for (let i = PER + 1; i < 13; i += 1)
+        expect(typeof v[i], `${name}[${i}]`).toBe('number');
+    }
+  });
+
+  it('pivots: a hole inside the previous session SKIPS the bar, it does not blank the session', () => {
+    // `max` / `min` / `last` are order statistics over the cells that are
+    // present — the opposite call from the VWAP's paired sums, and why the
+    // two studies differ here is written out in the kernel.
+    const holed = pivotPoints(sessionBars({ at: 2, column: 'high' }) as never, {
+      sessions: cal,
+    });
+    expect(typeof cells(holed, 'ppPivot')[PER + 1]).toBe('number');
+  });
+
+  it('pivots: a column with NO present cell in the previous session blanks the ladder', () => {
+    const times = [
+      ...Array.from({ length: 2 }, (_, k) => sessions[0]!.open + k * 3_600_000),
+      ...Array.from({ length: 2 }, (_, k) => sessions[1]!.open + k * 3_600_000),
+    ];
+    const allHighsMissing = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: times.map((t, i) => [
+        t,
+        i < 2 ? undefined : 101 + i,
+        99 + i,
+        100 + i,
+      ]) as never,
+    });
+    const r = pivotPoints(allHighsMissing as never, { sessions: cal });
+    expect(nullCountOf(r, 'ppPivot')).toBe(4);
+    expect(nullCountOf(r, 'ppS3')).toBe(4);
   });
 });

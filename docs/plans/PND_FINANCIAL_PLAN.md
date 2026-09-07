@@ -2355,6 +2355,243 @@ why the 26/200 pair is in the bench. References on the same run: `obv()`
 `foldRows(2 cols)` ~10. Everything here is compose-only; no study in the
 batch owns a super-linear cost.
 
+**Landed — the session-anchored studies (§6.9, G4).** `sessionVwap` and
+`pivotPoints` — the two studies the corpus assessment gated on the trading
+calendar, and the last two the assessment ranked as high-value. Both take the
+session as a **first-class input**; neither invents session boundaries.
+
+**The option shape: both doors, one walk, `sessions` primary.** The batch was
+briefed to pick one of two doors — a calendar/session list, or a session-id
+column — and support the second only if it was one line on top of the first.
+It is one line, and both ship, as a shared `SessionAnchorOptions`
+(`contract/session-anchor.ts`, beside the OHLCV column contract):
+
+- **`sessions: TradingCalendar | Session[]`** — the primary door, and the one
+  the docstrings lead with. It is the RFC §6.1 picture: one calendar object
+  shared by the data ops, the bar building and the axis, so a study and a
+  chart cannot disagree about where a session starts. A `TradingCalendar` is
+  narrowed with `sessionsInRange` over the series' own key range first; a raw
+  `Session[]` (the schedule table a feed hands you — Amendment 2, Tidal Ask 1)
+  goes through `normalizeSessions`, so an overlapping or malformed schedule
+  **throws** rather than anchoring on whichever session the walk reached
+  first.
+- **`session: <column name>`** — the door for a series that has already been
+  through `tagSessions` / `partitionBy(sessionId)`, which is the RFC's own
+  stopgap (Tidal Ask 2) and therefore a shape real consumers are already in.
+  Making them hand the calendar back would mean walking it twice. It is
+  `columnValues` plus an `assertColumn` — a required option with no default,
+  so a typo throws.
+
+What makes carrying both honest rather than two ways to be subtly different
+is that they are **the same walk**: `sessionIdValues(keys, sessions, stamped)`
+moved into `kernels/session.ts`, and `TradingCalendar.tagSessions` was
+rewritten to call it. So `sessionVwap(bars, { sessions: cal })` and
+`sessionVwap(cal.tagSessions(bars), { session: 'session' })` are equal by
+construction, and a test pins them equal under **both** stamp conventions
+rather than only the default. `stamped` belongs to the `sessions` door alone
+and **throws** beside `session` — a session-id column has already had the
+stamp decision applied to it, so accepting the option there would be a lie;
+the error points at `tagSessions`.
+
+Rewriting `tagSessions` onto the kernel was not only tidiness. It had been
+reading `series.toArray()` and `event.begin()` — one `Event` plus one data
+object per row, the exact cost PR #536 removed from the study kernel — where
+the study door reads `keyColumn().begin` columnar. Measured at 1M bars,
+output identical on every row: **120.90 ms → 25.69 ms** (4.7×;
+`scratchpad/session-tag-bench.mjs`).
+
+**`sessionVwap` composes on `anchoredVwap` literally, not by resemblance.**
+The two studies now call one kernel, `anchoredVwapValues(typical, volume,
+anchors)`, where `anchors` is a **group id per row**: `anchoredVwap` passes a
+single group (`NaN` before the anchor bar, one id after), `sessionVwap` passes
+each bar's session id. "Session VWAP is anchored VWAP re-anchored every
+session" is now a fact about the code. The fused loop also replaced the old
+four-array composition (blank ×2 + `cumulativeValues` ×2 + a divide pass):
+bit-identical output, **23.51 ms → 16.62 ms** at 1M rows (−29%;
+`scratchpad/session-avwap-bench.mjs`). `cumulativeValues` keeps its other
+three consumers.
+
+The gap rule follows the cumulative precedent `anchoredVwap` set rather than
+`negativeVolumeIndex`'s re-seed: **an interior gap ends that session's line**,
+because the reading is a _level_ and skipping the bar would report an average
+price that silently excludes volume that traded. The difference is that the
+**reset is the recovery** — the next session open re-seeds, where
+`anchoredVwap` makes the caller re-anchor by hand. Both sums are blanked
+wherever either input is missing (the #710 rule), so a bar with a volume but a
+missing `high` cannot bias the average toward zero. The zero-accumulated-volume
+guard is live and at the **output**, exactly as in `anchoredVwap`: reachable
+on a session that opens on a run of zero-volume bars, and the mutation matrix
+confirms it is live (3 failures when it returns `0` instead).
+
+**`pivotPoints`: the column set follows the method.** Camarilla defines a
+fourth pair and the other three sets do not. The alternative — nine columns
+always, with `ppR4`/`ppS4` permanently `undefined` for three of four methods —
+invents columns that have no definition, makes "missing" ambiguous between
+_not in this method_ and _no previous session_, and hands every
+standard-pivot consumer two dead series. So the set varies (7 columns, or 9
+for Camarilla) and the **return type is conditional on `method`**
+(`PivotPointsResult`), so `.get('ppR4')` type-checks only where the column
+exists. The cost is that the study is the first in the package whose return
+type is hand-written rather than inferred from a `withColumn` chain — the same
+`as unknown as` step `tagSessions` already makes for `TaggedSchema` — and that
+a caller passing a non-literal `method` gets the union of the two shapes.
+Judged worth it; the alternative is silently wrong data.
+
+`method` is a **genuine variant menu**, not the two-indicators-behind-a-flag
+case a `keltner` "band source" flag would have been: all four sets read the
+same three inputs and emit the same ladder shape, differing in constants.
+Two deltas are documented on the study because both are in circulation:
+Woodie's ships the previous-**close** centre `(H + L + 2C)/4` rather than the
+current-session-**open** variant (which would make one menu entry read a
+column the other three don't), and Camarilla's levels are measured from the
+**close**, not from the pivot — which is the definition, and is why its ladder
+is asymmetric about `ppPivot` and why the oracle checks its two halves
+separately.
+
+Aggregation is `previousSessionHlcValues` — `aggregate` + hold-broadcast as
+one pass. Three decisions in it:
+
+- **"Previous session" means the previous session with BARS in this series**,
+  not the previous entry on the calendar. A holiday the feed skipped has no
+  aggregate, and reading the calendar for one would invent a bar.
+- **The aggregates are taken over the cells that are PRESENT**, per column — a
+  bar with a missing `high` still contributes its `low`. That is deliberately
+  _not_ the blank-both-together VWAP rule: there the two sums are numerator
+  and denominator of one ratio, so consuming different bars biases the answer,
+  while `max`/`min`/`last` are three independent order statistics. A column
+  with no present cell in a session yields `undefined`, which propagates
+  through every level.
+- **The seven (or nine) columns share ONE warm-up**, not one each: every level
+  of every method reads all three aggregates, so a missing input blanks the
+  whole ladder together. The first session with bars and every closed-time bar
+  read `undefined`.
+
+**The oracle needed a new input, and that is the one place this batch touched
+the fixture's shape.** Every existing case keys bar `i` at `i` _milliseconds_ —
+bar-indexed, which is all a window study needs and over which no trading
+calendar can be laid (80 ms is not a trading week). Rather than a second
+fixture, the five new cases carry `input.sessionTimes` and **reuse the same 80
+OHLCV bars**: the prices, ranges and volume spikes the other 208 cases are
+checked against are exactly the ones these are checked against. The clock is a
+real one — 30-minute bars stamped at their open on a 09:30–16:00
+America/New_York grid, six sessions (with a holiday on 2024-01-15 so a
+weekend-plus-holiday gap exists), plus **two bars in no session**: one stamped
+exactly at Monday's close, one a Saturday noon print. Without those two the
+fixture could not tell a study that reads `undefined` in closed time from one
+that carries the last session's value across the gap. `6 × 13 + 2 = 80`, so
+the row count still matches every other input, and regeneration left all 208
+existing cases byte-identical.
+
+The references are pandas `groupby`-`cumsum` and
+`groupby().agg().shift(1).reindex(sid)` — genuinely different formulations
+from our sequential reset loops, not transcriptions. The vitest side rebuilds
+the calendar from the **same rules** rather than from a table in the fixture,
+so a disagreement between our Temporal session generation and Python's
+`zoneinfo` about a session boundary fails the case instead of hiding behind a
+shared input. Generator asserts: each session's first bar opens at its own
+typical price; exactly 78 of 80 bars in session; the levels are flat within a
+session; the ladder is ordered; the four methods are separated on R1 (0.05
+floor). Separations printed by the generator: session VWAP sits **12.0162**
+from the non-resetting cumulative form and **1.7147** from the unweighted
+per-session mean of typical price.
+
+**Perf at 1M bars** (`scripts/perf-studies.mjs`, one run; two calendars are
+benchmarked because the O(N + sessions) claim needs evidence, not assertion):
+`sessionVwap` **45.5 ms** on a ~520-session equity calendar (~27 % of bars in
+session) and **55.9 ms** on a ~760-session all-day calendar (100 % in
+session) — the spread is the in-session _fraction_, i.e. how much accumulation
+runs, not the session count; `sessionVwap({ session: column })` 44.1 ms;
+`tagSessions` 15.96 ms. `pivotPoints` **113.6 ms** (`standard`, 7 columns) and
+**146.6 ms** (`camarilla`, 9) — ~16 ms per appended column, which is
+`withColumn`'s cost and nothing else; the walk plus the aggregate pass is the
+~15 ms `tagSessions` shows. References on the same run: `anchoredVwap` 48.5,
+`obv()` 24.7, `vwap()` 94.6, `bollinger()` 115.8, `guppy()` (12 columns)
+332.4, `sma()` 36.4, `ema()` 11.2. A per-bar search over the schedule would be
+1e6 × 5e2 = 5e8 comparisons and could not land within an order of magnitude of
+these numbers.
+
+**Mutation matrix** (29 mutations across the four new source files plus the
+two refactored ones; the tests that could see them —
+`session-kernel` / `studies` / `study-oracle` / `study-missing-cells` /
+`talib-properties` / `fluent` / `tag-sessions` — re-run per mutation; counts
+are FAILING tests; script at `scratchpad/session-mutate.py`):
+
+| n   | mutation                                                                               |
+| --- | -------------------------------------------------------------------------------------- |
+| 32  | `sessionIdValues`: open-stamped lower bound `>=` → `>` (drops each session's open bar) |
+| 3   | `sessionIdValues`: ignore `stamped`, always open-stamp                                 |
+| 8   | `sessionIdValues`: the id is the session INDEX, not its `open`                         |
+| 1   | `sessionIdValues`: cursor skip `<=` → `<`                                              |
+| 33  | `previousSessionHlc`: levels read the CURRENT session (write after the fold)           |
+| 9   | `previousSessionHlc`: `prev` never advances past the first session                     |
+| 12  | `previousSessionHlc`: the session high takes the MIN                                   |
+| 13  | `previousSessionHlc`: the session close is the FIRST close                             |
+| 1   | `previousSessionHlc`: a closed-time bar RESETS the running aggregate                   |
+| 9   | `anchoredVwapValues`: never reset (one group for the whole series)                     |
+| 3   | `anchoredVwapValues`: zero accumulated volume reads `0`                                |
+| 3   | `anchoredVwapValues`: a leading gap is a zero, not a shifted start                     |
+| 16  | `anchoredVwapValues`: a `NaN` group id still accumulates                               |
+| 4   | `pivotLevelValues`: Woodie's uses the standard centre                                  |
+| 3   | `pivotLevelValues`: Fibonacci 0.382 / 0.618 swapped                                    |
+| 3   | `pivotLevelValues`: Camarilla centred on the pivot, not the close                      |
+| 3   | `pivotLevelValues`: Camarilla R4 multiplier `1.1/2` → `1.1/3`                          |
+| 4   | `pivotLevelValues`: standard R3 drops the doubling                                     |
+| 6   | `pivotLevelValues`: standard R1/S1 swapped                                             |
+| 11  | `pivotPoints`: Camarilla's fourth pair is not produced                                 |
+| 1   | `pivotPoints`: the collision guard checks only the first column                        |
+| 1   | `resolveSessionIds`: `stamped` beside the column door is ignored                       |
+| 1   | `resolveSessionIds`: a raw `Session[]` skips validation                                |
+| 1   | `resolveSessionIds`: range start not nudged back one ms                                |
+| 2   | `resolveSessionIds`: range end not nudged forward one ms                               |
+| 1   | `resolveSessionIds`: both doors together no longer throws                              |
+| 1   | `resolveSessionIds`: a missing session column reads all-missing                        |
+| 12  | `sessionVwap`: default output name changed                                             |
+| 3   | `tagSessions`: `stamped` default flipped to `'close'`                                  |
+
+**Two survivors on the first run, both acted on rather than papered over.**
+
+- **Dead code, deleted.** `sessionIdValues` tested `t < s.close` (and
+  `t <= s.close` close-stamped) after the cursor had already skipped every
+  session that ended before `t` — so the close side is true by construction
+  and flipping it failed nothing. Removed, with the invariant written where
+  the test used to be (#703's rule: delete a dead guard, don't test it). It
+  had been carried verbatim from `tagSessions` since the calendar landed.
+- **A missing test, added.** Nothing noticed a closed-time bar resetting
+  `previousSessionHlcValues`' in-progress aggregate. That is reachable only
+  through the **column** door (a real schedule puts closed time _between_
+  sessions, never inside one), and the rule matters there: a session ends
+  when the id CHANGES, not when a bar happens to carry none — otherwise the
+  second half of an interrupted run would read the first half's aggregate as
+  its "previous session". Pinned in the kernel test on ids `1,1,NaN,1,2`.
+
+The two boundary mutations on the calendar narrowing (`start − 1`, `end + 1`)
+also earned a test that did not exist when they were written: a close-stamped
+series whose FIRST bar sits exactly on a session's close, and any series whose
+LAST bar sits exactly on a session's open. Both are reachable, both were
+one-sided misses, and `sessionsInRange` being half-open is why.
+
+**Considered and rejected.**
+
+- **One door only.** Dropping the column door would have made an
+  already-partitioned consumer (the RFC's own stopgap shape) re-walk the
+  calendar; dropping the calendar door would have made every consumer run
+  `tagSessions` first for no gain. Since the second is `columnValues` on top of
+  the same walk, both ship.
+- **A fixed nine-column pivot family.** See above — `undefined` extras make
+  "missing" ambiguous and ship dead series.
+- **Woodie's open-weighted centre**, and a `woodieSource` option to choose.
+  A knob with one conventional value per vendor, on one of four menu entries,
+  reading a column the other three don't. Documented as a delta instead.
+- **A `sessionCumulativeValues` kernel** (a generic per-session running sum)
+  under `sessionVwap`. It would have had exactly one consumer and cost three
+  intermediate arrays; the fused `anchoredVwapValues` has two consumers and is
+  the arithmetic itself.
+- **Making `sessionVwap` a `partitionBy` + `anchoredVwap` recipe** rather than
+  a study. That is what the pre-calendar workaround was, and it is worse on
+  every axis: it needs a per-partition anchor timestamp computed by the
+  caller, it does not blank closed time, and it does not survive the
+  re-assembly type-wise.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

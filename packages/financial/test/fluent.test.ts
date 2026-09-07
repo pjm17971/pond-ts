@@ -104,6 +104,10 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
+  generateSessions,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -1557,5 +1561,73 @@ describe('fluent: the volume and miscellaneous leftovers', () => {
       ).toBe(true);
     }
     expect(chained.length).toBe(90);
+  });
+});
+
+describe('the session-anchored pair through the fluent door', () => {
+  const sessions = generateSessions(
+    { timeZone: 'America/New_York', open: '09:30', close: '16:00' },
+    { from: '2024-01-08', to: '2024-01-10' },
+  );
+  const cal = TradingCalendar.fromSessions(sessions);
+  /** Eight half-hour bars per session over three sessions. */
+  const sessionBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 24 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.7) + 0.2 * i;
+        const o = c - 0.8 * Math.cos(i / 2.3);
+        return [
+          sessions[Math.floor(i / 8)]!.open + (i % 8) * 1_800_000,
+          o,
+          Math.max(o, c) + 0.5 + 0.6 * Math.abs(Math.sin(i / 2.1)),
+          Math.min(o, c) - 0.5 - 0.6 * Math.abs(Math.cos(i / 1.7)),
+          c,
+          1000 + 130 * ((i * 3) % 7),
+        ];
+      }) as Array<[number, number, number, number, number, number]>,
+    });
+
+  it('sessionVwap through the fluent door equals the standalone function', () => {
+    const opts = { sessions: cal } as const;
+    const fluent = sessionBars().sessionVwap(opts);
+    const standalone = sessionVwap(sessionBars(), opts);
+    expect(col(fluent, 'svwap')).toEqual(col(standalone, 'svwap'));
+    expect(col(fluent, 'svwap').some((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('pivotPoints through the fluent door equals the standalone function', () => {
+    const opts = { sessions: cal, method: 'camarilla' } as const;
+    const fluent = sessionBars().pivotPoints(opts);
+    const standalone = pivotPoints(sessionBars(), opts);
+    for (const name of ['ppPivot', 'ppR4', 'ppS4']) {
+      expect(col(fluent, name), name).toEqual(col(standalone, name));
+      expect(
+        col(fluent, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('chains both onto a tagged series through the column door', () => {
+    const chained = cal
+      .tagSessions(sessionBars())
+      .sessionVwap({ session: 'session' })
+      .pivotPoints({ session: 'session', method: 'fibonacci' });
+    for (const name of ['svwap', 'ppPivot', 'ppR3', 'ppS3']) {
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+    expect(chained.length).toBe(24);
   });
 });
