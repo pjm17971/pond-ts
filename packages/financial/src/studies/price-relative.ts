@@ -106,7 +106,6 @@ export function priceRelative<
       `priceRelative benchmark '${benchmark}' is the same column as 'column'; the ratio would be 1 on every bar`,
     );
   }
-  assertColumn(wide, column, 'column');
   assertColumn(wide, benchmark, 'benchmark');
   assertNoColumn(wide, output);
 

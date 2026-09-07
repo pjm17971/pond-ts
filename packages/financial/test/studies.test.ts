@@ -6381,9 +6381,28 @@ describe('correlation', () => {
     expect(() => correlation(b, { benchmark: 'spy' as never })).toThrow(
       /benchmark column 'spy' is not on the series/,
     );
+    // A benchmark that exists but is not numeric throws too — otherwise it
+    // would read all-NaN, the silent-empty outcome the throw exists to stop.
+    const labelled = new TimeSeries({
+      name: 'bars',
+      schema: [...pairSchema, { name: 'label', kind: 'string' }] as const,
+      rows: pairCloses.map(
+        (c, i) =>
+          [i, c, pairBench[i]!, 'spy'] as [number, number, number, string],
+      ),
+    });
     expect(() =>
-      correlation(b, { benchmark: 'bench', column: 'nope' as never }),
-    ).toThrow(/column 'nope' is not on the series/);
+      correlation(labelled, { benchmark: 'label' as never, period: 3 }),
+    ).toThrow(
+      /benchmark column 'label' is a string column, not a number column/,
+    );
+    // A misnamed `column` has a default and reads all-missing, as in every
+    // other study; only the required `benchmark` throws.
+    const typo = correlation(b, {
+      benchmark: 'bench',
+      column: 'nope' as never,
+    });
+    expect(col(typo, 'corr').every((v) => v === undefined)).toBe(true);
   });
 
   it('period longer than the series is all-undefined, length kept', () => {
@@ -6396,6 +6415,43 @@ describe('correlation', () => {
     );
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('correlation on a column that freezes mid-series', () => {
+  it('reads undefined on the flat windows and finite elsewhere — never throws', () => {
+    // The Layer-2 repro for #706: a tick-frozen price that steps every 97
+    // bars, against a moving benchmark. Before the kernel's change counter
+    // this threw `withColumn 'corr': index 126 is -Infinity`.
+    const n = 600;
+    const closes = Array.from(
+      { length: n },
+      (_, i) => 100 + Math.floor(i / 97),
+    );
+    const bench = Array.from(
+      { length: n },
+      (_, i) => 50 + 3 * Math.sin(i / 5) + i * 0.001,
+    );
+    const r = correlation(pairBars(closes, bench), {
+      benchmark: 'bench',
+      period: 30,
+    });
+    const v = col(r, 'corr');
+    let flat = 0;
+    let moving = 0;
+    for (let i = 29; i < n; i += 1) {
+      const isFlat = Math.floor((i - 29) / 97) === Math.floor(i / 97);
+      if (isFlat) {
+        flat += 1;
+        expect(v[i], `corr[${i}]`).toBeUndefined();
+      } else {
+        moving += 1;
+        expect(Number.isFinite(v[i]!), `corr[${i}]`).toBe(true);
+        expect(Math.abs(v[i]!)).toBeLessThanOrEqual(1 + 1e-12);
+      }
+    }
+    expect(flat).toBeGreaterThan(300);
+    expect(moving).toBeGreaterThan(100);
   });
 });
 
@@ -6499,6 +6555,42 @@ describe('beta', () => {
     expect(() =>
       beta(b, { benchmark: 'bench', output: 'bench' as never }),
     ).toThrow(/collides/);
+  });
+});
+
+describe('beta on a benchmark that freezes mid-series', () => {
+  it('reads undefined where the benchmark returns are all zero and finite elsewhere — never throws', () => {
+    // The Layer-2 repro for #706: a stale (forward-filled) benchmark that
+    // steps every 61 bars, `period 5`. Before the change counter this threw
+    // `withColumn 'beta': index 127 is Infinity`.
+    const n = 400;
+    const closes = Array.from(
+      { length: n },
+      (_, i) => 100 + 4 * Math.sin(i / 3) + i * 0.02,
+    );
+    const bench = Array.from(
+      { length: n },
+      (_, i) => 50 + Math.floor(i / 61) * 0.5,
+    );
+    const r = beta(pairBars(closes, bench), { benchmark: 'bench', period: 5 });
+    const v = col(r, 'beta');
+    let flat = 0;
+    let moving = 0;
+    // Bar i's window holds the returns at bars i−4 … i; return k is non-zero
+    // only when the benchmark stepped at bar k (k % 61 === 0, k > 0).
+    for (let i = 5; i < n; i += 1) {
+      let steps = 0;
+      for (let k = i - 4; k <= i; k += 1) if (k % 61 === 0) steps += 1;
+      if (steps === 0) {
+        flat += 1;
+        expect(v[i], `beta[${i}]`).toBeUndefined();
+      } else {
+        moving += 1;
+        expect(Number.isFinite(v[i]!), `beta[${i}]`).toBe(true);
+      }
+    }
+    expect(flat).toBeGreaterThan(300);
+    expect(moving).toBeGreaterThan(20);
   });
 });
 

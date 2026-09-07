@@ -213,6 +213,47 @@ describe('rollingBivariateValues', () => {
     }
   });
 
+  it('a column that goes flat MID-WINDOW reads exact zeros too — the change counter, not the sums', () => {
+    // Layer-2 review of #706: `close = 100 + ⌊i/97⌋` against a moving
+    // benchmark at period 30 threw `±Infinity` into `withColumn` on 416 of
+    // 4 971 rows. Between aligned rebuilds the reverse-Welford removal left a
+    // ~2e-16 residue in `cxy` beside an `m2x` clamped to exact 0. The
+    // globally-flat test above only exercises the rebuild path; this one
+    // exercises every phase of the rebuild cycle.
+    const length = 5000;
+    const period = 30;
+    const x = new Float64Array(length);
+    const y = new Float64Array(length);
+    for (let i = 0; i < length; i += 1) {
+      x[i] = 100 + Math.floor(i / 97);
+      y[i] = 50 + 3 * Math.sin(i / 5) + i * 0.001;
+    }
+    const m = rollingBivariateValues(x, y, period);
+    let flatWindows = 0;
+    for (let i = period - 1; i < length; i += 1) {
+      const flat = Math.floor((i - period + 1) / 97) === Math.floor(i / 97);
+      if (flat) {
+        flatWindows += 1;
+        expect(m.varianceX[i], `varianceX[${i}]`).toBe(0);
+        expect(m.covariance[i], `covariance[${i}]`).toBe(0);
+        expect(
+          m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!),
+        ).toBeNaN();
+      } else {
+        expect(m.varianceX[i], `varianceX[${i}]`).toBeGreaterThan(0);
+        expect(
+          Number.isFinite(
+            m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!),
+          ),
+          `corr[${i}] finite`,
+        ).toBe(true);
+      }
+      expect(m.varianceY[i]).toBeGreaterThan(0);
+    }
+    // The invariance is not vacuous: most windows sit inside a flat run.
+    expect(flatWindows).toBeGreaterThan(3000);
+  });
+
   it('holds its accuracy at 1e6 and 1e12 where the textbook form does not', () => {
     // The claim on the kernel's docstring, pinned. The bound is deliberately
     // loose (1e-12 against a measured 2.4e-15) so it tracks a REGRESSION in

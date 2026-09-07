@@ -44,9 +44,10 @@ export function assertNoColumn(
 }
 
 /**
- * Throw if `column` is **not** on the series — the mirror of
- * {@link assertNoColumn}, for the studies that read a column the caller names
- * with no default to fall back on (`correlation`'s and `beta`'s `benchmark`).
+ * Throw if `column` is **not** on the series, or is not a `number` column —
+ * the mirror of {@link assertNoColumn}, for the studies that read a column
+ * the caller names with no default to fall back on (the two-series family's
+ * `benchmark`).
  *
  * Reading a column that isn't there is otherwise silent: `columnValues` maps
  * an unknown name to an all-`NaN` array, so a typo produces an empty study
@@ -59,17 +60,27 @@ export function assertNoColumn(
  * throws on a misnamed column under `min`/`max` (core's sweep rejects it) and
  * answers all-missing under `avg`/`stdev` (the range-exact path reads it as
  * `NaN`). These studies read neither door — they read `columnValues` directly
- * — so the behaviour is chosen here rather than inherited, and the choice is
- * to **throw** for both `column` and `benchmark`.
+ * — so the behaviour is chosen here rather than inherited. The choice is to
+ * **throw for `benchmark` only**: it is the required option. A misnamed
+ * `column` has a default and reads all-missing, exactly as it does in every
+ * other study (a Layer-2 review of #706 caught the first draft applying the
+ * throw to both, which made `correlation({ column: 'typo' })` the one study
+ * in the package that threw where `sma({ column: 'typo' })` reads empty).
  */
 export function assertColumn(
   series: TimeSeries<SeriesSchema>,
   column: string,
   role: string,
 ): void {
-  if (!series.schema.slice(1).some((c) => c.name === column)) {
+  const col = series.schema.slice(1).find((c) => c.name === column);
+  if (col === undefined) {
     throw new TypeError(
       `${role} column '${column}' is not on the series; join the comparison series in first (align + joinMany) or pass a different '${role}'`,
+    );
+  }
+  if (col.kind !== 'number') {
+    throw new TypeError(
+      `${role} column '${column}' is a ${col.kind} column, not a number column`,
     );
   }
 }

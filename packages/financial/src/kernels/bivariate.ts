@@ -92,16 +92,29 @@ export interface RollingBivariateMoments {
  * `test/bivariate-kernel.test.ts`; the full comparison is
  * `scratchpad/two-series-numerics2.mjs`.
  *
- * ## A flat window needs no guard, and that is measured
+ * ## A flat window reads exact zeros — from a change counter, not the sums
  *
- * If one column is constant across the window its centred deviations are
- * **exactly** zero, so the co-moment update `cxy += dx · (v − my)` adds
- * exactly zero and the removal subtracts exactly zero. The covariance comes
- * back as an exact `0` beside a variance of exact `0`, and every consumer's
- * division is therefore a genuine `0 / 0` → `NaN` → a missing cell, with no
- * branch to write or to test. (Contrast `priceRelative`, whose zero
- * denominator sits at the output with a live numerator and *does* need a
- * guard.) Pinned by a kernel test on an exactly-flat column.
+ * If one column is constant across the window, its variance is `0` and so
+ * is its covariance with anything, and every consumer's division is a
+ * genuine `0 / 0` → `NaN` → a missing cell. The accumulators get that
+ * *exactly* right only on a rebuild row or on a column that has been flat
+ * since the last rebuild: a column that goes flat **mid-window** (a
+ * tick-frozen price, a forward-filled benchmark) leaves the reverse-Welford
+ * removal with a ~2e-16 residue in `cxy` beside an `m2x` clamped to exact
+ * `0`, and `residue / sqrt(0)` is `±Infinity` — which `withColumn` throws
+ * on. Measured (Layer-2 review of #706): `close = 100 + ⌊i/97⌋` against a
+ * moving benchmark threw at `period 30` on 416 of 4 971 rows.
+ *
+ * So the kernel keeps a per-column **change counter** — how many adjacent
+ * pairs inside the window differ, maintained in O(1) per row — and when it
+ * reads `0` the column's variance and the covariance are written as exact
+ * `0` regardless of what the accumulators hold. This is the same device
+ * `linearRegressionValues` uses for its `r²`, and for the same reason: a
+ * flat window is a *fact about the input*, not a value the sums converge
+ * to. (Contrast `priceRelative`, whose zero denominator sits at the output
+ * with a live numerator and *does* need a guard of its own.) Pinned by
+ * kernel tests on a globally flat column and on a column that goes flat
+ * mid-window between rebuilds.
  *
  * O(N) time — one add, one remove and one amortised rebuild step per row —
  * three allocations.
@@ -131,6 +144,12 @@ export function rollingBivariateValues(
   let m2x = 0;
   let m2y = 0;
   let cxy = 0;
+  // Change counters: how many adjacent pairs inside the window differ, per
+  // column. `0` means the column is flat across the whole window, and that
+  // is the one fact the accumulators cannot be trusted to report exactly
+  // between rebuilds — see "A flat window" above.
+  let changesX = 0;
+  let changesY = 0;
   let windowStart = 0;
   let windowEnd = 0;
   // Rows in the window with a missing cell in EITHER column. The window is
@@ -143,6 +162,10 @@ export function rollingBivariateValues(
     while (windowEnd <= i) {
       const u = x[windowEnd]!;
       const v = y[windowEnd]!;
+      if (windowEnd > windowStart) {
+        if (x[windowEnd - 1] !== u) changesX += 1;
+        if (y[windowEnd - 1] !== v) changesY += 1;
+      }
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
@@ -166,6 +189,10 @@ export function rollingBivariateValues(
     while (windowStart < lo) {
       const u = x[windowStart]!;
       const v = y[windowStart]!;
+      if (windowStart + 1 < windowEnd) {
+        if (x[windowStart + 1] !== u) changesX -= 1;
+        if (y[windowStart + 1] !== v) changesY -= 1;
+      }
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
@@ -248,9 +275,13 @@ export function rollingBivariateValues(
     }
 
     if (windowEnd - windowStart < period || incomplete > 0) continue;
-    covariance[i] = cxy / count;
-    varianceX[i] = m2x / count;
-    varianceY[i] = m2y / count;
+    // A flat column has variance exactly 0 and covariance exactly 0 by
+    // definition; the counters say so where the accumulators only nearly do.
+    const flatX = changesX === 0;
+    const flatY = changesY === 0;
+    covariance[i] = flatX || flatY ? 0 : cxy / count;
+    varianceX[i] = flatX ? 0 : m2x / count;
+    varianceY[i] = flatY ? 0 : m2y / count;
   }
 
   return { covariance, varianceX, varianceY };

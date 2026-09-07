@@ -102,9 +102,12 @@ export interface CorrelationOptions<
  *   input returns `0.0` on every emitted bar (TA-Lib guards its zero
  *   denominator and substitutes zero). This is the package's standing rule —
  *   a genuine `0/0` is `undefined`, as in {@link stochastic}'s flat window —
- *   and it is the one deliberate delta from `CORREL`. No guard is written for
- *   it: the covariance of a flat window is **exactly** `0`, so the division
- *   is already `0/0` → `NaN` → a missing cell (pinned by a test).
+ *   and it is the one deliberate delta from `CORREL`. No guard is written
+ *   here: the kernel's change counter reports a flat column's variance and
+ *   covariance as **exactly** `0`, so the division is already `0/0` → `NaN`
+ *   → a missing cell — including a column that goes flat mid-window (a
+ *   tick-frozen price), which the accumulators alone got wrong (pinned by
+ *   tests at both levels).
  * - **Invariant to an independent scale AND shift of either column** — that
  *   is what Pearson's `r` is, and both halves are pinned as property tests.
  *   `benchmark = 2 · column + 5` therefore reads `+1`, and a negative
@@ -141,7 +144,6 @@ export function correlation<
       `correlation benchmark '${benchmark}' is the same column as 'column'; a column correlates with itself at exactly 1`,
     );
   }
-  assertColumn(wide, column, 'column');
   assertColumn(wide, benchmark, 'benchmark');
   assertNoColumn(wide, output);
 
@@ -154,9 +156,9 @@ export function correlation<
   const length = covariance.length;
   const out = new Float64Array(length);
   for (let i = 0; i < length; i += 1) {
-    // No zero-variance guard: a flat window's covariance is exactly `0`
-    // beside a variance of exactly `0`, so this is already `0/0` → `NaN` →
-    // a missing cell. See the kernel's "A flat window needs no guard".
+    // No zero-variance guard: the kernel writes a flat column's variance
+    // and covariance as exact `0` (change counter), so this is already
+    // `0/0` → `NaN` → a missing cell. See the kernel's "A flat window".
     out[i] = covariance[i]! / Math.sqrt(varianceX[i]! * varianceY[i]!);
   }
   return series.withColumn(output, out);

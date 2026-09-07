@@ -1257,7 +1257,11 @@ settles for this family the reducer-dependent inconsistency the volatility tail
 recorded as a carry-forward (`rollingValues` throws under `min`/`max`, answers
 empty under `avg`/`stdev`). These studies read `columnValues` directly and
 inherit neither door, so the answer is chosen here: **`assertColumn`, the
-mirror of `assertNoColumn`.** The kernel-level question is still open.
+mirror of `assertNoColumn`, on `benchmark` only.** The first draft applied it
+to `column` too; the Layer-2 review pointed out that made `correlation({
+column: 'typo' })` the one study in the package that threw where `sma({
+column: 'typo' })` reads empty, so `column` now follows its siblings. The
+kernel-level question is still open.
 
 (2) **`beta` takes prices and differences them inside; `correlation` does
 not.** The asymmetry is TA-Lib's and it is documented rather than reconciled.

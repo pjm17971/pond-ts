@@ -33,8 +33,9 @@ and a doc note, not a second study that differs invisibly.
 - **A study that compares two instruments takes a `benchmark` COLUMN**, not a
   second `TimeSeries`. The consumer aligns and joins first (`align` +
   `TimeSeries.joinMany`) and the study reads two columns of one row, as `atr`
-  reads `high`/`low`/`close`. Guard a required column name with
-  `assertColumn` — it throws, where a defaulted column reads all-missing.
+  reads `high`/`low`/`close`. Guard the required `benchmark` name with
+  `assertColumn` — it throws (missing or non-numeric), where a defaulted
+  `column` reads all-missing exactly as it does in every other study.
 - **Periods are bar counts**, not durations. Validate with `assertPeriod`.
 - **Warm-up is length-preserving**: emit `undefined` for the first `period − 1`
   rows, keep the row count (so the study lines up on the source's time axis).

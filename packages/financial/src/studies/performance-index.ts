@@ -120,7 +120,6 @@ export function performanceIndex<
       `performanceIndex benchmark '${benchmark}' is the same column as 'column'; the reading would be 1 on every bar`,
     );
   }
-  assertColumn(wide, column, 'column');
   assertColumn(wide, benchmark, 'benchmark');
   assertNoColumn(wide, output);
 

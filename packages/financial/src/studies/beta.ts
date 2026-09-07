@@ -95,8 +95,10 @@ export interface BetaOptions<S extends SeriesSchema, Output extends string> {
  *   column blanks `period + 1` rows — the gap bar costs two returns — and
  *   then recovers.
  * - **A flat benchmark window reads `undefined`, and TA-Lib reads `0`.** Its
- *   return variance is zero, and so — exactly — is the covariance, so this is
- *   a genuine `0/0` and needs no guard (see the kernel). **Measured**:
+ *   return variance is zero, and so — exactly — is the covariance (the
+ *   kernel's change counter writes both as exact `0`, even when the
+ *   benchmark froze mid-window), so this is a genuine `0/0` and needs no
+ *   guard here (see the kernel). **Measured**:
  *   `talib.BETA` over a constant first input returns `0.0`. Same deliberate
  *   delta as {@link correlation}'s, for the same reason: `0` would claim "no
  *   relationship" from data that cannot support the claim.
@@ -141,7 +143,6 @@ export function beta<
       `beta benchmark '${benchmark}' is the same column as 'column'; a column has a beta of exactly 1 against itself`,
     );
   }
-  assertColumn(wide, column, 'column');
   assertColumn(wide, benchmark, 'benchmark');
   assertNoColumn(wide, output);
 
@@ -154,9 +155,9 @@ export function beta<
   const length = covariance.length;
   const out = new Float64Array(length);
   for (let i = 0; i < length; i += 1) {
-    // No zero-variance guard: a flat benchmark window gives an exactly-zero
-    // covariance over an exactly-zero variance, so this is `0/0` → `NaN`
-    // already. See the kernel's "A flat window needs no guard".
+    // No zero-variance guard: the kernel writes a flat benchmark window's
+    // return variance and covariance as exact `0` (change counter), so this
+    // is `0/0` → `NaN` already. See the kernel's "A flat window".
     out[i] = covariance[i]! / varianceY[i]!;
   }
   return series.withColumn(output, out);
