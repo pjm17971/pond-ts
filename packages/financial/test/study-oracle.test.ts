@@ -118,6 +118,8 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  ichimoku,
+  zigZag,
   sessionVwap,
   pivotPoints,
   TradingCalendar,
@@ -160,6 +162,13 @@ interface OracleCase {
     step?: number;
     maxStep?: number;
     maPeriod?: number;
+    conversionPeriod?: number;
+    basePeriod?: number;
+    spanBPeriod?: number;
+    displacement?: number;
+    deviation?: number;
+    high?: string;
+    low?: string;
     cyclePeriod?: number;
     limit?: number;
     minTick?: number;
@@ -629,6 +638,23 @@ function run(c: OracleCase): unknown {
       return negativeVolumeIndex(ohlcSeries(), p as Record<string, never>);
     case 'positiveVolumeIndex':
       return positiveVolumeIndex(ohlcSeries(), p as Record<string, never>);
+    case 'ichimoku':
+      return ichimoku(
+        ohlcSeries(),
+        p as {
+          conversionPeriod?: number;
+          basePeriod?: number;
+          spanBPeriod?: number;
+          displacement?: number;
+        },
+      );
+    case 'zigZag':
+      // The long cases are close-only, so they name `high` and `low` as the
+      // close — which is the documented close-based recipe, not a mode.
+      return zigZag(
+        c.input === 'long' ? longSeries() : ohlcSeries(),
+        p as { deviation?: number; high?: never; low?: never },
+      );
     case 'klinger':
       return klinger(
         ohlcSeries(),

@@ -5,6 +5,7 @@ import {
   highestLowestValues,
   percentOfRangeValues,
   rollingExtremesValues,
+  rollingBarExtremesValues,
 } from '../src/kernels/highest-lowest.js';
 
 /*
@@ -336,5 +337,94 @@ describe('rollingExtremesValues — the STRICT array door', () => {
       expect(highest[i], `bar ${i}`).toBe(Math.max(...window));
       expect(lowest[i], `bar ${i}`).toBe(Math.min(...window));
     }
+  });
+});
+
+describe('rollingBarExtremesValues', () => {
+  const f = (xs: number[]) => Float64Array.from(xs);
+
+  it('takes the max of `highs` against the min of `lows`, hand-computed', () => {
+    const highs = f([12, 14, 13, 16, 15]);
+    const lows = f([10, 11, 9, 12, 13]);
+    const { highest, lowest } = rollingBarExtremesValues(highs, lows, 3);
+    expect(Array.from(highest)).toEqual([NaN, NaN, 14, 16, 16]);
+    expect(Array.from(lowest)).toEqual([NaN, NaN, 9, 9, 9]);
+  });
+
+  it('is the pair two `rollingExtremesValues` calls would give, on clean input', () => {
+    // The door exists to halve the work, not to change the answer.
+    const n = 300;
+    const highs = new Float64Array(n);
+    const lows = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) {
+      const c = 100 + 9 * Math.sin(i / 3.1) + 4 * Math.cos(i / 7.3);
+      highs[i] = c + 0.5;
+      lows[i] = c - 0.7;
+    }
+    for (const period of [1, 2, 13, 52]) {
+      const paired = rollingBarExtremesValues(highs, lows, period);
+      expect(Array.from(paired.highest), `period ${period}`).toEqual(
+        Array.from(rollingExtremesValues(highs, period).highest),
+      );
+      expect(Array.from(paired.lowest), `period ${period}`).toEqual(
+        Array.from(rollingExtremesValues(lows, period).lowest),
+      );
+    }
+  });
+
+  it('blanks BOTH outputs when either array has a hole in the window', () => {
+    // Stricter than a per-array rule, deliberately: a range whose top is
+    // known and whose bottom is not is not a range.
+    const highs = f([12, NaN, 13, 16, 15, 17]);
+    const lows = f([10, 11, 9, NaN, 13, 14]);
+    const { highest, lowest } = rollingBarExtremesValues(highs, lows, 2);
+    // Windows holding bar 1 (a missing high) or bar 3 (a missing low) are
+    // blank on both sides; bar 5's window (bars 4–5) is complete.
+    expect(
+      Array.from(highest).map((x) => (Number.isNaN(x) ? null : x)),
+    ).toEqual([null, null, null, null, null, 17]);
+    expect(Array.from(lowest).map((x) => (Number.isNaN(x) ? null : x))).toEqual(
+      [null, null, null, null, null, 13],
+    );
+  });
+
+  it('agrees with a brute-force scan on a long gappy input', () => {
+    const n = 400;
+    const period = 11;
+    const highs = new Float64Array(n);
+    const lows = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) {
+      const c = 100 + 9 * Math.sin(i / 3.1) + 4 * Math.cos(i / 7.3);
+      highs[i] = i % 31 === 7 ? NaN : c + 0.5;
+      lows[i] = i % 43 === 19 ? NaN : c - 0.7;
+    }
+    const { highest, lowest } = rollingBarExtremesValues(highs, lows, period);
+    for (let i = 0; i < n; i += 1) {
+      if (i < period - 1) {
+        expect(Number.isNaN(highest[i]!), `bar ${i}`).toBe(true);
+        continue;
+      }
+      const hw = Array.from(highs.slice(i - period + 1, i + 1));
+      const lw = Array.from(lows.slice(i - period + 1, i + 1));
+      if ([...hw, ...lw].some((x) => Number.isNaN(x))) {
+        expect(Number.isNaN(highest[i]!), `bar ${i}`).toBe(true);
+        expect(Number.isNaN(lowest[i]!), `bar ${i}`).toBe(true);
+        continue;
+      }
+      expect(highest[i], `bar ${i}`).toBe(Math.max(...hw));
+      expect(lowest[i], `bar ${i}`).toBe(Math.min(...lw));
+    }
+  });
+
+  it('reserves no more ring than the series is long', () => {
+    // The #709 lesson: a period far longer than the input must not allocate
+    // for a window it can never fill.
+    const { highest, lowest } = rollingBarExtremesValues(
+      f([1, 2, 3]),
+      f([0, 1, 2]),
+      5_000_000,
+    );
+    expect(Array.from(highest).every((x) => Number.isNaN(x))).toBe(true);
+    expect(Array.from(lowest).every((x) => Number.isNaN(x))).toBe(true);
   });
 });

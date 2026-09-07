@@ -115,6 +115,9 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  ichimoku,
+  ichimokuOffsets,
+  zigZag,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -6898,7 +6901,7 @@ describe('the two-series oracle cases are in the fixture', () => {
     // + 5 session-anchored (1 sessionVwap, 4 pivotPoints — one per method).
     // A case that silently disappears takes its study's only value check
     // with it, and nothing else would notice.
-    expect(fixture.cases).toHaveLength(213);
+    expect(fixture.cases).toHaveLength(220);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -11726,5 +11729,460 @@ describe('pivotPoints', () => {
   it('an empty session list leaves every level missing', () => {
     const r = pivotPoints(sessionBars(), { sessions: [] });
     expect(col(r, 'ppPivot').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Ichimoku (corpus §6.4, G5) and ZigZag (§6.4, G6).                           */
+/* -------------------------------------------------------------------------- */
+
+describe('ichimoku', () => {
+  // Tiny windows so every line is hand-computable. Highs 12 14 13 16 15,
+  // lows 10 11 9 12 13, closes 11 13 10 15 14 — the close is never on an
+  // extreme and the range is never constant.
+  const tiny: Array<[number, number, number]> = [
+    [12, 10, 11],
+    [14, 11, 13],
+    [13, 9, 10],
+    [16, 12, 15],
+    [15, 13, 14],
+  ];
+  const opts = {
+    conversionPeriod: 2,
+    basePeriod: 3,
+    spanBPeriod: 4,
+  } as const;
+
+  it('is (HH + LL) / 2 per window, hand-computed on all five lines', () => {
+    const r = ichimoku(hlc(tiny), opts);
+    // Tenkan over 2 bars: (14+10)/2, (14+9)/2, (16+9)/2, (16+12)/2.
+    expect(col(r, 'ichiTenkan')).toEqual([undefined, 12, 11.5, 12.5, 14]);
+    // Kijun over 3: (14+9)/2, (16+9)/2, (16+9)/2.
+    expect(col(r, 'ichiKijun')).toEqual([
+      undefined,
+      undefined,
+      11.5,
+      12.5,
+      12.5,
+    ]);
+    // Senkou A is the mean of those two, on Kijun's warm-up.
+    expect(col(r, 'ichiSenkouA')).toEqual([
+      undefined,
+      undefined,
+      11.5,
+      12.5,
+      13.25,
+    ]);
+    // Senkou B over 4: (16+9)/2 twice.
+    expect(col(r, 'ichiSenkouB')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      12.5,
+      12.5,
+    ]);
+    // Chikou IS the close — undisplaced, so it starts at bar 0.
+    expect(col(r, 'ichiChikou')).toEqual([11, 13, 10, 15, 14]);
+  });
+
+  it('reads the bar’s high and low, NOT the close', () => {
+    // The common slip. Pointing `high` and `low` at the close is a different
+    // line on every bar here — which is the whole reason the oracle measures
+    // the separation.
+    const overClose = ichimoku(hlc(tiny), {
+      ...opts,
+      high: 'close',
+      low: 'close',
+    });
+    expect(col(overClose, 'ichiTenkan')).toEqual([
+      undefined,
+      12,
+      11.5,
+      12.5,
+      14.5,
+    ]);
+    expect(col(overClose, 'ichiTenkan')).not.toEqual(
+      col(ichimoku(hlc(tiny), opts), 'ichiTenkan'),
+    );
+  });
+
+  it('warms each column up on its OWN window (9 / 26 / 26 / 52 / 0)', () => {
+    const r = ichimoku(hlc(k2Closes(80).map((c) => [c + 1, c - 1, c])));
+    const first = (name: string) =>
+      col(r, name).findIndex((x) => x !== undefined);
+    expect(first('ichiTenkan')).toBe(8);
+    expect(first('ichiKijun')).toBe(25);
+    expect(first('ichiSenkouA')).toBe(25);
+    expect(first('ichiSenkouB')).toBe(51);
+    expect(first('ichiChikou')).toBe(0);
+  });
+
+  it('displacement changes NO value — it is metadata for the chart', () => {
+    // The G5 decision: the study keys every column to the bar it is computed
+    // from and shifts nothing. A caller who sets `displacement` and expects
+    // the data to move gets the identical columns, which is what this pins.
+    const base = ichimoku(hlc(tiny), opts);
+    const moved = ichimoku(hlc(tiny), { ...opts, displacement: 5 });
+    for (const name of [
+      'ichiTenkan',
+      'ichiKijun',
+      'ichiSenkouA',
+      'ichiSenkouB',
+      'ichiChikou',
+    ]) {
+      expect(col(moved, name), name).toEqual(col(base, name));
+    }
+  });
+
+  it('a hole in `high` blanks each line for its own window, and no more', () => {
+    // Bar 3's high is missing. `rollingExtremesValues` is STRICT, so a line
+    // is blank for exactly the windows that contain the hole: Tenkan (2) on
+    // bars 3–4, Kijun (3) on 3–5, Senkou B (4) on 3–6. Senkou A takes the
+    // later of the two it averages, so it matches Kijun.
+    const gappy = ohlcvGappy([
+      [12, 10, 11, 1],
+      [14, 11, 13, 1],
+      [13, 9, 10, 1],
+      [undefined, 12, 15, 1],
+      [15, 13, 14, 1],
+      [17, 14, 16, 1],
+      [18, 15, 17, 1],
+      [19, 16, 18, 1],
+    ]);
+    const r = ichimoku(gappy as never, opts);
+    const missing = (name: string) =>
+      col(r, name)
+        .map((x, i) => (x === undefined ? i : -1))
+        .filter((i) => i >= 0);
+    expect(missing('ichiTenkan')).toEqual([0, 3, 4]);
+    expect(missing('ichiKijun')).toEqual([0, 1, 3, 4, 5]);
+    expect(missing('ichiSenkouA')).toEqual([0, 1, 3, 4, 5]);
+    expect(missing('ichiSenkouB')).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // The close is untouched by the hole in `high`.
+    expect(missing('ichiChikou')).toEqual([]);
+  });
+
+  it('a hole in `close` blanks Chikou alone — the others never read it', () => {
+    const gappy = ohlcvGappy([
+      [12, 10, 11, 1],
+      [14, 11, 13, 1],
+      [13, 9, undefined, 1],
+      [16, 12, 15, 1],
+      [15, 13, 14, 1],
+    ]);
+    const r = ichimoku(gappy as never, opts);
+    expect(col(r, 'ichiChikou')).toEqual([11, 13, undefined, 15, 14]);
+    expect(col(r, 'ichiTenkan')).toEqual([undefined, 12, 11.5, 12.5, 14]);
+  });
+
+  it('a flat window is the price itself, not a missing cell', () => {
+    // (HH + LL) / 2 with HH === LL is a fact, not a 0/0 — contrast a
+    // stochastic, where the range is a denominator.
+    const flat = hlc([
+      [10, 10, 10],
+      [10, 10, 10],
+      [10, 10, 10],
+    ]);
+    expect(
+      col(ichimoku(flat, { ...opts, spanBPeriod: 3 }), 'ichiTenkan'),
+    ).toEqual([undefined, 10, 10]);
+  });
+
+  it('rejects bad periods and a column collision, and honours the prefix', () => {
+    const b = hlc(tiny);
+    expect(() => ichimoku(b, { conversionPeriod: 0 })).toThrow(
+      /conversionPeriod/,
+    );
+    expect(() => ichimoku(b, { basePeriod: 1.5 })).toThrow(/basePeriod/);
+    expect(() => ichimoku(b, { spanBPeriod: -1 })).toThrow(/spanBPeriod/);
+    expect(() => ichimoku(b, { displacement: 0 })).toThrow(/displacement/);
+    const once = ichimoku(b, opts);
+    expect(() => ichimoku(once as never, opts)).toThrow(/collides/);
+    const renamed = ichimoku(b, { ...opts, prefix: 'cloud' });
+    expect(col(renamed, 'cloudTenkan')).toEqual([
+      undefined,
+      12,
+      11.5,
+      12.5,
+      14,
+    ]);
+    expect(col(renamed, 'ichiTenkan').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('ichimokuOffsets', () => {
+  it('names the two spans forward and Chikou back, by column', () => {
+    expect(ichimokuOffsets()).toEqual({
+      ichiTenkan: 0,
+      ichiKijun: 0,
+      ichiSenkouA: 26,
+      ichiSenkouB: 26,
+      ichiChikou: -26,
+    });
+  });
+
+  it('reads the same two fields the study does, from the same object', () => {
+    const opts = { conversionPeriod: 5, displacement: 13, prefix: 'ich2' };
+    // The point of the helper: hand it the study's own options and the names
+    // and the signs cannot drift apart.
+    const r = ichimoku(hlc([[12, 10, 11]]), opts);
+    const offsets = ichimokuOffsets(opts);
+    expect(Object.keys(offsets).sort()).toEqual(
+      r.schema
+        .slice(1)
+        .map((c) => c.name)
+        .filter((n) => n.startsWith('ich2'))
+        .sort(),
+    );
+    expect(offsets.ich2SenkouB).toBe(13);
+    expect(offsets.ich2Chikou).toBe(-13);
+  });
+
+  it('rejects a displacement that is not a bar count', () => {
+    expect(() => ichimokuOffsets({ displacement: 0 })).toThrow(/displacement/);
+    expect(() => ichimokuOffsets({ displacement: 2.5 })).toThrow(
+      /displacement/,
+    );
+  });
+});
+
+describe('zigZag', () => {
+  // A hand-walked path at a 10% threshold: up to 120, down to 98, up to 125,
+  // then a provisional down leg. Four confirmed pivots, so three completed
+  // legs and one that never ends.
+  const swing: Array<[number, number, number]> = [
+    [101, 99, 100],
+    [105, 100, 103],
+    [112, 104, 110],
+    [120, 110, 118],
+    [115, 106, 108],
+    [108, 100, 102],
+    [104, 98, 100],
+    [103, 99, 101],
+    [110, 105, 108],
+    [118, 112, 116],
+    [125, 118, 123],
+    [120, 110, 112],
+    [115, 108, 110],
+  ];
+  const dev10 = { deviation: 10 } as const;
+
+  it('confirms a pivot at the extreme’s OWN bar, hand-computed', () => {
+    const v = col(zigZag(hlc(swing), dev10), 'zzPivot');
+    // Bar 0's low is the first pivot (confirmed at bar 2, when the high
+    // reached 112 — 13.1% above it); 120 at bar 3, 98 at bar 6, 125 at 10.
+    expect(v).toEqual([
+      99,
+      undefined,
+      undefined,
+      120,
+      undefined,
+      undefined,
+      98,
+      undefined,
+      undefined,
+      undefined,
+      125,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('names the leg each bar belongs to, provisional tail included', () => {
+    const v = col(zigZag(hlc(swing), dev10), 'zzDirection');
+    expect(v).toEqual([1, 1, 1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1]);
+  });
+
+  it('interpolates between pivots, and stops at the last confirmed one', () => {
+    const v = col(zigZag(hlc(swing), dev10), 'zzLine');
+    expect(v.slice(0, 4)).toEqual([99, 106, 113, 120]);
+    expect(v[4]).toBeCloseTo(120 - 22 / 3, 12);
+    expect(v[5]).toBeCloseTo(120 - 44 / 3, 12);
+    expect(v.slice(6, 11)).toEqual([98, 104.75, 111.5, 118.25, 125]);
+    // The provisional leg has no end, so it has no line.
+    expect(v[11]).toBeUndefined();
+    expect(v[12]).toBeUndefined();
+  });
+
+  it('a bar cannot reverse itself — its high and low have no order', () => {
+    // Bar 2 makes a new high AND a low 23% below it. Nothing is confirmed:
+    // the counter-extreme is only ever taken from a LATER bar.
+    const r = zigZag(
+      hlc([
+        [100, 100, 100],
+        [112, 111, 111],
+        [130, 100, 120],
+        [128, 127, 127],
+      ]),
+      dev10,
+    );
+    expect(col(r, 'zzPivot')).toEqual([100, undefined, undefined, undefined]);
+    expect(col(r, 'zzDirection')).toEqual([1, 1, 1, 1]);
+  });
+
+  it('a run whose extremes fall on ONE bar seeds nothing until they part', () => {
+    // Bar 0 is both the highest high and the lowest low, a 20% range. The
+    // seed has no order to read, so nothing fires until bar 3 puts a lower
+    // low after the high.
+    const r = zigZag(
+      hlc([
+        [120, 100, 110],
+        [119, 101, 110],
+        [118, 102, 110],
+        [110, 99, 105],
+      ]),
+      dev10,
+    );
+    expect(col(r, 'zzPivot')).toEqual([120, undefined, undefined, undefined]);
+    expect(col(r, 'zzDirection')).toEqual([-1, -1, -1, -1]);
+    // One pivot, so no completed leg and no line anywhere.
+    expect(col(r, 'zzLine').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('a gap discards the provisional leg, re-seeds, and draws no line across', () => {
+    // [PND-SFOLD] plus the one addition ZigZag needs: bar 2's high of 120
+    // never saw the reversal that would confirm it, so it is NOT a pivot,
+    // and the two runs' pivots are never joined by a line.
+    const gappy = ohlcvGappy([
+      [100, 100, 100, 1],
+      [112, 111, 111, 1],
+      [120, 119, 119, 1],
+      [undefined, 118, 118, 1],
+      [105, 104, 104, 1],
+      [95, 94, 94, 1],
+    ]);
+    const r = zigZag(gappy as never, dev10);
+    expect(col(r, 'zzPivot')).toEqual([
+      100,
+      undefined,
+      undefined,
+      undefined,
+      105,
+      undefined,
+    ]);
+    expect(col(r, 'zzDirection')).toEqual([1, 1, 1, undefined, -1, -1]);
+    expect(col(r, 'zzLine').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('the threshold is a PERCENT of the extreme, not a price move', () => {
+    // The same path 10× higher confirms the same pivots on the same bars; a
+    // build reading `deviation` as an absolute move would not.
+    const scaled = hlc(swing.map(([h, l, c]) => [h * 10, l * 10, c * 10]));
+    expect(col(zigZag(scaled, dev10), 'zzDirection')).toEqual(
+      col(zigZag(hlc(swing), dev10), 'zzDirection'),
+    );
+    expect(col(zigZag(scaled, dev10), 'zzPivot')[3]).toBe(1200);
+  });
+
+  it('a tighter deviation finds more pivots, a looser one fewer', () => {
+    const count = (deviation: number) =>
+      col(zigZag(hlc(swing), { deviation }), 'zzPivot').filter(
+        (x) => x !== undefined,
+      ).length;
+    expect(count(5)).toBeGreaterThanOrEqual(count(10));
+    expect(count(25)).toBeLessThan(count(10));
+  });
+
+  it('the close-based fork needs no option — point high and low at it', () => {
+    const overClose = zigZag(hlc(swing), {
+      ...dev10,
+      high: 'close',
+      low: 'close',
+    });
+    const v = col(overClose, 'zzPivot').filter((x) => x !== undefined);
+    expect(v.length).toBeGreaterThanOrEqual(3);
+    // Different extremes, so different pivot prices than the high/low run.
+    expect(v).not.toEqual(
+      col(zigZag(hlc(swing), dev10), 'zzPivot').filter((x) => x !== undefined),
+    );
+  });
+
+  it('only ever emits ±1 in the direction column', () => {
+    for (const x of col(zigZag(hlc(swing), { deviation: 2 }), 'zzDirection')) {
+      if (x !== undefined) expect([-1, 1]).toContain(x);
+    }
+  });
+
+  it('a retracement EXACTLY at the threshold confirms (the boundary is closed)', () => {
+    // Surfaced by the mutation matrix: `>=` -> `>` survived every other
+    // test, because no fixture landed on the threshold. At `deviation: 50`
+    // the arithmetic is exact in floats (0.5 x 100 = 50), so the boundary is
+    // reachable rather than approximately reachable.
+    //          the seed rise is 100 on a base of 100 (100%), then a 50%
+    //          retracement from 200, then a 50% rise from 100.
+    const r = zigZag(
+      hlc([
+        [100, 100, 100],
+        [200, 200, 200],
+        [150, 100, 120],
+        [150, 100, 120],
+      ]),
+      { deviation: 50 },
+    );
+    expect(col(r, 'zzPivot')).toEqual([100, 200, 100, undefined]);
+  });
+
+  it('the SEED’s threshold is closed too', () => {
+    // The seed reads the same comparison on a different pair. At
+    // `deviation: 100` the rise from 100 to 200 is exactly 100%.
+    const r = zigZag(
+      hlc([
+        [100, 100, 100],
+        [200, 200, 200],
+      ]),
+      { deviation: 100 },
+    );
+    expect(col(r, 'zzPivot')).toEqual([100, undefined]);
+    // …and one basis point more of threshold is one pivot fewer.
+    const tighter = zigZag(
+      hlc([
+        [100, 100, 100],
+        [200, 200, 200],
+      ]),
+      { deviation: 100.01 },
+    );
+    expect(col(tighter, 'zzPivot')).toEqual([undefined, undefined]);
+  });
+
+  it('a bar cannot reverse itself on a FALLING leg either', () => {
+    // The mirror of the rising-leg case, and the one the mutation matrix
+    // showed no test covered: bar 2 makes a new low AND a high 37% above it,
+    // and confirms nothing.
+    const r = zigZag(
+      hlc([
+        [100, 100, 100],
+        [89, 88, 88],
+        [110, 80, 95],
+        [85, 84, 84],
+      ]),
+      dev10,
+    );
+    expect(col(r, 'zzPivot')).toEqual([100, undefined, undefined, undefined]);
+    expect(col(r, 'zzDirection')).toEqual([-1, -1, -1, -1]);
+  });
+
+  it('the line AT a pivot is that pivot exactly', () => {
+    // A joint on the two columns: a consumer reading `zzLine` where
+    // `zzPivot` is set must get the same number, not one within a rounding.
+    const r = zigZag(hlc(swing), dev10);
+    const pivots = col(r, 'zzPivot');
+    const line = col(r, 'zzLine');
+    const bars = pivots
+      .map((x, i) => (x === undefined ? -1 : i))
+      .filter((i) => i >= 0);
+    expect(bars.length).toBe(4);
+    for (const i of bars) expect(line[i], `bar ${i}`).toBe(pivots[i]);
+  });
+
+  it('rejects a bad deviation and a column collision, and honours the prefix', () => {
+    const b = hlc(swing);
+    expect(() => zigZag(b, { deviation: 0 })).toThrow(/deviation/);
+    expect(() => zigZag(b, { deviation: -1 })).toThrow(/deviation/);
+    expect(() => zigZag(b, { deviation: Infinity })).toThrow(/deviation/);
+    const once = zigZag(b, dev10);
+    expect(() => zigZag(once as never, dev10)).toThrow(/collides/);
+    const renamed = zigZag(b, { ...dev10, prefix: 'swing' });
+    expect(col(renamed, 'swingPivot')[3]).toBe(120);
+    expect(col(renamed, 'zzPivot').every((x) => x === undefined)).toBe(true);
   });
 });

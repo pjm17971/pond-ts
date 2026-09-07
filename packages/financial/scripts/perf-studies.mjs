@@ -96,6 +96,8 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  ichimoku,
+  zigZag,
   sessionVwap,
   pivotPoints,
   TradingCalendar,
@@ -727,6 +729,30 @@ function scaleResults(length) {
       ),
       benchmark('pivotPoints({ session: column, standard })', () =>
         pivotPoints(tagged, { session: 'session' }),
+      ),
+      // Ichimoku and ZigZag (assessment 6.4, G5 / G6). Ichimoku is THREE
+      // `rollingBarExtremesValues` passes (one walk per window, the max of
+      // `high` beside the min of `low`) plus two elementwise passes, so it
+      // should sit flat in the periods and near three times the deque
+      // kernel — the 9/26/52 and 20/60/120 pair below is what shows the
+      // flatness, and it is the only bench the paired door has, being
+      // internal. Built on the SINGLE-array door it measured 433.6 ms at
+      // 1M against 213 ms of unavoidable deque work; the pairing brought it
+      // to 280.7. ZigZag is one
+      // `foldRows` pass plus a walk over the confirmed pivots, so it should
+      // sit near `foldRows(2 cols)`; a tighter deviation confirms far more
+      // pivots and must not change that.
+      benchmark('ichimoku({ 9, 26, 52 })', () => ichimoku(series)),
+      benchmark('ichimoku({ 20, 60, 120 })', () =>
+        ichimoku(series, {
+          conversionPeriod: 20,
+          basePeriod: 60,
+          spanBPeriod: 120,
+        }),
+      ),
+      benchmark('zigZag({ deviation: 5 })', () => zigZag(series)),
+      benchmark('zigZag({ deviation: 0.5 })', () =>
+        zigZag(series, { deviation: 0.5 }),
       ),
     ],
   };

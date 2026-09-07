@@ -2592,6 +2592,187 @@ one-sided misses, and `sessionsInRange` being half-open is why.
   caller, it does not blank closed time, and it does not survive the
   re-assembly type-wise.
 
+**Landed — Ichimoku and ZigZag (§6.4, G5/G6 in their batch forms).**
+`ichimoku` (five columns) and `zigZag` (three), plus one non-study export,
+`ichimokuOffsets`; seven oracle cases, 215 in the fixture. Both are the
+corpus' most-used remaining studies and both were blocked on a _gap_ rather
+than on math — G5 (forward displacement past the series end) and G6
+(repainting). Neither gap was closed; each study was shipped in the form that
+does not need it, and the residue was turned into two named asks. Decisions:
+
+(1) **Ichimoku ships undisplaced, and that includes Chikou, which COULD have
+been shifted.** The forward half has no honest alternative — `shift(cols, -n)`
+moves values across rows that already exist and there are no rows past the
+last bar, so faking them means inventing bar times, which off a daily grid is
+[PND-TCAL] arithmetic. The backward half is the real decision: `shift(col,
+-displacement)` lands entirely on existing rows, and TradingView plots Chikou
+that way (its point at bar `i` is `close[i + 26]`). It ships **raw** anyway,
+for two reasons. First, **a pre-shifted Chikou is a look-ahead column** — its
+value at row `i` is not knowable at row `i`, and every other column in this
+package is causal; joined into a feature matrix it leaks the future with
+nothing in its name or type to say so. Second, it would make the study's own
+rule non-uniform: with Chikou raw the rule is one sentence (_no column is
+displaced; the chart offsets `+displacement` on the spans and `−displacement`
+on Chikou_), and pre-shifting one of three means a consumer has to remember
+which. The plotted form is a documented one-liner
+(`.shift('ichiChikou', -26)`) carrying the look-ahead warning at the point of
+use.
+
+(2) **`displacement` is therefore an option that changes no value, and that is
+stated three times rather than hidden.** It is validated as a bar count,
+echoed by `ichimokuOffsets`, and pinned by an **oracle case** — a run at
+`displacement: 5` whose expected arrays are byte-identical to the default's,
+so a future build that quietly starts shifting fails the fixture rather than
+a doc review. The alternative (drop the option from the study and put it only
+on the offsets helper) was rejected: Ichimoku's published parameter set is
+9/26/52/**26**, and a study that cannot be told its own fourth number reads
+as incomplete. Measured, the number is not decorative — had the study applied
+it, Senkou A would move by up to 11.81, Senkou B 5.11 and Chikou 17.60 on a
+fixture spanning 98.65…118.01.
+
+(3) **`ichimokuOffsets` is the data-side half of charts ask C2, and it is a
+map, not a number.** It returns `{ ichiTenkan: 0, ichiKijun: 0, ichiSenkouA:
++displacement, ichiSenkouB: +displacement, ichiChikou: −displacement }`, keyed
+by the _actual_ prefixed column names, so a chart cannot get a sign or a name
+wrong; pass it the same options object the study got. The precedent is
+`GUPPY_SHORT_PERIODS` — a number a chart has to restate is a number a chart
+gets wrong. **The ask this creates:** C2 (per-layer `xOffsetBars` plus forward
+projection space in bars) and then C3 (a band between two _crossing_ columns
+with a two-colour `fillBy: 'order'`), without which the cloud cannot be drawn
+at all. Both were already on the charts list; this study is the first shipped
+consumer, so they are now blocking a landed study rather than a hypothetical
+one.
+
+(4) **ZigZag makes every column repaint, deliberately, rather than mixing one
+causal column in with two that do not.** `zzPivot` sits on the bar its extreme
+_occurred_, which is only known when a later bar confirms it; `zzLine`
+interpolates towards a pivot still in the future; and `zzDirection` was the
+one that could have gone either way — the machine's _causal_ belief (still
+hunting a high) or the leg a bar _retrospectively_ belongs to. The
+retrospective reading shipped, because a single causal column among two
+repainting ones is a trap that reads as a safety guarantee, and because
+`zzDirection` is what `zzLine` is drawn from. The docstring says the whole
+study is a description of the past and names the one causal reading a strategy
+can take (the bar the direction _changes_ is the confirmation bar).
+
+(5) **No `zzProvisional` column; the last leg is documented as absent.** It
+would be `undefined` on every row but one, and the number it holds — the
+running extreme since the last pivot — is a three-line recipe from data
+already on the series (`zzDirection`'s tail names the side, the last non-null
+`zzPivot` names the start). `zzDirection` _does_ cover the provisional leg,
+since its direction is the one thing about it that is known, so the tail is
+not blank. **What the live layer would need (the G6 repaint contract):** a
+`LiveSeries` form cannot revise `zzPivot[k]` after emitting bar `k`, so it
+needs either (a) a _provisional tail_ convention — the last leg emitted as
+revisable state alongside the append-only confirmed pivots, with a "pivot
+confirmed at bar `i`, located at bar `k`" event rather than a column write —
+or (b) recompute-on-window semantics with a documented revision horizon. (a)
+is the smaller change and matches what the batch study already knows: the
+confirmation bar and the pivot bar are different numbers, and only the first
+is ever "now". Neither is built; this is the record of what the shape has to
+be.
+
+(6) **A gap resets the machine AND discards the leg in force — the K6 rule
+plus one addition.** [PND-SFOLD] resets; ZigZag additionally throws away the
+provisional leg's extreme, because confirming it would mean inventing the
+reversal that was never seen, and draws no line across the hole (the
+interpolation runs between consecutive pivots _of the same run_). The
+alternative considered was `wilderValues`' rule — end the study at the first
+gap — and it was rejected on the kernel's own argument: Wilder stops because
+its seed is a `period`-bar mean and restarting restates the statistic, while
+ZigZag's seed is two bars and a threshold, which is exactly what a chart does
+when a halted instrument resumes. Resetting costs the one leg that spanned
+the hole and nothing else.
+
+(7) **Two rules fall out of "a bar's high and low have no order", and both
+are load-bearing.** The counter-extreme is only ever taken from a bar _after_
+the extreme's, so (a) a single wide bar never confirms a pivot on itself — a
+5% intraday range at `deviation: 5` would otherwise put two pivots on one row
+— and (b) a seed whose running high and running low are the same bar fires
+nothing until they part. Together they give the invariant the oracle asserts:
+pivot bars are **strictly increasing** and at most one is confirmed per bar.
+Neither rule is separable on the oracle's input (no bar there has a 5% range,
+and the fixture's first bar is not both extremes), so both are pinned by unit
+tests, and the generator asserts the invariant on every case so the day the
+fixture grows such a bar the claim stops being quietly true.
+
+(8) **The close-based fork needed no option, because the column names already
+are one.** `zigZag(bars, { high: 'close', low: 'close' })` is the close-based
+study exactly — zero branches in the machine, since the fold reads two input
+arrays and the fork is which arrays. It ships as its own oracle case rather
+than as a `source: 'close'` mode, and the same shape composes over another
+study's output (`{ high: 'sma', low: 'sma' }`). Measured on the 80-bar
+fixture: at 2% the fork finds 4 pivots against high/low's 6; at 5% it finds
+the same three bars at prices up to 0.85 away.
+
+(9) **`deviation` is a percent, so the property test asserts the true
+statement and not the convenient one.** Scaling every price leaves the pivot
+bars and `zzDirection` identical and multiplies `zzPivot`/`zzLine` — that is a
+real invariance. **Shifting** is not: lifting the same path by 5000 makes a 5%
+threshold worth ~250 points, which no swing in the fixture reaches, so the
+pivots vanish entirely. The test asserts exactly that (all-`undefined`), which
+is a stronger claim than "the columns differ". Ichimoku, by contrast, is
+equivariant both ways and is asserted both ways.
+
+(10) **The perf check turned up one real optimization and it is a kernel, not
+a study tweak.** Ichimoku's three windows want the max of `high` beside the
+min of `low`, and `rollingExtremesValues` returns the max **and** min of a
+_single_ array — so the first build called it twice per window and discarded
+half of each answer. Measured at 1M bars, that waste _was_ the study: six
+deque passes at **414 ms** against a 404 ms end-to-end study, with the five
+`withColumn` appends at 67 ms and the elementwise work invisible. The
+three passes a paired door makes cost **213 ms**, so
+`rollingBarExtremesValues(highs, lows, period)` was added to
+`kernels/highest-lowest.ts` — one walk, two deques reading different arrays,
+one shared missing counter — and on the package bench `ichimoku` went
+**433.6 → 280.7 ms at 1M (−35%)**, and at 20/60/120 **438.4 → 266.9 (−39%)**,
+from 1.75× `donchian` to 1.14×. (The 213 ms figure above is the deque work
+alone; the bench measures the whole study, so it lands above it, not on it.) It is internal (not on the barrel),
+so the study's own two bench entries are its only benchmark, which the perf
+script now says out loud.
+
+The kernel's missing-cell rule is **strict over BOTH arrays together** — a
+bar is blank on both outputs unless all `period` cells of `high` _and_ `low`
+are finite. That is stricter than a per-array rule and it reproduces exactly
+what the two-call build gave, because `NaN` propagated through
+`(HH + LL) / 2` anyway; stating it in the kernel is the #710 SMI rule (two
+inputs consumed through separate passes must blank the same bars) moved from
+a study's arithmetic into the door. It is what puts Ichimoku's warm-ups at
+8/25/25/51/0 and gives the interior-gap rule its shape (a hole costs each
+line exactly its own window, then it recovers). Ichimoku's lines are
+Donchian midlines with a different missing-cell rule (strict here,
+skip-and-carry-on there); that is noted on both rather than reconciled, per
+the house convention.
+
+(11) **The mutation matrix bought three tests and one deletion, and the one
+survivor is provably equivalent.** 23 mutations, 22 killed. The first pass
+left four alive and each turned out to be a different kind of finding:
+`>=` → `>` on the reversal threshold survived because **no fixture landed on
+the threshold** (at `deviation: 50` the arithmetic is exact in floats, so a
+100 → 200 → 100 path hits it twice and now pins the closed boundary, seed
+branch included); "a bar may reverse itself" survived on the **falling** leg
+only, the rising mirror having been tested and the falling one not; the
+line's endpoint pinning survived because it was **dead** — swept over 3M
+random `(from, to, span)` triples, `from + (to − from)·span/span` never once
+missed `to` — so the interpolation was restructured to write the endpoints
+from the pivots and the interior only, which makes both assignments live and
+keeps the "the line AT a pivot IS that pivot" guarantee as code rather than
+as luck. The survivor that remains, `<` → `<=` on the direction fill, is
+**equivalent by construction**: each leg owns `[start, stop)` and the next
+iteration overwrites `stop` with its own direction, so the extra write
+changes nothing. It is recorded in a comment beside the loop rather than
+chased, the `rollingExtremesValues` precedent.
+
+Perf at 1M bars (the full before/after table is in the commit message):
+`ichimoku({9, 26, 52})` **280.7 ms** and `ichimoku({20, 60, 120})` **266.9** —
+**flat in the periods**, as three deque passes must be; `zigZag({deviation:
+5})` **82.2** and at `0.5` **80.4** — flat in the threshold, as a fold plus a
+walk over the confirmed pivots must be. References on the same run:
+`donchian()` 247.2, `stochastic()` 340.9, `foldRows(2 cols)` 18.3, `sma()`
+37.8, `ema()` 12.0. ZigZag is compose-only; Ichimoku's cost is entirely its
+kernel's, which is why the optimization went there rather than into the
+study.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

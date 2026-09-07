@@ -97,6 +97,8 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  ichimoku,
+  zigZag,
   sessionVwap,
   pivotPoints,
   TradingCalendar,
@@ -3274,5 +3276,122 @@ describe('the session-anchored studies place their gaps', () => {
     const r = pivotPoints(allHighsMissing as never, { sessions: cal });
     expect(nullCountOf(r, 'ppPivot')).toBe(4);
     expect(nullCountOf(r, 'ppS3')).toBe(4);
+  });
+});
+
+describe('[PND-STUDYBOX] Ichimoku and ZigZag: where the missing rows land', () => {
+  /** 60 swinging bars, optionally with one cell punched out. The swing is
+   *  wide enough (±7 on ~100) that ZigZag confirms pivots on both sides of
+   *  a hole at bar 30. */
+  const swingBars = (hole?: { at: number; column: 'high' | 'low' | 'close' }) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.1) + 0.25 * i;
+        const row: Array<number | undefined> = [
+          i * MINUTE,
+          c + 0.4 + 0.5 * Math.abs(Math.sin(i / 2.1)),
+          c - 0.4 - 0.5 * Math.abs(Math.cos(i / 1.7)),
+          c,
+        ];
+        if (hole !== undefined && hole.at === i) {
+          row[{ high: 1, low: 2, close: 3 }[hole.column]] = undefined;
+        }
+        return row;
+      }) as never,
+    });
+
+  const ichiOpts = {
+    conversionPeriod: 4,
+    basePeriod: 6,
+    spanBPeriod: 9,
+  } as const;
+
+  it('ichimoku: a hole in `high` costs each line exactly its OWN window', () => {
+    // `rollingExtremesValues` is the STRICT door, so a hole blanks precisely
+    // the windows that contain it — 4 bars for Tenkan, 6 for Kijun, 9 for
+    // Senkou B — and the line then comes back. Senkou A is the mean of the
+    // first two and takes the longer of their two blanks.
+    const clean = ichimoku(swingBars(), ichiOpts);
+    expect(nullCountOf(clean, 'ichiTenkan')).toBe(3);
+    expect(nullCountOf(clean, 'ichiKijun')).toBe(5);
+    expect(nullCountOf(clean, 'ichiSenkouA')).toBe(5);
+    expect(nullCountOf(clean, 'ichiSenkouB')).toBe(8);
+    expect(nullCountOf(clean, 'ichiChikou')).toBe(0);
+
+    const holed = ichimoku(swingBars({ at: 30, column: 'high' }), ichiOpts);
+    for (const [name, span] of [
+      ['ichiTenkan', 4],
+      ['ichiKijun', 6],
+      ['ichiSenkouA', 6],
+      ['ichiSenkouB', 9],
+    ] as const) {
+      const v = cells(holed, name);
+      expect(typeof v[29], name).toBe('number');
+      for (let i = 30; i < 30 + span; i += 1) {
+        expect(v[i], `${name} bar ${i}`).toBeUndefined();
+      }
+      expect(typeof v[30 + span], name).toBe('number');
+    }
+    // The close is a different input: Chikou never notices.
+    expect(nullCountOf(holed, 'ichiChikou')).toBe(0);
+  });
+
+  it('ichimoku: a hole in `close` blanks Chikou alone', () => {
+    const holed = ichimoku(swingBars({ at: 30, column: 'close' }), ichiOpts);
+    expect(nullCountOf(holed, 'ichiChikou')).toBe(1);
+    expect(cells(holed, 'ichiChikou')[30]).toBeUndefined();
+    // The four windowed lines read `high` and `low` only.
+    expect(nullCountOf(holed, 'ichiTenkan')).toBe(3);
+    expect(nullCountOf(holed, 'ichiSenkouB')).toBe(8);
+  });
+
+  it('zigZag: a gap ends the leg, and no line is drawn across it', () => {
+    const opts = { deviation: 3 } as const;
+    const clean = zigZag(swingBars(), opts);
+    const cleanLine = cells(clean, 'zzLine');
+    // The control: on clean bars a leg spans bar 30.
+    expect(typeof cleanLine[30]).toBe('number');
+
+    const holed = zigZag(swingBars({ at: 30, column: 'low' }), opts);
+    const pivots = cells(holed, 'zzPivot');
+    const line = cells(holed, 'zzLine');
+    const direction = cells(holed, 'zzDirection');
+
+    // The gap bar itself reports nothing on any of the three.
+    expect(pivots[30]).toBeUndefined();
+    expect(line[30]).toBeUndefined();
+    expect(direction[30]).toBeUndefined();
+
+    // Both runs confirm pivots, so the machine really did re-seed.
+    const bars = pivots
+      .map((x, i) => (typeof x === 'number' ? i : -1))
+      .filter((i) => i >= 0);
+    expect(bars.some((i) => i < 30)).toBe(true);
+    expect(bars.some((i) => i > 30)).toBe(true);
+
+    // The FIRST run's line stops at its last confirmed pivot — the leg in
+    // force at the hole was provisional and is discarded, not confirmed
+    // against the bars on the far side.
+    const lastBefore = Math.max(...bars.filter((i) => i < 30));
+    for (let i = lastBefore + 1; i <= 30; i += 1) {
+      expect(line[i], `bar ${i}`).toBeUndefined();
+    }
+    // …and the second run's line starts at ITS first pivot, never earlier.
+    const firstAfter = Math.min(...bars.filter((i) => i > 30));
+    for (let i = 31; i < firstAfter; i += 1) {
+      expect(line[i], `bar ${i}`).toBeUndefined();
+    }
+    expect(typeof line[firstAfter]).toBe('number');
+    // The direction column DOES cover the provisional leg on both sides —
+    // its direction is the one thing about it that is known.
+    expect(typeof direction[29]).toBe('number');
+    expect(typeof direction[31]).toBe('number');
   });
 });

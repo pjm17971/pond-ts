@@ -147,6 +147,8 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  ichimoku,
+  zigZag,
   sessionVwap,
   pivotPoints,
   TradingCalendar,
@@ -5710,5 +5712,170 @@ describe('[talib] pivotPoints is scale- and shift-EQUIVARIANT on every column', 
     expect(apart('standard', 'woodie')).toBeGreaterThan(0.1);
     expect(apart('standard', 'camarilla')).toBeGreaterThan(0.1);
     expect(apart('fibonacci', 'camarilla')).toBeGreaterThan(0.1);
+  });
+});
+
+/* ========================================================================== */
+/* Ichimoku (corpus §6.4, G5) and ZigZag (§6.4, G6).                          */
+/*                                                                            */
+/*  ichimoku   price-EQUIVARIANT both ways: every line is a midpoint of two   */
+/*      prices or the close itself, so a scale factor and a shift both pass   */
+/*      straight through. `displacement` moves nothing — the study keys       */
+/*      every column to the bar it is computed from.                          */
+/*  zigZag     price-scale EQUIVARIANT and emphatically NOT shift-invariant:  */
+/*      `deviation` is a PERCENT, so scaling leaves the pivot bars alone and  */
+/*      multiplies the prices, while adding a constant changes what a         */
+/*      percent is worth and dissolves the pivots altogether. The true        */
+/*      statement is asserted, not the convenient one.                        */
+/* ========================================================================== */
+
+describe('[talib] ichimoku is equivariant in price, both ways', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const NAMES = [
+    'ichiTenkan',
+    'ichiKijun',
+    'ichiSenkouA',
+    'ichiSenkouB',
+    'ichiChikou',
+  ] as const;
+
+  it('scaling every price scales all five lines', () => {
+    const base = ichimoku(volMiscBars() as never);
+    const scaled = ichimoku(volMiscBars(140, K) as never);
+    for (const name of NAMES) {
+      expectLinear(col(base, name), col(scaled, name), K);
+    }
+    // The control: the fixture must actually reach the longest window.
+    expect(col(base, 'ichiSenkouB').filter((x) => x !== undefined).length).toBe(
+      140 - 51,
+    );
+  });
+
+  it('SHIFTING every price shifts all five lines by the same constant', () => {
+    const base = ichimoku(volMiscBars() as never);
+    const moved = ichimoku(volMiscBars(140, 1, SHIFT) as never);
+    for (const name of NAMES) {
+      const a = col(base, name);
+      const b = col(moved, name);
+      expect(a.length).toBe(b.length);
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] === undefined) expect(b[i]).toBeUndefined();
+        else expect(b[i]!).toBeCloseTo(a[i]! + SHIFT, 6);
+      }
+    }
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    const withSma = sma(volMiscBars() as never, {
+      period: 5,
+      output: 'smooth',
+    });
+    const chained = ichimoku(withSma, {
+      high: 'smooth',
+      low: 'smooth',
+      close: 'smooth',
+    });
+    const v = col(chained, 'ichiTenkan');
+    expect(v).toHaveLength(140);
+    // The SMA's four-bar head is STRICT input to the deque door, so it adds
+    // to the 9-bar window rather than being skipped: 4 + 8.
+    expect(firstValid(v)).toBe(12);
+    expect(firstValid(col(chained, 'ichiChikou'))).toBe(4);
+  });
+
+  it('all-missing input yields five all-missing columns', () => {
+    const r = ichimoku(emptyVolMiscBars(60) as never);
+    for (const name of NAMES) {
+      const v = col(r, name);
+      expect(v).toHaveLength(60);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] zigZag scales with price and is NOT shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+
+  it('scaling every price keeps the pivot bars and multiplies the prices', () => {
+    const base = zigZag(volMiscBars() as never);
+    const scaled = zigZag(volMiscBars(140, K) as never);
+    const pivots = col(base, 'zzPivot');
+    // The control: the fixture must actually turn, several times.
+    expect(pivots.filter((x) => x !== undefined).length).toBeGreaterThanOrEqual(
+      3,
+    );
+    expectLinear(pivots, col(scaled, 'zzPivot'), K);
+    expectLinear(col(base, 'zzLine'), col(scaled, 'zzLine'), K);
+    expectSame(col(base, 'zzDirection'), col(scaled, 'zzDirection'));
+  });
+
+  it('ADDING a constant changes the study — a percent is not a distance', () => {
+    // The honest statement. A 5% threshold on prices near 100 is ~5 points;
+    // on the same path lifted by 5000 it is ~250, which no swing here
+    // reaches, so the pivots vanish entirely rather than merely moving.
+    const base = col(zigZag(volMiscBars() as never), 'zzPivot');
+    const moved = col(zigZag(volMiscBars(140, 1, SHIFT) as never), 'zzPivot');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(moved.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    const withSma = sma(volMiscBars() as never, {
+      period: 5,
+      output: 'smooth',
+    });
+    const v = col(
+      zigZag(withSma, { high: 'smooth', low: 'smooth' }),
+      'zzDirection',
+    );
+    expect(v).toHaveLength(140);
+    // The SMA's head is a gap, so the machine seeds after it — the first
+    // pivot cannot land before bar 4.
+    expect(firstValid(v)).toBeGreaterThanOrEqual(4);
+    expect(v.some((x) => x === 1) && v.some((x) => x === -1)).toBe(true);
+  });
+
+  it('all-missing input yields three all-missing columns', () => {
+    const r = zigZag(emptyVolMiscBars(60) as never);
+    for (const name of ['zzPivot', 'zzDirection', 'zzLine']) {
+      const v = col(r, name);
+      expect(v).toHaveLength(60);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('the line never leaves the band its two pivots span', () => {
+    // A linear interpolation cannot leave the interval between its
+    // endpoints — the bound a build that extrapolated would break.
+    const r = zigZag(volMiscBars() as never);
+    const pivots = col(r, 'zzPivot');
+    const line = col(r, 'zzLine');
+    const bars = pivots
+      .map((x, i) => (x === undefined ? -1 : i))
+      .filter((i) => i >= 0);
+    for (let k = 0; k + 1 < bars.length; k += 1) {
+      const from = pivots[bars[k]!]!;
+      const to = pivots[bars[k + 1]!]!;
+      const lo = Math.min(from, to);
+      const hi = Math.max(from, to);
+      for (let j = bars[k]!; j <= bars[k + 1]!; j += 1) {
+        expect(line[j]).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(line[j]).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    }
+    // …and it stops at the last confirmed pivot, leaving the provisional leg
+    // without a line.
+    expect(line[bars.at(-1)! + 1]).toBeUndefined();
+    expect(line.at(-1)).toBeUndefined();
   });
 });
