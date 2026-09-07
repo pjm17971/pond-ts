@@ -12172,6 +12172,46 @@ describe('zigZag', () => {
       .filter((i) => i >= 0);
     expect(bars.length).toBe(4);
     for (const i of bars) expect(line[i], `bar ${i}`).toBe(pivots[i]);
+    // The one exception, named in the docstring: a run's ONLY confirmed
+    // pivot has no completed leg on either side, so it carries no line.
+    const lone = zigZag(
+      hlc([
+        [101, 100, 100],
+        [113, 111, 112],
+        [120, 118, 119],
+      ]),
+      dev10,
+    );
+    expect(col(lone, 'zzPivot')[0]).toBe(100);
+    expect(col(lone, 'zzLine')[0]).toBeUndefined();
+  });
+
+  it('ties keep the EARLIER bar — an equal extreme does not move the pivot', () => {
+    // A double top at 120 on bars 2 and 3: the pivot sits on bar 2, the
+    // first of the equal highs, and the line is measured from there. The
+    // opposite of `highest`, where the newest equal bar wins.
+    const r = zigZag(
+      hlc([
+        [101, 100, 100],
+        [113, 111, 112],
+        [120, 118, 119],
+        [120, 117, 118],
+        [110, 105, 106],
+        [100, 98, 99],
+      ]),
+      dev10,
+    );
+    expect(col(r, 'zzPivot')).toEqual([
+      100,
+      undefined,
+      120,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(col(r, 'zzDirection')).toEqual([1, 1, -1, -1, -1, -1]);
+    expect(col(r, 'zzLine').slice(0, 3)).toEqual([100, 110, 120]);
+    expect(col(r, 'zzLine')[3]).toBeUndefined();
   });
 
   it('rejects a bad deviation and a column collision, and honours the prefix', () => {

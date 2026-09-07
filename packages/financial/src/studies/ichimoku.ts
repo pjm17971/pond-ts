@@ -63,7 +63,7 @@ function midpointValues(
 ): Float64Array {
   // ONE walk per window, via the paired door. The single-array
   // `rollingExtremesValues` would take two calls here and discard half of
-  // each answer, which measured as this study'''s whole cost at 1M bars: six
+  // each answer, which measured as this study's whole cost at 1M bars: six
   // passes at 414 ms against 213 ms for the three below.
   const { highest, lowest } = rollingBarExtremesValues(highs, lows, period);
   const out = new Float64Array(highs.length);
@@ -111,8 +111,11 @@ function midpointValues(
  *
  * The backward half — Chikou — **could** have been pre-shifted, since
  * `shift(col, −displacement)` lands entirely on rows that exist, and that is
- * what TradingView plots (its Chikou point at bar `i` is `close[i + 26]`).
- * It ships **raw** anyway, and this is the deliberate part:
+ * the textbook plot (the Chikou point at bar `i` is `close[i + 26]`; note
+ * that TradingView's built-in shifts both halves by `displacement − 1`, one
+ * bar fewer, a platform choice rather than the definition — the chart-side
+ * offset absorbs either). It ships **raw** anyway, and this is the
+ * deliberate part:
  *
  * - **A pre-shifted Chikou is a look-ahead column.** Its value at row `i`
  *   is not knowable at row `i`, and every other column in this package is

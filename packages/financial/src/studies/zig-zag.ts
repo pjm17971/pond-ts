@@ -267,6 +267,13 @@ function zigZagStep(
  * `${prefix}Direction` **does** cover the provisional leg — its direction is
  * the one thing about it that is known — so the tail is not blank.
  *
+ * `${prefix}Line` is set at a pivot exactly when that pivot starts or ends a
+ * **completed** leg, and there it is the pivot's own value, not an
+ * interpolation of it. The one pivot that carries no line is a run's
+ * **only** confirmed pivot (the last one of a run has the leg before it, so
+ * its line is set): `Pivot` is `100` on that bar and `Line` is `undefined`,
+ * because there is no completed leg on either side of it to draw.
+ *
  * ## Missing cells: a gap RESETS the machine, and ends the leg
  *
  * The [PND-SFOLD] rule, applied with the one addition ZigZag needs: a hole
@@ -317,6 +324,13 @@ function zigZagStep(
  *   with it. **Adding** a constant does *not* leave the study alone: it
  *   changes what a percent is worth, and both the pivot set and the columns
  *   move. That is asserted as a real property, not waived.
+ * - **Ties keep the EARLIER bar.** A later bar whose high merely *equals*
+ *   the running extreme does not move it (the comparison is strict), so a
+ *   double top's pivot sits on the first of the equal bars, and the leg's
+ *   line is measured from there. This is the opposite of `highest` /
+ *   `lowest`, where the newest equal bar wins; here a bar that added no
+ *   price information is not allowed to move a pivot that a later reversal
+ *   will confirm. Pinned by a unit test.
  * - **`deviation` is a percent, not a bar count**, so it is validated as a
  *   positive finite number rather than by `assertPeriod`.
  * - **Prices are assumed positive**, as everywhere a percent is taken in this
@@ -385,7 +399,7 @@ export function zigZag<
     // provisional leg — to the last bar that run saw.
     const stop = hasNext ? state.pivotIdx[k + 1]! : state.segmentEnd[segment]!;
     const legDir = state.pivotDir[k]!;
-    // Each leg owns [start, stop): the next pivot'''s bar belongs to the NEXT
+    // Each leg owns [start, stop): the next pivot's bar belongs to the NEXT
     // leg, and writes it on the next iteration. (Writing it here too would
     // change nothing — iteration k+1 overwrites it — but half-open spans are
     // what make that true without having to check.)

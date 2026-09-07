@@ -2605,8 +2605,10 @@ been shifted.** The forward half has no honest alternative — `shift(cols, -n)`
 moves values across rows that already exist and there are no rows past the
 last bar, so faking them means inventing bar times, which off a daily grid is
 [PND-TCAL] arithmetic. The backward half is the real decision: `shift(col,
--displacement)` lands entirely on existing rows, and TradingView plots Chikou
-that way (its point at bar `i` is `close[i + 26]`). It ships **raw** anyway,
+-displacement)` lands entirely on existing rows, and the textbook plot draws
+Chikou that way (its point at bar `i` is `close[i + 26]`; TradingView's
+built-in uses `displacement − 1` on both halves, a platform choice the
+chart-side offset absorbs). It ships **raw** anyway,
 for two reasons. First, **a pre-shifted Chikou is a look-ahead column** — its
 value at row `i` is not knowable at row `i`, and every other column in this
 package is causal; joined into a feature matrix it leaks the future with
