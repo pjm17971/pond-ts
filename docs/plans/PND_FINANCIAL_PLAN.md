@@ -1679,7 +1679,7 @@ the fill-with-previous-close answer, and it reached the docstring, a test
 comment, the CHANGELOG, this plan and the PR body before the Layer-2
 reviewer re-ran TA-Lib.
 
-### [PND-SFOLD] — K6 stateful-fold kernel — **landed**, private to the package
+### [PND-SFOLD] — K6 stateful-fold kernel — **landed** in the package, not promoted to core
 
 `foldRows` (`packages/financial/src/kernels/fold.ts`) ships with six
 consumers; the design, the gap rule and what a **core** `foldRows` would need
@@ -1688,6 +1688,20 @@ before it earns promotion are written up under "Landed — the state machines
 whether this becomes a core `scanRows` — is gated on a consumer outside
 `@pond-ts/financial` wanting it, and the four things it would need are
 recorded so that decision starts from evidence.
+
+_Layer-2 review of #708, recorded._ The non-TA-Lib oracles here (`superTrend`,
+`atrTrailingStop`, NVI/PVI, `klinger`) are pandas transcriptions of the shipped
+step functions — same `run` counter, same branch order — so they are
+**change-detectors**, not independent derivations; the separation probes
+against the plausible wrong turns carry the correctness weight, and a
+third-party re-derivation of Klinger and NVI is the open ask a Codex pass
+would answer. The SuperTrend flip-order claim was over-general: the structural
+argument holds where the code states it (`multiplier ≥ 1`, close inside its
+own bar); below 1 the reviewer's random-walk data separated 55 of 168 sets
+(all at 0.2 or 0.5, up to 5.0 price units) while this fixture reads 0.0 across
+the whole grid (re-measured at integration, 0 of 133 — fixture luck, not a
+guarantee). The note is scoped and the generator asserts the equality only at
+multiplier 1, the regime the argument covers.
 
 ### [PND-TCAL] — Trading-time deferred items
 

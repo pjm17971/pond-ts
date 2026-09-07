@@ -138,8 +138,10 @@ function volumeIndex(
  *   and `>=` for PVI — silently makes the two indices partition every bar
  *   and gives PVI a bar Fosback does not give it.
  * - **`start` is a base, not data.** `1000` is Fosback's; some vendors use
- *   `100` or `0`-based percentages. It scales the whole line, so the study
- *   is *invariant* to it in shape.
+ *   `100`, and some chart a `0`-based percent form (`100 · (index/start −
+ *   1)`), which is a *different column* — the index is multiplicative, so
+ *   a `0` start would be `0` forever, and `start` rejects it. It scales the
+ *   whole line, so the study is *invariant* to it in shape.
  * - **The return is a simple price return**, `close[i]/close[i−1] − 1`, on
  *   whichever `column` is named — this is a ratio index, not a sum, so
  *   there is no `× volume` term anywhere (contrast {@link priceVolumeTrend},

@@ -3348,10 +3348,15 @@ def super_trend(period: int = 10, mult: float = 3.0, min_flips: int = 1) -> dict
     # `prevLower <= close < basicLower`; and `close < basicLower` needs
     # `multiplier * ATR < mid - close <= (high - low)/2`, which the ATR bounds
     # out for any multiplier at or above 1 whenever the close sits inside its
-    # own bar. Measured: 0.0 apart across every (period 2..20) x
-    # (multiplier 0.2..4.0) pair on this fixture. Asserted as an EQUALITY so
-    # that a future fixture which does separate them fails loudly here rather
-    # than leaving the claim stale.
+    # own bar. That is a STRUCTURAL guarantee only for multiplier >= 1: below
+    # 1 the two readings can and do separate on other data (a Layer-2
+    # reviewer's random walks separated 55 of 168 period x multiplier sets,
+    # all at 0.2 or 0.5, by up to 5.0 price units), and this fixture's 0.0
+    # across (period 2..20) x (multiplier 0.2..4.0) — re-measured at
+    # integration, 0 of 133 — is fixture luck below 1. So the assert pins the
+    # regime the argument covers, (7, 1.0), as an EQUALITY: a future fixture
+    # that separates them THERE fails loudly rather than leaving the claim
+    # stale.
     flip_alt, _ = _super_trend_values(7, 1.0, flip_on_ratcheted=False)
     d_flip = float(np.nanmax(np.abs(base - flip_alt)))
     assert d_flip == 0.0, (
@@ -3498,10 +3503,12 @@ def _klinger_force(alt_factor: bool = False, simplified: bool = False) -> pd.Ser
         t = 1 if hlc > prev_hlc else -1
         cm = cm + dm if t == trend else prev_dm + dm
         trend = t
+        # No `cm == 0` guard, matching the shipped TS: cm == 0 forces dm == 0
+        # and the ratio is 0/0 -> NaN on its own (mutation testing found the
+        # TS guard dead and deleted it; keeping one here would be an
+        # edit-divergence trap).
         if simplified:
             out[i] = vo[i] * t * 100.0
-        elif cm == 0.0:
-            out[i] = np.nan
         elif alt_factor:
             out[i] = vo[i] * abs(2.0 * (dm / cm) - 1.0) * t * 100.0
         else:
@@ -3540,6 +3547,11 @@ def klinger(fast: int = 34, slow: int = 55, signal: int = 13) -> dict:
     simp_force = _klinger_force(simplified=True)
     simp = _ema_first_seed(simp_force, fast) - _ema_first_seed(simp_force, slow)
     d_simp = float(np.nanmax(np.abs(line - simp)))
+    assert d_simp > 1e-6, (
+        "Klinger's original force and TradingView's simplified form read the "
+        f"same on this fixture (|delta| = {d_simp}) - the two definitions are "
+        "not distinguishable here and the docstring's separation is stale"
+    )
     ours_span = float(np.nanmax(line) - np.nanmin(line))
     simp_span = float(np.nanmax(simp) - np.nanmin(simp))
     print(
@@ -4515,10 +4527,12 @@ out = {
                 "separates the no-ratchet and ratchet-on-current-close "
                 "readings; the flip-order reading (previous band instead of "
                 "the just-ratcheted one) is UNOBSERVABLE whenever the close "
-                "sits inside its own bar and multiplier >= 1, measured 0.0 "
-                "apart across period 2..20 x multiplier 0.2..4.0, and is "
-                "asserted as an equality so a future fixture that does "
-                "separate it fails loudly. Two columns: st "
+                "sits inside its own bar and multiplier >= 1 — a structural "
+                "guarantee in that regime only (below 1 it separates on other "
+                "data; this fixture reads 0.0 across period 2..20 x multiplier "
+                "0.2..4.0 by luck) — and is asserted as an equality at "
+                "multiplier 1 so a future fixture that separates it there "
+                "fails loudly. Two columns: st "
                 "(the live band) and stTrend (+1 = line below price). The "
                 "bands themselves are NOT emitted - `st` already is whichever "
                 "band is live. Seed: on the first finite-ATR bar both bands "

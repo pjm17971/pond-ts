@@ -189,7 +189,8 @@ both; `sma()` went 569 → 56 ms, `ema()` 603 → 2.5 ms).
   helper**, never a bespoke event loop in the study — the per-bar stateful
   fold PSAR and SuperTrend need is `foldRows` ([PND-SFOLD]), which walks the
   columns once and costs 11.3 ms at 1M rows over a two-column no-op step
-  against `ema()`'s 6.3 ms.
+  against `ema()`'s 6.3 ms **on the same run** — 1.8× (the quieter
+  reference run below reads `ema()` at 2.5 ms; compare ratios, not runs).
 - **Touching a kernel means running the bench.** Compose-only studies inherit
   kernel performance and need no benchmark of their own. Any change to
   `kernels/*.ts` — or a new kernel helper — runs
