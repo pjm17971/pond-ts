@@ -344,7 +344,7 @@ describe('linearRegressionAt', () => {
     // intercept of every changing window with BigInt rationals and pins the
     // kernel to them, so neither the trigger nor the pin can hide a wrong
     // value. It fails with the fix reverted.
-    it('every changing window reads within 1e-9 of the exact r², slope and intercept', () => {
+    it('every changing window reads within 1e-12 of the exact r² and intercept and relatively within 1e-9 of the exact slope', () => {
       const rnd = lcg(4242);
       let windows = 0;
       let unresolved = 0;
@@ -370,18 +370,29 @@ describe('linearRegressionAt', () => {
                 windows += 1;
                 const exact = exactRegression(w);
                 const tag = `@${magnitude}/${step}/${period} bar ${i}`;
+                // Relative, with a floor of ε times the window's own spread over the
+                // period (an exactly-zero exact slope on a symmetric window still
+                // leaves the kernel a rounding-sized value): no absolute 1e-9 — a
+                // near-flat window's exact slope is ~1e-19 and an absolute clause pinned
+                // nothing there (the pre-fix kernel passed one at 5e-4 of tolerance
+                // while 1477× off relative — second-pass review of #707).
+                let lo = w[0]!;
+                let hi = w[0]!;
+                for (let k = 1; k < period; k += 1) {
+                  if (w[k]! < lo) lo = w[k]!;
+                  if (w[k]! > hi) hi = w[k]!;
+                }
                 expect(
                   Math.abs(slope[i]! - exact.slope),
                   `slope ${tag}`,
                 ).toBeLessThanOrEqual(
-                  1e-9 * Math.max(1, Math.abs(exact.slope)),
+                  1e-9 * Math.abs(exact.slope) +
+                    (Number.EPSILON * (hi - lo)) / period,
                 );
                 expect(
                   Math.abs(intercept[i]! - exact.intercept),
                   `intercept ${tag}`,
-                ).toBeLessThanOrEqual(
-                  1e-9 * Math.max(1, Math.abs(exact.intercept)),
-                );
+                ).toBeLessThanOrEqual(1e-12 * Math.abs(exact.intercept));
                 if (Number.isNaN(r2[i])) {
                   unresolved += 1;
                   continue;
@@ -391,7 +402,7 @@ describe('linearRegressionAt', () => {
                 expect(
                   Math.abs(r2[i]! - exact.r2),
                   `r2 ${tag}`,
-                ).toBeLessThanOrEqual(1e-9);
+                ).toBeLessThanOrEqual(1e-12);
               }
             }
           }

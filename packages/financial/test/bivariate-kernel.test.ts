@@ -385,7 +385,7 @@ describe('rollingBivariateValues', () => {
     expect(checked).toBeGreaterThan(5000);
   });
 
-  it('every changing window reads within 1e-9 of the exact correlation on plateau-stepped, ulp-jittered input', () => {
+  it('every changing window reads within 1e-12 of the exact correlation on plateau-stepped, ulp-jittered input', () => {
     // Reviewed 2026-09-07 (Layer-2 on #707): the first fix enforced
     // "changes ⇒ variance > 0" but not the range — a tiny positive variance
     // beside a covariance residue read |corr| = 20.5. This pins the emitted
@@ -426,16 +426,16 @@ describe('rollingBivariateValues', () => {
               expect(
                 Math.abs(corr - exact.corr),
                 `corr ${tag}`,
-              ).toBeLessThanOrEqual(1e-9);
+              ).toBeLessThanOrEqual(1e-12);
               // The moments themselves, relative to the exact ones.
               expect(
                 Math.abs(m.varianceX[i]! - exact.varianceX),
                 `varX value ${tag}`,
-              ).toBeLessThanOrEqual(1e-9 * exact.varianceX);
+              ).toBeLessThanOrEqual(1e-12 * exact.varianceX);
               expect(
                 Math.abs(m.varianceY[i]! - exact.varianceY),
                 `varY value ${tag}`,
-              ).toBeLessThanOrEqual(1e-9 * exact.varianceY);
+              ).toBeLessThanOrEqual(1e-12 * exact.varianceY);
             }
           }
         }

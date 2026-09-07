@@ -123,9 +123,16 @@ export interface CorrelationOptions<
  *   post-merge review of #706 found windows where the kernel's moments
  *   were residues and the ratio read `|r| = 20.5`, and the answer to that
  *   is in the kernel — it rebuilds any window whose moments are
- *   ill-conditioned, verified against an exact reference — so the only
- *   overshoot that can reach this line is rounding, and rounding is pinned.
+ *   ill-conditioned, verified against an exact reference — so what reaches
+ *   this line is rounding, and only rounding (within `1e-6`) is pinned;
+ *   anything further passes through unclamped, so a genuine anomaly is
+ *   still loud rather than laundered into a plausible ±1.
  */
+/** How far past ±1 a reading may sit and still be called rounding. Measured
+ *  overshoot on an exactly anti-correlated pair is 2e-16; the kernel's
+ *  Cauchy–Schwarz rebuild slack is 1e-6 on r², i.e. 5e-7 on r. */
+const PIN_SLACK = 1e-6;
+
 export function correlation<
   S extends SeriesSchema,
   const Output extends string = 'corr',
@@ -162,11 +169,26 @@ export function correlation<
     // No zero-variance guard: the kernel writes a flat column's variance
     // and covariance as exact `0` (change counter), so this is already
     // `0/0` → `NaN` → a missing cell. See the kernel's "A flat window".
-    const r = covariance[i]! / Math.sqrt(varianceX[i]! * varianceY[i]!);
+    // `sqrt(vx · vy)` is the bit-exact form on an affine pair (it reads
+    // exactly 1 where `sqrt(vx) · sqrt(vy)` reads 1 − 2e-16), so it is the
+    // default — but the PRODUCT of two variances underflows to 0 at |price|
+    // ≈ 1e-81 (and overflows past 1e78) where each root is still a perfectly
+    // good number, and `cov / 0` is an Infinity a pin would then launder
+    // into a plausible ±1 (second-pass review of #707). Fall back to the
+    // separate roots exactly there.
+    const vx = varianceX[i]!;
+    const vy = varianceY[i]!;
+    let denominator = Math.sqrt(vx * vy);
+    if (denominator === 0 || denominator === Infinity)
+      denominator = Math.sqrt(vx) * Math.sqrt(vy);
+    const r = covariance[i]! / denominator;
     // |r| ≤ 1 in exact arithmetic; the kernel rebuilds any window whose
     // moments could overshoot materially, so what is left is last-ulp
-    // rounding, pinned to the bound rather than reported.
-    out[i] = r > 1 ? 1 : r < -1 ? -1 : r;
+    // rounding — and ONLY that is pinned to the bound. Anything past the
+    // slack is a real anomaly and passes through to `withColumn`, which
+    // throws on a non-finite value rather than charting it.
+    out[i] =
+      r > 1 && r <= 1 + PIN_SLACK ? 1 : r < -1 && r >= -1 - PIN_SLACK ? -1 : r;
   }
   return series.withColumn(output, out);
 }

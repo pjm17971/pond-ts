@@ -89,6 +89,10 @@ export interface RollingBivariateMoments {
  *   the property test checks the emitted correlation against an exact
  *   BigInt-rational reference over plateau-stepped, ulp-jittered input.
  *   Below |x| ≈ 1e-154 the squares underflow and the window reads flat.
+ *   **Cost, measured**: 0 rebuilds on 100k bars of random walk, trend or
+ *   low-vol intraday prices; on tick-jittered prices that plateau between
+ *   1% steps, 1.1–1.3× at `period 14 … 200` on one series and up to 3×
+ *   (11% of rows rebuilt) at `period 200` on a second reviewer's.
  *
  * Measured over 200k rows at `period 30`, worst **absolute error in the
  * resulting correlation coefficient** (the scale that means something when

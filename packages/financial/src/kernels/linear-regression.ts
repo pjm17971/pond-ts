@@ -155,7 +155,12 @@ export interface RollingRegression {
  * checks the emitted values against an exact BigInt-rational reference
  * over plateau-stepped, ulp-jittered input at five magnitudes, so the pin
  * cannot mask a wrong value. O(period) per such window, and only such
- * windows.
+ * windows — **measured**: 0 recomputes on 100k bars of random walk, trend
+ * or low-vol intraday prices (outputs within 1.2e-14 of the previous
+ * kernel); on tick-jittered prices that plateau between 1% steps the
+ * recompute fires on a few percent of rows and costs 1.1–2× at
+ * `period 200` on one series, 3× on a second reviewer's — the price of a
+ * correct answer on exactly the input the rolling form gets wrong.
  *
  * ## Missing cells: the **strict** window, like `wma`
  *

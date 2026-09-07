@@ -6560,6 +6560,39 @@ describe('beta', () => {
   });
 });
 
+describe('correlation at magnitudes where a product of variances underflows', () => {
+  it('reads the exact value at 1e-90, not a laundered −1 (second-pass review of #707)', () => {
+    // Kernel moments are exactly right here; `sqrt(vx · vy)` underflows to
+    // 0 and `cov / 0` is −Infinity, which a bare ±1 pin then turned into a
+    // plausible −1. The study falls back to the separate roots exactly
+    // there, and pins only rounding-sized overshoot. Exact corr of the
+    // first window is −0.327.
+    const closes = [1e-90, 2e-90, 4e-90, 3e-90, 1e-90, 5e-90];
+    const bench = [3e-90, 1e-90, 2e-90, 4e-90, 2e-90, 1e-90];
+    const r = col(
+      correlation(pairBars(closes, bench), { benchmark: 'bench', period: 3 }),
+      'corr',
+    );
+    expect(r[2]).toBeCloseTo(-0.3273268353539886, 12);
+    for (let i = 2; i < closes.length; i += 1) {
+      expect(Number.isFinite(r[i]!), `corr[${i}] finite`).toBe(true);
+      expect(Math.abs(r[i]!)).toBeLessThanOrEqual(1);
+    }
+    // And the overflow side: |price| ≈ 1e80 read `−0` before.
+    const big = col(
+      correlation(
+        pairBars(
+          closes.map((v) => v * 1e170),
+          bench.map((v) => v * 1e170),
+        ),
+        { benchmark: 'bench', period: 3 },
+      ),
+      'corr',
+    );
+    expect(big[2]).toBeCloseTo(-0.3273268353539886, 12);
+  });
+});
+
 describe('beta on a benchmark that freezes mid-series', () => {
   it('reads undefined where the benchmark returns are all zero and finite elsewhere — never throws', () => {
     // The Layer-2 repro for #706: a stale (forward-filled) benchmark that
