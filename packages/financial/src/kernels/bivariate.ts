@@ -1,3 +1,14 @@
+/** The three row-aligned moment arrays {@link rollingBivariateValues}
+ *  returns, each `NaN` wherever the window has no reading. */
+export interface RollingBivariateMoments {
+  /** Population covariance of the two columns over the window. */
+  covariance: Float64Array;
+  /** Population variance of the **first** column (`x`) over the window. */
+  varianceX: Float64Array;
+  /** Population variance of the **second** column (`y`) over the window. */
+  varianceY: Float64Array;
+}
+
 /**
  * **Rolling bivariate moments** — kernel **K8** of the corpus assessment
  * (`docs/notes/financial-indicators-assessment-2026-07.md` §3, gap note G7):
@@ -95,15 +106,6 @@
  * O(N) time — one add, one remove and one amortised rebuild step per row —
  * three allocations.
  */
-export interface RollingBivariateMoments {
-  /** Population covariance of the two columns over the window. */
-  covariance: Float64Array;
-  /** Population variance of the **first** column (`x`) over the window. */
-  varianceX: Float64Array;
-  /** Population variance of the **second** column (`y`) over the window. */
-  varianceY: Float64Array;
-}
-
 export function rollingBivariateValues(
   x: Float64Array,
   y: Float64Array,
