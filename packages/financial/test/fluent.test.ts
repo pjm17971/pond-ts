@@ -54,6 +54,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  linearRegression,
+  timeSeriesForecast,
+  chandeForecastOscillator,
+  centerOfGravity,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -746,5 +750,85 @@ describe('fluent volatility tail', () => {
       output: 'relVol2',
     });
     expect(col(rv, 'relVol')[35]).not.toBeCloseTo(col(rv2, 'relVol2')[35]!, 6);
+  });
+});
+
+describe('fluent regression family (K7)', () => {
+  const regBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: closeSchema,
+      rows: Array.from({ length: 40 }, (_, i) => [
+        i,
+        100 + 7 * Math.sin(i / 4.1) + 0.25 * i,
+      ]) as Array<[number, number]>,
+    });
+
+  it('chains all four and matches the standalone functions bar for bar', () => {
+    const fluent = regBars()
+      .linearRegression({ period: 6 })
+      .timeSeriesForecast({ period: 6 })
+      .chandeForecastOscillator({ period: 6 })
+      .centerOfGravity({ period: 5 });
+    const functional = centerOfGravity(
+      chandeForecastOscillator(
+        timeSeriesForecast(linearRegression(regBars(), { period: 6 }), {
+          period: 6,
+        }),
+        { period: 6 },
+      ),
+      { period: 5 },
+    );
+    for (const name of [
+      'linregValue',
+      'linregSlope',
+      'linregIntercept',
+      'linregAngle',
+      'linregR2',
+      'tsf',
+      'cfo',
+      'cog',
+    ]) {
+      const v = col(fluent, name);
+      expect(v, name).toEqual(col(functional, name));
+      expect(
+        v.some((x) => x !== undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('passes the period through, not just the defaults', () => {
+    // A mount that dropped the options object would still produce numbers.
+    const fast = regBars().linearRegression({ period: 4 });
+    const slow = regBars().linearRegression({ period: 20, prefix: 'slow' });
+    expect(col(fast, 'linregSlope')[30]).not.toBeCloseTo(
+      col(slow, 'slowSlope')[30]!,
+      6,
+    );
+    const shortTsf = regBars().timeSeriesForecast({ period: 4 });
+    const longTsf = regBars().timeSeriesForecast({
+      period: 20,
+      output: 'tsf20',
+    });
+    expect(col(shortTsf, 'tsf')[30]).not.toBeCloseTo(
+      col(longTsf, 'tsf20')[30]!,
+      6,
+    );
+    const shortCog = regBars().centerOfGravity({ period: 4 });
+    const longCog = regBars().centerOfGravity({ period: 12, output: 'cog12' });
+    expect(col(shortCog, 'cog')[30]).not.toBeCloseTo(
+      col(longCog, 'cog12')[30]!,
+      6,
+    );
+    const shortCfo = regBars().chandeForecastOscillator({ period: 4 });
+    const longCfo = regBars().chandeForecastOscillator({
+      period: 20,
+      output: 'cfo20',
+    });
+    expect(col(shortCfo, 'cfo')[30]).not.toBeCloseTo(
+      col(longCfo, 'cfo20')[30]!,
+      6,
+    );
   });
 });
