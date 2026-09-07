@@ -168,6 +168,19 @@ import type { ChandeForecastOscillatorOptions } from './studies/chande-forecast-
 import { chandeForecastOscillator as chandeForecastOscillatorStudy } from './studies/chande-forecast-oscillator.js';
 import type { CenterOfGravityOptions } from './studies/center-of-gravity.js';
 import { centerOfGravity as centerOfGravityStudy } from './studies/center-of-gravity.js';
+import type { ParabolicSarOptions } from './studies/parabolic-sar.js';
+import { parabolicSar as parabolicSarStudy } from './studies/parabolic-sar.js';
+import type { SuperTrendOptions } from './studies/super-trend.js';
+import { superTrend as superTrendStudy } from './studies/super-trend.js';
+import type { AtrTrailingStopOptions } from './studies/atr-trailing-stop.js';
+import { atrTrailingStop as atrTrailingStopStudy } from './studies/atr-trailing-stop.js';
+import type { VolumeIndexOptions } from './studies/volume-index.js';
+import {
+  negativeVolumeIndex as negativeVolumeIndexStudy,
+  positiveVolumeIndex as positiveVolumeIndexStudy,
+} from './studies/volume-index.js';
+import type { KlingerOptions } from './studies/klinger.js';
+import { klinger as klingerStudy } from './studies/klinger.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -485,6 +498,30 @@ declare module 'pond-ts' {
     centerOfGravity<const Output extends string = 'cog'>(
       options?: CenterOfGravityOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Parabolic SAR (`${prefix}` stop + `${prefix}Trend` side). */
+    parabolicSar<const Prefix extends string = 'psar'>(
+      options?: ParabolicSarOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Trend`>>;
+    /** Fluent SuperTrend (`${prefix}` line + `${prefix}Trend` side). */
+    superTrend<const Prefix extends string = 'st'>(
+      options?: SuperTrendOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Trend`>>;
+    /** Fluent ATR trailing stop (`${prefix}` stop + `${prefix}Trend` side). */
+    atrTrailingStop<const Prefix extends string = 'ats'>(
+      options?: AtrTrailingStopOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Trend`>>;
+    /** Fluent Negative Volume Index. */
+    negativeVolumeIndex<const Output extends string = 'nvi'>(
+      options?: VolumeIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Positive Volume Index. */
+    positiveVolumeIndex<const Output extends string = 'pvi'>(
+      options?: VolumeIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Klinger Volume Oscillator (`${prefix}` + `${prefix}Signal`). */
+    klinger<const Prefix extends string = 'kvo'>(
+      options?: KlingerOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
   }
 }
 
@@ -868,4 +905,40 @@ proto.performanceIndex = function (
   options: PerformanceIndexOptions<SeriesSchema, string>,
 ) {
   return performanceIndexStudy(this, options);
+};
+proto.parabolicSar = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ParabolicSarOptions<SeriesSchema, string>,
+) {
+  return parabolicSarStudy(this, options);
+};
+proto.superTrend = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: SuperTrendOptions<SeriesSchema, string>,
+) {
+  return superTrendStudy(this, options);
+};
+proto.atrTrailingStop = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: AtrTrailingStopOptions<SeriesSchema, string>,
+) {
+  return atrTrailingStopStudy(this, options);
+};
+proto.negativeVolumeIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: VolumeIndexOptions<SeriesSchema, string>,
+) {
+  return negativeVolumeIndexStudy(this, options);
+};
+proto.positiveVolumeIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: VolumeIndexOptions<SeriesSchema, string>,
+) {
+  return positiveVolumeIndexStudy(this, options);
+};
+proto.klinger = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: KlingerOptions<SeriesSchema, string>,
+) {
+  return klingerStudy(this, options);
 };

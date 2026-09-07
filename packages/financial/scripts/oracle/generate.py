@@ -3120,6 +3120,449 @@ def performance_index(n: int) -> dict:
     return {"perf": col(v)}
 
 
+# --------------------------------------------------------------------------
+# K6 -- the stateful row fold ([PND-SFOLD]).
+#
+# Five studies whose value on bar i depends on the bars before it through a
+# carried STATE rather than a window: Parabolic SAR, SuperTrend, the ATR
+# trailing stop, NVI/PVI and Klinger. Only the first has a TA-Lib function;
+# the rest are pandas replications with the definition spelled out term by
+# term and a SEPARATION assert against the nearby misreading (a fixture that
+# cannot tell two readings apart pins neither).
+# --------------------------------------------------------------------------
+
+
+def _sar_values(high, low, accel: float, maximum: float, force_long=None):
+    """Wilder's Parabolic SAR in TA-Lib's exact arrangement (ta_SAR.c).
+
+    Returns (sar, trend). The value PRINTED on bar i was computed at the end
+    of bar i-1; the clamp reads the last two bars; and the initial side comes
+    from Wilder's -DM over the first one-bar move. All three are measured
+    against talib.SAR below rather than recalled.
+    """
+    n = len(high)
+    sar_out = np.full(n, np.nan)
+    trend_out = np.full(n, np.nan)
+    if n < 2:
+        return sar_out, trend_out
+
+    diff_p = high[1] - high[0]
+    diff_m = low[0] - low[1]
+    # `force_long` exists ONLY for the separation assert below - the shipped
+    # reading is always the -DM rule.
+    is_long = (
+        force_long
+        if force_long is not None
+        else not (diff_m > 0 and diff_m > diff_p)
+    )
+
+    af = accel
+    if is_long:
+        ep = high[1]
+        sar = low[0]
+    else:
+        ep = low[1]
+        sar = high[0]
+    # TA-Lib's "cheat": on the first printed bar, yesterday IS today.
+    new_low = low[1]
+    new_high = high[1]
+
+    for today in range(1, n):
+        prev_low, prev_high = new_low, new_high
+        new_low, new_high = low[today], high[today]
+        if is_long:
+            if new_low <= sar:
+                is_long = False
+                sar = max(ep, prev_high, new_high)
+                sar_out[today] = sar
+                af = accel
+                ep = new_low
+                sar = max(sar + af * (ep - sar), prev_high, new_high)
+            else:
+                sar_out[today] = sar
+                if new_high > ep:
+                    ep = new_high
+                    af = min(af + accel, maximum)
+                sar = min(sar + af * (ep - sar), prev_low, new_low)
+        else:
+            if new_high >= sar:
+                is_long = True
+                sar = min(ep, prev_low, new_low)
+                sar_out[today] = sar
+                af = accel
+                ep = new_high
+                sar = min(sar + af * (ep - sar), prev_low, new_low)
+            else:
+                sar_out[today] = sar
+                if new_low < ep:
+                    ep = new_low
+                    af = min(af + accel, maximum)
+                sar = max(sar + af * (ep - sar), prev_high, new_high)
+        trend_out[today] = 1.0 if is_long else -1.0
+    return sar_out, trend_out
+
+
+def parabolic_sar(accel: float = 0.02, maximum: float = 0.2) -> dict:
+    high = np.asarray(highs, dtype=float)
+    low = np.asarray(lows, dtype=float)
+    sar_v, trend_v = _sar_values(high, low, accel, maximum)
+    sar = pd.Series(sar_v)
+    trend = pd.Series(trend_v)
+    label = f"parabolicSar({accel}, {maximum})"
+
+    assert sar.first_valid_index() == 1, (
+        f"{label} first valid at {sar.first_valid_index()}, expected 1"
+    )
+    flips = int((trend.dropna().diff().fillna(0) != 0).sum())
+    assert flips >= 2, (
+        f"{label} flips only {flips} time(s) on this fixture - a SAR that "
+        "never reverses does not exercise the reversal branch at all"
+    )
+
+    if talib is not None:
+        ref = pd.Series(talib.SAR(high, low, acceleration=accel, maximum=maximum))
+        assert list(sar.isna()) == list(ref.isna()), (
+            f"{label} warm-up differs from TA-Lib: ours first valid "
+            f"{sar.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+        )
+        d = float(np.nanmax(np.abs(sar - ref)))
+        assert d == 0.0, f"{label} disagrees with TA-Lib SAR by {d}"
+        print(f"  {label}: matches TA-Lib SAR EXACTLY ({d:.1f}), warm-ups identical, {flips} flips")
+
+        # The -DM seed rule is load-bearing, so it is PROBED rather than
+        # assumed: a 7-bar input whose first move is a falling low (-DM > 0)
+        # opens SHORT, and a version forced long on the same data must
+        # disagree with TA-Lib. Without this, "we match TA-Lib" could be an
+        # accident of the fixture opening on the side we happened to pick.
+        probe_h = np.array([10.0, 10.2, 10.3, 10.4, 10.1, 9.7, 9.9])
+        probe_l = np.array([9.0, 8.0, 8.1, 8.2, 8.0, 7.6, 7.8])
+        theirs = talib.SAR(probe_h, probe_l, accel, maximum)
+        ours = _sar_values(probe_h, probe_l, accel, maximum)[0]
+        assert np.allclose(ours[1:], theirs[1:]), (
+            f"the -DM seed probe disagrees with TA-Lib: ours {ours[1:]}, "
+            f"TA-Lib {theirs[1:]}"
+        )
+        forced = _sar_values(probe_h, probe_l, accel, maximum, force_long=True)[0]
+        assert not np.allclose(forced[1:], theirs[1:]), (
+            "the seed probe cannot tell a forced-long seed from TA-Lib's -DM "
+            "rule, so it pins nothing"
+        )
+        print(
+            "  parabolicSar: the initial side comes from Wilder's -DM on bar 1 "
+            "(probed against TA-Lib; a forced-long seed disagrees)"
+        )
+
+    return {"psar": col(sar), "psarTrend": col(trend)}
+
+
+def _super_trend_values(period: int, mult: float, ratchet_on_prev_close: bool = True,
+                        flip_on_ratcheted: bool = True, ratchet: bool = True):
+    """SuperTrend (Olivier Seban, as TradingView's ta.supertrend implements it).
+
+    `ratchet_on_prev_close` / `flip_on_ratcheted` / `ratchet` exist ONLY to
+    produce the separation probes - the shipped reading is all three True.
+    """
+    a = _atr_series(period).to_numpy()
+    hi = np.asarray(highs, dtype=float)
+    lo = np.asarray(lows, dtype=float)
+    cl = np.asarray(closes, dtype=float)
+    n = len(cl)
+    line = np.full(n, np.nan)
+    trend = np.full(n, np.nan)
+    upper = lower = np.nan
+    prev_upper = prev_lower = np.nan
+    up = False
+    prev_close = np.nan
+    run = 0
+    for i in range(n):
+        if not all(np.isfinite(v) for v in (hi[i], lo[i], cl[i], a[i])):
+            run = 0
+            continue
+        run += 1
+        mid = (hi[i] + lo[i]) / 2.0
+        half = mult * a[i]
+        basic_upper = mid + half
+        basic_lower = mid - half
+        if run == 1:
+            upper, lower, up = basic_upper, basic_lower, False
+        else:
+            ref_close = prev_close if ratchet_on_prev_close else cl[i]
+            prev_upper, prev_lower = upper, lower
+            if not ratchet:
+                upper, lower = basic_upper, basic_lower
+            else:
+                if basic_upper < upper or ref_close > upper:
+                    upper = basic_upper
+                if basic_lower > lower or ref_close < lower:
+                    lower = basic_lower
+            test_upper = upper if flip_on_ratcheted else prev_upper
+            test_lower = lower if flip_on_ratcheted else prev_lower
+            up = (not (cl[i] < test_lower)) if up else (cl[i] > test_upper)
+        line[i] = lower if up else upper
+        trend[i] = 1.0 if up else -1.0
+        prev_close = cl[i]
+    return pd.Series(line), pd.Series(trend)
+
+
+def super_trend(period: int = 10, mult: float = 3.0, min_flips: int = 1) -> dict:
+    line, trend = _super_trend_values(period, mult)
+    label = f"superTrend({period}, {mult})"
+    assert line.first_valid_index() == period, (
+        f"{label} first valid at {line.first_valid_index()}, expected {period} "
+        "(the ATR's own first bar)"
+    )
+    flips = int((trend.dropna().diff().fillna(0) != 0).sum())
+    # `min_flips` is per-case: a 3-ATR band on 80 gently-trending bars flips
+    # once, which still exercises both sides and the reversal branch, but the
+    # SECOND case is deliberately tuned tighter so the machine is seen turning
+    # repeatedly rather than latching.
+    assert flips >= min_flips, (
+        f"{label} flips only {flips} time(s), expected at least {min_flips} "
+        "- the fixture is degenerate for this parameter set"
+    )
+    assert set(trend.dropna().unique()) == {1.0, -1.0}, (
+        f"{label} never takes both sides on this fixture"
+    )
+
+    # Separation. Both probes run at a FIXED tight parameter set rather than
+    # this case's own: a 3-ATR band on 80 gently-trending bars turns once, and
+    # a probe there would silently pin nothing.
+    base, _ = _super_trend_values(7, 1.0)
+    deltas = []
+    for name, kwargs in (
+        ("no-ratchet (basic bands)", {"ratchet": False}),
+        ("ratchet-on-current-close", {"ratchet_on_prev_close": False}),
+    ):
+        other, _ = _super_trend_values(7, 1.0, **kwargs)
+        d = float(np.nanmax(np.abs(base - other)))
+        assert d > 1e-6, (
+            f"superTrend cannot be told apart from the {name} reading at "
+            f"(7, 1.0) (max |delta| = {d}) - the fixture pins neither"
+        )
+        deltas.append(f"{name} {d:.4g}")
+
+    # The third candidate slip -- flipping on the PREVIOUS final band instead
+    # of the just-ratcheted one -- is UNOBSERVABLE here, and structurally so
+    # rather than by luck of the fixture. While the side is up the lower band
+    # only ratchets UP, so the two readings differ only when
+    # `prevLower <= close < basicLower`; and `close < basicLower` needs
+    # `multiplier * ATR < mid - close <= (high - low)/2`, which the ATR bounds
+    # out for any multiplier at or above 1 whenever the close sits inside its
+    # own bar. That is a STRUCTURAL guarantee only for multiplier >= 1: below
+    # 1 the two readings can and do separate on other data (a Layer-2
+    # reviewer's random walks separated 55 of 168 period x multiplier sets,
+    # all at 0.2 or 0.5, by up to 5.0 price units), and this fixture's 0.0
+    # across (period 2..20) x (multiplier 0.2..4.0) — re-measured at
+    # integration, 0 of 133 — is fixture luck below 1. So the assert pins the
+    # regime the argument covers, (7, 1.0), as an EQUALITY: a future fixture
+    # that separates them THERE fails loudly rather than leaving the claim
+    # stale.
+    flip_alt, _ = _super_trend_values(7, 1.0, flip_on_ratcheted=False)
+    d_flip = float(np.nanmax(np.abs(base - flip_alt)))
+    assert d_flip == 0.0, (
+        "the flip-order reading now separates on this fixture "
+        f"(max |delta| = {d_flip}) - promote it to an assert and update the note"
+    )
+    print(
+        f"  {label}: first valid {period}, {flips} flips; separation probe at "
+        f"(7, 1.0): " + ", ".join(deltas) + "; flip-order reading 0.0 (unobservable, see note)"
+    )
+    return {"st": col(line), "stTrend": col(trend)}
+
+
+def _ats_values(period: int, mult: float):
+    a = _atr_series(period).to_numpy()
+    cl = np.asarray(closes, dtype=float)
+    n = len(cl)
+    stop = np.full(n, np.nan)
+    trend = np.full(n, np.nan)
+    cur = np.nan
+    long = True
+    prev_close = np.nan
+    run = 0
+    for i in range(n):
+        if not (np.isfinite(cl[i]) and np.isfinite(a[i])):
+            run = 0
+            continue
+        run += 1
+        d = mult * a[i]
+        c = cl[i]
+        if run == 1:
+            cur = c - d
+            long = True
+        else:
+            prev = cur
+            if c > prev and prev_close > prev:
+                cur = max(prev, c - d)
+            elif c < prev and prev_close < prev:
+                cur = min(prev, c + d)
+            elif c > prev:
+                cur = c - d
+                long = True
+            else:
+                cur = c + d
+                long = False
+        stop[i] = cur
+        trend[i] = 1.0 if long else -1.0
+        prev_close = c
+    return pd.Series(stop), pd.Series(trend)
+
+
+def atr_trailing_stop(period: int = 14, mult: float = 3.0) -> dict:
+    stop, trend = _ats_values(period, mult)
+    label = f"atrTrailingStop({period}, {mult})"
+    assert stop.first_valid_index() == period, (
+        f"{label} first valid at {stop.first_valid_index()}, expected {period}"
+    )
+    flips = int((trend.dropna().diff().fillna(0) != 0).sum())
+    assert flips >= 2, f"{label} flips only {flips} time(s) - the fixture is degenerate"
+
+    # The ratchet is the study: a version that re-anchors every bar (no max /
+    # min against the previous stop) must differ.
+    cl = np.asarray(closes, dtype=float)
+    a = _atr_series(period).to_numpy()
+    naive = pd.Series(
+        np.where(trend.to_numpy() > 0, cl - mult * a, cl + mult * a)
+    )
+    d = float(np.nanmax(np.abs(stop - naive)))
+    assert d > 1e-6, (
+        f"{label} is indistinguishable from the un-ratcheted band "
+        f"(max |delta| = {d})"
+    )
+    # The Chandelier anchor (rolling extreme instead of the close) is the
+    # NAMED alternative, not this study; show it is a different number.
+    hh = pd.Series(highs).rolling(period).max().to_numpy()
+    ll = pd.Series(lows).rolling(period).min().to_numpy()
+    chand = pd.Series(np.where(trend.to_numpy() > 0, hh - mult * a, ll + mult * a))
+    dc = float(np.nanmax(np.abs(stop - chand)))
+    assert dc > 1e-6, f"{label} is indistinguishable from the Chandelier anchor"
+    print(f"  {label}: first valid {period}, {flips} flips, ratchet and close-anchor both separated")
+    return {"ats": col(stop), "atsTrend": col(trend)}
+
+
+def _volume_index_values(on_fall: bool, start: float) -> pd.Series:
+    cl = np.asarray(closes, dtype=float)
+    vo = np.asarray(volumes, dtype=float)
+    n = len(cl)
+    out = np.full(n, np.nan)
+    value = start
+    for i in range(n):
+        if i == 0:
+            value = start
+        else:
+            fell = vo[i] < vo[i - 1]
+            if vo[i] != vo[i - 1] and fell == on_fall:
+                value = value * (1.0 + (cl[i] - cl[i - 1]) / cl[i - 1])
+        out[i] = value
+    return pd.Series(out)
+
+
+def volume_index(kind: str, start: float = 1000.0) -> dict:
+    on_fall = kind == "nvi"
+    v = _volume_index_values(on_fall, start)
+    label = f"{kind}({start})"
+    assert v.first_valid_index() == 0, f"{label} must start at bar 0"
+    assert v.iloc[0] == start, f"{label} must open at {start}"
+    moves = int((v.diff().fillna(0).abs() > 1e-12).sum())
+    assert moves >= 10, (
+        f"{label} moves on only {moves} bars - the fixture does not exercise "
+        "the compounding branch"
+    )
+    holds = len(v) - 1 - moves
+    assert holds >= 10, (
+        f"{label} holds on only {holds} bars - the fixture does not exercise "
+        "the hold branch"
+    )
+    # Separation from the WRONG side, and from the volume-weighted cousin.
+    other = _volume_index_values(not on_fall, start)
+    d = float(np.nanmax(np.abs(v - other)))
+    assert d > 1e-6, f"{label} is indistinguishable from its twin"
+    # Scale invariance in price and in volume, asserted here as well as in the
+    # TypeScript property tests (the two references must agree on it).
+    print(f"  {label}: opens at {start}, {moves} compounding bars / {holds} holds, twin separated")
+    return {kind: col(v)}
+
+
+def _klinger_force(alt_factor: bool = False, simplified: bool = False) -> pd.Series:
+    hi = np.asarray(highs, dtype=float)
+    lo = np.asarray(lows, dtype=float)
+    cl = np.asarray(closes, dtype=float)
+    vo = np.asarray(volumes, dtype=float)
+    n = len(cl)
+    out = np.full(n, np.nan)
+    trend = 0
+    cm = 0.0
+    prev_hlc = np.nan
+    prev_dm = np.nan
+    for i in range(n):
+        hlc = hi[i] + lo[i] + cl[i]
+        dm = hi[i] - lo[i]
+        if i == 0:
+            trend, cm, prev_hlc, prev_dm = 0, 0.0, hlc, dm
+            continue
+        t = 1 if hlc > prev_hlc else -1
+        cm = cm + dm if t == trend else prev_dm + dm
+        trend = t
+        # No `cm == 0` guard, matching the shipped TS: cm == 0 forces dm == 0
+        # and the ratio is 0/0 -> NaN on its own (mutation testing found the
+        # TS guard dead and deleted it; keeping one here would be an
+        # edit-divergence trap).
+        if simplified:
+            out[i] = vo[i] * t * 100.0
+        elif alt_factor:
+            out[i] = vo[i] * abs(2.0 * (dm / cm) - 1.0) * t * 100.0
+        else:
+            out[i] = vo[i] * abs(2.0 * (dm / cm - 1.0)) * t * 100.0
+        prev_hlc, prev_dm = hlc, dm
+    return pd.Series(out)
+
+
+def klinger(fast: int = 34, slow: int = 55, signal: int = 13) -> dict:
+    vf = _klinger_force()
+    line = _ema_first_seed(vf, fast) - _ema_first_seed(vf, slow)
+    sig = _ema_first_seed(line, signal)
+    label = f"klinger({fast}, {slow}, {signal})"
+
+    assert vf.first_valid_index() == 1, (
+        f"{label} volume force first valid at {vf.first_valid_index()}, expected 1"
+    )
+    assert line.first_valid_index() == slow, (
+        f"{label} first valid at {line.first_valid_index()}, expected {slow} "
+        "(the volume force starts at bar 1, so the slow EMA lands at slow)"
+    )
+    assert sig.first_valid_index() == slow + signal - 1, (
+        f"{label} signal first valid at {sig.first_valid_index()}, expected "
+        f"{slow + signal - 1}"
+    )
+
+    # F-AMBIG: the two readings of the |2 x (dm/cm - 1)| factor, and
+    # TradingView's simplified (no dm/cm) form, must all be distinguishable.
+    alt = _ema_first_seed(_klinger_force(alt_factor=True), fast) - _ema_first_seed(
+        _klinger_force(alt_factor=True), slow
+    )
+    d_alt = float(np.nanmax(np.abs(line - alt)))
+    assert d_alt > 1e-6, (
+        f"{label} cannot be told apart from the 2*(dm/cm) - 1 reading"
+    )
+    simp_force = _klinger_force(simplified=True)
+    simp = _ema_first_seed(simp_force, fast) - _ema_first_seed(simp_force, slow)
+    d_simp = float(np.nanmax(np.abs(line - simp)))
+    assert d_simp > 1e-6, (
+        "Klinger's original force and TradingView's simplified form read the "
+        f"same on this fixture (|delta| = {d_simp}) - the two definitions are "
+        "not distinguishable here and the docstring's separation is stale"
+    )
+    ours_span = float(np.nanmax(line) - np.nanmin(line))
+    simp_span = float(np.nanmax(simp) - np.nanmin(simp))
+    print(
+        f"  {label}: first valid {slow} / {slow + signal - 1}; "
+        f"|delta| vs the 2*(dm/cm)-1 reading = {d_alt:.4g}; "
+        f"vs TradingView's simplified form = {d_simp:.4g} "
+        f"(spans {ours_span:.4g} vs {simp_span:.4g})"
+    )
+    return {"kvo": col(line), "kvoSignal": col(sig)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -3598,6 +4041,56 @@ cases = [
         "params": {"period": 5},
         "expected": center_of_gravity(5),
     },
+    {
+        "study": "parabolicSar",
+        "params": {},
+        "expected": parabolic_sar(),
+    },
+    {
+        "study": "parabolicSar",
+        "params": {"step": 0.05, "maxStep": 0.5},
+        "expected": parabolic_sar(0.05, 0.5),
+    },
+    {
+        "study": "superTrend",
+        "params": {"period": 10, "multiplier": 3},
+        "expected": super_trend(10, 3.0),
+    },
+    {
+        "study": "superTrend",
+        "params": {"period": 7, "multiplier": 1},
+        "expected": super_trend(7, 1.0, min_flips=3),
+    },
+    {
+        "study": "atrTrailingStop",
+        "params": {"period": 14, "multiplier": 3},
+        "expected": atr_trailing_stop(14, 3.0),
+    },
+    {
+        "study": "atrTrailingStop",
+        "params": {"period": 7, "multiplier": 1.5},
+        "expected": atr_trailing_stop(7, 1.5),
+    },
+    {
+        "study": "negativeVolumeIndex",
+        "params": {},
+        "expected": volume_index("nvi"),
+    },
+    {
+        "study": "positiveVolumeIndex",
+        "params": {},
+        "expected": volume_index("pvi"),
+    },
+    {
+        "study": "klinger",
+        "params": {},
+        "expected": klinger(),
+    },
+    {
+        "study": "klinger",
+        "params": {"fastPeriod": 5, "slowPeriod": 13, "signalPeriod": 4},
+        "expected": klinger(5, 13, 4),
+    },
 ]
 
 out = {
@@ -4004,6 +4497,99 @@ out = {
                 "replication - no TA-Lib RVI of either kind - separated from "
                 "the EMA-smoothed (TradingView) fork. Its output column is "
                 "`relVol`, NOT `rvi`, which belongs to relativeVigorIndex"
+            ),
+            "parabolicSar": (
+                "Wilder's Parabolic SAR == talib.SAR(high, low, acceleration, "
+                "maximum) EXACTLY (0.0 max |delta| at (0.02,0.2), (0.05,0.5), "
+                "(0.01,0.1)), identical warm-up (first valid at bar 1). Three "
+                "prose-ambiguous details are pinned to TA-Lib's reading and "
+                "probed rather than recalled: the initial side comes from "
+                "Wilder's -DM over the first one-bar move (short only if the "
+                "low fell further than the high rose; a tie is long), the "
+                "first printed bar treats yesterday's extremes as today's, "
+                "and the clamp against the last two bars applies to the "
+                "reversal override as well as the ordinary advance. Two "
+                "columns: psar (the stop) and psarTrend (+1 long / -1 short), "
+                "because the clamp can print the stop exactly ON an extreme, "
+                "so `psar < low` is not a safe derivation of the side. "
+                "SAREXT (offset-on-reverse, signed short output) is out of "
+                "scope. TA-Lib checks no NaN at all, so its answer on a gap "
+                "is numeric garbage; ours resets the machine ([PND-SFOLD])"
+            ),
+            "superTrend": (
+                "Olivier Seban's SuperTrend as TradingView's ta.supertrend "
+                "implements it, defaults 10 / 3: basic bands (high+low)/2 +/- "
+                "multiplier*ATR(period) on WILDER's ATR (the same _atr_series "
+                "`atr` and `keltner` use); the final band ratchets towards "
+                "price and is released when the PREVIOUS close closed through "
+                "the PREVIOUS final band; the side then flips on THIS bar's "
+                "close against the JUST-RATCHETED band. The generator "
+                "separates the no-ratchet and ratchet-on-current-close "
+                "readings; the flip-order reading (previous band instead of "
+                "the just-ratcheted one) is UNOBSERVABLE whenever the close "
+                "sits inside its own bar and multiplier >= 1 — a structural "
+                "guarantee in that regime only (below 1 it separates on other "
+                "data; this fixture reads 0.0 across period 2..20 x multiplier "
+                "0.2..4.0 by luck) — and is asserted as an equality at "
+                "multiplier 1 so a future fixture that separates it there "
+                "fails loudly. Two columns: st "
+                "(the live band) and stTrend (+1 = line below price). The "
+                "bands themselves are NOT emitted - `st` already is whichever "
+                "band is live. Seed: on the first finite-ATR bar both bands "
+                "take their basic values and the side starts DOWN, mirroring "
+                "ta.supertrend's `direction := 1` branch (Pine's sign is "
+                "inverted from ours). First valid at `period`. pandas "
+                "replication - no TA-Lib SuperTrend"
+            ),
+            "atrTrailingStop": (
+                "The close-anchored ATR trailing stop (Sylvain Vervoort's, the "
+                "form TradingView's ATR Trailing Stop / UT Bot scripts "
+                "implement), defaults 14 / 3: d = multiplier*ATR(period) on "
+                "Wilder's ATR; four cases - ratchet up while long "
+                "(max(prev, close-d)), ratchet down while short "
+                "(min(prev, close+d)), and a flip to close-d / close+d when "
+                "the close crosses the stop. A close exactly ON the stop "
+                "resolves SHORT (the fourth case is `otherwise`). Two columns: "
+                "ats and atsTrend (+1 = stop below price). First valid at "
+                "`period`. Separated from the un-ratcheted band AND from the "
+                "CHANDELIER anchor (rolling extreme instead of the close), "
+                "which is a different study, reachable as donchian + atr and "
+                "deliberately not a knob here. pandas replication"
+            ),
+            "negativeVolumeIndex": (
+                "Fosback/Dysart's NVI: index starts at `start` (1000) on bar "
+                "0 and compounds the bar's simple close return ONLY when that "
+                "bar's volume was LOWER than the previous bar's; otherwise it "
+                "holds. A FLAT volume holds on both NVI and PVI (strict "
+                "comparison each way), so the two do not partition the bars "
+                "- the fixture has NO adjacent-equal volume, so that rule is "
+                "pinned by the TypeScript unit tests, not here. "
+                "No period and no warm-up. Scale-invariant in price and in "
+                "volume. A zero previous close is undefined from there on "
+                "(the division is the output). pandas replication - no TA-Lib "
+                "NVI - separated from the wrong-side (PVI) reading"
+            ),
+            "positiveVolumeIndex": (
+                "Fosback's PVI - negativeVolumeIndex's twin, compounding only "
+                "when volume ROSE. Every convention there applies, including "
+                "that a flat volume holds"
+            ),
+            "klinger": (
+                "Klinger's ORIGINAL volume oscillator (1997, as StockCharts "
+                "documents it), defaults 34 / 55 / 13: trend = +1 if "
+                "(high+low+close) rose else -1; dm = high - low; cm "
+                "accumulates dm while the trend holds and re-bases on "
+                "dm[i-1]+dm[i] when it turns (which is also the seed); vf = "
+                "volume * |2 * (dm/cm - 1)| * trend * 100; kvo = EMA(vf, "
+                "fast) - EMA(vf, slow) and kvoSignal = EMA(kvo, signal), all "
+                "on POND's first-sample EMA seed (the macd precedent). "
+                "F-AMBIG: separated from the |2*(dm/cm) - 1| misreading and "
+                "from TradingView's ta.kvo, which drops the dm/cm factor "
+                "entirely (signed volume only) and is a DIFFERENT indicator, "
+                "not an option. cm = 0 (a leg of zero-range bars) is a "
+                "genuine 0/0 -> undefined. The volume force starts at bar 1, "
+                "so kvo lands at `slow` and the signal at slow+signal-1. "
+                "pandas replication - no TA-Lib Klinger"
             ),
         },
     },

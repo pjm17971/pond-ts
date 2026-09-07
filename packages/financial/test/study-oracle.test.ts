@@ -76,6 +76,12 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -108,6 +114,8 @@ interface OracleCase {
     sumPeriod?: number;
     stdevPeriod?: number;
     benchmark?: string;
+    step?: number;
+    maxStep?: number;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -401,6 +409,34 @@ function run(c: OracleCase): unknown {
       return chandeForecastOscillator(series(), p as { period?: number });
     case 'centerOfGravity':
       return centerOfGravity(series(), p as { period?: number });
+    case 'parabolicSar':
+      return parabolicSar(
+        ohlcSeries(),
+        p as { step?: number; maxStep?: number },
+      );
+    case 'superTrend':
+      return superTrend(
+        ohlcSeries(),
+        p as { period?: number; multiplier?: number },
+      );
+    case 'atrTrailingStop':
+      return atrTrailingStop(
+        ohlcSeries(),
+        p as { period?: number; multiplier?: number },
+      );
+    case 'negativeVolumeIndex':
+      return negativeVolumeIndex(ohlcSeries(), p as Record<string, never>);
+    case 'positiveVolumeIndex':
+      return positiveVolumeIndex(ohlcSeries(), p as Record<string, never>);
+    case 'klinger':
+      return klinger(
+        ohlcSeries(),
+        p as {
+          fastPeriod?: number;
+          slowPeriod?: number;
+          signalPeriod?: number;
+        },
+      );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

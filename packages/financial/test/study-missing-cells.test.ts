@@ -60,6 +60,12 @@ import {
   timeSeriesForecast,
   chandeForecastOscillator,
   centerOfGravity,
+  parabolicSar,
+  superTrend,
+  atrTrailingStop,
+  negativeVolumeIndex,
+  positiveVolumeIndex,
+  klinger,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -1885,6 +1891,209 @@ describe('the two-series family: where a gap lands (corpus §6.7)', () => {
       ],
     ] as const) {
       expect(nullCountOf(out, name), name).toBe(pc.length);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* [PND-SFOLD] — where a K6 machine's gaps land.                               */
+/*                                                                             */
+/* The kernel's rule is RESET: an incomplete row is `undefined`, and the next   */
+/* complete row starts a fresh run. These pin WHERE that shows, per study —    */
+/* which is not the same answer for all five, because a study that reads a     */
+/* Wilder-smoothed input inherits Wilder's propagate-to-the-end rule through   */
+/* the front door and never gets to re-seed.                                   */
+/* -------------------------------------------------------------------------- */
+describe('[PND-SFOLD] the K6 state machines', () => {
+  const k6Schema = [
+    { name: 'time', kind: 'time' },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+    { name: 'volume', kind: 'number', required: false },
+  ] as const;
+
+  /** Ten wavy bars; `hole` names a bar and a column to blank. */
+  const k6Bars = (hole?: {
+    at: number;
+    column: 'high' | 'low' | 'close' | 'volume';
+  }) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: k6Schema,
+      rows: Array.from({ length: 10 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 1.7) + 0.4 * i;
+        const row: Array<number | undefined> = [
+          i * MINUTE,
+          c + 0.5 + 0.4 * ((i % 3) + 1),
+          c - 0.5 - 0.3 * ((i % 2) + 1),
+          c,
+          1000 + 90 * ((i * 7) % 5),
+        ];
+        if (hole !== undefined && hole.at === i) {
+          row[{ high: 1, low: 2, close: 3, volume: 4 }[hole.column]] =
+            undefined;
+        }
+        return row;
+      }) as never,
+    });
+
+  it('parabolicSar: a hole costs its own bar AND the re-seed bar, then recovers', () => {
+    const clean = cells(parabolicSar(k6Bars()), 'psar');
+    expect(clean[0]).toBeUndefined(); // the seed needs a predecessor
+    expect(clean.slice(1).every((x) => x !== undefined)).toBe(true);
+
+    const holed = parabolicSar(k6Bars({ at: 5, column: 'high' }));
+    for (const name of ['psar', 'psarTrend']) {
+      const v = cells(holed, name);
+      expect(v[5], name).toBeUndefined(); // the incomplete bar
+      expect(v[6], name).toBeUndefined(); // run 1 again: no predecessor yet
+      expect(v[7], name).toBeDefined(); // re-seeded and running
+      expect(nullCountOf(holed, name), name).toBe(3); // bars 0, 5, 6 — nothing else
+    }
+  });
+
+  it('parabolicSar: a hole in the LOW costs the same two bars as one in the high', () => {
+    const byHigh = cells(
+      parabolicSar(k6Bars({ at: 4, column: 'high' })),
+      'psar',
+    ).map((x) => x === undefined);
+    const byLow = cells(
+      parabolicSar(k6Bars({ at: 4, column: 'low' })),
+      'psar',
+    ).map((x) => x === undefined);
+    expect(byLow).toEqual(byHigh);
+    // …and the close is not read at all, so blanking it changes nothing.
+    expect(
+      cells(parabolicSar(k6Bars({ at: 4, column: 'close' })), 'psar'),
+    ).toEqual(cells(parabolicSar(k6Bars()), 'psar'));
+  });
+
+  it('superTrend: the ATR propagates, so a hole ends the study rather than resetting it', () => {
+    const out = superTrend(k6Bars({ at: 5, column: 'close' }), { period: 2 });
+    for (const name of ['st', 'stTrend']) {
+      const v = cells(out, name);
+      expect(
+        v.slice(0, 2).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(v[2], name).toBeDefined();
+      expect(v[4], name).toBeDefined();
+      // From the gap on: the true range is unknown on bars 5 and 6, and
+      // Wilder's recursion has no state to carry across the hole.
+      expect(
+        v.slice(5).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('atrTrailingStop: same — the gap rule it shows is the ATR’s, not the fold’s', () => {
+    const out = atrTrailingStop(k6Bars({ at: 6, column: 'low' }), {
+      period: 2,
+    });
+    const v = cells(out, 'ats');
+    expect(v[5]).toBeDefined();
+    expect(v.slice(6).every((x) => x === undefined)).toBe(true);
+    expect(
+      cells(out, 'atsTrend')
+        .slice(6)
+        .every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('negativeVolumeIndex: a hole blanks its own bar and RE-BASES the index', () => {
+    // The visible half of the reset rule: unlike `obv`, which propagates to
+    // the end, the index restarts from `start` on the next complete bar —
+    // its level is an arbitrary base, so re-basing loses only the base.
+    const out = negativeVolumeIndex(k6Bars({ at: 4, column: 'volume' }), {
+      start: 1000,
+    });
+    const v = cells(out, 'nvi');
+    expect(v[0]).toBe(1000);
+    expect(v[3]).toBeDefined();
+    expect(v[4]).toBeUndefined();
+    expect(v[5]).toBe(1000); // re-based, not continued
+    expect(nullCountOf(out, 'nvi')).toBe(1);
+  });
+
+  it('positiveVolumeIndex: a hole in the PRICE column re-bases it the same way', () => {
+    const v = cells(
+      positiveVolumeIndex(k6Bars({ at: 6, column: 'close' })),
+      'pvi',
+    );
+    expect(v[6]).toBeUndefined();
+    expect(v[7]).toBe(1000);
+  });
+
+  it('klinger: the force re-seeds, and both EMAs step over the hole', () => {
+    // The volume force is undefined on the incomplete bar AND on the bar
+    // after it (the trend comparison needs a predecessor), so the slow EMA —
+    // which waits for `slowPeriod` finite values — starts two bars later than
+    // it would on clean input.
+    const clean = klinger(k6Bars(), {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      signalPeriod: 2,
+    });
+    expect(cells(clean, 'kvo')[3]).toBeDefined();
+    expect(
+      cells(clean, 'kvo')
+        .slice(0, 3)
+        .every((x) => x === undefined),
+    ).toBe(true);
+
+    const holed = klinger(k6Bars({ at: 2, column: 'volume' }), {
+      fastPeriod: 2,
+      slowPeriod: 3,
+      signalPeriod: 2,
+    });
+    const v = cells(holed, 'kvo');
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBeDefined();
+    expect(cells(holed, 'kvoSignal')[5]).toBeUndefined();
+    expect(cells(holed, 'kvoSignal')[6]).toBeDefined();
+  });
+
+  it('an all-missing input gives an all-missing column, never a throw', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: k6Schema,
+      rows: Array.from({ length: 8 }, (_, i) => [
+        i * MINUTE,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]) as never,
+    });
+    for (const [name, out] of [
+      ['psar', parabolicSar(empty)],
+      ['st', superTrend(empty, { period: 2 })],
+      ['ats', atrTrailingStop(empty, { period: 2 })],
+      ['nvi', negativeVolumeIndex(empty)],
+      ['pvi', positiveVolumeIndex(empty)],
+      ['kvo', klinger(empty, { fastPeriod: 2, slowPeriod: 3 })],
+    ] as const) {
+      expect(nullCountOf(out, name), name).toBe(8);
+    }
+  });
+
+  it('no K6 column ever leaks a NaN to a reader', () => {
+    const holed = k6Bars({ at: 5, column: 'high' });
+    const outs = [
+      ['psar', parabolicSar(holed)],
+      ['psarTrend', parabolicSar(holed)],
+      ['st', superTrend(holed, { period: 2 })],
+      ['ats', atrTrailingStop(holed, { period: 2 })],
+      ['nvi', negativeVolumeIndex(holed)],
+      ['kvo', klinger(holed, { fastPeriod: 2, slowPeriod: 3 })],
+    ] as const;
+    for (const [name, out] of outs) {
+      expect(
+        cells(out, name).some((x) => typeof x === 'number' && Number.isNaN(x)),
+        name,
+      ).toBe(false);
     }
   });
 });

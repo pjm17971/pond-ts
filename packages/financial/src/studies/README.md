@@ -77,6 +77,15 @@ and a doc note, not a second study that differs invisibly.
     (`correlation`, `beta`). Shifted-frame Welford with an aligned rebuild —
     never `Σxy − ΣxΣy/n`, which returns a negative variance at 1e12-scale
     prices.
+  - `foldRows(inputs, outputCount, state, step)` (`kernels/fold.ts`) —
+    kernel **K6**: a per-bar fold with **carried state** over several
+    row-aligned columns, for the path-dependent studies no window can
+    express (`parabolicSar`, `superTrend`, `atrTrailingStop`,
+    `negativeVolumeIndex`/`positiveVolumeIndex`, `klinger`). The step sees
+    `(state, i, run, inputs, outputs)` where `run` counts the consecutive
+    complete rows ending at `i`, so `run === 1` is the seed bar; **a missing
+    cell resets the machine**, and the kernel NaN-fills the outputs, so a
+    step that writes nothing warms up.
   - `clvValues(high, low, close)` and
     `accumulationDistributionValues(high, low, close, volume)`
     (`kernels/close-location.ts`) — where the close sits in the bar's own
@@ -176,9 +185,12 @@ both; `sma()` went 569 → 56 ms, `ema()` 603 → 2.5 ms).
   mapped reducer is a built-in name with a numeric output** (a single
   custom-function reducer sends the whole call to the generic sweep), and
   `smooth('ema')` runs its typed fast path on packed numeric sources. If a
-  new study needs a shape those don't cover (e.g. a per-bar stateful fold —
-  PSAR/SuperTrend), the answer is a **new kernel helper backed by a new core
-  fast path** ([PND-SFOLD]), never a bespoke event loop in the study.
+  new study needs a shape those don't cover, the answer is a **new kernel
+  helper**, never a bespoke event loop in the study — the per-bar stateful
+  fold PSAR and SuperTrend need is `foldRows` ([PND-SFOLD]), which walks the
+  columns once and costs 11.3 ms at 1M rows over a two-column no-op step
+  against `ema()`'s 6.3 ms **on the same run** — 1.8× (the quieter
+  reference run below reads `ema()` at 2.5 ms; compare ratios, not runs).
 - **Touching a kernel means running the bench.** Compose-only studies inherit
   kernel performance and need no benchmark of their own. Any change to
   `kernels/*.ts` — or a new kernel helper — runs

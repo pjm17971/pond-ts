@@ -1475,6 +1475,190 @@ fixing the `rollingValues` misnamed-column asymmetry, which this batch settles
 only for its own studies and leaves as the kernel-level carry-forward the
 volatility tail recorded.
 
+**Landed — the state machines (Phase 3, K6).** The kernel the corpus
+assessment's **G2** names, plus its six first consumers: `parabolicSar`,
+`superTrend`, `atrTrailingStop`, `negativeVolumeIndex`, `positiveVolumeIndex`
+and `klinger`. This is the first group whose value on bar `i` is not a
+function of a bounded window, so the interesting decisions are all about
+_state_, not arithmetic. Decisions:
+
+(1) **The kernel is a loop and a gap rule, and nothing else.** `foldRows(
+inputs, outputCount, state, step)` walks the rows, tests every input cell for
+`NaN`, and calls `step(state, i, run, inputs, outputs)` on the complete ones,
+where `run` counts how many _consecutive_ complete rows end at `i`. The first
+draft had an `init` / `seed` / `step` triple; `run` collapses it, because a
+machine that seeds off one bar branches on `run === 1` and one that needs a
+predecessor (SAR reads bar `i−1`) branches on `run === 2` and lets `run === 1`
+fall through to the `NaN` the outputs already hold. The kernel also **owns the
+allocation**, NaN-filled — the warm-up and the gap rule are the same fill, and
+a study allocating its own buffers would silently publish `0` (a price) for
+both. The step takes everything explicitly rather than closing over it, so it
+is a top-level, unit-testable function with no closure on the hot path; the
+study's configuration rides in the same typed state object as its carried
+fields (`readonly` versus mutable is the distinction).
+
+(2) **A missing cell RESETS the machine — and the alternative is the one that
+loses.** The two honest answers are (a) reset (emit `undefined` for the
+incomplete bar, re-seed from the next complete one) and (b) hold (emit
+`undefined` but carry the state across). We ship (a). Ask what the _true_
+answer is: a Parabolic SAR that did not see a bar cannot know whether it
+flipped — the missing bar might have printed a new extreme (advancing the
+acceleration factor), penetrated the stop (reversing the side and resetting
+the factor), or neither, and nothing in the surrounding bars distinguishes
+those. (b) would resume with a side, an extreme point and a factor that are
+**not** what the definition says, and because the machine is a recursion the
+error never washes out — a stop carried on the wrong side stays wrong until
+the next genuine reversal. (a) throws away real information but everything it
+then emits is exactly what the definition says, computed from bars the machine
+saw. (b) trades a visible absence for an invisible lie, which is the trade
+this package never takes.
+
+The asymmetry with `wilderValues`, which **propagates to the end** instead, is
+stated rather than reconciled, and the difference is the cost of a seed:
+Wilder's is the mean of `period` bars, so a mid-series restart would silently
+restate what "a 14-bar average" means there; a K6 seed is one or two bars,
+which is exactly what a chart does when a halted instrument resumes. The
+practical consequence is that the reset is only _visible_ for the machines
+reading raw columns — `parabolicSar`, `negativeVolumeIndex`,
+`positiveVolumeIndex` — because `superTrend` and `atrTrailingStop` read
+`atrValues`, whose own interior-gap rule leaves every later row incomplete
+before the reset can fire. Documented per study rather than averaged into a
+slogan.
+
+(3) **What a core `foldRows` would need that this one does not.** Promoting
+this to core (`scanRows` / `foldEvents`, the G2 ask) needs four things the
+library kernel is free to skip. **A typed row view**, since core cannot hand a
+study a positional `Float64Array[]` and expect the caller to remember which
+index is `low` — it would want `{ high, low, … }` narrowed by the schema, and
+the cost of materialising one per row is exactly the `Event` allocation
+`readNumericColumn` exists to avoid, so it would need the columnar-cursor
+treatment `rolling`'s fast path already has. **A declared output schema**, so
+the result is a `TimeSeries` rather than arrays a study has to `withColumn`
+back on. **A missing-cell POLICY rather than a rule** — core has no business
+deciding that a gap resets a caller's machine, so the reset/hold/propagate
+choice becomes an option, and the honest default for a general operator is
+probably `propagate` (the conservative one), with `reset` an opt-in the
+financial studies would pass. And **a live counterpart**: the whole point of a
+core primitive is that `LiveSeries` gets it too, and a fold whose state is
+per-partition needs the factory-based per-partition state pattern
+(`ARCHITECTURE.md`) rather than one object. None of the four is needed by six
+batch studies, which is why the kernel stays in the package (exported from
+`@pond-ts/financial` like the other kernels, not promoted to core); the shape
+is now proven
+and the promotion is a decision with evidence rather than a guess.
+
+(4) **`${prefix}` + `${prefix}Trend`, and why the value column is bare.**
+The three stop machines each emit two columns: the value under the **bare**
+prefix and a `+1` / `−1` side. Bare rather than `${prefix}Line` (the `macd`
+precedent) because MACD's three columns are three peers with no principal
+among them, whereas a SAR _is_ one number and the trend annotates it — naming
+the value `psarLine` would make this the one study whose principal output is
+not reachable under the name the caller passed, and `psar()` would leave no
+column called `psar`. The **side is a separate column rather than a derivation**
+because it is genuinely not recoverable: all three clamp, so the stop can
+print exactly _on_ an extreme (`min(sar, prevLow, low)`) or exactly on the
+close (`atr = 0`), and `psar < low` would then draw the dot on the wrong side.
+`+1` always means "the line sits below price", which is the opposite sign to
+TradingView's `ta.supertrend` (its `direction := 1` is a downtrend) — the
+delta is documented on the study.
+
+(5) **SuperTrend ships the line and the side, not the bands.** `st` already
+_is_ whichever final band is live, so the only thing `${prefix}Upper` /
+`${prefix}Lower` would add is the **inactive** band, which no published
+SuperTrend chart draws and which is an artefact of the ratchet's bookkeeping —
+freezing it in the schema would make the study's contract wider than its
+definition. Two columns until a documented consumer needs four.
+
+(6) **`atrTrailingStop` is close-anchored, and the Chandelier is named, not a
+knob.** Two families circulate under names this close together, so the choice
+is explicit: the shipped form measures the band from the **close**
+(Vervoort's, the form TradingView's ATR Trailing Stop / "UT Bot" scripts
+implement), and Chuck LeBeau's **Chandelier Exit** measures it from the
+rolling extreme instead. An `anchor: 'close' | 'extreme'` option was
+considered and rejected — the two differ in more than one place (the extreme
+form also has its own warm-up and a conventionally different flip test), so
+the knob would be two studies wearing one name. The Chandelier is a
+composition away (`donchian` supplies both extremes, `atr` the width).
+
+(7) **Klinger ships the original, and the fork is named.** `F-AMBIG` in the
+assessment, and it earns it. The volume force is
+`volume × |2 × (dm/cm − 1)| × trend × 100` with `dm = high − low` and `cm`
+accumulating `dm` over the trend leg (re-based on `dm[i−1] + dm[i]` when the
+trend turns, which is also the seed) — Klinger's own, as StockCharts
+documents it. The reading taken is `2 × ((dm/cm) − 1)` under the modulus, not
+`2 × (dm/cm) − 1`; the oracle separates them (measured `4.0e+04` apart at the
+defaults on an oscillator spanning `1.3e+05`). TradingView's `ta.kvo`, which
+drops the `dm/cm` factor entirely and is just an EMA-pair oscillator of signed
+volume, is documented as a **different indicator sharing the name** rather
+than offered as a `variant` — a knob would hide that.
+
+(8) **NVI/PVI: a flat volume holds on both, and the reset re-bases.** Fosback
+compares strictly in each direction, so an unchanged volume is neither a
+down-volume nor an up-volume bar and the two indices do **not** partition the
+tape — the obvious `<` / `>=` implementation gives PVI a bar Fosback does not.
+The K6 reset is most visible here: an interior gap re-bases the index at
+`start` on the next complete bar, which is a deliberate difference from `obv`,
+which propagates to the end. The difference is what the level _means_ — OBV
+accumulates volume, a quantity with units where the distance between two
+points is the reading, so a hole makes every later level wrong; NVI compounds
+returns from an arbitrary base, so re-basing loses only the base.
+
+**Deltas and measurements** (every number re-run from
+`scratchpad/sfold-*.py`, cited in the commit message): `parabolicSar` is
+**exactly** TA-Lib `SAR` (`0.0` maximum absolute difference at `(0.02, 0.2)`,
+`(0.05, 0.5)` and `(0.01, 0.1)` over the oracle's 80 bars, masks identical),
+with the `−DM` seed probed against TA-Lib on a short-opening 7-bar fixture
+that a forced-long seed gets wrong. TA-Lib **has no gap semantics at all** —
+measured on an interior hole it emits a full column of numbers with no gap in
+it, because its comparisons against `NaN` are all false; ours resets, which is
+the one deliberate delta. The other four have no TA-Lib function and are
+pandas replications with the analytic first valid bar asserted and a
+**separation** case against the nearby misreading in each case.
+
+One separation could **not** be built, and the finding is worth keeping:
+SuperTrend's "flip on the previous final band instead of the just-ratcheted
+one" is **unobservable** whenever the close sits inside its own bar and
+`multiplier ≥ 1`. While the side is up the lower band only ratchets up, so the
+two readings differ only when `prevLower ≤ close < basicLower`, and
+`close < basicLower` needs `multiplier · ATR < mid − close ≤ (high − low)/2`,
+which the ATR bounds out. Measured `0.0` apart across every
+`period 2..20 × multiplier 0.2..4.0` pair on the fixture; the generator
+asserts the **equality**, so a future fixture that does separate them fails
+loudly rather than leaving the claim stale.
+
+**Perf** (1M bars, `scripts/perf-studies.mjs`; `ema()` reads 6.29 ms and
+`sma()` 20.60 ms on the same run): the bare two-column fold over a no-op step
+is **11.32 ms**, 1.8× `ema()`, against a **5.20 ms** floor for the same NaN
+scan written inline with no callback — so the per-row indirect call is ~6 ms
+per million rows and is the design (one shared loop; no study owns a loop).
+A 1–4-column specialisation with hoisted locals was written and measured: 35%
+at `k = 1` (which no study uses), **4% at `k = 2` and nothing at `k = 4`**, so
+it was not landed. The studies then pay the package's usual column plumbing:
+`parabolicSar` 41.9 ms, `superTrend` 61.4 ms, `atrTrailingStop` 49.0 ms,
+`negativeVolumeIndex` 31.3 ms, `klinger` 73.2 ms — all in line with
+`atrBands` (40.4 ms) and `macd` (68.1 ms) for the same output-column count.
+
+**Mutation matrix**: 24 mutations across the kernel and the six studies, **all
+killed** (1–48 failing tests each) after three rounds of test additions. The
+first round left seven survivors and each one was a real gap: the oracle input
+and the unit fixture both happen to open **long**, so nothing tested the `−DM`
+seed; nothing exercised the three tie-breaks (`low ≤ sar`,
+`not (close < lower)`, the ATS `otherwise` branch); and the NVI zero-base
+guard was only reached on a path where the level was already `0`, so removing
+it changed nothing. That last one also found its twin: **Klinger's `cm === 0`
+guard was genuinely dead** — `cm` is a sum of non-negative ranges, so a zero
+`cm` forces a zero `dm` and the ratio is `0/0 = NaN` on its own — and it was
+**deleted** rather than tested, per the volatility tail's rule.
+
+**Considered and not built**: a separate `seed`/`init` hook on the kernel
+(decision 1); the hold-across-a-gap rule (2); a core `scanRows` now (3); a
+`${prefix}Dir` third column or a sign-encoded single column on the stop
+machines (4); SuperTrend's two band columns (5); an `anchor` knob on
+`atrTrailingStop` (6); a `variant` knob on `klinger` (7); a `SAREXT` case
+(its offset-on-reverse and per-side acceleration parameters are a different
+function with a signed output convention); and the fold-loop specialisation
+the bench did not justify.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,
@@ -1495,12 +1679,29 @@ the fill-with-previous-close answer, and it reached the docstring, a test
 comment, the CHANGELOG, this plan and the PR body before the Layer-2
 reviewer re-ran TA-Lib.
 
-### [PND-SFOLD] — K6 stateful-fold kernel (studies Phase 3)
+### [PND-SFOLD] — K6 stateful-fold kernel — **landed** in the package, not promoted to core
 
-A few Phase-3 studies (PSAR, SuperTrend, etc.) need the K6 stateful-fold
-shim — a per-bar fold with carried state that doesn't fit the rolling
-kernels. Design the kernel when Phase-1 breadth is done and a consumer pulls
-on a Phase-3 study.
+`foldRows` (`packages/financial/src/kernels/fold.ts`) ships with six
+consumers; the design, the gap rule and what a **core** `foldRows` would need
+before it earns promotion are written up under "Landed — the state machines
+(Phase 3, K6)" above. Nothing here is open work: the remaining question —
+whether this becomes a core `scanRows` — is gated on a consumer outside
+`@pond-ts/financial` wanting it, and the four things it would need are
+recorded so that decision starts from evidence.
+
+_Layer-2 review of #708, recorded._ The non-TA-Lib oracles here (`superTrend`,
+`atrTrailingStop`, NVI/PVI, `klinger`) are pandas transcriptions of the shipped
+step functions — same `run` counter, same branch order — so they are
+**change-detectors**, not independent derivations; the separation probes
+against the plausible wrong turns carry the correctness weight, and a
+third-party re-derivation of Klinger and NVI is the open ask a Codex pass
+would answer. The SuperTrend flip-order claim was over-general: the structural
+argument holds where the code states it (`multiplier ≥ 1`, close inside its
+own bar); below 1 the reviewer's random-walk data separated 55 of 168 sets
+(all at 0.2 or 0.5, up to 5.0 price units) while this fixture reads 0.0 across
+the whole grid (re-measured at integration, 0 of 133 — fixture luck, not a
+guarantee). The note is scoped and the generator asserts the equality only at
+multiplier 1, the regime the argument covers.
 
 ### [PND-TCAL] — Trading-time deferred items
 

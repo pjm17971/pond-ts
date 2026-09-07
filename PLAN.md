@@ -1259,9 +1259,19 @@ pandas-oracle-verified) have shipped. Plan:
   the new `rollingBivariateValues` kernel — the comparison series is a
   `benchmark` **column** on the already joined series, never a second
   `TimeSeries`, so alignment stays `align` + `joinMany`'s job).
-  **Fifty-nine studies shipped**; the Phase-2 kernel families (K1–K8) are
-  all in. What remains of the corpus is Phase 3 — the K6 stateful fold
-  ([PND-SFOLD]: PSAR, SuperTrend, ZigZag) — and the session-anchored
+  Phase 3 then landed the **K6 stateful fold** ([PND-SFOLD], now closed):
+  `foldRows` — a per-bar fold with carried state over several row-aligned
+  columns, whose one rule is that a missing cell **resets** the machine (a
+  SAR that did not see a bar cannot know whether it flipped) — with six
+  consumers: `parabolicSar` (bar-for-bar TA-Lib `SAR`), `superTrend`,
+  `atrTrailingStop`, `negativeVolumeIndex`, `positiveVolumeIndex` and
+  `klinger`. The kernel is exported from `@pond-ts/financial` like the
+  other kernels but **not promoted to core**; what a core
+  `scanRows` would additionally need is recorded in the financial plan so
+  that promotion starts from evidence rather than a guess.
+  **Sixty-five studies shipped.** What remains of the corpus is the
+  repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
+  live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /
   session VWAP**, which needs a reset and belongs with the session-anchored
   studies. Package-wide questions surfaced by the wave, none blocking:
@@ -1277,8 +1287,6 @@ pandas-oracle-verified) have shipped. Plan:
   #703; the two-series studies added a third answer, `assertColumn`
   throwing on a required `benchmark`; unifying it moves shipped studies so
   it waits for a consumer).
-- **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
-  (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
   discontinuous axis, exchange-tz tick grain, cursor timezone control,
   overnight sessions in `fromRules`.
