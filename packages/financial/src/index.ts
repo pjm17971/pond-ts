@@ -27,6 +27,8 @@ export { MA_TYPES, movingAverageValues } from './kernels/moving-average.js';
 export { percentChangeValues } from './kernels/rate-of-change.js';
 export { directionalMovementValues } from './kernels/directional-movement.js';
 export { barsSinceExtremeValues } from './kernels/highest-lowest.js';
+export type { RollingBivariateMoments } from './kernels/bivariate.js';
+export { rollingBivariateValues } from './kernels/bivariate.js';
 export type { RollingRegression } from './kernels/linear-regression.js';
 export {
   linearRegressionValues,
@@ -141,6 +143,14 @@ export { relativeVolatilityIndex } from './studies/relative-volatility-index.js'
 export type { PsychologicalLineOptions } from './studies/psychological-line.js';
 export { psychologicalLine } from './studies/psychological-line.js';
 export type { DirectionalMovementOptions } from './studies/directional-movement.js';
+export type { CorrelationOptions } from './studies/correlation.js';
+export { correlation } from './studies/correlation.js';
+export type { BetaOptions } from './studies/beta.js';
+export { beta } from './studies/beta.js';
+export type { PriceRelativeOptions } from './studies/price-relative.js';
+export { priceRelative } from './studies/price-relative.js';
+export type { PerformanceIndexOptions } from './studies/performance-index.js';
+export { performanceIndex } from './studies/performance-index.js';
 export { directionalMovement } from './studies/directional-movement.js';
 export type { AroonOptions } from './studies/aroon.js';
 export { aroon } from './studies/aroon.js';

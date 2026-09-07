@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { TimeSeries } from 'pond-ts';
 import {
@@ -57,6 +58,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   linearRegression,
   timeSeriesForecast,
   chandeForecastOscillator,
@@ -6134,5 +6139,681 @@ describe('centerOfGravity', () => {
     const v = col(centerOfGravity(bars([10, 12, 11]), { period: 5 }), 'cog');
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The two-series / comparison family (corpus §6.7, kernel K8).                */
+/*                                                                             */
+/* The comparison series is a COLUMN on the same series, so every fixture here */
+/* is a two-column bar series — the shape a consumer gets from `align` +       */
+/* `TimeSeries.joinMany`, which the first test builds for real.                */
+/* -------------------------------------------------------------------------- */
+
+const pairSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'close', kind: 'number' },
+  { name: 'bench', kind: 'number' },
+] as const;
+
+function pairBars(closes: number[], bench: number[]) {
+  return new TimeSeries({
+    name: 'bars',
+    schema: pairSchema,
+    rows: closes.map((c, i) => [i, c, bench[i]!]) as Array<
+      [number, number, number]
+    >,
+  });
+}
+
+/** Never monotonic, never flat, and the two sides lead each other in places
+ *  so the correlation crosses zero rather than sitting at one corner. */
+const pairCloses = [100, 102, 101, 104, 103, 107, 105, 108, 110, 109, 112, 111];
+const pairBench = [50, 51, 50.5, 51.5, 52, 52.5, 53.5, 53, 54, 55, 54.5, 56];
+
+/** A straightforward two-pass beta over the last `period` one-bar returns —
+ *  written out here so the study's answer is checked against arithmetic a
+ *  reader can follow, not against a second copy of the kernel. */
+function betaReference(
+  closes: number[],
+  bench: number[],
+  period: number,
+  at: number,
+): number {
+  const rx: number[] = [];
+  const ry: number[] = [];
+  for (let i = at - period + 1; i <= at; i += 1) {
+    rx.push(closes[i]! / closes[i - 1]! - 1);
+    ry.push(bench[i]! / bench[i - 1]! - 1);
+  }
+  const mx = rx.reduce((a, b) => a + b, 0) / period;
+  const my = ry.reduce((a, b) => a + b, 0) / period;
+  let cov = 0;
+  let vy = 0;
+  for (let i = 0; i < period; i += 1) {
+    cov += (rx[i]! - mx) * (ry[i]! - my);
+    vy += (ry[i]! - my) * (ry[i]! - my);
+  }
+  return cov / vy;
+}
+
+describe('the two-series family: joining the benchmark in', () => {
+  it('the documented recipe works: two series, align-free join, then the study', () => {
+    // This is the recipe every docstring in the family points at, run for
+    // real. It is the argument for the design: the study never sees two
+    // series, because core has already made them one row.
+    const barsOnly = bars(pairCloses);
+    const spy = new TimeSeries({
+      name: 'spy',
+      schema: closeSchema,
+      rows: pairBench.map((c, i) => [i, c]) as Array<[number, number]>,
+    });
+
+    const wide = TimeSeries.joinMany([barsOnly, spy.rename({ close: 'spy' })], {
+      type: 'inner',
+    });
+    expect(wide.length).toBe(pairCloses.length);
+
+    const withCorr = correlation(wide, {
+      column: 'close',
+      benchmark: 'spy',
+      period: 4,
+    });
+    const withBeta = beta(withCorr, {
+      column: 'close',
+      benchmark: 'spy',
+      period: 4,
+    });
+    const both = priceRelative(withBeta, {
+      column: 'close',
+      benchmark: 'spy',
+    });
+
+    // Same numbers as running the same studies over a hand-built wide series
+    // — the join is transport, not semantics.
+    const direct = pairBars(pairCloses, pairBench);
+    expect(col(both, 'corr')).toEqual(
+      col(correlation(direct, { benchmark: 'bench', period: 4 }), 'corr'),
+    );
+    expect(col(both, 'beta')).toEqual(
+      col(beta(direct, { benchmark: 'bench', period: 4 }), 'beta'),
+    );
+    expect(col(both, 'priceRel')).toEqual(
+      col(priceRelative(direct, { benchmark: 'bench' }), 'priceRel'),
+    );
+  });
+
+  it('an OUTER join leaves one-sided rows, and the strict window blanks them', () => {
+    // The other half of the recipe: what a join type means for the study. An
+    // outer join over two different bar clocks produces rows with only one
+    // side present; a bivariate moment cannot use them, so they and the
+    // windows over them read `undefined` rather than being averaged around.
+    const barsOnly = bars(pairCloses);
+    const sparse = new TimeSeries({
+      name: 'spy',
+      schema: closeSchema,
+      // Only the even bars, so every odd row of the join is one-sided.
+      rows: pairBench
+        .map((c, i) => [i, c] as [number, number])
+        .filter((_, i) => i % 2 === 0),
+    });
+    const wide = TimeSeries.joinMany(
+      [barsOnly, sparse.rename({ close: 'spy' })],
+      { type: 'outer' },
+    );
+    const v = col(
+      correlation(wide, { column: 'close', benchmark: 'spy', period: 3 }),
+      'corr',
+    );
+    expect(v).toHaveLength(pairCloses.length);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('correlation', () => {
+  it('is Pearson r of the two columns, warm-up period − 1, length kept', () => {
+    const r = correlation(pairBars(pairCloses, pairBench), {
+      benchmark: 'bench',
+      period: 4,
+    });
+    const v = col(r, 'corr');
+    expect(v).toHaveLength(pairCloses.length);
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[3]).toBe('number');
+    // Bars 0..3: close 100,102,101,104 (mean 101.75); bench 50,51,50.5,51.5
+    // (mean 50.75). cov = (−1.75·−0.75 + 0.25·0.25 + −0.75·−0.25 +
+    // 2.25·0.75)/4 = (1.3125 + 0.0625 + 0.1875 + 1.6875)/4 = 0.8125.
+    // varX = (3.0625+0.0625+0.5625+5.0625)/4 = 2.1875,
+    // varY = (0.5625+0.0625+0.0625+0.5625)/4 = 0.3125.
+    expect(v[3]!).toBeCloseTo(0.8125 / Math.sqrt(2.1875 * 0.3125), 12);
+    expect(Math.abs(v[3]!)).toBeLessThanOrEqual(1);
+  });
+
+  it('defaults to period 30, column close and output corr', () => {
+    const long = Array.from(
+      { length: 40 },
+      (_, i) => 100 + Math.sin(i / 3) * 5,
+    );
+    const other = Array.from(
+      { length: 40 },
+      (_, i) => 60 + Math.cos(i / 4) * 3,
+    );
+    const v = col(
+      correlation(pairBars(long, other), { benchmark: 'bench' }),
+      'corr',
+    );
+    expect(v.slice(0, 29).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[29]).toBe('number');
+  });
+
+  it('reads exactly +1 on an affine benchmark and −1 on a negated one', () => {
+    // The definition of Pearson's r: invariant to an independent scale AND
+    // shift of either column, so an affine pair is perfectly correlated.
+    const affine = pairCloses.map((c) => 2 * c + 5);
+    expect(
+      col(
+        correlation(pairBars(pairCloses, affine), {
+          benchmark: 'bench',
+          period: 5,
+        }),
+        'corr',
+      ).slice(4),
+    ).toEqual(Array.from({ length: 8 }, () => 1));
+    // The negated pair is NOT bit-exact, and that is the measured reason
+    // there is no `±1` clamp: this input reads `-1.0000000000000002` on one
+    // bar, an overshoot of 2e-16 that no caller's threshold can see and that
+    // a guard would have to be written (and tested) to remove.
+    const negated = pairCloses.map((c) => -3 * c + 1000);
+    const negatedCorr = col(
+      correlation(pairBars(pairCloses, negated), {
+        benchmark: 'bench',
+        period: 5,
+      }),
+      'corr',
+    ).slice(4);
+    for (const r of negatedCorr) expect(r!).toBeCloseTo(-1, 14);
+    expect(negatedCorr.some((r) => r! < -1)).toBe(true);
+  });
+
+  it('a flat window on either side is undefined, not 0 (TA-Lib says 0)', () => {
+    // A genuine 0/0 — there is no correlation to report. Deliberate delta
+    // from `talib.CORREL`, which substitutes 0.0 for its zero denominator
+    // (measured). No guard exists: the covariance of a flat window is
+    // exactly 0, so the division is already 0/0.
+    const flat = pairCloses.map(() => 7);
+    expect(
+      col(
+        correlation(pairBars(pairCloses, flat), {
+          benchmark: 'bench',
+          period: 4,
+        }),
+        'corr',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+    expect(
+      col(
+        correlation(pairBars(flat, pairCloses), {
+          benchmark: 'bench',
+          period: 4,
+        }),
+        'corr',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('validates its options', () => {
+    const b = pairBars(pairCloses, pairBench);
+    expect(() => correlation(b, { benchmark: 'bench', period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => correlation(b, { benchmark: 'bench', period: 1 })).toThrow(
+      /at least 2/,
+    );
+    expect(() =>
+      correlation(b, { benchmark: 'bench', output: 'close' as never }),
+    ).toThrow(/collides/);
+    // A benchmark that is the source column is a mistake, not a reading.
+    expect(() => correlation(b, { benchmark: 'close' })).toThrow(/same column/);
+    // A misnamed column THROWS in this family rather than reading empty —
+    // the deliberate resolution of the reducer-dependent split the volatility
+    // tail recorded, chosen here because these studies read `columnValues`
+    // directly and inherit neither door's answer.
+    expect(() => correlation(b, { benchmark: 'spy' as never })).toThrow(
+      /benchmark column 'spy' is not on the series/,
+    );
+    // A benchmark that exists but is not numeric throws too — otherwise it
+    // would read all-NaN, the silent-empty outcome the throw exists to stop.
+    const labelled = new TimeSeries({
+      name: 'bars',
+      schema: [...pairSchema, { name: 'label', kind: 'string' }] as const,
+      rows: pairCloses.map(
+        (c, i) =>
+          [i, c, pairBench[i]!, 'spy'] as [number, number, number, string],
+      ),
+    });
+    expect(() =>
+      correlation(labelled, { benchmark: 'label' as never, period: 3 }),
+    ).toThrow(
+      /benchmark column 'label' is a string column, not a number column/,
+    );
+    // A misnamed `column` has a default and reads all-missing, as in every
+    // other study; only the required `benchmark` throws.
+    const typo = correlation(b, {
+      benchmark: 'bench',
+      column: 'nope' as never,
+    });
+    expect(col(typo, 'corr').every((v) => v === undefined)).toBe(true);
+  });
+
+  it('period longer than the series is all-undefined, length kept', () => {
+    const v = col(
+      correlation(pairBars([1, 2, 3], [3, 2, 1]), {
+        benchmark: 'bench',
+        period: 5,
+      }),
+      'corr',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('correlation on a column that freezes mid-series', () => {
+  it('reads undefined on the flat windows and finite elsewhere — never throws', () => {
+    // The Layer-2 repro for #706: a tick-frozen price that steps every 97
+    // bars, against a moving benchmark. Before the kernel's change counter
+    // this threw `withColumn 'corr': index 126 is -Infinity`.
+    const n = 600;
+    const closes = Array.from(
+      { length: n },
+      (_, i) => 100 + Math.floor(i / 97),
+    );
+    const bench = Array.from(
+      { length: n },
+      (_, i) => 50 + 3 * Math.sin(i / 5) + i * 0.001,
+    );
+    const r = correlation(pairBars(closes, bench), {
+      benchmark: 'bench',
+      period: 30,
+    });
+    const v = col(r, 'corr');
+    let flat = 0;
+    let moving = 0;
+    for (let i = 29; i < n; i += 1) {
+      const isFlat = Math.floor((i - 29) / 97) === Math.floor(i / 97);
+      if (isFlat) {
+        flat += 1;
+        expect(v[i], `corr[${i}]`).toBeUndefined();
+      } else {
+        moving += 1;
+        expect(Number.isFinite(v[i]!), `corr[${i}]`).toBe(true);
+        expect(Math.abs(v[i]!)).toBeLessThanOrEqual(1 + 1e-12);
+      }
+    }
+    expect(flat).toBeGreaterThan(300);
+    expect(moving).toBeGreaterThan(100);
+  });
+});
+
+describe('beta', () => {
+  it('is the slope of the returns, first valid at bar `period`', () => {
+    const r = beta(pairBars(pairCloses, pairBench), {
+      benchmark: 'bench',
+      period: 4,
+    });
+    const v = col(r, 'beta');
+    expect(v).toHaveLength(pairCloses.length);
+    // `period` returns need `period + 1` prices, so the warm-up is `period`
+    // rows and not `period − 1` — one later than a plain window study.
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBeCloseTo(betaReference(pairCloses, pairBench, 4, 4), 10);
+    expect(v[9]).toBeCloseTo(betaReference(pairCloses, pairBench, 4, 9), 10);
+  });
+
+  it('defaults to period 5, column close and output beta', () => {
+    const v = col(
+      beta(pairBars(pairCloses, pairBench), { benchmark: 'bench' }),
+      'beta',
+    );
+    expect(v.slice(0, 5).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[5]).toBe('number');
+  });
+
+  it('is exactly 1 against a SCALED benchmark and not 1 against an affine one', () => {
+    // A pure scale is return-preserving, so beta is exactly 1. An affine
+    // transform is NOT — `Δx/(kx + c)` is not `Δx/x` — which is the trap
+    // `correlation` (exactly +1 on the same pair) hides.
+    const scaled = pairCloses.map((c) => 3.5 * c);
+    expect(
+      col(
+        beta(pairBars(pairCloses, scaled), { benchmark: 'bench', period: 4 }),
+        'beta',
+      ).slice(4),
+    ).toEqual(Array.from({ length: 8 }, () => 1));
+
+    const affine = pairCloses.map((c) => 2 * c + 5);
+    const v = col(
+      beta(pairBars(pairCloses, affine), { benchmark: 'bench', period: 4 }),
+      'beta',
+    );
+    expect(v[4]!).toBeCloseTo(betaReference(pairCloses, affine, 4, 4), 10);
+    expect(v[4]!).not.toBeCloseTo(1, 3);
+    expect(v[4]!).toBeGreaterThan(1); // the benchmark's returns are SMALLER
+    // …while the correlation of the very same pair is exactly 1.
+    expect(
+      col(
+        correlation(pairBars(pairCloses, affine), {
+          benchmark: 'bench',
+          period: 4,
+        }),
+        'corr',
+      )[4],
+    ).toBe(1);
+  });
+
+  it('a flat benchmark window is undefined, not 0 (TA-Lib says 0)', () => {
+    const flat = pairCloses.map(() => 7);
+    expect(
+      col(
+        beta(pairBars(pairCloses, flat), { benchmark: 'bench', period: 4 }),
+        'beta',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('a zero price is a missing return, so it blanks `period` readings', () => {
+    // TA-Lib substitutes a return of 0 for a zero base; `percentChangeValues`
+    // marks it missing, and the strict window carries that through. Only
+    // reachable when `column` is another study's output.
+    const holed = [...pairCloses];
+    holed[5] = 0;
+    const v = col(
+      beta(pairBars(holed, pairBench), { benchmark: 'bench', period: 3 }),
+      'beta',
+    );
+    // Only ONE return is unusable, and it is the one AFTER the zero: the
+    // return INTO a zero price is a legitimate −100%, the return out of it
+    // divides by zero. So the three windows ending at bars 6, 7 and 8 blank
+    // and bar 5 — whose window ends on the −100% — still reads.
+    expect(typeof v[5]).toBe('number');
+    expect(v.slice(6, 9).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[9]).toBe('number');
+  });
+
+  it('validates its options', () => {
+    const b = pairBars(pairCloses, pairBench);
+    expect(() => beta(b, { benchmark: 'bench', period: 1 })).toThrow(
+      /at least 2/,
+    );
+    expect(() => beta(b, { benchmark: 'bench', period: 2.5 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => beta(b, { benchmark: 'close' })).toThrow(/same column/);
+    expect(() => beta(b, { benchmark: 'nope' as never })).toThrow(
+      /is not on the series/,
+    );
+    expect(() =>
+      beta(b, { benchmark: 'bench', output: 'bench' as never }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('beta on a benchmark that freezes mid-series', () => {
+  it('reads undefined where the benchmark returns are all zero and finite elsewhere — never throws', () => {
+    // The Layer-2 repro for #706: a stale (forward-filled) benchmark that
+    // steps every 61 bars, `period 5`. Before the change counter this threw
+    // `withColumn 'beta': index 127 is Infinity`.
+    const n = 400;
+    const closes = Array.from(
+      { length: n },
+      (_, i) => 100 + 4 * Math.sin(i / 3) + i * 0.02,
+    );
+    const bench = Array.from(
+      { length: n },
+      (_, i) => 50 + Math.floor(i / 61) * 0.5,
+    );
+    const r = beta(pairBars(closes, bench), { benchmark: 'bench', period: 5 });
+    const v = col(r, 'beta');
+    let flat = 0;
+    let moving = 0;
+    // Bar i's window holds the returns at bars i−4 … i; return k is non-zero
+    // only when the benchmark stepped at bar k (k % 61 === 0, k > 0).
+    for (let i = 5; i < n; i += 1) {
+      let steps = 0;
+      for (let k = i - 4; k <= i; k += 1) if (k % 61 === 0) steps += 1;
+      if (steps === 0) {
+        flat += 1;
+        expect(v[i], `beta[${i}]`).toBeUndefined();
+      } else {
+        moving += 1;
+        expect(Number.isFinite(v[i]!), `beta[${i}]`).toBe(true);
+      }
+    }
+    expect(flat).toBeGreaterThan(300);
+    expect(moving).toBeGreaterThan(20);
+  });
+});
+
+describe('priceRelative', () => {
+  it('is the ratio, on every bar, with no warm-up at all', () => {
+    const v = col(
+      priceRelative(pairBars(pairCloses, pairBench), { benchmark: 'bench' }),
+      'priceRel',
+    );
+    expect(v).toHaveLength(pairCloses.length);
+    expect(v[0]).toBe(2); // 100 / 50 — bar 0 emits; it reads one row
+    expect(v[1]).toBeCloseTo(102 / 51, 12);
+    expect(v.every((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('is scale-EQUIVARIANT in column and inverse in benchmark', () => {
+    const base = col(
+      priceRelative(pairBars(pairCloses, pairBench), { benchmark: 'bench' }),
+      'priceRel',
+    );
+    const scaledColumn = col(
+      priceRelative(
+        pairBars(
+          pairCloses.map((c) => 3 * c),
+          pairBench,
+        ),
+        {
+          benchmark: 'bench',
+        },
+      ),
+      'priceRel',
+    );
+    const scaledBench = col(
+      priceRelative(
+        pairBars(
+          pairCloses,
+          pairBench.map((c) => 3 * c),
+        ),
+        {
+          benchmark: 'bench',
+        },
+      ),
+      'priceRel',
+    );
+    for (let i = 0; i < base.length; i += 1) {
+      expect(scaledColumn[i]!).toBeCloseTo(base[i]! * 3, 10);
+      expect(scaledBench[i]!).toBeCloseTo(base[i]! / 3, 10);
+    }
+  });
+
+  it('a zero benchmark is undefined — a LIVE guard at the output', () => {
+    // Without it this is `Infinity`, which `withColumn` rejects outright, so
+    // "the study returns at all" is half the assertion and "only that row is
+    // missing" is the other half.
+    const holed = [...pairBench];
+    holed[3] = 0;
+    const v = col(
+      priceRelative(pairBars(pairCloses, holed), { benchmark: 'bench' }),
+      'priceRel',
+    );
+    expect(v[3]).toBeUndefined();
+    expect(v.filter((x) => x === undefined)).toHaveLength(1);
+    // A NEGATIVE benchmark still produces a number (`=== 0`, not `<= 0`).
+    const negative = [...pairBench];
+    negative[3] = -25;
+    expect(
+      col(
+        priceRelative(pairBars(pairCloses, negative), { benchmark: 'bench' }),
+        'priceRel',
+      )[3],
+    ).toBeCloseTo(104 / -25, 12);
+  });
+
+  it('validates its options', () => {
+    const b = pairBars(pairCloses, pairBench);
+    expect(() => priceRelative(b, { benchmark: 'close' })).toThrow(
+      /same column/,
+    );
+    expect(() => priceRelative(b, { benchmark: 'nope' as never })).toThrow(
+      /is not on the series/,
+    );
+    expect(() =>
+      priceRelative(b, { benchmark: 'bench', output: 'close' as never }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('performanceIndex', () => {
+  it('is the ratio of the two period-bar growths, warm-up `period`', () => {
+    const v = col(
+      performanceIndex(pairBars(pairCloses, pairBench), {
+        benchmark: 'bench',
+        period: 4,
+      }),
+      'perf',
+    );
+    expect(v).toHaveLength(pairCloses.length);
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    // Bar 4: close 103/100, bench 52/50. Bar 11: close 111/108, bench 56/53.
+    expect(v[4]!).toBeCloseTo(103 / 100 / (52 / 50), 12);
+    expect(v[11]!).toBeCloseTo(111 / 108 / (56 / 53), 12);
+  });
+
+  it('defaults to period 20 and output perf', () => {
+    const long = Array.from({ length: 30 }, (_, i) => 100 + i * 0.7);
+    const other = Array.from({ length: 30 }, (_, i) => 40 + i * 0.2);
+    const v = col(
+      performanceIndex(pairBars(long, other), { benchmark: 'bench' }),
+      'perf',
+    );
+    expect(v.slice(0, 20).every((x) => x === undefined)).toBe(true);
+    expect(typeof v[20]).toBe('number');
+  });
+
+  it('(perf − 1) × 100 IS percentChange(priceRelative, period)', () => {
+    // The identity that makes this a normalisation of the price relative
+    // rather than new math — the `benchmark` terms cancel exactly.
+    const withRatio = priceRelative(pairBars(pairCloses, pairBench), {
+      benchmark: 'bench',
+    });
+    const viaRoc = col(
+      percentChange(withRatio, { column: 'priceRel', periods: 4 }),
+      'pctChange',
+    );
+    const direct = col(
+      performanceIndex(pairBars(pairCloses, pairBench), {
+        benchmark: 'bench',
+        period: 4,
+      }),
+      'perf',
+    );
+    for (let i = 4; i < direct.length; i += 1) {
+      expect((direct[i]! - 1) * 100).toBeCloseTo(viaRoc[i]!, 9);
+    }
+  });
+
+  it('all three zero guards are live and report missing, not ±Infinity', () => {
+    // Each of these would send a non-finite value (or a silently wrong 0) to
+    // `withColumn`; each has its own row.
+    const zeroBase = [...pairCloses];
+    zeroBase[2] = 0; // column's look-back base
+    expect(
+      col(
+        performanceIndex(pairBars(zeroBase, pairBench), {
+          benchmark: 'bench',
+          period: 3,
+        }),
+        'perf',
+      )[5],
+    ).toBeUndefined();
+
+    const zeroBenchBase = [...pairBench];
+    zeroBenchBase[2] = 0; // benchmark's look-back base → growth of 0 → ∞
+    expect(
+      col(
+        performanceIndex(pairBars(pairCloses, zeroBenchBase), {
+          benchmark: 'bench',
+          period: 3,
+        }),
+        'perf',
+      )[5],
+    ).toBeUndefined();
+
+    const zeroBenchNow = [...pairBench];
+    zeroBenchNow[5] = 0; // benchmark now → growth of ∞ → a silent 0
+    expect(
+      col(
+        performanceIndex(pairBars(pairCloses, zeroBenchNow), {
+          benchmark: 'bench',
+          period: 3,
+        }),
+        'perf',
+      )[5],
+    ).toBeUndefined();
+  });
+
+  it('validates its options', () => {
+    const b = pairBars(pairCloses, pairBench);
+    expect(() =>
+      performanceIndex(b, { benchmark: 'bench', period: 0 }),
+    ).toThrow(/positive integer/);
+    expect(() => performanceIndex(b, { benchmark: 'close' })).toThrow(
+      /same column/,
+    );
+    expect(() => performanceIndex(b, { benchmark: 'nope' as never })).toThrow(
+      /is not on the series/,
+    );
+    expect(() =>
+      performanceIndex(b, { benchmark: 'bench', output: 'bench' as never }),
+    ).toThrow(/collides/);
+  });
+
+  it('period longer than the series is all-undefined, length kept', () => {
+    const v = col(
+      performanceIndex(pairBars([1, 2, 3], [3, 2, 1]), {
+        benchmark: 'bench',
+        period: 5,
+      }),
+      'perf',
+    );
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('the two-series oracle cases are in the fixture', () => {
+  it('has a case for each of the four studies (bump when adding cases)', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('./fixtures/study-oracle.json', import.meta.url),
+        'utf8',
+      ),
+    ) as { cases: Array<{ study: string }> };
+    // 119 cases before this batch + 7. A case that silently disappears takes
+    // its study's only value check with it, and nothing else would notice.
+    expect(fixture.cases).toHaveLength(134);
+    const counts = new Map<string, number>();
+    for (const c of fixture.cases) {
+      counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
+    }
+    expect(counts.get('correlation')).toBe(2);
+    expect(counts.get('beta')).toBe(2);
+    expect(counts.get('priceRelative')).toBe(1);
+    expect(counts.get('performanceIndex')).toBe(2);
   });
 });

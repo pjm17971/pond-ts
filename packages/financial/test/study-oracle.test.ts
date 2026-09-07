@@ -68,6 +68,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   linearRegression,
   timeSeriesForecast,
   chandeForecastOscillator,
@@ -103,6 +107,7 @@ interface OracleCase {
     emaPeriod?: number;
     sumPeriod?: number;
     stdevPeriod?: number;
+    benchmark?: string;
   };
   expected: Record<string, Array<number | null>>;
 }
@@ -114,6 +119,7 @@ interface Oracle {
     highs: number[];
     lows: number[];
     volumes: number[];
+    benchmarks: number[];
   };
   cases: OracleCase[];
 }
@@ -160,6 +166,27 @@ function ohlcSeries(): TimeSeries<never> {
       oracle.input.lows[i]!,
       c,
       oracle.input.volumes[i]!,
+    ]),
+  }) as unknown as TimeSeries<never>;
+}
+
+/** The closes with the oracle's modelled BENCHMARK column beside them — the
+ *  already-joined wide series the two-series family reads. In real use the
+ *  benchmark arrives via `align` + `TimeSeries.joinMany`; the studies only
+ *  ever see the result, which is the whole point of naming the comparison
+ *  series with a column rather than a second `TimeSeries`. */
+function benchmarkSeries(): TimeSeries<never> {
+  return new TimeSeries({
+    name: 'oracle',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number' },
+      { name: 'bench', kind: 'number' },
+    ],
+    rows: oracle.input.closes.map((c, i) => [
+      i,
+      c,
+      oracle.input.benchmarks[i]!,
     ]),
   }) as unknown as TimeSeries<never>;
 }
@@ -349,6 +376,23 @@ function run(c: OracleCase): unknown {
       return aroon(ohlcSeries(), p as { period?: number });
     case 'vortex':
       return vortex(ohlcSeries(), p as { period?: number });
+    case 'correlation':
+      return correlation(
+        benchmarkSeries(),
+        p as { period?: number; benchmark: never },
+      );
+    case 'beta':
+      return beta(
+        benchmarkSeries(),
+        p as { period?: number; benchmark: never },
+      );
+    case 'priceRelative':
+      return priceRelative(benchmarkSeries(), p as { benchmark: never });
+    case 'performanceIndex':
+      return performanceIndex(
+        benchmarkSeries(),
+        p as { period?: number; benchmark: never },
+      );
     case 'linearRegression':
       return linearRegression(series(), p as { period?: number });
     case 'timeSeriesForecast':

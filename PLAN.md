@@ -1250,11 +1250,19 @@ pandas-oracle-verified) have shipped. Plan:
   `ulcerIndex`, `verticalHorizontalFilter`, `gopalakrishnanRangeIndex`,
   `relativeVolatilityIndex` → `relVol`, #703 — none of which TA-Lib
   implements, so every oracle case is a pandas replication asserting the
-  first-valid bar plus a measured separation from the plausible wrong turn).
-  **Fifty-one studies shipped.** Next Phase-2 batches by kernel family: K7
-  regression (five projections from one kernel — linear regression line,
-  slope, intercept, angle, forecast oscillator / TSF) and K8 two-series
-  (Beta, correlation, relative strength). Left open here: the **anchored /
+  first-valid bar plus a measured separation from the plausible wrong turn);
+  batch four added the **K7 regression family** (`linearRegression` →
+  `linreg*`, `timeSeriesForecast`, `chandeForecastOscillator`,
+  `centerOfGravity` on the one-pass `linearRegressionValues` kernel, #705;
+  `linreg`/`tsf` deliberately not a `MaType`) and the **K8 two-series
+  family** (`correlation`, `beta`, `priceRelative`, `performanceIndex` on
+  the new `rollingBivariateValues` kernel — the comparison series is a
+  `benchmark` **column** on the already joined series, never a second
+  `TimeSeries`, so alignment stays `align` + `joinMany`'s job).
+  **Fifty-nine studies shipped**; the Phase-2 kernel families (K1–K8) are
+  all in. What remains of the corpus is Phase 3 — the K6 stateful fold
+  ([PND-SFOLD]: PSAR, SuperTrend, ZigZag) — and the session-anchored
+  studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /
   session VWAP**, which needs a reset and belongs with the session-anchored
   studies. Package-wide questions surfaced by the wave, none blocking:
   `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine proves every
@@ -1266,7 +1274,9 @@ pandas-oracle-verified) have shipped. Plan:
   (107 ms vs `donchian`'s 246 ms at 1M bars) is the measured evidence; and
   `rollingValues`' reducer-dependent answer to a misnamed column
   (`stdev`/`avg` read all-missing, `max`/`min` throw — pinned both ways in
-  #703, unifying it moves shipped studies so it waits for a consumer).
+  #703; the two-series studies added a third answer, `assertColumn`
+  throwing on a required `benchmark`; unifying it moves shipped studies so
+  it waits for a consumer).
 - **[PND-SFOLD]** — K6 stateful-fold kernel for Phase-3 studies
   (PSAR/SuperTrend); design when a consumer pulls.
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the

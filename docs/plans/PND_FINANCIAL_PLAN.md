@@ -1217,6 +1217,212 @@ which the change counter handles exactly); a normalised "angle" (a different
 indicator wearing TA-Lib's name); and adding `linreg`/`tsf` to `MaType`, whose
 reason is (6).
 
+**Landed — the two-series family (§6.7, G7).** `correlation`, `beta`,
+`priceRelative` and `performanceIndex` — the first studies in the package that
+read **two instruments** — plus the K8 kernel `rollingBivariateValues`. Seven
+oracle cases; the two TA-Lib-backed studies agree with `CORREL` and `BETA`
+bar-for-bar (1.3e-12 and 1.1e-12 at the defaults). Decisions:
+
+(1) **The comparison series is a `benchmark` COLUMN, not a second
+`TimeSeries`, and this is the batch's load-bearing design choice.** Every study
+here names its comparison series with a required column on the series it is
+given — `beta(wide, { column: 'close', benchmark: 'spy', period: 60 })` — and
+the consumer aligns and joins first (`series.align(seq)` +
+`TimeSeries.joinMany([...], { type: 'inner' })`). It is the {@link atr} shape:
+a study that reads several columns of one row.
+
+What a second-`TimeSeries` signature would have cost is worth writing down,
+because it is the obvious API and it is the wrong one. Two instruments have
+their own bar clocks, holidays and halts, so `beta(bars, spy, …)` cannot avoid
+**inventing an alignment policy**: hold or interpolate the stale side? inner or
+outer join? whose timestamps win when a holiday differs? Each answer is a
+parameter, each parameter is a second way to express something core already
+expresses better (`align` takes a method and a sample point; `join` takes a
+type and a conflict rule), and the study would apply it **per study** — so
+`correlation` and `beta` over the same pair could silently disagree because
+their alignment options drifted apart. It would also make every study
+non-composable with the rest of the pipeline: the joined series is the thing a
+caller wants to chart, resample and slice, and the two-series signature never
+produces one. Pinned by a test that builds two series, joins them for real, and
+asserts the studies give the same numbers as over a hand-built wide series —
+"the join is transport, not semantics" — plus a second that runs an **outer**
+join and shows the strict window blanking the one-sided rows, which is the
+whole answer to "what does a missing benchmark bar mean".
+
+The cost of the choice is one new validator: a `benchmark` (or `column`) that
+is not on the series **throws**, where every other study in the package reads a
+misnamed column as all-missing. That is deliberate — a required option whose
+only job is to name a joined column has no honest all-missing reading — and it
+settles for this family the reducer-dependent inconsistency the volatility tail
+recorded as a carry-forward (`rollingValues` throws under `min`/`max`, answers
+empty under `avg`/`stdev`). These studies read `columnValues` directly and
+inherit neither door, so the answer is chosen here: **`assertColumn`, the
+mirror of `assertNoColumn`, on `benchmark` only.** The first draft applied it
+to `column` too; the Layer-2 review pointed out that made `correlation({
+column: 'typo' })` the one study in the package that threw where `sma({
+column: 'typo' })` reads empty, so `column` now follows its siblings. The
+kernel-level question is still open.
+
+(2) **`beta` takes prices and differences them inside; `correlation` does
+not.** The asymmetry is TA-Lib's and it is documented rather than reconciled.
+`CORREL` correlates the **raw inputs**, so a strong reading mostly says "both
+trended"; `BETA` differences internally, so its input must be prices. Matching
+both bar-for-bar means the two studies in the same batch disagree about what
+their `column` is — and a `returns: boolean` flag on `correlation` was
+rejected as two indicators behind a flag (the `keltner` precedent) that would
+also break TA-Lib comparability. The return correlation is
+`correlation(wide, { column: 'ret', benchmark: 'spyRet' })` after a
+`percentChange` each side, and the docstring says so. `beta`'s returns are
+`percentChangeValues(v, 1)` — the shipped ROC — so they are **percent**
+returns, which cancels in `cov/var`.
+
+(3) **TA-Lib's `BETA` argument order is a trap, measured.** `talib.BETA(a, b,
+n)` returns `cov(rA, rB) / var(rA)`: it regresses its **second** input on its
+**first**. So the call matching `beta({ column: 'close', benchmark: 'spy' })`
+is `talib.BETA(spy, close, n)` — benchmark first — and that is what the
+generator asserts against. A caller who passes `(stock, index)` gets the slope
+of the index on the stock: on an affine pair, `BETA(x, 2x+5) = 0.952` where
+`BETA(2x+5, x) = 1.050` (measured), a different number and not a different
+sign, so nothing in the output announces the mistake. Pond's option names are
+the fix: **`benchmark` is always the denominator**, and the generator's
+separation assert measures 4.30 between the two directions so no fixture can
+pin the wrong one.
+
+(4) **`benchmark = 2·column + 5` gives correlation exactly `+1` and a beta
+that is NOT 1** — the pair of assertions that keeps the two studies honest
+about what they measure. Correlation is invariant to an affine transform of
+either side; beta is a slope of **returns**, and an affine transform is not
+return-preserving (`Δx/(2x+5)` against `Δx/x`), so it drifts with the price
+level: measured `0.976` on a random walk near 100 at `period 5`. The
+exactly-`1` pair for beta is a **pure scale**, `k·column`, and both are pinned.
+The `−1` side of correlation is where the last decision fell out: on
+`−3·column + 1000` one window reads `−1.0000000000000002`, two ulps past the
+bound, while the `+1` side is bit-exact. **No `±1` clamp ships** — it would
+remove 2e-16 no threshold can see, at the price of a branch to keep alive —
+and both halves are pinned by a test so the overshoot is chosen rather than
+discovered on a chart.
+
+(5) **The kernel is the numerics decision, and the naive form is not merely
+less accurate — it returns a negative variance.** `rollingBivariateValues`
+carries `covariance`, `varianceX` and `varianceY` from one pass, in the
+**shifted frame** (`x − anchor`, anchored on the first complete pair in the
+window) with **Welford / co-moment** updates and the **aligned rebuild every
+`period` rows** — [PND-SHIFTFRAME] and [PND-PROCKERN] applied to a bivariate
+accumulator. Explicitly not `Σxy − ΣxΣy/n`, and the measurement is the
+argument. Worst absolute error in the resulting **correlation coefficient**
+over 200k rows at `period 30`, against a per-window two-pass reference:
+
+| input                          | naive `Σxy − ΣxΣy/n` | this    |
+| ------------------------------ | -------------------- | ------- |
+| random walk ≈100               | 7.4e-7               | 1.7e-14 |
+| prices ≈1e6 with ±3 structure  | 1.2e-2               | 2.1e-15 |
+| prices ≈1e12 with ±3 structure | **`Infinity`**       | 2.4e-15 |
+
+At 1e12 the naive variance goes negative, so its `sqrt` is `NaN` and the
+reading is non-finite — the failure is loud rather than subtle, but only if
+someone runs it at that magnitude. A first version of the probe accused the
+**kernel** instead, because its "reference" computed the window mean as
+`Σx / n` on raw 1e12 values and was itself the ill-conditioned party; the
+reference now shifts by the window's own first value, and both the probe and
+that lesson are in `test/bivariate-kernel.test.ts`.
+
+(6) **The window is STRICT — all `period` rows of BOTH columns — and that is
+the third window rule in the package.** Core's count-window reducers emit over
+`period` **rows**, skipping gaps (right for an extreme: `highestLowestValues`);
+`rollingMeanValues`' array door waits for `period` finite **values** (right for
+a mean); this waits for `period` complete **pairs**. The argument is the same
+one the array door makes, one step further: a thirty-bar correlation computed
+from three pairs is not the statistic `period` named, and — worse — it would be
+computed from a _different_ set of pairs than the caller's other column-pair
+study saw. The visible consequence is that an **outer join's one-sided rows
+blank**, which is the honest answer and is pinned as such.
+
+(7) **A flat window needs no guard, and the reason is exact arithmetic rather
+than a precedent.** Applying the #699 test (is the numerator forced to zero?):
+if one column is constant, its centred deviations are **exactly** zero, so the
+co-moment update `cxy += dx·(v − my)` adds exactly zero and the removal
+subtracts exactly zero. The covariance comes back as an exact `0` beside a
+variance of exact `0`, so `correlation` and `beta` are already a genuine `0/0`
+→ `NaN` → a missing cell with no branch written. Pinned at the **kernel** with
+`toBe(0)` rather than `toBeCloseTo`, because a residue there would turn both
+studies' `0/0` into a `±Infinity` that `withColumn` throws on. `priceRelative`
+is the contrast that makes the rule visible in one batch: its numerator is
+**not** forced to zero, its division is the study's last step, so its
+`benchmark === 0` guard is live and mutation-killed — the #703 rule (a guard at
+the output is load-bearing) with both cases side by side.
+
+TA-Lib disagrees on both, and it is measured rather than assumed: `CORREL` over
+a constant input returns `0.0`, and `BETA` over a constant first input returns
+`0.0`. Reporting `0` would claim "uncorrelated" from data that cannot support
+the claim, so this is the batch's one deliberate value delta, stated on both
+docstrings and in the fixture's conventions block. The second delta is the
+same shape: TA-Lib substitutes a return of `0` for a zero previous price, where
+`percentChangeValues` marks it missing (measured — on a ramp with one zeroed
+bar TA-Lib emits `4.6e-07`, `-3.0e-05`, `-6.0e-05`, `-1.2e-02` across the four
+bars this study blanks). Note the asymmetry a test caught: a **zero** price
+costs exactly one return, the one _after_ it, because the return _into_ a zero
+is a legitimate `−100%`; a **missing** price costs two.
+
+(8) **`performanceIndex` is F-AMBIG and the fork is named, including the one
+this does not ship.** What ships is the **look-back ratio** — each side's own
+`period`-bar growth, divided, `1` = parity — because `(perf − 1) × 100` is
+`percentChange(priceRelative, period)` **identically** (asserted in the
+generator to 3.3e-14 and by a test), which makes it the missing normalisation
+of the family rather than new math. Trading Technologies publishes a
+**different** formula under the same name — `PI = (close/benchmark) ×
+(MA(benchmark)/MA(close))`, a moving-average baseline instead of a lagged one
+(<https://library.tradingtechnologies.com/trade/chrt-ti-performance-index.html>)
+— and that variant is deliberately **not** shipped: it is already a composition
+of two shipped primitives (`priceRelative` and any MA), whereas the look-back
+form was the gap. The `× 100` and `− 1` scalings are presentation forks and are
+spelled out on the docstring; the ratio ships so the two lines in this family
+(`priceRelative` and this) read on the same kind of axis. **This is the one
+place a reviewer should push back if they disagree** — the corpus entry came
+from a vendor menu with the note "normalized relative performance" and no
+formula, so the definition is pinned by argument rather than by source.
+
+(9) **`priceRelative` says loudly what it is not.** ChartIQ lists _Price
+Relative_ and _Relative Strength (comparative)_ separately and they are one
+implementation, which ships under the unambiguous name; neither is Wilder's
+**Relative Strength Index**. The docstring says so in a heading, because the
+name collision is the most common confusion in the corpus and a caller who
+reaches for "relative strength" and gets an unbounded ratio needs to be told
+why in the place they are already reading.
+
+Perf at 1M bars (medians of 5, run twice): `performanceIndex` 25–27 ms,
+`priceRelative` 33–35 ms, `correlation` **61–74 ms at `period 30` and 60–64 ms
+at `period 200`** — flat in `period`, as the amortised rebuild requires —
+`beta` 75–79 ms (the same kernel plus two rate-of-change passes), and the bare
+`rollingBivariateValues` 38–43 ms at both periods. Against `ema` 11–13 ms,
+`sma` 36 ms, `rsi` 51 ms, `bollinger` 107–109 ms and `donchian` 235–240 ms on
+the same runs: the bivariate kernel costs roughly one `sma` more than a
+`Float64Array` floor and lands **below** `bollinger`, which is the right
+neighbourhood — Bollinger is the other two-moment window study and it also
+builds a series.
+
+**Mutation matrix**: 28 mutations, one per shipped decision (the strict
+window, `ddof`, the shifted frame, the rebuild, the co-moment pairing, each
+default, each threshold, the `sqrt`, each denominator, the returns, each of
+four zero guards, `assertColumn`). Killed-test counts ranged from 1 (a changed
+default `period`, which only the defaults test reads) to 14 (`beta`'s
+denominator swapped to the source's variance). **One survivor, and it is
+inherent rather than a missing test**: `performanceIndex`'s warm-up. An
+out-of-range look-back on a `Float64Array` reads `undefined`, whose arithmetic
+is already `NaN`, so no input can distinguish a warm-up guard from its absence
+(`percentChangeValues` has the same property). It was restructured from an
+`if (i < period) continue` into the **loop bound** so that nothing in the file
+looks like a live guard, and the redundancy is stated in a comment rather than
+tested.
+
+**Considered and not built**: a second-`TimeSeries` signature on any of the
+four (decision 1); a `returns: boolean` on `correlation` (decision 2); a `±1`
+clamp (decision 4); an `maType` variant of `performanceIndex` (decision 8); a
+`covariance` study of its own (the kernel is exported, and a named study for a
+dimensioned quantity nobody charts is vocabulary without a consumer); and
+fixing the `rollingValues` misnamed-column asymmetry, which this batch settles
+only for its own studies and leaves as the kernel-level carry-forward the
+volatility tail recorded.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,
