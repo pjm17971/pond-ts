@@ -183,6 +183,58 @@ assert len(set(benchmarks)) > N // 2, "oracle benchmark must vary, not repeat"
 
 bench_s = pd.Series(benchmarks, dtype="float64")
 
+# A LONGER close-only series, for the two studies whose warm-up does not fit
+# in 80 bars.
+#
+# Pring's Special K reaches back 530 bars and smooths the result over 195, so
+# its first value lands on bar 724 -- a case run on `closes` would be entirely
+# null and would pass VACUOUSLY. The Trend Intensity Index at Pee's own
+# periods (a 60-bar average with the last 30 deviations summed) first prints
+# on bar 88, which is also past the end of the 80-bar fixture.
+#
+# It is a SEPARATE array rather than a longer `closes` on purpose: extending
+# the primary input would recompute every one of the existing cases and turn
+# a nine-study addition into a whole-fixture diff. Cases that need it carry
+# `"input": "long"` and the vitest side builds a close-only series from it.
+#
+# Three incommensurate sines over a DELIBERATELY SLIGHT drift, so that (a)
+# Pring's Special K crosses zero -- the reading it exists for -- which a
+# steadily-rising series does not, because every one of its twelve rates of
+# change is then positive at once (measured: at a 0.05/bar drift the line runs
+# 151.5..379.3 and never turns); (b) deviations from a 60-bar average change
+# sign often, or TII would sit pinned at 0 or 100 and could not tell the sum
+# form from the count form; (c) the 7- and 65-bar averages RAVI reads cross
+# each other repeatedly, or its absolute value would be untested; and (d) it
+# stays strictly positive, which every percent rate of change needs.
+LONG_N = 900
+long_closes = [
+    round(
+        100
+        + 0.01 * i
+        + 22 * math.sin(i / 70)
+        + 6 * math.sin(i / 21 + 0.7)
+        + 1.5 * math.sin(i / 5.3 + 2.1),
+        4,
+    )
+    for i in range(LONG_N)
+]
+assert all(c > 0 for c in long_closes), "the long oracle series must be positive"
+assert len(set(long_closes)) > LONG_N // 2, "the long oracle series must vary"
+
+long_s = pd.Series(long_closes, dtype="float64")
+_long_dev = long_s - long_s.rolling(60).mean()
+_long_fast = long_s.rolling(7).mean() - long_s.rolling(65).mean()
+assert (_long_fast > 0).sum() > 100 and (_long_fast < 0).sum() > 100, (
+    "the long series' 7- and 65-bar averages must cross repeatedly -- "
+    "otherwise RAVI's absolute value never bites and the signed form would "
+    "be indistinguishable"
+)
+assert (_long_dev > 0).sum() > 200 and (_long_dev < 0).sum() > 200, (
+    "the long series' deviations from its 60-bar average must change sign "
+    "often -- a one-sided series pins the Trend Intensity Index at 0 or 100 "
+    "and cannot tell the sum form from the count form"
+)
+
 
 def col(series: pd.Series) -> list:
     """A pandas Series -> JSON list; NaN / non-finite (missing) -> null."""
@@ -4279,6 +4331,671 @@ def moving_average_deviation(n: int, kind: str) -> dict:
     return {"maDev": col(v)}
 
 
+# --------------------------------------------------------------------------
+# The momentum and trend leftovers (assessment 6.3 / 6.4 / 6.1): the
+# Stochastic Momentum Index, the Fisher Transform, the Schaff Trend Cycle,
+# the Pretty Good Oscillator, the swing index pair, the Random Walk Index,
+# RAVI, the Trend Intensity Index and Pring's Special K.
+#
+# NONE of these has a TA-Lib function, so every case below is a pandas
+# replication. Two of them (Fisher, Schaff) are state machines, and their
+# "oracle" is honestly a TRANSCRIPTION of the same step the TypeScript runs
+# rather than an independent derivation -- the review of #708 made that point
+# and it holds here. What carries the weight for those two is (a) the
+# analytic first-valid bar, asserted, and (b) the measured SEPARATION from
+# the plausible wrong turn, also asserted: a transcription that agreed with a
+# different definition would fail the separation even though it agreed with
+# itself.
+# --------------------------------------------------------------------------
+
+
+def stochastic_momentum_index(q: int, r: int, u: int, sig: int) -> dict:
+    """William Blau's SMI (TASC January 1993):
+
+        M   = close - (HH(q) + LL(q))/2       distance from the midpoint
+        H   = (HH(q) - LL(q))/2               half the range
+        smi = 100 * EMA(EMA(M, r), u) / EMA(EMA(H, r), u)
+        sig = EMA(smi, signalPeriod)
+
+    Blau's own defaults are q=13, r=25, u=2, with a 3-bar signal. Bounded
+    -100..100 because |M| <= H bar by bar and an EMA has non-negative
+    weights. Both stages use pond's first-sample EMA seed over an ARRAY, so
+    each steps over the previous stage's warm-up.
+
+    Two separations, because the double-EMA-of-a-ratio shape survives both
+    wrong turns: the SINGLE-smoothed form (only the r stage), and the short
+    fork several charting packages ship (q=5, r=3, u=3).
+    """
+    hh = h.rolling(q).max()
+    ll = low_s.rolling(q).min()
+    distance = s - (hh + ll) / 2
+    half_range = (hh - ll) / 2
+
+    def double(x):
+        return _ema_first_seed(_ema_first_seed(x, r), u)
+
+    line = 100 * double(distance) / double(half_range)
+    signal = _ema_first_seed(line, sig)
+
+    label = f"stochasticMomentumIndex({q}, {r}, {u}, {sig})"
+    expected = q + r + u - 3
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (the range at q-1, then each EMA stage)"
+    )
+    assert signal.first_valid_index() == expected + sig - 1, (
+        f"{label} signal first valid at {signal.first_valid_index()}, "
+        f"expected {expected + sig - 1}"
+    )
+    assert line.abs().max() <= 100 + 1e-9, (
+        f"{label} breaks its own -100..100 bound at {line.abs().max()}"
+    )
+    assert line.min() < 0 < line.max(), (
+        f"{label} never crosses zero on this fixture - the midpoint reading "
+        "the study exists for would be untested"
+    )
+
+    # The UNSMOOTHED reading (100*M/H) is the strong probe: that is just a
+    # rescaled stochastic, and it is what a build that dropped the smoothing
+    # entirely would print.
+    unsmoothed = 100 * distance / half_range
+    m = (~line.isna()) & (~unsmoothed.isna())
+    sep_raw = float(np.max(np.abs(line[m] - unsmoothed[m])))
+    # Dropping only the SECOND stage is a much closer miss -- at Blau's u = 2
+    # the finishing EMA is light -- so it gets its own, smaller, threshold.
+    single = 100 * _ema_first_seed(distance, r) / _ema_first_seed(half_range, r)
+    m = (~line.isna()) & (~single.isna())
+    sep_single = float(np.max(np.abs(line[m] - single[m])))
+
+    fork_hh = h.rolling(5).max()
+    fork_ll = low_s.rolling(5).min()
+    fork = 100 * _ema_first_seed(
+        _ema_first_seed(s - (fork_hh + fork_ll) / 2, 3), 3
+    ) / _ema_first_seed(_ema_first_seed((fork_hh - fork_ll) / 2, 3), 3)
+    m = (~line.isna()) & (~fork.isna())
+    sep_fork = float(np.max(np.abs(line[m] - fork[m])))
+    assert sep_raw > 20 and sep_single > 1 and sep_fork > 20, (
+        f"{label} sits {sep_raw} from the unsmoothed reading, {sep_single} "
+        f"from the single-smoothed form and {sep_fork} from the (5, 3, 3) "
+        "fork - the fixture cannot tell them apart"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib SMI); first valid at "
+        f"{expected}, range {line.min():.4f}..{line.max():.4f}, "
+        f"{sep_raw:.4f} from the unsmoothed reading, {sep_single:.4f} from "
+        f"the single-smoothed form and {sep_fork:.4f} from the (5, 3, 3) fork"
+    )
+    return {"smi": col(line), "smiSignal": col(signal)}
+
+
+def _fisher_machine(x) -> tuple:
+    """Ehlers' two recursions, transcribed (TASC November 2002):
+
+        value = 0.33*x + 0.67*value[-1],  clamped: >0.99 -> 0.999, <-0.99 -> -0.999
+        fish  = 0.5*ln((1+value)/(1-value)) + 0.5*fish[-1]
+
+    A NaN input RESETS the machine (pond's foldRows rule), re-seeding both
+    carried values at Ehlers' implicit zeros. The trigger is the PREVIOUS
+    bar's fish and therefore exists only from the second bar of a run.
+    """
+    v = np.asarray(x, dtype=float)
+    fish_out = np.full(len(v), np.nan)
+    trig_out = np.full(len(v), np.nan)
+    value = 0.0
+    fish = 0.0
+    run = 0
+    for i, raw in enumerate(v):
+        if not np.isfinite(raw):
+            run = 0
+            continue
+        run += 1
+        if run == 1:
+            value = 0.0
+            fish = 0.0
+        value = 0.33 * raw + 0.67 * value
+        if value > 0.99:
+            value = 0.999
+        elif value < -0.99:
+            value = -0.999
+        new_fish = 0.5 * math.log((1 + value) / (1 - value)) + 0.5 * fish
+        fish_out[i] = new_fish
+        if run >= 2:
+            trig_out[i] = fish
+        fish = new_fish
+    return pd.Series(fish_out), pd.Series(trig_out)
+
+
+def fisher_transform(n: int) -> dict:
+    """Ehlers' Fisher Transform: the MEDIAN PRICE normalised over its OWN
+    rolling extremes into (-1, 1), smoothed, clamped, pushed through
+    0.5*ln((1+x)/(1-x)), and smoothed again.
+
+    The range is over the median price series, not over high and low
+    separately -- Ehlers' `Highest(Price, Len)` / `Lowest(Price, Len)`, where
+    `Price = (H+L)/2`. Ports differ; the separation from that fork is
+    measured below, and so is the separation from dropping the second
+    (0.5/0.5) smoothing.
+    """
+    price = (h + low_s) / 2
+    hh = price.rolling(n).max()
+    ll = price.rolling(n).min()
+    span = hh - ll
+    # `pct/50 - 1` rather than `2*(p-LL)/span - 1`: the same number, in the
+    # same floating-point ORDER the study computes it (percentOfRangeValues
+    # then the rescale), so the transcription cannot drift by an ulp before
+    # the recursion.
+    x = pd.Series(np.where(span == 0, np.nan, 100 * (price - ll) / span) / 50 - 1)
+    line, trigger = _fisher_machine(x)
+
+    label = f"fisherTransform({n})"
+    assert line.first_valid_index() == n - 1, (
+        f"{label} first valid at {line.first_valid_index()}, expected {n - 1}"
+    )
+    assert trigger.first_valid_index() == n, (
+        f"{label} trigger first valid at {trigger.first_valid_index()}, "
+        f"expected {n} (the line delayed one bar)"
+    )
+    assert line.min() < 0 < line.max(), (
+        f"{label} never crosses zero on this fixture"
+    )
+
+    bar_hh = h.rolling(n).max()
+    bar_ll = low_s.rolling(n).min()
+    bar_span = bar_hh - bar_ll
+    port, _ = _fisher_machine(
+        pd.Series(
+            np.where(bar_span == 0, np.nan, 100 * (price - bar_ll) / bar_span)
+            / 50
+            - 1
+        )
+    )
+    m = (~line.isna()) & (~port.isna())
+    sep_port = float(np.max(np.abs(line[m] - port[m])))
+
+    # The same machine with the SECOND smoothing dropped (fish = the raw
+    # transform), which is the other common transcription slip.
+    raw = np.full(len(x), np.nan)
+    value = 0.0
+    run = 0
+    for i, v in enumerate(np.asarray(x, dtype=float)):
+        if not np.isfinite(v):
+            run = 0
+            continue
+        run += 1
+        if run == 1:
+            value = 0.0
+        value = 0.33 * v + 0.67 * value
+        if value > 0.99:
+            value = 0.999
+        elif value < -0.99:
+            value = -0.999
+        raw[i] = 0.5 * math.log((1 + value) / (1 - value))
+    unsmoothed = pd.Series(raw)
+    m = (~line.isna()) & (~unsmoothed.isna())
+    sep_raw = float(np.max(np.abs(line[m] - unsmoothed[m])))
+    assert sep_port > 0.1 and sep_raw > 0.3, (
+        f"{label} sits {sep_port} from the high/low-extremes port and "
+        f"{sep_raw} from the unsmoothed transform - the fixture cannot tell "
+        "them apart"
+    )
+    print(
+        f"  {label}: pandas TRANSCRIPTION of the same state machine (no "
+        f"TA-Lib Fisher); first valid at {n - 1}, range "
+        f"{line.min():.4f}..{line.max():.4f}, {sep_port:.4f} from the "
+        f"high/low-extremes port and {sep_raw:.4f} from the unsmoothed form"
+    )
+    return {"fisher": col(line), "fisherSignal": col(trigger)}
+
+
+def _half_smooth(x) -> pd.Series:
+    """`x += 0.5*(raw - x)`, seeded on the first value of a run; a NaN RESETS
+    it (pond's foldRows rule), where the common TradingView port instead
+    holds the previous reading."""
+    v = np.asarray(x, dtype=float)
+    out = np.full(len(v), np.nan)
+    prev = 0.0
+    run = 0
+    for i, raw in enumerate(v):
+        if not np.isfinite(raw):
+            run = 0
+            continue
+        run += 1
+        prev = raw if run == 1 else prev + 0.5 * (raw - prev)
+        out[i] = prev
+    return pd.Series(out)
+
+
+def _stoch_of(x, n: int) -> pd.Series:
+    """100*(x - LL)/(HH - LL) over a STRICT n-bar window of a DERIVED series;
+    a flat window is a 0/0 and reads null (percentOfRangeValues' rule)."""
+    x = pd.Series(np.asarray(x, dtype=float))
+    hh = x.rolling(n).max()
+    ll = x.rolling(n).min()
+    span = hh - ll
+    return pd.Series(np.where(span == 0, np.nan, 100 * (x - ll) / span))
+
+
+def schaff_trend_cycle(
+    fast: int, slow: int, cycle: int, long_input: bool = False
+) -> dict:
+    """Doug Schaff's STC: a stochastic of the MACD, 0.5-smoothed, then a
+    stochastic of THAT, 0.5-smoothed again. Defaults 23 / 50 / 10.
+
+    Both EMAs are pond's first-sample seed, both stochastic passes take the
+    STRICT window (a derived input), and both 0.5 recursions seed on their
+    first value. The separation measured is from dropping BOTH recursions --
+    the raw double stochastic, which is the shape a careless port produces.
+    """
+    src = long_s if long_input else s
+    macd_line = _ema_first_seed(src, fast) - _ema_first_seed(src, slow)
+    first_stage = _half_smooth(_stoch_of(macd_line, cycle))
+    line = _half_smooth(_stoch_of(first_stage, cycle))
+
+    label = f"schaffTrendCycle({fast}, {slow}, {cycle}, long={long_input})"
+    # The EARLIEST the line can exist: the MACD at slow - 1, then two strict
+    # cycle windows. It can legitimately start LATER, and on this fixture at
+    # the defaults it does -- the MACD rises monotonically for sixteen bars,
+    # which pins the first stochastic at 100, makes `d1` constant, and leaves
+    # the SECOND window flat (a 0/0 -> null, the shared percentOfRangeValues
+    # rule). So the assertion is the bound plus a proof that every null past
+    # it is a flat second window rather than a lost bar.
+    earliest = slow + 2 * cycle - 3
+    first = line.first_valid_index()
+    assert first >= earliest, (
+        f"{label} first valid at {first}, EARLIER than the analytic bound "
+        f"{earliest} (slow - 1, then two strict cycle windows)"
+    )
+    span2 = first_stage.rolling(cycle).max() - first_stage.rolling(cycle).min()
+    for i in range(earliest, first):
+        assert span2.iloc[i] == 0, (
+            f"{label} is null at bar {i}, past the analytic bound "
+            f"{earliest}, and the second stochastic window there is NOT flat "
+            f"(span {span2.iloc[i]}) - that is a lost bar, not the "
+            "flat-window rule"
+        )
+    if first > earliest:
+        print(
+            f"  {label}: the line starts at {first} rather than {earliest} - "
+            f"{first - earliest} bars of flat SECOND window (the first "
+            "stochastic pinned at 100 through a monotonic MACD leg)"
+        )
+    assert line.min() >= -1e-9 and line.max() <= 100 + 1e-9, (
+        f"{label} leaves its 0..100 bound: {line.min()}..{line.max()}"
+    )
+    assert line.max() - line.min() > 50, (
+        f"{label} spans only {line.max() - line.min()} on this fixture - a "
+        "cycle oscillator that never swings would not test the recursions"
+    )
+
+    unsmoothed = _stoch_of(_stoch_of(macd_line, cycle), cycle)
+    m = (~line.isna()) & (~unsmoothed.isna())
+    sep_raw = float(np.max(np.abs(line[m] - unsmoothed[m])))
+    assert sep_raw > 10, (
+        f"{label} sits only {sep_raw} from the unsmoothed double stochastic"
+    )
+    print(
+        f"  {label}: pandas TRANSCRIPTION of the same state machine (no "
+        f"TA-Lib STC); first valid at {first} (bound {earliest}), range "
+        f"{line.min():.4f}..{line.max():.4f}, {sep_raw:.4f} from the "
+        "unsmoothed double stochastic"
+    )
+    return {"stc": col(line)}
+
+
+def pretty_good_oscillator(n: int) -> dict:
+    """Mark Johnson's PGO: (close - SMA(close, n)) / EMA(TR, n).
+
+    F-AMBIG on the denominator: Johnson's is a SPAN EMA of true range, and
+    the common port uses Wilder's ATR instead. The separation from that port
+    is measured and asserted.
+    """
+    tr = _true_range()
+    denominator = _ema_first_seed(tr, n)
+    line = (s - s.rolling(n).mean()) / denominator
+
+    label = f"prettyGoodOscillator({n})"
+    assert line.first_valid_index() == n, (
+        f"{label} first valid at {line.first_valid_index()}, expected {n} "
+        "(TR[0] is undefined, so the EMA needs one extra bar)"
+    )
+    assert line.min() < 0 < line.max(), (
+        f"{label} never crosses zero on this fixture"
+    )
+
+    wilder_port = (s - s.rolling(n).mean()) / _wilder(tr, n)
+    m = (~line.isna()) & (~wilder_port.isna())
+    sep_wilder = float(np.max(np.abs(line[m] - wilder_port[m])))
+    assert sep_wilder > 0.05, (
+        f"{label} sits only {sep_wilder} from the Wilder-ATR port"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib PGO); first valid at {n}, "
+        f"range {line.min():.4f}..{line.max():.4f}, {sep_wilder:.4f} from the "
+        "Wilder-ATR denominator port"
+    )
+    return {"pgo": col(line)}
+
+
+def _swing_index_series(limit: float) -> pd.Series:
+    """Wilder's per-bar swing index (New Concepts, 1978), transcribed."""
+    out = np.full(N, np.nan)
+    for i in range(1, N):
+        prev_close = closes[i - 1]
+        prev_open = opens[i - 1]
+        c, o, hi, lo = closes[i], opens[i], highs[i], lows[i]
+        a = abs(hi - prev_close)
+        b = abs(lo - prev_close)
+        d = abs(hi - lo)
+        yesterday = 0.25 * abs(prev_close - prev_open)
+        if a >= b and a >= d:
+            r = a - 0.5 * b + yesterday
+        elif b >= a and b >= d:
+            r = b - 0.5 * a + yesterday
+        else:
+            r = d + yesterday
+        k = max(a, b)
+        numerator = (c - prev_close) + 0.5 * (c - o) + 0.25 * (prev_close - prev_open)
+        out[i] = math.nan if r == 0 else (50 * numerator / r) * (k / limit)
+    return pd.Series(out)
+
+
+def swing_index(limit: float, accumulative: bool) -> dict:
+    """Wilder's Swing Index and its cumulative total.
+
+    `limit` (Wilder's T, the instrument's limit move) is REQUIRED on the
+    study -- there is no defensible default -- so the case names it. With a
+    `limit` at least as large as the largest K on the fixture, the reading
+    is bounded -100..100, which is the property the K/T factor exists for
+    and is asserted here.
+
+    Two separations: dropping the K/T factor entirely, and using the
+    plain-range branch of R unconditionally (the two ways a transcription
+    goes wrong while keeping the shape).
+    """
+    si = _swing_index_series(limit)
+    label = f"swingIndex({limit}, accumulative={accumulative})"
+    assert si.first_valid_index() == 1, (
+        f"{label} first valid at {si.first_valid_index()}, expected 1"
+    )
+    max_k = max(
+        max(abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        for i in range(1, N)
+    )
+    if limit >= max_k:
+        assert si.abs().max() <= 100 + 1e-9, (
+            f"{label} breaks the -100..100 bound at {si.abs().max()} even "
+            f"though limit {limit} >= max K {max_k}"
+        )
+    assert si.min() < 0 < si.max(), f"{label} never changes sign"
+
+    no_k = np.full(N, np.nan)
+    plain_r = np.full(N, np.nan)
+    for i in range(1, N):
+        prev_close, prev_open = closes[i - 1], opens[i - 1]
+        c, o, hi, lo = closes[i], opens[i], highs[i], lows[i]
+        a, b, d = (
+            abs(hi - prev_close),
+            abs(lo - prev_close),
+            abs(hi - lo),
+        )
+        yesterday = 0.25 * abs(prev_close - prev_open)
+        r = (
+            a - 0.5 * b + yesterday
+            if (a >= b and a >= d)
+            else (b - 0.5 * a + yesterday if (b >= a and b >= d) else d + yesterday)
+        )
+        numerator = (c - prev_close) + 0.5 * (c - o) + 0.25 * (prev_close - prev_open)
+        if r != 0:
+            no_k[i] = 50 * numerator / r
+        r2 = d + yesterday
+        if r2 != 0:
+            plain_r[i] = (50 * numerator / r2) * (max(a, b) / limit)
+    sep_no_k = float(np.nanmax(np.abs(si.to_numpy() - no_k)))
+    sep_plain = float(np.nanmax(np.abs(si.to_numpy() - plain_r)))
+    assert sep_no_k > 1 and sep_plain > 1, (
+        f"{label} sits {sep_no_k} from the no-K/T form and {sep_plain} from "
+        "the plain-range R form - the fixture cannot tell them apart"
+    )
+
+    if accumulative:
+        asi = si.cumsum()
+        print(
+            f"  {label}: pandas replication (no TA-Lib ASI); si first valid "
+            f"at 1, asi range {asi.min():.4f}..{asi.max():.4f}"
+        )
+        return {"asi": col(asi)}
+    print(
+        f"  {label}: pandas replication (no TA-Lib SI); first valid at 1, "
+        f"range {si.min():.4f}..{si.max():.4f}, max K {max_k:.4f}, "
+        f"{sep_no_k:.4f} from the no-K/T form and {sep_plain:.4f} from the "
+        "plain-range R form"
+    )
+    return {"si": col(si)}
+
+
+def _rwi_values(period: int, denominator: str = "mean") -> tuple:
+    """Poulos' Random Walk Index: the max over horizons 2..period of
+    (high - low[-n]) / (meanTR(n) * sqrt(n)), and its mirror."""
+    tr = _true_range()
+    hi = np.full(N, -np.inf)
+    lo = np.full(N, -np.inf)
+    for n in range(2, period + 1):
+        base = (
+            tr.rolling(n).mean().to_numpy()
+            if denominator == "mean"
+            else _wilder(tr, n).to_numpy()
+        )
+        den = base * math.sqrt(n)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            th = np.where(
+                den == 0,
+                np.nan,
+                (h.to_numpy() - low_s.shift(n).to_numpy()) / den,
+            )
+            tl = np.where(
+                den == 0,
+                np.nan,
+                (h.shift(n).to_numpy() - low_s.to_numpy()) / den,
+            )
+        th[:n] = np.nan
+        tl[:n] = np.nan
+        hi = np.maximum(hi, th)
+        lo = np.maximum(lo, tl)
+    return pd.Series(hi), pd.Series(lo)
+
+
+def random_walk_index(period: int) -> dict:
+    """Poulos' RWI over horizons 2..period, with the n-bar MEAN true range in
+    the denominator (not Wilder's ATR -- see the study's docstring).
+
+    Two separations: the Wilder-denominator variant, and the SINGLE-horizon
+    form that only tests n = period.
+    """
+    rwi_high, rwi_low = _rwi_values(period)
+    label = f"randomWalkIndex({period})"
+    assert rwi_high.first_valid_index() == period, (
+        f"{label} rwiHigh first valid at {rwi_high.first_valid_index()}, "
+        f"expected {period}"
+    )
+    assert rwi_low.first_valid_index() == period, (
+        f"{label} rwiLow first valid at {rwi_low.first_valid_index()}, "
+        f"expected {period}"
+    )
+    assert rwi_high.max() > 1 and rwi_high.min() < 1, (
+        f"{label} never crosses the 1.0 random-walk line on this fixture - "
+        "the only reading the study has would be untested"
+    )
+
+    wilder_high, _ = _rwi_values(period, denominator="wilder")
+    m = (~rwi_high.isna()) & (~wilder_high.isna())
+    sep_wilder = float(np.max(np.abs(rwi_high[m] - wilder_high[m])))
+
+    tr = _true_range()
+    den = tr.rolling(period).mean() * math.sqrt(period)
+    single = pd.Series(
+        np.where(
+            den.to_numpy() == 0,
+            np.nan,
+            (h.to_numpy() - low_s.shift(period).to_numpy()) / den.to_numpy(),
+        )
+    )
+    m = (~rwi_high.isna()) & (~single.isna())
+    sep_single = float(np.max(np.abs(rwi_high[m] - single[m])))
+    # The Wilder threshold is deliberately small: at long horizons Wilder's
+    # recursion and the n-bar mean converge, so the separation SHRINKS with
+    # `period` (0.19 at 14, 0.031 at 30 on this fixture). Both are many
+    # orders of magnitude above the suite's 1e-9 tolerance, which is what
+    # "the fixture can tell them apart" means.
+    assert sep_wilder > 0.01 and sep_single > 0.1, (
+        f"{label} sits {sep_wilder} from the Wilder-denominator variant and "
+        f"{sep_single} from the single-horizon form"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib RWI); first valid at "
+        f"{period}, rwiHigh range {rwi_high.min():.4f}..{rwi_high.max():.4f}, "
+        f"{sep_wilder:.4f} from the Wilder-denominator variant and "
+        f"{sep_single:.4f} from the single-horizon form"
+    )
+    return {"rwiHigh": col(rwi_high), "rwiLow": col(rwi_low)}
+
+
+def ravi_study(short_n: int, long_n: int, long_input: bool = False) -> dict:
+    """Chande's RAVI: 100*|SMA(short) - SMA(long)| / SMA(long), 7 / 65."""
+    src = long_s if long_input else s
+    short_ma = src.rolling(short_n).mean()
+    long_ma = src.rolling(long_n).mean()
+    line = 100 * (short_ma - long_ma).abs() / long_ma
+
+    label = f"ravi({short_n}, {long_n}, long={long_input})"
+    expected = max(short_n, long_n) - 1
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected}"
+    )
+    assert line.min() >= 0, f"{label} must be non-negative"
+
+    signed = 100 * (short_ma - long_ma) / long_ma
+    m = (~line.isna()) & (~signed.isna())
+    sep_signed = float(np.max(np.abs(line[m] - signed[m])))
+    assert sep_signed > 0.5, (
+        f"{label} sits only {sep_signed} from the SIGNED form - the fixture "
+        "never puts the fast average below the slow one"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib RAVI); first valid at "
+        f"{expected}, range {line.min():.4f}..{line.max():.4f}, "
+        f"{sep_signed:.4f} from the signed form"
+    )
+    return {"ravi": col(line)}
+
+
+def trend_intensity_index(n: int, ma_n: int, long_input: bool) -> dict:
+    """M. H. Pee's TII (TASC June 2002): 100 * SDpos / (SDpos + SDneg), where
+    the deviations are close - SMA(close, ma_n) over the last n bars.
+
+    F-AMBIG: the common simplification COUNTS the positive deviations instead
+    of summing them. The separation from that count form is measured.
+    """
+    src = long_s if long_input else s
+    deviation = src - src.rolling(ma_n).mean()
+    up = deviation.clip(lower=0)
+    down = (-deviation).clip(lower=0)
+    up_sum = up.rolling(n).sum()
+    down_sum = down.rolling(n).sum()
+    total = up_sum + down_sum
+    line = pd.Series(np.where(total == 0, np.nan, 100 * up_sum / total))
+
+    label = f"trendIntensityIndex({n}, {ma_n}, long={long_input})"
+    expected = ma_n + n - 2
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (the average at ma_n - 1, then n finite deviations)"
+    )
+    assert line.min() >= -1e-9 and line.max() <= 100 + 1e-9, (
+        f"{label} leaves its 0..100 bound: {line.min()}..{line.max()}"
+    )
+    assert (line < 50).any() and (line > 50).any(), (
+        f"{label} stays on one side of 50 - the reading would be untested"
+    )
+
+    count = 100 * (deviation > 0).rolling(n).mean()
+    count[deviation.rolling(n).count() < n] = np.nan
+    count[deviation.isna().rolling(n).sum() > 0] = np.nan
+    m = (~line.isna()) & (~count.isna())
+    sep_count = float(np.max(np.abs(line[m] - count[m])))
+    assert sep_count > 10, (
+        f"{label} sits only {sep_count} from the COUNT form"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib TII); first valid at "
+        f"{expected}, range {line.min():.4f}..{line.max():.4f}, "
+        f"{sep_count:.4f} from the count form"
+    )
+    return {"tii": col(line)}
+
+
+SPECIAL_K_ROC = [10, 15, 20, 30, 40, 65, 75, 100, 195, 265, 390, 530]
+SPECIAL_K_SMOOTHING = [10, 10, 10, 15, 50, 65, 75, 100, 130, 130, 130, 195]
+SPECIAL_K_WEIGHTS = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4]
+
+
+def special_k() -> dict:
+    """Pring's Special K -- the extended KST, twelve weighted terms across
+    three groups. Computed on the LONG 900-bar input, because the slowest
+    term (a 530-bar ROC smoothed over 195) first prints on bar 724.
+
+    Two separations, the same two the kst case uses because the shape
+    survives both: an EQUAL-weight sum, and a sum of UNSMOOTHED rates of
+    change.
+    """
+    total = None
+    equal = None
+    unsmoothed = None
+    for roc_n, smooth_n, weight in zip(
+        SPECIAL_K_ROC, SPECIAL_K_SMOOTHING, SPECIAL_K_WEIGHTS
+    ):
+        term = (long_s.pct_change(roc_n) * 100).rolling(smooth_n).mean()
+        total = term * weight if total is None else total + term * weight
+        equal = term if equal is None else equal + term
+        u = long_s.pct_change(roc_n) * 100 * weight
+        unsmoothed = u if unsmoothed is None else unsmoothed + u
+    line = total
+
+    label = "specialK()"
+    expected = max(
+        r + m for r, m in zip(SPECIAL_K_ROC, SPECIAL_K_SMOOTHING)
+    ) - 1
+    assert expected == 724, f"the Special K table changed: warm-up {expected}"
+    assert line.first_valid_index() == expected, (
+        f"{label} first valid at {line.first_valid_index()}, expected "
+        f"{expected} (the slowest term's roc + smooth - 1)"
+    )
+    assert line.notna().sum() > 100, (
+        f"{label} has only {line.notna().sum()} values on the long input - "
+        "the case would barely test anything"
+    )
+    assert line.min() < 0 < line.max(), (
+        f"{label} never crosses zero on the long fixture"
+    )
+
+    m = (~line.isna()) & (~equal.isna())
+    sep_equal = float(np.max(np.abs(line[m] - equal[m])))
+    m = (~line.isna()) & (~unsmoothed.isna())
+    sep_raw = float(np.max(np.abs(line[m] - unsmoothed[m])))
+    assert sep_equal > 5 and sep_raw > 5, (
+        f"{label} sits {sep_equal} from the equal-weight sum and {sep_raw} "
+        "from the unsmoothed one"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib Special K) on the LONG "
+        f"input; first valid at {expected} of {LONG_N}, range "
+        f"{line.min():.4f}..{line.max():.4f}, {sep_equal:.4f} from the "
+        f"equal-weight sum and {sep_raw:.4f} from the unsmoothed one"
+    )
+    return {"specialK": col(line)}
+
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -4890,6 +5607,133 @@ cases = [
         "study": "movingAverageDeviation",
         "params": {"period": 14, "maType": "ema"},
         "expected": moving_average_deviation(14, "ema"),
+    },
+    {
+        "study": "stochasticMomentumIndex",
+        "params": {},
+        "expected": stochastic_momentum_index(13, 25, 2, 3),
+    },
+    {
+        # Shorter and unequal smoothings, so a build that applied one span
+        # twice (or swapped the two stages' order) is still caught, and the
+        # signal's own warm-up is told apart from the line's.
+        "study": "stochasticMomentumIndex",
+        "params": {
+            "period": 8,
+            "longPeriod": 10,
+            "shortPeriod": 4,
+            "signalPeriod": 5,
+        },
+        "expected": stochastic_momentum_index(8, 10, 4, 5),
+    },
+    {"study": "fisherTransform", "params": {}, "expected": fisher_transform(10)},
+    {
+        # A short look-back, so the normalised price reaches the clamp more
+        # often and the machine's seed path is exercised on a different bar
+        # than the default's.
+        "study": "fisherTransform",
+        "params": {"period": 4},
+        "expected": fisher_transform(4),
+    },
+    {
+        # Schaff's own periods need far more than 80 bars to say anything:
+        # on the short fixture the line has six values and every one of them
+        # is 0. So the default case runs on the LONG input.
+        "study": "schaffTrendCycle",
+        "params": {},
+        "input": "long",
+        "expected": schaff_trend_cycle(23, 50, 10, True),
+    },
+    {
+        # Much shorter, so the study has most of the fixture to itself and
+        # the two 0.5 recursions are seen over many more bars than the
+        # defaults' thirteen.
+        "study": "schaffTrendCycle",
+        "params": {"fastPeriod": 5, "slowPeriod": 12, "cyclePeriod": 4},
+        "expected": schaff_trend_cycle(5, 12, 4),
+    },
+    {
+        "study": "prettyGoodOscillator",
+        "params": {},
+        "expected": pretty_good_oscillator(14),
+    },
+    {
+        # A short period, where the EMA of true range has much less memory
+        # and the Wilder-denominator port would be closer - the harder case
+        # for the separation the generator asserts.
+        "study": "prettyGoodOscillator",
+        "params": {"period": 5},
+        "expected": pretty_good_oscillator(5),
+    },
+    {
+        # `limit` is REQUIRED on this study, so both cases name it. 3.0 is
+        # comfortably above the fixture's largest K, which is what makes the
+        # -100..100 bound assertable.
+        "study": "swingIndex",
+        "params": {"limit": 3},
+        "expected": swing_index(3, False),
+    },
+    {
+        # A limit BELOW the largest K, where the reading legitimately leaves
+        # the -100..100 band - the case that pins K/T as a real division
+        # rather than a normalisation the study could drop.
+        "study": "swingIndex",
+        "params": {"limit": 0.5},
+        "expected": swing_index(0.5, False),
+    },
+    {
+        "study": "accumulativeSwingIndex",
+        "params": {"limit": 3},
+        "expected": swing_index(3, True),
+    },
+    {"study": "randomWalkIndex", "params": {}, "expected": random_walk_index(14)},
+    {
+        # A longer horizon list, which is the axis this study's cost and its
+        # definition both live on - a build that only tested n = period would
+        # agree at period 2 and diverge here.
+        "study": "randomWalkIndex",
+        "params": {"period": 30},
+        "expected": random_walk_index(30),
+    },
+    {
+        # Chande's 65-bar average leaves only sixteen readings on the short
+        # fixture, and over those the 7-bar average never crosses below it -
+        # so the ABSOLUTE VALUE, which is the whole point of the study, would
+        # be untested. The default case runs on the LONG input, where the
+        # fast average crosses the slow one repeatedly.
+        "study": "ravi",
+        "params": {},
+        "input": "long",
+        "expected": ravi_study(7, 65, True),
+    },
+    {
+        # Shorter periods, so the reading exists over most of the fixture and
+        # crosses Chande's 3% threshold in both directions.
+        "study": "ravi",
+        "params": {"shortPeriod": 4, "longPeriod": 20},
+        "expected": ravi_study(4, 20),
+    },
+    {
+        # Pee's own periods need 89 bars, so this case runs on the LONG
+        # input; the short case below stays on the 80-bar fixture.
+        "study": "trendIntensityIndex",
+        "params": {},
+        "input": "long",
+        "expected": trend_intensity_index(30, 60, True),
+    },
+    {
+        "study": "trendIntensityIndex",
+        "params": {"period": 10, "maPeriod": 20},
+        "expected": trend_intensity_index(10, 20, False),
+    },
+    {
+        # One case only: the study has no period options at all (the
+        # thirty-six constants ARE the study), and its 724-bar warm-up means
+        # it can only run on the long input.
+        "study": "specialK",
+        "params": {},
+        "input": "long",
+        "expected": special_k(),
     },
 ]
 
@@ -5510,6 +6354,7 @@ out = {
     },
     "input": {
         "closes": closes,
+        "longCloses": long_closes,
         "opens": opens,
         "highs": highs,
         "lows": lows,
@@ -5527,4 +6372,7 @@ path = (
 )
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(out, indent=2) + "\n")
-print(f"wrote {path.relative_to(pathlib.Path.cwd())} ({N} bars, {len(cases)} cases)")
+print(
+    f"wrote {path.relative_to(pathlib.Path.cwd())} ({N} bars, plus a "
+    f"{LONG_N}-bar close-only input, {len(cases)} cases)"
+)

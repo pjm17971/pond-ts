@@ -74,6 +74,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../src/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -2327,5 +2337,277 @@ describe('[PND-STUDYBOX] the moving-average stacks: where the missing rows are',
     const out = guppy(gappy(0), { type: 'sma' });
     expect(nullCountOf(out, 'gmmaS3')).toBe(2);
     expect(typeof cells(out, 'gmmaS3')[2]).toBe('number');
+  });
+});
+
+describe('[PND-STUDYBOX] the momentum and trend leftovers: where the missing rows are', () => {
+  const leftoverSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'open', kind: 'number', required: false },
+    { name: 'high', kind: 'number', required: false },
+    { name: 'low', kind: 'number', required: false },
+    { name: 'close', kind: 'number', required: false },
+  ] as const;
+
+  /** Sixty wavy OHLC bars; `hole` names a bar and a column to blank. */
+  const leftoverBars = (hole?: {
+    at: number;
+    column: 'open' | 'high' | 'low' | 'close';
+  }) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: leftoverSchema,
+      rows: Array.from({ length: 60 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.1) + 0.25 * i;
+        const o = c - 0.7 * Math.cos(i / 2.3);
+        const row: Array<number | undefined> = [
+          i * MINUTE,
+          o,
+          Math.max(o, c) + 0.4 + 0.5 * Math.abs(Math.sin(i / 2.1)),
+          Math.min(o, c) - 0.4 - 0.5 * Math.abs(Math.cos(i / 1.7)),
+          c,
+        ];
+        if (hole !== undefined && hole.at === i) {
+          row[{ open: 1, high: 2, low: 3, close: 4 }[hole.column]] = undefined;
+        }
+        return row;
+      }) as never,
+    });
+
+  /** The close-only view, for the four `column` studies. */
+  const leftoverCloses = (gapAt?: number) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => [
+        i * MINUTE,
+        i === gapAt ? undefined : 100 + 7 * Math.sin(i / 3.1) + 0.25 * i,
+      ]) as never,
+    });
+
+  it('smi: the head is period + long + short − 3, the signal signalPeriod − 1 later', () => {
+    const out = stochasticMomentumIndex(leftoverBars(), {
+      period: 4,
+      longPeriod: 5,
+      shortPeriod: 3,
+      signalPeriod: 4,
+    });
+    expect(nullCountOf(out, 'smi')).toBe(9);
+    expect(nullCountOf(out, 'smiSignal')).toBe(12);
+    expect(typeof cells(out, 'smi')[9]).toBe('number');
+  });
+
+  it('smi: a hole in the CLOSE costs one bar; one in the HIGH costs none', () => {
+    const opts = {
+      period: 4,
+      longPeriod: 5,
+      shortPeriod: 3,
+      signalPeriod: 4,
+    } as const;
+    // The close feeds the numerator directly, and the EMAs skip the missing
+    // cell rather than propagating it.
+    const closeHole = stochasticMomentumIndex(
+      leftoverBars({ at: 30, column: 'close' }),
+      opts,
+    );
+    expect(cells(closeHole, 'smi')[30]).toBeUndefined();
+    expect(typeof cells(closeHole, 'smi')[31]).toBe('number');
+    // The extremes come from the SKIPPING door, so an absent high leaves the
+    // range defined over the cells the window does hold — no bar is lost.
+    const highHole = stochasticMomentumIndex(
+      leftoverBars({ at: 30, column: 'high' }),
+      opts,
+    );
+    expect(nullCountOf(highHole, 'smi')).toBe(9);
+  });
+
+  it('fisher: the head is period − 1, the signal one more; a hole RESETS the machine', () => {
+    const clean = fisherTransform(leftoverBars(), { period: 5 });
+    expect(nullCountOf(clean, 'fisher')).toBe(4);
+    expect(nullCountOf(clean, 'fisherSignal')).toBe(5);
+    // A missing low blanks the median price, so every strict 5-bar range
+    // holding it is missing: bars 30…34. The machine then re-seeds on bar
+    // 35, which means bar 35 has no TRIGGER either.
+    const holed = fisherTransform(leftoverBars({ at: 30, column: 'low' }), {
+      period: 5,
+    });
+    const line = cells(holed, 'fisher');
+    expect(typeof line[29]).toBe('number');
+    for (let i = 30; i <= 34; i += 1)
+      expect(line[i], `bar ${i}`).toBeUndefined();
+    expect(typeof line[35]).toBe('number');
+    expect(cells(holed, 'fisherSignal')[35]).toBeUndefined();
+    expect(typeof cells(holed, 'fisherSignal')[36]).toBe('number');
+  });
+
+  it('stc: the head is at least slow + 2·cycle − 3, and a hole re-seeds both folds', () => {
+    const opts = { fastPeriod: 4, slowPeriod: 10, cyclePeriod: 4 } as const;
+    const clean = schaffTrendCycle(leftoverCloses(), opts);
+    const line = cells(clean, 'stc');
+    for (let i = 0; i < 15; i += 1) expect(line[i], `bar ${i}`).toBeUndefined();
+    expect(typeof line[15]).toBe('number');
+    // A missing close blanks that bar's EMAs and therefore the MACD, and the
+    // strict cycle windows holding it — but nothing propagates to the end.
+    const holed = schaffTrendCycle(leftoverCloses(30), opts);
+    expect(cells(holed, 'stc')[30]).toBeUndefined();
+    expect(typeof cells(holed, 'stc')[45]).toBe('number');
+  });
+
+  it('pgo: the head is `period`, one past the average’s, and a hole costs two bars', () => {
+    const clean = prettyGoodOscillator(leftoverBars(), { period: 6 });
+    expect(nullCountOf(clean, 'pgo')).toBe(6);
+    // A missing close costs EXACTLY two bars, and it is worth naming which
+    // two because the obvious guess is wrong: the simple average comes from
+    // the COLUMN door, which skips the missing cell and averages the rest,
+    // so it costs nothing. Bar 30 goes because the numerator reads the close
+    // directly; bar 31 goes because its true range reads bar 30's close as
+    // `prevClose`, and the EMA emits nothing on a bar whose input is
+    // missing. Bar 32 is back.
+    const holed = prettyGoodOscillator(
+      leftoverBars({ at: 30, column: 'close' }),
+      { period: 6 },
+    );
+    const v = cells(holed, 'pgo');
+    expect(typeof v[29]).toBe('number');
+    expect(v[30]).toBeUndefined();
+    expect(v[31]).toBeUndefined();
+    expect(typeof v[32]).toBe('number');
+  });
+
+  it('si / asi: a one-bar head, and a hole costs that bar and the next', () => {
+    const clean = swingIndex(leftoverBars(), { limit: 5 });
+    expect(nullCountOf(clean, 'si')).toBe(1);
+    const holed = swingIndex(leftoverBars({ at: 30, column: 'open' }), {
+      limit: 5,
+    });
+    const v = cells(holed, 'si');
+    expect(typeof v[29]).toBe('number');
+    expect(v[30]).toBeUndefined();
+    // Bar 31 reads bar 30's open as `prevOpen`.
+    expect(v[31]).toBeUndefined();
+    expect(typeof v[32]).toBe('number');
+    // The ASI is a running sum, so the same hole ends it rather than
+    // costing two bars — the cumulative rule OBV and the A/D line follow.
+    const asi = cells(
+      accumulativeSwingIndex(leftoverBars({ at: 30, column: 'open' }), {
+        limit: 5,
+      }),
+      'asi',
+    );
+    expect(typeof asi[29]).toBe('number');
+    for (let i = 30; i < 60; i += 1) expect(asi[i], `bar ${i}`).toBeUndefined();
+  });
+
+  it('rwi: the head is `period`, and a hole costs the bar plus `period` more', () => {
+    const clean = randomWalkIndex(leftoverBars(), { period: 5 });
+    expect(nullCountOf(clean, 'rwiHigh')).toBe(5);
+    expect(nullCountOf(clean, 'rwiLow')).toBe(5);
+    // The longest horizon's strict `period`-bar mean of true range is what
+    // sets the width: a missing high blanks `TR[30]`, so every window
+    // holding it — bars 30…34 — is missing, and bar 35's windows all start
+    // at 31.
+    const holed = randomWalkIndex(leftoverBars({ at: 30, column: 'high' }), {
+      period: 5,
+    });
+    const v = cells(holed, 'rwiHigh');
+    expect(typeof v[29]).toBe('number');
+    for (let i = 30; i <= 34; i += 1) expect(v[i], `bar ${i}`).toBeUndefined();
+    expect(typeof v[35]).toBe('number');
+  });
+
+  it('ravi: the head is max(short, long) − 1, and a hole costs no bar at all', () => {
+    const opts = { shortPeriod: 4, longPeriod: 12 } as const;
+    expect(nullCountOf(ravi(leftoverCloses(), opts), 'ravi')).toBe(11);
+    // Both averages come from the COLUMN door, which SKIPS a missing cell
+    // and averages the rest — so a hole leaves the reading defined
+    // everywhere it was, on a window one contributor short. That is core's
+    // reducer policy, stated here rather than assumed.
+    const holed = ravi(leftoverCloses(30), opts);
+    expect(nullCountOf(holed, 'ravi')).toBe(11);
+    expect(typeof cells(holed, 'ravi')[30]).toBe('number');
+  });
+
+  it('tii: the head is maPeriod + period − 2, and a hole costs `period` bars', () => {
+    const opts = { period: 5, maPeriod: 10 } as const;
+    expect(
+      nullCountOf(trendIntensityIndex(leftoverCloses(), opts), 'tii'),
+    ).toBe(13);
+    // The average skips the hole (column door) but the DEVIATION does not —
+    // it reads the raw close — so the bar's deviation is missing and the
+    // strict `period`-bar sums holding it are too: bars 30…34.
+    const holed = trendIntensityIndex(leftoverCloses(30), opts);
+    const v = cells(holed, 'tii');
+    expect(typeof v[29]).toBe('number');
+    for (let i = 30; i <= 34; i += 1) expect(v[i], `bar ${i}`).toBeUndefined();
+    expect(typeof v[35]).toBe('number');
+  });
+
+  it('specialK: a 724-bar head, and a series shorter than it is all-missing', () => {
+    const long = (gapAt?: number) =>
+      new TimeSeries({
+        name: 'bars',
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'close', kind: 'number', required: false },
+        ] as const,
+        rows: Array.from({ length: 760 }, (_, i) => [
+          i * MINUTE,
+          i === gapAt ? undefined : 100 + 20 * Math.sin(i / 70) + 0.01 * i,
+        ]) as never,
+      });
+    expect(nullCountOf(specialK(long()), 'specialK')).toBe(724);
+    expect(nullCountOf(specialK(leftoverCloses()), 'specialK')).toBe(60);
+    // One hole at bar 730 blanks that bar, the twelve bars that read it as a
+    // look-back base, and every smoothing window holding one of those — a
+    // wide hole (the longest smoothing is 195 bars) but a hole, not a tail.
+    const holed = specialK(long(730));
+    expect(typeof cells(holed, 'specialK')[729]).toBe('number');
+    expect(cells(holed, 'specialK')[730]).toBeUndefined();
+  });
+
+  it('no leftover column ever leaks a NaN to a reader', () => {
+    const out = trendIntensityIndex(
+      ravi(
+        randomWalkIndex(
+          accumulativeSwingIndex(
+            swingIndex(
+              prettyGoodOscillator(
+                fisherTransform(leftoverBars({ at: 20, column: 'close' }), {
+                  period: 5,
+                }),
+                { period: 6 },
+              ),
+              { limit: 5 },
+            ),
+            { limit: 5 },
+          ),
+          { period: 5 },
+        ),
+        { shortPeriod: 4, longPeriod: 12 },
+      ),
+      { period: 5, maPeriod: 10 },
+    );
+    for (const name of [
+      'fisher',
+      'fisherSignal',
+      'pgo',
+      'si',
+      'asi',
+      'rwiHigh',
+      'rwiLow',
+      'ravi',
+      'tii',
+    ]) {
+      for (const value of cells(out, name)) {
+        expect(
+          value === undefined ||
+            (typeof value === 'number' && !Number.isNaN(value)),
+          name,
+        ).toBe(true);
+      }
+    }
   });
 });

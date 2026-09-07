@@ -90,6 +90,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -127,13 +137,23 @@ interface OracleCase {
     benchmark?: string;
     step?: number;
     maxStep?: number;
+    maPeriod?: number;
+    cyclePeriod?: number;
+    limit?: number;
   };
+  /** Which input the case was generated over. Absent means the 80-bar
+   *  OHLCV fixture; `'long'` means the 900-bar close-only one, which the
+   *  three studies whose warm-up does not fit in 80 bars need (Special K
+   *  reaches bar 724) and which two more use because the short fixture
+   *  cannot exercise their reading (see the generator). */
+  input?: 'long';
   expected: Record<string, Array<number | null>>;
 }
 interface Oracle {
   meta: { oracle: string };
   input: {
     closes: number[];
+    longCloses: number[];
     opens: number[];
     highs: number[];
     lows: number[];
@@ -159,6 +179,20 @@ function series(): TimeSeries<never> {
       { name: 'close', kind: 'number' },
     ],
     rows: oracle.input.closes.map((c, i) => [i, c]),
+  }) as unknown as TimeSeries<never>;
+}
+
+/** The 900-bar close-only series the long cases were generated over.
+ *  Separate from `closes` so that adding it did not recompute every existing
+ *  case; see the generator's note. */
+function longSeries(): TimeSeries<never> {
+  return new TimeSeries({
+    name: 'oracle',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number' },
+    ],
+    rows: oracle.input.longCloses.map((c, i) => [i, c]),
   }) as unknown as TimeSeries<never>;
 }
 
@@ -212,6 +246,9 @@ function benchmarkSeries(): TimeSeries<never> {
 
 function run(c: OracleCase): unknown {
   const p = c.params;
+  // The close-only door: the 900-bar input for a case marked `'long'`, the
+  // 80-bar one otherwise. Only the close-only studies have long cases.
+  const source = () => (c.input === 'long' ? longSeries() : series());
   switch (c.study) {
     case 'sma':
       return sma(series(), p as { period: number });
@@ -485,6 +522,44 @@ function run(c: OracleCase): unknown {
           signalPeriod?: number;
         },
       );
+    case 'stochasticMomentumIndex':
+      return stochasticMomentumIndex(
+        ohlcSeries(),
+        p as {
+          period?: number;
+          longPeriod?: number;
+          shortPeriod?: number;
+          signalPeriod?: number;
+        },
+      );
+    case 'fisherTransform':
+      return fisherTransform(ohlcSeries(), p as { period?: number });
+    case 'schaffTrendCycle':
+      return schaffTrendCycle(
+        source(),
+        p as {
+          fastPeriod?: number;
+          slowPeriod?: number;
+          cyclePeriod?: number;
+        },
+      );
+    case 'prettyGoodOscillator':
+      return prettyGoodOscillator(ohlcSeries(), p as { period?: number });
+    case 'swingIndex':
+      return swingIndex(ohlcSeries(), p as { limit: number });
+    case 'accumulativeSwingIndex':
+      return accumulativeSwingIndex(ohlcSeries(), p as { limit: number });
+    case 'randomWalkIndex':
+      return randomWalkIndex(ohlcSeries(), p as { period?: number });
+    case 'ravi':
+      return ravi(source(), p as { shortPeriod?: number; longPeriod?: number });
+    case 'trendIntensityIndex':
+      return trendIntensityIndex(
+        source(),
+        p as { period?: number; maPeriod?: number },
+      );
+    case 'specialK':
+      return specialK(source(), p as Record<string, never>);
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

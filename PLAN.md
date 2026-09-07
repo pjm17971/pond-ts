@@ -1275,7 +1275,15 @@ pandas-oracle-verified) have shipped. Plan:
   `2/n` smoothing via an internal raw-alpha EMA), `stochasticRsi` (TA-Lib
   `STOCHRSI`, on a new O(N) deque extremes kernel), `trueStrengthIndex`,
   `movingAverageDeviation` (points; the percent form is `disparityIndex`).
-  **Seventy-three studies shipped.** What remains of the corpus is the
+  Batch six added the **momentum and trend leftovers** (§6.3/§6.4/§6.1):
+  `stochasticMomentumIndex`, `fisherTransform` and `schaffTrendCycle` (two
+  more K6 state machines), `prettyGoodOscillator`, `swingIndex` +
+  `accumulativeSwingIndex` (Wilder's `limit` is a **required** option — the
+  second after `benchmark`), `randomWalkIndex` (the corpus' **G2**
+  multi-horizon window, shipped `O(N·period)` on a kernel of its own), `ravi`,
+  `trendIntensityIndex` and `specialK` — whose 724-bar warm-up is why the
+  oracle fixture now carries a second, 900-bar close-only input.
+  **Eighty-three studies shipped.** What remains of the corpus is the
   repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
   live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /

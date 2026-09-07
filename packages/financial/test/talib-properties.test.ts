@@ -118,6 +118,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -4041,5 +4051,385 @@ describe('[talib] movingAverageDeviation is linear in price and shift-INVARIANT'
     const v = col(movingAverageDeviation(empty as never), 'maDev');
     expect(v).toHaveLength(40);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ==========================================================================
+ * The momentum and trend leftovers (assessment 6.3 / 6.4 / 6.1).
+ *
+ * The scale/shift pair is the discriminator for every one of these, and it
+ * is NOT the same pair for all of them — which is exactly why each is
+ * asserted rather than assumed:
+ *
+ *   smi / fisher / stc / pgo / rwi / tii   scale- AND shift-invariant
+ *   ravi / specialK                        scale-invariant, shift-DEPENDENT
+ *   swingIndex / asi                       scale-EQUIVARIANT unless `limit`
+ *                                          scales too; shift-invariant
+ *
+ * A build that dropped `swingIndex`'s `K/limit` factor would become
+ * scale-invariant, and one that dropped `ravi`'s division would lose its
+ * scale invariance — so the pairs are the tests, not decoration.
+ * ========================================================================== */
+
+/** A longer non-degenerate OHLC fixture, for the studies whose warm-up does
+ *  not fit in `momRows`' forty bars. `a` scales every price, `b` shifts it. */
+const leftoverRows = (
+  a = 1,
+  b = 0,
+  length = 120,
+): Array<[number, number, number, number]> =>
+  Array.from({ length }, (_, i) => {
+    const c = 100 + 8 * Math.sin(i / 3.5) + 6 * Math.sin(i / 17) + 0.15 * i;
+    const o = c - 0.9 * Math.cos(i / 2.1);
+    const up = 0.5 + 0.8 * Math.abs(Math.sin(i / 2.3));
+    const down = 0.5 + 0.8 * Math.abs(Math.cos(i / 1.9));
+    return [
+      o * a + b,
+      (Math.max(o, c) + up) * a + b,
+      (Math.min(o, c) - down) * a + b,
+      c * a + b,
+    ];
+  });
+
+/** The close-only view of {@link leftoverRows}, for the `column` studies. */
+const leftoverCloses = (a = 1, b = 0, length = 120) =>
+  leftoverRows(a, b, length).map((r) => r[3]);
+
+/** An all-missing OHLC series of `length` rows. */
+const emptyBars = (length: number) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as never,
+  });
+
+/** An all-missing close-only series of `length` rows. */
+const emptyCloses = (length: number) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length }, (_, i) => [i, undefined]) as never,
+  });
+
+describe('[talib] the momentum leftovers that are scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const cases: Array<[string, string[], (s: never) => unknown]> = [
+    [
+      'stochasticMomentumIndex',
+      ['smi', 'smiSignal'],
+      (s) =>
+        stochasticMomentumIndex(s, {
+          period: 6,
+          longPeriod: 8,
+          shortPeriod: 3,
+          signalPeriod: 3,
+        }),
+    ],
+    [
+      'fisherTransform',
+      ['fisher', 'fisherSignal'],
+      (s) => fisherTransform(s, { period: 8 }),
+    ],
+    [
+      'prettyGoodOscillator',
+      ['pgo'],
+      (s) => prettyGoodOscillator(s, { period: 10 }),
+    ],
+    [
+      'randomWalkIndex',
+      ['rwiHigh', 'rwiLow'],
+      (s) => randomWalkIndex(s, { period: 8 }),
+    ],
+  ];
+
+  for (const [name, columns, run] of cases) {
+    it(`${name} is unchanged by scaling and by shifting`, () => {
+      const base = run(momBars(leftoverRows()) as never);
+      const scaled = run(momBars(leftoverRows(K)) as never);
+      const shifted = run(momBars(leftoverRows(1, SHIFT)) as never);
+      for (const column of columns) {
+        const b = col(base, column);
+        expect(
+          b.some((x) => x !== undefined),
+          `${name}.${column}`,
+        ).toBe(true);
+        expectSame(b, col(scaled, column));
+        expectSame(b, col(shifted, column));
+      }
+    });
+
+    it(`${name} is not constant — the invariance above is not vacuous`, () => {
+      const v = col(run(momBars(leftoverRows()) as never), columns[0]!).filter(
+        (x) => x !== undefined,
+      ) as number[];
+      expect(v.length).toBeGreaterThan(50);
+      expect(Math.max(...v) - Math.min(...v)).toBeGreaterThan(0.5);
+    });
+
+    it(`all-missing input yields all-missing ${name} columns`, () => {
+      const out = run(emptyBars(60) as never);
+      for (const column of columns) {
+        const v = col(out, column);
+        expect(v, column).toHaveLength(60);
+        expect(
+          v.every((x) => x === undefined),
+          column,
+        ).toBe(true);
+      }
+    });
+  }
+});
+
+describe('[talib] schaffTrendCycle and trendIntensityIndex: scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const cases: Array<[string, string, (s: never) => unknown]> = [
+    [
+      'schaffTrendCycle',
+      'stc',
+      (s) =>
+        schaffTrendCycle(s, {
+          fastPeriod: 6,
+          slowPeriod: 14,
+          cyclePeriod: 5,
+        }),
+    ],
+    [
+      'trendIntensityIndex',
+      'tii',
+      (s) => trendIntensityIndex(s, { period: 10, maPeriod: 20 }),
+    ],
+  ];
+
+  for (const [name, column, run] of cases) {
+    it(`${name} is unchanged by scaling and by shifting`, () => {
+      // The MACD under the STC is a DIFFERENCE of two averages of the same
+      // column, so a shift cancels there; the stochastic that follows
+      // cancels the scale. TII's deviations cancel a shift between the price
+      // and its own average, and its ratio of sums cancels the scale.
+      const base = col(run(bars(leftoverCloses()) as never), column);
+      expect(base.some((x) => x !== undefined)).toBe(true);
+      expectSame(base, col(run(bars(leftoverCloses(K)) as never), column));
+      expectSame(
+        base,
+        col(run(bars(leftoverCloses(1, SHIFT)) as never), column),
+      );
+    });
+
+    it(`${name} over another study keeps the column and does NOT shift`, () => {
+      // Both of these read their source through the COLUMN door — core's
+      // count-window `avg` for the average, `smooth('ema')` for the MACD —
+      // and that door counts ROWS, not contributors. So a two-bar `NaN` head
+      // from `sma(3)` is skipped rather than added to the warm-up, and the
+      // reading starts on exactly the bar it starts on over the raw close.
+      // That is `sma()`'s documented contract ("the outer warm-up does not
+      // add to the inner one"), and it is the deliberate contrast with the
+      // ARRAY doors `stochasticRsi` and `trueStrengthIndex` compose on,
+      // whose warm-ups do stack. What this pins is the guarantee that
+      // matters either way: the column is not empty and the length is kept.
+      const src = sma(bars(leftoverCloses()), { period: 3 });
+      const v = col(run(src as never), column);
+      expect(v).toHaveLength(120);
+      expect(v.some((x) => x !== undefined)).toBe(true);
+      expect(firstValid(v)).toBe(
+        firstValid(col(run(bars(leftoverCloses()) as never), column)),
+      );
+    });
+
+    it(`all-missing input yields an all-missing ${column}`, () => {
+      const v = col(run(emptyCloses(80) as never), column);
+      expect(v).toHaveLength(80);
+      expect(v.every((x) => x === undefined)).toBe(true);
+    });
+  }
+});
+
+describe('[talib] ravi and specialK are scale-invariant and shift-DEPENDENT', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('ravi is unchanged by scaling', () => {
+    const opts = { shortPeriod: 5, longPeriod: 20 } as const;
+    const base = col(ravi(bars(leftoverCloses()), opts), 'ravi');
+    expect(base.some((x) => x !== undefined && x !== 0)).toBe(true);
+    expectSame(base, col(ravi(bars(leftoverCloses(K)), opts), 'ravi'));
+  });
+
+  it('ravi MOVES under a shift — its denominator is a price level', () => {
+    // The companion assertion: adding a constant to every price moves the
+    // denominator without moving the numerator, so a percent-of-price
+    // reading must fall. A build that dropped the division would be shift-
+    // invariant instead.
+    const opts = { shortPeriod: 5, longPeriod: 20 } as const;
+    const base = col(ravi(bars(leftoverCloses()), opts), 'ravi');
+    const shifted = col(ravi(bars(leftoverCloses(1, SHIFT)), opts), 'ravi');
+    let moved = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      expect(shifted[i], `bar ${i}`).toBeDefined();
+      if (Math.abs(shifted[i]! - base[i]!) > 1e-6) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(50);
+  });
+
+  it('specialK is unchanged by scaling and MOVES under a shift', () => {
+    // Every term is a ratio, so a multiplicative change cancels; an additive
+    // one does not. The same pair `kst` has.
+    const closes = leftoverCloses(1, 0, 760);
+    const base = col(specialK(bars(closes)), 'specialK');
+    expect(base.some((x) => x !== undefined)).toBe(true);
+    expectSame(
+      base,
+      col(specialK(bars(leftoverCloses(K, 0, 760))), 'specialK'),
+    );
+    const shifted = col(
+      specialK(bars(leftoverCloses(1, SHIFT, 760))),
+      'specialK',
+    );
+    let moved = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      if (Math.abs(shifted[i]! - base[i]!) > 1e-6) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(30);
+  });
+
+  it('ravi over another study keeps the column and does NOT shift', () => {
+    // Both averages come from the column door, which counts rows — see the
+    // note on the schaffTrendCycle case above.
+    const src = sma(bars(leftoverCloses()), { period: 3 });
+    const opts = { shortPeriod: 5, longPeriod: 20 } as const;
+    const v = col(
+      ravi(src as never, { ...opts, column: 'sma' as never }),
+      'ravi',
+    );
+    expect(v).toHaveLength(120);
+    expect(v.some((x) => x !== undefined)).toBe(true);
+    expect(firstValid(v)).toBe(
+      firstValid(col(ravi(bars(leftoverCloses()), opts), 'ravi')),
+    );
+  });
+
+  it('all-missing input yields all-missing ravi and specialK', () => {
+    expect(
+      col(ravi(emptyCloses(80) as never, { longPeriod: 20 }), 'ravi').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    const v = col(specialK(emptyCloses(760) as never), 'specialK');
+    expect(v).toHaveLength(760);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] the swing index is scale-EQUIVARIANT unless `limit` scales too', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const LIMIT = 5;
+
+  it('scaling the prices alone scales the reading', () => {
+    // Every term of the numerator, of R and of K is a difference of two
+    // prices, so N/R is unchanged and the whole reading rides on K/limit.
+    const base = col(
+      swingIndex(momBars(leftoverRows()) as never, { limit: LIMIT }),
+      'si',
+    );
+    const scaled = col(
+      swingIndex(momBars(leftoverRows(K)) as never, { limit: LIMIT }),
+      'si',
+    );
+    expect(base.some((x) => x !== undefined && x !== 0)).toBe(true);
+    expectLinear(base, scaled, K);
+  });
+
+  it('scaling `limit` with the prices leaves it UNCHANGED', () => {
+    const base = col(
+      swingIndex(momBars(leftoverRows()) as never, { limit: LIMIT }),
+      'si',
+    );
+    const both = col(
+      swingIndex(momBars(leftoverRows(K)) as never, { limit: LIMIT * K }),
+      'si',
+    );
+    expectSame(base, both);
+  });
+
+  it('shifting every price changes nothing', () => {
+    const base = col(
+      swingIndex(momBars(leftoverRows()) as never, { limit: LIMIT }),
+      'si',
+    );
+    const shifted = col(
+      swingIndex(momBars(leftoverRows(1, SHIFT)) as never, { limit: LIMIT }),
+      'si',
+    );
+    expectSame(base, shifted);
+  });
+
+  it('the ASI carries both properties, being the running total', () => {
+    const base = col(
+      accumulativeSwingIndex(momBars(leftoverRows()) as never, {
+        limit: LIMIT,
+      }),
+      'asi',
+    );
+    expect(base.some((x) => x !== undefined && x !== 0)).toBe(true);
+    expectLinear(
+      base,
+      col(
+        accumulativeSwingIndex(momBars(leftoverRows(K)) as never, {
+          limit: LIMIT,
+        }),
+        'asi',
+      ),
+      K,
+    );
+    expectSame(
+      base,
+      col(
+        accumulativeSwingIndex(momBars(leftoverRows(1, SHIFT)) as never, {
+          limit: LIMIT,
+        }),
+        'asi',
+      ),
+    );
+  });
+
+  it('all-missing input yields all-missing si and asi', () => {
+    for (const [name, column, run] of [
+      [
+        'swingIndex',
+        'si',
+        () => swingIndex(emptyBars(60) as never, { limit: 5 }),
+      ],
+      [
+        'accumulativeSwingIndex',
+        'asi',
+        () => accumulativeSwingIndex(emptyBars(60) as never, { limit: 5 }),
+      ],
+    ] as Array<[string, string, () => unknown]>) {
+      const v = col(run(), column);
+      expect(v, name).toHaveLength(60);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
   });
 });

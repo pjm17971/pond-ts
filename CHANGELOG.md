@@ -70,6 +70,85 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the momentum and trend leftovers** (corpus §6.3 /
+  §6.4 / §6.1) — ten studies in the uniform shape (a `column` or the bar
+  columns plus an `output` or `prefix`, bar-count periods, a length-preserving
+  per-column warm-up, a fluent method), each with oracle cases. Two internal
+  kernels ride with them: `swingIndexValues` (shared by the swing pair) and
+  `randomWalkValues` (the multi-horizon sweep the corpus flags as **G2**).
+  - **`stochasticMomentumIndex({ period = 13, longPeriod = 25, shortPeriod =
+2, signalPeriod = 3, high, low, close, prefix = 'smi' })`** → `smi`,
+    `smiSignal` — William Blau's SMI: the close against the **midpoint** of
+    the `period`-bar range, with the distance and the half-range each
+    double-EMA smoothed before the division, ×100. Bounded −100…100 and
+    signed, where the classic stochastic reads 50 at the midpoint. Option
+    names are `trueStrengthIndex`'s (Blau's other double-smoothed
+    study, same author, same `r`/`s`). Blau's `(13, 25, 2)` ship; the short
+    `(5, 3, 3)` fork sits **108.99** away and the unsmoothed reading
+    **126.95**, on a line spanning −48.19…74.33 (measured). A flat range for
+    the whole smoothed history reads `undefined` — the guard is live via a
+    redirected `close`.
+  - **`fisherTransform({ period = 10, high, low, prefix = 'fisher' })`** →
+    `fisher`, `fisherSignal` — John Ehlers' Fisher Transform (TASC Nov 2002),
+    a `foldRows` state machine. The range is over the **median price's** own
+    extremes, not over the bars' highs and lows: that port sits **5.95** away
+    on a line spanning −4.69…7.60 (measured). `0.33/0.67`, the `±0.99` clamp
+    test with its `±0.999` replacement, and the `0.5/0.5` second smoothing are
+    Ehlers' constants, not options. The signal is the line **delayed one
+    bar**. A gap — or a flat window — resets the machine ([PND-SFOLD]).
+  - **`schaffTrendCycle({ fastPeriod = 23, slowPeriod = 50, cyclePeriod = 10,
+column, output = 'stc' })`** — Doug Schaff's STC: a stochastic of the MACD,
+    `0.5`-smoothed, then a stochastic of that, `0.5`-smoothed again. Bounded
+    0…100; the raw double stochastic is **98.30** away (measured). Both
+    recursions are `foldRows` steps, so a gap resets them rather than
+    repeating the previous reading as the common port does — and that is
+    visible: a sustained trend pins the first stochastic, leaving the second
+    window flat and the line `undefined`, which on the package's own oracle
+    input delays the start from bar 67 to bar **74**.
+  - **`prettyGoodOscillator({ period = 14, column, high, low, close, output =
+'pgo' })`** — Mark Johnson's PGO, `(close − SMA)/EMA(TR)`, in units of
+    average daily ranges. **F-AMBIG**: Johnson's span-EMA denominator ships
+    and the Wilder-`ATR` port is named and measured (**0.211** apart at
+    period 14 on a line spanning −3.71…4.23). `column` defaults to whatever
+    `close` resolves to, as `atrBands` does.
+  - **`swingIndex({ limit, open, high, low, close, output = 'si' })`** and
+    **`accumulativeSwingIndex({ …, output = 'asi' })`** — Wilder's 1978 swing
+    index and its running total. **`limit` (Wilder's `T`, the instrument's
+    limit move) is required** and has no default: it is a fact about the
+    instrument, every possible default silently rescales the reading, and the
+    ±100 bound the study is defined by depends on it. A `limit` of 0 (or
+    negative, or non-finite) is rejected. `R = 0` — a tape frozen for two
+    bars — reads `undefined`, which for the ASI ends the level, the same rule
+    OBV follows.
+  - **`randomWalkIndex({ period = 14, high, low, close, prefix = 'rwi' })`** →
+    `rwiHigh`, `rwiLow` — E. Michael Poulos' RWI: the **maximum over horizons
+    `2 … period`** of `(high − low[−n]) / (meanTR(n)·√n)`. The denominator is
+    the `n`-bar **mean** true range, not Wilder's ATR (that variant is
+    **0.190** away at period 14; the single-horizon form **2.374**, measured).
+    Deliberately **O(N·period)** — the G2 shape no window kernel expresses —
+    with O(N) memory; 328 ms at `period 14` and 1194 ms at `period 50` on 1M
+    bars. Both columns go **negative** when every horizon fell.
+  - **`ravi({ shortPeriod = 7, longPeriod = 65, column, output = 'ravi' })`** —
+    Tushar Chande's Range Action Verification Index,
+    `100·|SMA(short) − SMA(long)|/SMA(long)`. The **absolute value** is the
+    study: it answers "is this trending" (above 3%), not "which way" — the
+    signed form is **26.98** away (measured). Scale-invariant, not
+    shift-invariant.
+  - **`trendIntensityIndex({ period = 30, maPeriod = 60, column, output =
+'tii' })`** — M. H. Pee's TII, `100·Σpos/(Σpos + Σneg)` over the last
+    `period` deviations from a `maPeriod` SMA. **F-AMBIG**: Pee's **sums**
+    ship, weighted by how far price strayed; the common **count** form is
+    **28.85** away (measured) and would deserve its own name. Bounded 0…100,
+    warm-up `maPeriod + period − 2` = **88** bars at the defaults.
+  - **`specialK({ column, output = 'specialK' })`** — Martin Pring's Special
+    K: the KST construction extended to **twelve** weighted smoothed rates of
+    change across three groups. The thirty-six constants are the study, so
+    there are no period options (the `kst` decision). **Warm-up 724 bars** —
+    a series shorter than 725 comes back entirely `undefined`, with the row
+    count preserved.
+
+### Added
+
 - `@pond-ts/financial`: **the moving-average stacks and the smoothed-momentum
   tail** (corpus §6.1 / §6.3) — seven studies in the uniform shape (a `column`
   plus an `output` or `prefix`, bar-count periods, a length-preserving
