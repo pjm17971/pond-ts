@@ -191,50 +191,6 @@ export function rollingBivariateValues(
   // strict, so this is the whole mask: one incomplete pair blanks the row.
   let incomplete = 0;
 
-  // Recompute every moment from the current window [windowStart, windowEnd),
-  // re-anchoring on its first complete pair so the offsets are bounded by
-  // the window's own spread whatever the magnitude. Called on the aligned
-  // schedule (`i % period === 0`) and on demand when a removal has driven a
-  // changing column's `m2` to zero or below.
-  const rebuild = (): void => {
-    anchorX = 0;
-    anchorY = 0;
-    for (let k = windowStart; k < windowEnd; k += 1) {
-      const u = x[k]!;
-      const v = y[k]!;
-      if (Number.isFinite(u) && Number.isFinite(v)) {
-        anchorX = u;
-        anchorY = v;
-        break;
-      }
-    }
-    count = 0;
-    meanX = 0;
-    meanY = 0;
-    m2x = 0;
-    m2y = 0;
-    cxy = 0;
-    grossX = 0;
-    grossY = 0;
-    for (let k = windowStart; k < windowEnd; k += 1) {
-      const u = x[k]!;
-      const v = y[k]!;
-      if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
-      const su = u - anchorX;
-      const sv = v - anchorY;
-      grossX += su * su;
-      grossY += sv * sv;
-      count += 1;
-      const dx = su - meanX;
-      const dy = sv - meanY;
-      meanX += dx / count;
-      meanY += dy / count;
-      m2x += dx * (su - meanX);
-      m2y += dy * (sv - meanY);
-      cxy += dx * (sv - meanY);
-    }
-  };
-
   for (let i = 0; i < length; i += 1) {
     const lo = i - period + 1 > 0 ? i - period + 1 : 0;
 
@@ -320,37 +276,84 @@ export function rollingBivariateValues(
     // it re-anchors the shifted frame before the series has trended away
     // from it, and it discards whatever drift the removals above have
     // accumulated, neither of which can then survive one window turnover.
-    if (i % period === 0) rebuild();
+    // The aligned rebuild — `i % period`, not a counter, so the state at a
+    // given row does not depend on where the sweep began — and, on the
+    // second pass only, the on-demand rebuild for an ill-conditioned window.
+    // Written inline rather than as a closure: a closure capturing the
+    // accumulators moves every one of them out of registers and into a heap
+    // context, which measured as a 4.5× slowdown of the whole kernel.
+    let rebuildNow = i % period === 0;
+    for (;;) {
+      if (rebuildNow) {
+        // Recompute every moment from the current window
+        // [windowStart, windowEnd), re-anchoring on its first complete pair
+        // so the offsets are bounded by the window's own spread whatever
+        // the magnitude.
+        anchorX = 0;
+        anchorY = 0;
+        for (let k = windowStart; k < windowEnd; k += 1) {
+          const u = x[k]!;
+          const v = y[k]!;
+          if (Number.isFinite(u) && Number.isFinite(v)) {
+            anchorX = u;
+            anchorY = v;
+            break;
+          }
+        }
+        count = 0;
+        meanX = 0;
+        meanY = 0;
+        m2x = 0;
+        m2y = 0;
+        cxy = 0;
+        grossX = 0;
+        grossY = 0;
+        for (let k = windowStart; k < windowEnd; k += 1) {
+          const u = x[k]!;
+          const v = y[k]!;
+          if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+          const su = u - anchorX;
+          const sv = v - anchorY;
+          grossX += su * su;
+          grossY += sv * sv;
+          count += 1;
+          const dx = su - meanX;
+          const dy = sv - meanY;
+          meanX += dx / count;
+          meanY += dy / count;
+          m2x += dx * (su - meanX);
+          m2y += dy * (sv - meanY);
+          cxy += dx * (sv - meanY);
+        }
+      }
 
-    if (windowEnd - windowStart < period || incomplete > 0) continue;
-    // A flat column has variance exactly 0 and covariance exactly 0 by
-    // definition; the counters say so where the accumulators only nearly do.
-    const flatX = changesX === 0;
-    const flatY = changesY === 0;
-    // The converse: a column that DOES change must have a positive variance.
-    // The reverse-Welford removal can drive `m2` to zero or below on a
-    // window whose values differ by ulps (the clamp above then reads 0 and
-    // the study reports a false missing cell — reviewed 2026-09-07). That is
-    // numerical, not mathematical, degeneracy, so the answer is a fresh
-    // O(period) rebuild of this window: Welford's `m2` is a sum of
-    // non-negative terms and is positive for any non-flat window.
-    if (
-      (!flatX && m2x < RELATIVE_MOMENT_FLOOR * grossX) ||
-      (!flatY && m2y < RELATIVE_MOMENT_FLOOR * grossY) ||
-      cxy * cxy > m2x * m2y * CAUCHY_SCHWARZ_SLACK
-    ) {
-      // Ill-conditioned, not flat: the moment is a residue beside the
-      // gross magnitude that has passed through it since the last rebuild
-      // (the anchor went stale across a plateau step), or the co-moment
-      // has drifted past what Cauchy–Schwarz allows. Rebuild this window
-      // fresh on its own first pair. With `gross = 0` the squares
-      // themselves underflowed (|x| ≲ 1e-154): nothing to rebuild from,
-      // and the window reads as flat.
-      rebuild();
+      if (windowEnd - windowStart < period || incomplete > 0) break;
+      // A flat column has variance exactly 0 and covariance exactly 0 by
+      // definition; the counters say so where the accumulators only nearly
+      // do.
+      const flatX = changesX === 0;
+      const flatY = changesY === 0;
+      if (
+        !rebuildNow &&
+        ((!flatX && m2x < RELATIVE_MOMENT_FLOOR * grossX) ||
+          (!flatY && m2y < RELATIVE_MOMENT_FLOOR * grossY) ||
+          cxy * cxy > m2x * m2y * CAUCHY_SCHWARZ_SLACK)
+      ) {
+        // Ill-conditioned, not flat: the moment is a residue beside the
+        // gross magnitude that has passed through it since the last rebuild
+        // (the anchor went stale across a plateau step), or the co-moment
+        // has drifted past what Cauchy–Schwarz allows. Rebuild this window
+        // fresh on its own first pair and emit from that. With `gross = 0`
+        // the squares themselves underflowed (|x| ≲ 1e-154): nothing to
+        // rebuild from, and the window reads as flat.
+        rebuildNow = true;
+        continue;
+      }
+      covariance[i] = flatX || flatY ? 0 : cxy / count;
+      varianceX[i] = flatX ? 0 : m2x / count;
+      varianceY[i] = flatY ? 0 : m2y / count;
+      break;
     }
-    covariance[i] = flatX || flatY ? 0 : cxy / count;
-    varianceX[i] = flatX ? 0 : m2x / count;
-    varianceY[i] = flatY ? 0 : m2y / count;
   }
 
   return { covariance, varianceX, varianceY };
