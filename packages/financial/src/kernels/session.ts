@@ -4,6 +4,7 @@ import type { Session } from '../calendar/session.js';
  * **Per-bar session ids** — for each key instant, the `open` of the session
  * that contains it, or `NaN` in closed time (a gap between sessions, a
  * weekend bar on a 24/7 feed, an instant outside the schedule's range).
+ * A session's intraday `breaks` do NOT split it — see `SessionAnchorOptions`.
  *
  * This is the single walk behind both session doors: `TradingCalendar
  * .tagSessions` appends exactly this array as a column, and the

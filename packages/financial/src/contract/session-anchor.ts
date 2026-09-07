@@ -25,9 +25,11 @@ export type SessionSource = TradingCalendar | readonly Session[];
  *
  * ## `sessions` — the primary door
  *
- * A calendar (or a session list). The study asks it for the sessions
- * overlapping the series' own key range and walks bars against them once,
- * `O(N + sessions)`. This is the door the trading-calendar RFC's §6.1 picture
+ * A calendar (or a session list). A calendar is asked for the sessions
+ * overlapping the series' own key range (`sessionsInRange`); a raw list is
+ * validated and sorted on every call — cheap, but not narrowed. Either way
+ * the bars are walked against the sessions once, `O(N + sessions)` with the
+ * session cursor only moving forward. This is the door the trading-calendar RFC's §6.1 picture
  * points at: one calendar object shared by the data ops, the bar building and
  * the axis, so a study and a chart cannot disagree about where a session
  * starts.
@@ -49,20 +51,40 @@ export type SessionSource = TradingCalendar | readonly Session[];
  * against a session edge, and a session-id column has already had that
  * decision applied to it (pass `stamped` to `tagSessions` instead). Passing it
  * beside `session` throws rather than being silently ignored.
+ *
+ * The type is a discriminated union, so `{ sessions, session }`, `{ session,
+ * stamped }` and `{}` are **compile errors** (a Layer-2 review of #715 found
+ * all three only threw at runtime); the runtime checks stay for a caller who
+ * arrives through `as never`.
+ *
+ * ## Breaks do not split a session
+ *
+ * A session with intraday `breaks` (a lunch halt) is **one** session here: a
+ * session VWAP spans both halves and a pivot ladder reads the whole day's
+ * high / low / close, which is what every venue that publishes them means. A
+ * bar printed *inside* a break — a data quirk, not a trade — is therefore
+ * tagged in-session rather than as closed time. Closed time is the gap
+ * between sessions, an overnight print, a weekend bar on a 24/7 feed, or an
+ * instant outside the schedule's range.
  */
-export interface SessionAnchorOptions<S extends SeriesSchema> {
-  /** The trading calendar, or an explicit session list. **The primary door.**
-   *  Mutually exclusive with `session`. */
-  sessions?: SessionSource;
-  /** The name of a session-id column already on the series (what
-   *  `TradingCalendar.tagSessions` appends). Mutually exclusive with
-   *  `sessions`. */
-  session?: NumericColumnNameForSchema<S>;
-  /** Bar-stamp convention for the `sessions` door — `'open'` (default) treats
-   *  a session as `[open, close)`, `'close'` as `(open, close]`. Rejected
-   *  beside `session`. */
-  stamped?: 'open' | 'close';
-}
+export type SessionAnchorOptions<S extends SeriesSchema> =
+  | {
+      /** The trading calendar, or an explicit session list. **The primary
+       *  door.** Mutually exclusive with `session`. */
+      sessions: SessionSource;
+      session?: never;
+      /** Bar-stamp convention for the `sessions` door — `'open'` (default)
+       *  treats a session as `[open, close)`, `'close'` as `(open, close]`. */
+      stamped?: 'open' | 'close';
+    }
+  | {
+      sessions?: never;
+      /** The name of a session-id column already on the series (what
+       *  `TradingCalendar.tagSessions` appends). Mutually exclusive with
+       *  `sessions`; `stamped` does not apply (pass it to `tagSessions`). */
+      session: NumericColumnNameForSchema<S>;
+      stamped?: never;
+    };
 
 /**
  * Resolve a study's session anchor to one **session id per row** (`NaN` in

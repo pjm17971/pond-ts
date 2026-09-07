@@ -17,11 +17,11 @@ import {
   type PivotMethod,
 } from '../kernels/pivot.js';
 
-export interface PivotPointsOptions<
+export type PivotPointsOptions<
   S extends SeriesSchema,
   Prefix extends string,
   Method extends PivotMethod,
-> extends SessionAnchorOptions<S> {
+> = SessionAnchorOptions<S> & {
   /** Which formula set. **Default `'standard'`.** `'camarilla'` appends a
    *  fourth pair (`${prefix}R4` / `${prefix}S4`); the other three do not. */
   method?: Method;
@@ -33,7 +33,7 @@ export interface PivotPointsOptions<
   close?: NumericColumnNameForSchema<S>;
   /** Column-family prefix. **Default `'pp'`.** */
   prefix?: Prefix;
-}
+};
 
 /** The seven columns `'standard'` / `'fibonacci'` / `'woodie'` append. */
 export type PivotPointsSchema<
@@ -75,11 +75,15 @@ export type PivotPointsResult<
   S extends SeriesSchema,
   Prefix extends string,
   Method extends PivotMethod,
-> = TimeSeries<
-  Method extends 'camarilla'
-    ? CamarillaPivotPointsSchema<S, Prefix>
-    : PivotPointsSchema<S, Prefix>
->;
+> = Method extends 'camarilla'
+  ? TimeSeries<CamarillaPivotPointsSchema<S, Prefix>>
+  : TimeSeries<PivotPointsSchema<S, Prefix>>;
+// The conditional sits OUTSIDE `TimeSeries<…>` on purpose: with a
+// non-literal `method` it then distributes to `TimeSeries<7> | TimeSeries<9>`,
+// on which `.get('ppR4')` is a compile error (sound), where a conditional
+// inside `TimeSeries<…>` would give `TimeSeries<7 | 9>` and let `ppR4`
+// type-check on a series that has seven columns at runtime (Layer-2 review
+// of #715).
 
 /**
  * **Pivot Points** — each session's support/resistance ladder, computed from

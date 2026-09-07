@@ -12,10 +12,10 @@ import { anchoredVwapValues } from '../kernels/anchored-vwap.js';
 import { assertNoColumn, columnValues } from '../kernels/rolling.js';
 import { typicalPriceValues } from '../kernels/typical-price.js';
 
-export interface SessionVwapOptions<
+export type SessionVwapOptions<
   S extends SeriesSchema,
   Output extends string,
-> extends SessionAnchorOptions<S> {
+> = SessionAnchorOptions<S> & {
   /** High column. **Default `'high'`.** */
   high?: NumericColumnNameForSchema<S>;
   /** Low column. **Default `'low'`.** */
@@ -26,7 +26,7 @@ export interface SessionVwapOptions<
   volume?: NumericColumnNameForSchema<S>;
   /** Name of the appended column. **Default `'svwap'`.** */
   output?: Output;
-}
+};
 
 /**
  * **Session VWAP** — the volume-weighted average price accumulated from each
@@ -49,7 +49,8 @@ export interface SessionVwapOptions<
  * simply that bar's typical price) and `undefined` on any bar that falls in
  * **closed time** — a gap between sessions, an overnight print, a weekend bar
  * on a 24/7 feed. A bar with no session has no session VWAP; that is a fact
- * about the bar, not a hole to fill.
+ * about the bar, not a hole to fill. A session's intraday `breaks` do not
+ * split it: a lunch-halt session is one VWAP across both halves.
  *
  * ## Where the sessions come from
  *

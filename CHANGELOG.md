@@ -75,7 +75,8 @@ include new features and type-level changes; patch bumps are strictly additive.
   the **G4** pair the trading calendar was gating). Both take the session as a
   first-class input through one shared option shape, `SessionAnchorOptions`:
   exactly one of **`sessions`** (a `TradingCalendar` or a `Session[]` — the
-  primary door, narrowed with `sessionsInRange` and walked once, `O(N +
+  primary door — a calendar is narrowed with `sessionsInRange`, an explicit
+    list validated per call — and walked once, `O(N +
 sessions)`) or **`session`** (the name of a session-id column, what
   `TradingCalendar.tagSessions` appends — the door for a series already
   partitioned by session), plus `stamped: 'open' | 'close'` on the calendar

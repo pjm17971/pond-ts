@@ -11467,10 +11467,12 @@ describe('sessionVwap', () => {
       /exactly one of 'sessions'/,
     );
     expect(() =>
+      // Now a compile error too (the anchor is a discriminated union); the
+      // runtime guard stays for a caller who arrives through `as never`.
       sessionVwap(cal().tagSessions(sessionBars()), {
         sessions: cal(),
         session: 'session',
-      }),
+      } as never),
     ).toThrow(/got both/);
   });
 
@@ -11479,7 +11481,7 @@ describe('sessionVwap', () => {
       sessionVwap(cal().tagSessions(sessionBars()), {
         session: 'session',
         stamped: 'close',
-      }),
+      } as never),
     ).toThrow(/tagSessions/);
   });
 
