@@ -28,7 +28,10 @@ export { percentChangeValues } from './kernels/rate-of-change.js';
 export { directionalMovementValues } from './kernels/directional-movement.js';
 export { barsSinceExtremeValues } from './kernels/highest-lowest.js';
 export type { RollingRegression } from './kernels/linear-regression.js';
-export { linearRegressionValues } from './kernels/linear-regression.js';
+export {
+  linearRegressionValues,
+  linearRegressionAt,
+} from './kernels/linear-regression.js';
 export type {
   MovingAverageOptions,
   MovingAverageTypeOptions,

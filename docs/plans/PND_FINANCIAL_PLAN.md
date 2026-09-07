@@ -1131,7 +1131,8 @@ by construction. Writing a `centerOfGravityValues` kernel instead would have
 duplicated `wma`'s recurrence and its rebuild for a second place to get the same
 numerics wrong. The identity is exact algebra, not an approximation, and it is
 **pinned by a test against the naive `O(N·period)` definition** at four periods
-(agreement ≤ 1.1e-14; ≤ 8.0e-15 over 50k bars at a price of 1e12) so a future
+(agreement ≤ 1.1e-14; measured, not pinned, 8.0e-15 to 2.5e-14 over 50k bars
+at a price of 1e12 depending on the series) so a future
 editor can check the shortcut rather than trust it.
 
 (8) **CG's zero line is TradingView's, not Ehlers'.** Ehlers' own EasyLanguage

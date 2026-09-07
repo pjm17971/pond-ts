@@ -36,7 +36,8 @@ export interface CenterOfGravityOptions<
  * ```
  *
  * The current bar carries weight `1` and the oldest carries `period`, so
- * the reading is a **negative** number between `−period` and `−1`: a flat
+ * on positive prices the reading is a **negative** number between
+ * `−period` and `−1`: a flat
  * window balances in the middle at exactly `−(period + 1)/2`, and it moves
  * *up* (toward `−1`) as recent bars get heavier, i.e. as the price rises.
  * Ehlers' point was that this is a moment rather than a momentum — it has
@@ -89,13 +90,20 @@ export interface CenterOfGravityOptions<
  * `period` numerics and its strict-window mask. The identity is exact
  * algebra rather than an approximation, and it is **pinned by a test**
  * against the naive `O(N·period)` definition (agreement ≤ 1.1e-14 at
- * `period 20` on the oracle input, ≤ 8.0e-15 over 50k bars at a price of
- * 1e12), so a future editor can check the shortcut rather than trust it.
+ * `period 20` on the oracle input; measured, not pinned: 8.0e-15 over 50k
+ * bars at a price of 1e12 on one series and 2.5e-14 on another — a few
+ * ulps either way), so a future editor can check the shortcut rather than
+ * trust it.
  *
  * ## Edges
  *
- * - **Bounded `−period … −1`**, and both ends are reachable only in the
- *   limit (all the weight on the oldest bar, or on the newest).
+ * - **Bounded `−period … −1` on a positive source column**, and both ends
+ *   are reachable only in the limit (all the weight on the oldest bar, or on
+ *   the newest). The bound is a property of positive weights over positive
+ *   prices, not of the formula: a column that crosses zero (an oscillator,
+ *   a spread) can read outside it — measured `−0.667` at `period 2` on
+ *   `[5, 1, −1, 4]`, the zero-crossing case the bounds test does not cover
+ *   because it runs on closes only.
  * - **A zero-sum window reads `undefined`, and the guard is live.** The
  *   division is the study's **output**, and the numerator is *not* forced
  *   to zero with the denominator — `[1, −1]` at `period 2` sums to `0`

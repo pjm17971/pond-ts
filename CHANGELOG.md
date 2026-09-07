@@ -113,7 +113,8 @@ include new features and type-level changes; patch bumps are strictly additive.
   - **`centerOfGravity({ period = 10, column, output = 'cog' })`** — Ehlers'
     position-weighted balance point (_Stocks & Commodities_, May 2002),
     `−Σ(k+1)·price[i−k] / Σprice[i−k]` with the **newest** bar carrying weight
-    1. Negative, bounded `[−period, −1]`, and a flat window balances at
+    1. Negative and bounded `[−period, −1]` on positive prices (a
+       zero-crossing source column can read outside it), and a flat window balances at
        `−(period+1)/2`. This is **TradingView's uncentred `ta.cog`**; Ehlers' own
        EasyLanguage adds `(period+1)/2` to re-centre on zero, a constant offset
        the oracle pins. It needs no new kernel: the descending weights are the

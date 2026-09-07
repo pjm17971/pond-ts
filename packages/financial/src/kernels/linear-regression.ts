@@ -99,6 +99,12 @@ export interface RollingRegression {
  * | `1e12` | intercept | 264 | **4.9e-4** (≈1 ulp of 1e12) |
  * | `1e12` | r² | `Infinity` | **1.0e-7** |
  *
+ * The right-hand column is the gap to a two-pass **reference**, which is
+ * itself ~1 ulp from the true value at this scale, so the intercept and r²
+ * rows read as an order of magnitude (a second reference measured 6.1e-4 and
+ * 1.3e-7), not as exact figures; the slope row and the raw-frame column are
+ * the load-bearing ones.
+ *
  * The raw frame does not merely lose precision at 1e12 — its `r²` leaves
  * `[0, 1]` and reaches `Infinity`, because the two cancelling moment
  * differences round to different signs. Above ~1e13 the *input* stops
