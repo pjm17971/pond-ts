@@ -1283,9 +1283,7 @@ pandas-oracle-verified) have shipped. Plan:
   multi-horizon window, shipped `O(N·period)` on a kernel of its own), `ravi`,
   `trendIntensityIndex` and `specialK` — whose 724-bar warm-up is why the
   oracle fixture now carries a second, 900-bar close-only input.
-  **Seventy-three studies shipped**, before this batch's ten and whatever else
-  the batch-six fan-out lands — the integrator sets the count once the wave is
-  merged. What remains of the corpus is the
+  **Eighty-three studies shipped.** What remains of the corpus is the
   repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
   live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /
