@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   accumulationDistributionValues,
   clvValues,
+  moneyFlowVolumeValues,
 } from '../src/kernels/close-location.js';
 
 const arr = (...xs: number[]) => Float64Array.from(xs);
@@ -105,5 +106,53 @@ describe('accumulationDistributionValues', () => {
     );
     expect(out).toHaveLength(2);
     expect(read(out)).toEqual([undefined, undefined]);
+  });
+});
+
+describe('moneyFlowVolumeValues', () => {
+  it('is the close location weighted by volume', () => {
+    // +1 on the high, −1 on the low, 0 at the midpoint, each × its volume.
+    expect(
+      read(
+        moneyFlowVolumeValues(
+          arr(12, 12, 12),
+          arr(10, 10, 10),
+          arr(12, 10, 11),
+          arr(100, 200, 300),
+        ),
+      ),
+    ).toEqual([100, -200, 0]);
+  });
+
+  it('is the A/D line’s own term — the level is its running total', () => {
+    // The claim that makes the shared kernel worth having: two derivations
+    // of the same term could otherwise drift.
+    const high = arr(12, 13, 14, 12.6);
+    const low = arr(10, 11, 12, 10.6);
+    const close = arr(11, 12.5, 12.2, 12.4);
+    const volume = arr(100, 200, 300, 400);
+    const term = moneyFlowVolumeValues(high, low, close, volume);
+    const line = accumulationDistributionValues(high, low, close, volume);
+    let running = 0;
+    for (let i = 0; i < term.length; i += 1) {
+      running += term[i]!;
+      expect(line[i], `bar ${i}`).toBeCloseTo(running, 12);
+    }
+  });
+
+  it('a flat bar contributes 0, and any missing input makes the term missing', () => {
+    expect(
+      read(moneyFlowVolumeValues(arr(12), arr(12), arr(12), arr(500))),
+    ).toEqual([0]);
+    expect(
+      read(
+        moneyFlowVolumeValues(
+          arr(12, 12),
+          arr(10, 10),
+          arr(11, 11),
+          arr(NaN, 100),
+        ),
+      ),
+    ).toEqual([undefined, 0]);
   });
 });

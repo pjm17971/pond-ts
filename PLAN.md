@@ -1291,7 +1291,13 @@ pandas-oracle-verified) have shipped. Plan:
   `primeNumberBands` / `primeNumberOscillator` (trial division; ~6.5 s per
   1M bars at 1e7 prices, documented) and Bill Williams'
   `marketFacilitationIndex` (output `bwmfi` — `mfi` is money flow).
-  **Ninety-five studies shipped.** What remains of the corpus is the
+  Batch seven added the **volume and miscellaneous leftovers** (§6.6/§6.1):
+  `twiggsMoneyFlow`, `tradeVolumeIndex` (`minTick` required — the third
+  required option), `shinoharaIntensityRatio`, `elderImpulse` (a numeric
+  +1/0/−1 verdict), `movingAverageCross` (the cross EVENT as a signal
+  column) and `anchoredVwap` (the user-anchored form; the session-reset
+  form still waits on [PND-TCAL]).
+  **One hundred and one studies shipped.** What remains of the corpus is the
   repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
   live-layer question as much as a study one) and the session-anchored
   studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /

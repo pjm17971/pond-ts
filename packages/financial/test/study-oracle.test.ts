@@ -112,6 +112,12 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
 } from '../src/index.js';
 import type { PriceOscillatorMode } from '../src/index.js';
 
@@ -152,6 +158,8 @@ interface OracleCase {
     maPeriod?: number;
     cyclePeriod?: number;
     limit?: number;
+    minTick?: number;
+    anchor?: number;
   };
   /** Which input the case was generated over. Absent means the 80-bar
    *  OHLCV fixture; `'long'` means the 900-bar close-only one, which the
@@ -616,6 +624,29 @@ function run(c: OracleCase): unknown {
       );
     case 'specialK':
       return specialK(source(), p as Record<string, never>);
+    case 'twiggsMoneyFlow':
+      return twiggsMoneyFlow(ohlcSeries(), p as { period?: number });
+    case 'tradeVolumeIndex':
+      return tradeVolumeIndex(ohlcSeries(), p as { minTick: number });
+    case 'shinoharaIntensityRatio':
+      return shinoharaIntensityRatio(ohlcSeries(), p as { period?: number });
+    case 'anchoredVwap':
+      return anchoredVwap(ohlcSeries(), p as { anchor: number });
+    case 'movingAverageCross':
+      return movingAverageCross(
+        source(),
+        p as { fastPeriod?: number; slowPeriod?: number; maType?: MaType },
+      );
+    case 'elderImpulse':
+      return elderImpulse(
+        series(),
+        p as {
+          emaPeriod?: number;
+          fastPeriod?: number;
+          slowPeriod?: number;
+          signalPeriod?: number;
+        },
+      );
     default:
       // A fixture case whose study has no dispatch here must fail loudly, not
       // silently skip — the guard for future fan-out studies.

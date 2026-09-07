@@ -4995,6 +4995,431 @@ def special_k() -> dict:
     return {"specialK": col(line)}
 
 
+# --------------------------------------------------------------------------
+# The volume and miscellaneous leftovers (assessment 6.6 / 6.4 / 6.1).
+#
+# None of these has a TA-Lib function, so every one is a pandas replication
+# with (a) the ANALYTIC first valid bar asserted and (b) a measured separation
+# from the plausible wrong turn -- the discipline the phase-2 brief asks for
+# where no vendor reference exists. Two of them (`tradeVolumeIndex`,
+# `movingAverageCross`) are state machines, where the "independent
+# implementation" claim is weaker: the loop below is a TRANSCRIPTION of the
+# same recurrence the TypeScript runs, so it proves the transcription and the
+# plumbing, and the SEPARATION probes are what carry the weight.
+# --------------------------------------------------------------------------
+
+
+def _true_bounds() -> tuple:
+    """Twiggs' true high / true low: max(high, prevClose) / min(low, prevClose).
+
+    Bar 0 has no previous close, so both are NaN there -- `pd.concat().max()`
+    would skip the NaN and return the high, which is NOT the definition, so
+    the mask is applied explicitly.
+    """
+    prev_c = s.shift(1)
+    trh = pd.concat([h, prev_c], axis=1).max(axis=1)
+    trl = pd.concat([low_s, prev_c], axis=1).min(axis=1)
+    return trh.where(prev_c.notna()), trl.where(prev_c.notna())
+
+
+def twiggs_money_flow(n: int = 21) -> dict:
+    """Twiggs Money Flow: Wilder(flow, n) / Wilder(volume, n), where the flow
+    is the close's location in the bar's TRUE range times volume.
+
+    No TA-Lib function. Two separations are asserted: from the WINDOW-SUM form
+    (the F-AMBIG fork -- Chaikin's averaging on Twiggs' range) and from
+    `chaikinMoneyFlow` itself at the same period (Twiggs' range correction).
+    The denominator is blanked wherever the numerator is, which is what the
+    TypeScript does and what keeps the two smoothings on the same bars.
+    """
+    trh, trl = _true_bounds()
+    flow = vol * ((s - trl) - (trh - s)) / (trh - trl)
+    weight = vol.where(flow.notna())
+    v = _wilder(flow, n) / _wilder(weight, n)
+    label = f"twiggsMoneyFlow({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(bar 0 has no true range, so the Wilder seed lands one bar late)"
+    )
+    assert float(np.nanmax(np.abs(v))) <= 1.0, f"{label} left [-1, +1]"
+    assert v.min() < 0 < v.max(), (
+        f"{label} does not change sign on this fixture - the accumulation / "
+        "distribution reading would be one-sided"
+    )
+
+    window = flow.rolling(n).sum() / weight.rolling(n).sum()
+    m = v.notna() & window.notna()
+    sep_window = float(np.max(np.abs(v[m] - window[m])))
+    cmf = (_clv() * vol).rolling(n).sum() / vol.rolling(n).sum()
+    m = v.notna() & cmf.notna()
+    sep_cmf = float(np.max(np.abs(v[m] - cmf[m])))
+    assert sep_window > 0.01 and sep_cmf > 0.01, (
+        f"{label} sits {sep_window} from the window-sum form and {sep_cmf} "
+        "from Chaikin Money Flow - the fixture cannot tell them apart"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib TMF); first valid at {n}, "
+        f"range {v.min():.4f}..{v.max():.4f}, {sep_window:.4f} from the "
+        f"window-sum form and {sep_cmf:.4f} from chaikinMoneyFlow({n})"
+    )
+    return {"tmf": col(v)}
+
+
+def _tvi_values(min_tick: float, seed_direction: int = 0, persist: bool = True):
+    """The Trade Volume Index recurrence -- a TRANSCRIPTION of the machine the
+    TypeScript runs, so the separations below are what carry the weight.
+
+    `seed_direction` is the vendor fork that assumes an initial UP tick;
+    `persist=False` is the fork that treats an undecided bar as no trade at
+    all (which is `obv` with a dead band, not this study).
+    """
+    c = np.asarray(closes, dtype=float)
+    v = np.asarray(volumes, dtype=float)
+    out = np.full(len(c), np.nan)
+    level = 0.0
+    direction = seed_direction
+    undecided = 0
+    for i in range(len(c)):
+        if i > 0:
+            move = c[i] - c[i - 1]
+            if move > min_tick:
+                direction = 1
+            elif move < -min_tick:
+                direction = -1
+            else:
+                undecided += 1
+                if not persist:
+                    direction = 0
+            level += direction * v[i]
+        out[i] = level
+    return pd.Series(out), undecided
+
+
+def trade_volume_index(min_tick: float, min_undecided: int = 5) -> dict:
+    v, undecided = _tvi_values(min_tick)
+    label = f"tradeVolumeIndex({min_tick})"
+
+    assert v.first_valid_index() == 0, f"{label} must be defined from bar 0"
+    assert v.iloc[0] == 0.0, f"{label} must open at 0"
+    assert undecided >= min_undecided, (
+        f"{label} has only {undecided} bars inside the dead band - the "
+        "PERSISTENCE rule, which is the whole study, would be untested"
+    )
+
+    no_persist, _ = _tvi_values(min_tick, persist=False)
+    sep_persist = float(np.max(np.abs(v - no_persist)))
+    assert sep_persist > 1, (
+        f"{label} sits {sep_persist} from the non-persisting fork - the "
+        "fixture cannot tell them apart"
+    )
+    # The OTHER fork - seeding the direction UP instead of leaving it
+    # undecided - is invisible on this fixture, and that is asserted rather
+    # than assumed: bar 1's move (1.412) is the LARGEST in the series, so it
+    # is decisive at every min_tick worth testing and the seed never gets a
+    # bar to act on. It is pinned TypeScript-side instead, on a fixture whose
+    # first bars sit inside the dead band (the negativeVolumeIndex precedent
+    # for a rule the oracle input cannot exercise).
+    seeded, _ = _tvi_values(min_tick, seed_direction=1)
+    assert float(np.max(np.abs(v - seeded))) == 0.0, (
+        f"{label}: bar 1 is no longer decisive, so the up-seeded fork IS "
+        "visible here now - assert the separation instead of this"
+    )
+    print(
+        f"  {label}: pandas TRANSCRIPTION of the same state machine (no "
+        f"TA-Lib TVI); opens at 0, {undecided} dead-band bars, range "
+        f"{v.min():.0f}..{v.max():.0f}, {sep_persist:.0f} from the "
+        "non-persisting fork (the up-seeded fork is invisible here - see "
+        "the note)"
+    )
+    return {"tvi": col(v)}
+
+
+def shinohara_intensity_ratio(n: int = 26) -> dict:
+    """Shinohara's A and B ratios: 100 * sum(up) / sum(down) over n bars, the
+    A pair measured against the OPEN and the B pair against the PREVIOUS
+    close.
+
+    No TA-Lib function. Two separations are asserted: between the two
+    columns themselves (a build that swapped the `strong` / `weak` labels -
+    the F-AMBIG fork - would be wrong by most of the scale) and from the
+    B-against-the-SAME-bar's-close misreading, which is the wrong turn that
+    leaves the shape intact.
+    """
+    prev_c = s.shift(1)
+    strong = 100 * (h - o_s).rolling(n).sum() / (o_s - low_s).rolling(n).sum()
+    weak = 100 * (h - prev_c).rolling(n).sum() / (prev_c - low_s).rolling(n).sum()
+    label = f"shinoharaIntensityRatio({n})"
+
+    assert strong.first_valid_index() == n - 1, (
+        f"{label} strong first valid at {strong.first_valid_index()}, "
+        f"expected {n - 1}"
+    )
+    assert weak.first_valid_index() == n, (
+        f"{label} weak first valid at {weak.first_valid_index()}, expected "
+        f"{n} (bar 0 has no previous close, so the window starts one later)"
+    )
+    assert strong.min() < 100 < strong.max(), (
+        f"{label} strong never crosses its neutral 100 on this fixture"
+    )
+
+    m = strong.notna() & weak.notna()
+    sep_swap = float(np.max(np.abs(strong[m] - weak[m])))
+    same_close = 100 * (h - s).rolling(n).sum() / (s - low_s).rolling(n).sum()
+    m = weak.notna() & same_close.notna()
+    sep_same = float(np.max(np.abs(weak[m] - same_close[m])))
+    assert sep_swap > 10 and sep_same > 10, (
+        f"{label}: the two columns sit {sep_swap} apart and the "
+        f"same-bar-close misreading {sep_same} away - the fixture cannot "
+        "tell the conventions apart"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib Shinohara); strong first "
+        f"valid at {n - 1} spanning {strong.min():.2f}..{strong.max():.2f}, "
+        f"weak at {n} spanning {weak.min():.2f}..{weak.max():.2f}; the two "
+        f"columns sit {sep_swap:.2f} apart and the same-bar-close "
+        f"misreading {sep_same:.2f} away"
+    )
+    return {"sirStrong": col(strong), "sirWeak": col(weak)}
+
+
+def elder_impulse(
+    ema_n: int = 13, fast: int = 12, slow: int = 26, signal: int = 9
+) -> dict:
+    """Elder's Impulse System: +1 when EMA(ema_n) AND the MACD histogram both
+    rose, -1 when both fell, 0 otherwise.
+
+    No TA-Lib function. Every EMA is POND's first-sample seed (the macd
+    precedent), so the histogram here is the same one `macd` produces. Two
+    separations are asserted, and because the output is a three-valued column
+    a max-abs distance says nothing useful - what is measured is the COUNT of
+    bars on which each single-input build disagrees.
+    """
+    trend = _ema_first_seed(closes, ema_n)
+    line = _ema_first_seed(closes, fast) - _ema_first_seed(closes, slow)
+    sig = _ema_first_seed(line, signal)
+    hist = line - sig
+
+    def verdict(a: pd.Series, b: pd.Series) -> pd.Series:
+        up = (a.diff() > 0) & (b.diff() > 0)
+        down = (a.diff() < 0) & (b.diff() < 0)
+        v = pd.Series(np.where(up, 1.0, np.where(down, -1.0, 0.0)))
+        mask = a.notna() & a.shift(1).notna() & b.notna() & b.shift(1).notna()
+        return v.where(mask)
+
+    v = verdict(trend, hist)
+    label = f"elderImpulse({ema_n}, {fast}, {slow}, {signal})"
+
+    # Both inputs need TWO values: the EMA has them from bar `ema_n` (it
+    # first prints at ema_n - 1) and the histogram from slow + signal - 1
+    # (it first prints at slow + signal - 2).
+    expected = max(ema_n, slow + signal - 1)
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected "
+        f"{expected} (both inputs need TWO values)"
+    )
+    assert set(v.dropna().unique()) <= {-1.0, 0.0, 1.0}, (
+        f"{label} emitted a value outside {{-1, 0, +1}}"
+    )
+    for want in (-1.0, 0.0, 1.0):
+        assert (v == want).sum() > 0, (
+            f"{label} never reads {want} on this fixture - the case would "
+            "not exercise the whole rule"
+        )
+
+    # The two single-input builds: the EMA slope alone, and the histogram
+    # slope alone. Each is a plausible misreading of "trend and momentum
+    # agree", and each collapses the 0 band.
+    ema_only = pd.Series(
+        np.where(trend.diff() > 0, 1.0, np.where(trend.diff() < 0, -1.0, 0.0))
+    ).where(v.notna())
+    hist_only = pd.Series(
+        np.where(hist.diff() > 0, 1.0, np.where(hist.diff() < 0, -1.0, 0.0))
+    ).where(v.notna())
+    m = v.notna()
+    diff_ema = int((v[m] != ema_only[m]).sum())
+    diff_hist = int((v[m] != hist_only[m]).sum())
+    assert diff_ema >= 5 and diff_hist >= 5, (
+        f"{label} differs from the EMA-only build on {diff_ema} bars and "
+        f"from the histogram-only build on {diff_hist} - too few to tell "
+        "them apart"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib Elder Impulse); first "
+        f"valid at {expected}, {int((v == 1).sum())} up / "
+        f"{int((v == 0).sum())} neutral / {int((v == -1).sum())} down bars; "
+        f"differs from the EMA-only build on {diff_ema} of {int(m.sum())} "
+        f"bars and from the histogram-only build on {diff_hist}"
+    )
+    return {"impulse": col(v)}
+
+
+def _cross_values(fast_ma, slow_ma, adjacent: bool = False, delay: int = 0):
+    """The cross machine as a TRANSCRIPTION of the TypeScript step.
+
+    `adjacent=True` is the naive rule (compare against the PREVIOUS sign
+    rather than the last NON-ZERO one), which double-reports a crossing that
+    passes through an exact tie and invents one on a touch-and-retreat.
+    `delay=1` reports the event one bar late - the off-by-one that leaves the
+    shape intact.
+    """
+    f = np.asarray(fast_ma, dtype=float)
+    sl = np.asarray(slow_ma, dtype=float)
+    out = np.full(len(f), np.nan)
+    last = 0
+    prev_sign = None
+    run = 0
+    for i in range(len(f)):
+        if not (np.isfinite(f[i]) and np.isfinite(sl[i])):
+            run = 0
+            last = 0
+            prev_sign = None
+            continue
+        run += 1
+        d = f[i] - sl[i]
+        sign = 1 if d > 0 else (-1 if d < 0 else 0)
+        if run == 1:
+            last = sign
+            prev_sign = sign
+            continue
+        if adjacent:
+            out[i] = sign if (sign != prev_sign) else 0
+        elif sign == 0:
+            out[i] = 0.0
+        elif last == 0:
+            last = sign
+            out[i] = 0.0
+        elif sign != last:
+            last = sign
+            out[i] = float(sign)
+        else:
+            out[i] = 0.0
+        prev_sign = sign
+    v = pd.Series(out)
+    return v.shift(delay) if delay else v
+
+
+def moving_average_cross(
+    fast: int = 10, slow: int = 30, kind: str = "sma", long: bool = False
+) -> dict:
+    """Moving Average Cross: +1 on the bar the fast average crosses above the
+    slow one, -1 below, 0 otherwise.
+
+    No TA-Lib function. A TRANSCRIPTION of the same machine, so the weight is
+    on the separations: from the REGIME column (`sign(fast - slow)`, which is
+    a different reading entirely) and from the one-bar-late report. The tie
+    rule cannot be separated on this fixture - two floating-point averages
+    are never exactly equal on it - and that is asserted rather than assumed;
+    it is pinned by the TypeScript unit tests on constructed input.
+    """
+    source = long_closes if long else closes
+    f = _ma_over(source, kind, fast)
+    sl = _ma_over(source, kind, slow)
+    v = _cross_values(f, sl)
+    label = f"movingAverageCross({fast}, {slow}, {kind}, long={long})"
+
+    first = slow  # the slow average prints at slow - 1; the seed bar reports nothing
+    assert v.first_valid_index() == first, (
+        f"{label} first valid at {v.first_valid_index()}, expected {first} "
+        "(the bar after both averages exist - the seed reports nothing)"
+    )
+    ups = int((v == 1).sum())
+    downs = int((v == -1).sum())
+    assert ups >= 1 and downs >= 1, (
+        f"{label} has {ups} up-crosses and {downs} down-crosses on this "
+        "fixture - it does not exercise both directions"
+    )
+    assert set(v.dropna().unique()) <= {-1.0, 0.0, 1.0}, (
+        f"{label} emitted a value outside {{-1, 0, +1}}"
+    )
+
+    regime = pd.Series(np.sign(np.asarray(f, dtype=float) - np.asarray(sl, dtype=float))).where(v.notna())
+    m = v.notna()
+    diff_regime = int((v[m] != regime[m]).sum())
+    late = _cross_values(f, sl, delay=1)
+    diff_late = int((v[m] != late[m].fillna(0)).sum())
+    assert diff_regime >= 20 and diff_late >= 2, (
+        f"{label} differs from the regime column on {diff_regime} bars and "
+        f"from the one-bar-late report on {diff_late} - too few"
+    )
+
+    # The tie rule: assert the naive adjacent-sign build AGREES here, so the
+    # day the fixture grows an exact tie this stops being silently untested.
+    adjacent = _cross_values(f, sl, adjacent=True)
+    assert int((v[m] != adjacent[m]).sum()) == 0, (
+        f"{label}: the fixture now contains an exact tie, so the naive "
+        "adjacent-sign rule IS separable here - assert the separation"
+    )
+    print(
+        f"  {label}: pandas TRANSCRIPTION of the same machine (no TA-Lib MA "
+        f"cross); first valid at {first}, {ups} up / {downs} down crosses; "
+        f"differs from the regime column on {diff_regime} of {int(m.sum())} "
+        f"bars and from the one-bar-late report on {diff_late} (the tie rule "
+        "is pinned TypeScript-side - no exact tie here)"
+    )
+    return {"maCross": col(v)}
+
+
+def anchored_vwap(anchor: int) -> dict:
+    """Anchored VWAP: cumsum(typicalPrice * volume) / cumsum(volume) from the
+    first bar at or after `anchor`, with earlier bars null.
+
+    The oracle series uses the ROW INDEX as its epoch-millisecond key, so an
+    anchor of `n` is the bar at index `n`. No TA-Lib function; separated from
+    the ROLLING vwap over the same span and from the unweighted cumulative
+    mean of typical price.
+    """
+    tp = (h + low_s + s) / 3
+    mask = pd.Series(range(len(closes))) >= anchor
+    flow = (tp * vol).where(mask)
+    weight = vol.where(mask)
+    v = flow.cumsum() / weight.cumsum()
+    label = f"anchoredVwap({anchor})"
+
+    assert v.first_valid_index() == anchor, (
+        f"{label} first valid at {v.first_valid_index()}, expected {anchor}"
+    )
+    assert abs(float(v.iloc[anchor]) - float(tp.iloc[anchor])) < 1e-9, (
+        f"{label} must open at the anchor bar's own typical price"
+    )
+
+    # The rolling VWAP over the SAME number of bars is a different line at
+    # every bar but the first, and the unweighted cumulative mean of typical
+    # price is what a build that dropped the weighting would give.
+    span = len(closes) - anchor
+    rolling = (tp * vol).rolling(span).sum() / vol.rolling(span).sum()
+    m = v.notna() & rolling.notna()
+    sep_rolling = float(np.max(np.abs(v[m] - rolling[m])))
+    unweighted = tp.where(mask).expanding().mean()
+    m = v.notna() & unweighted.notna()
+    sep_plain = float(np.max(np.abs(v[m] - unweighted[m])))
+    assert sep_plain > 0.1, (
+        f"{label} sits {sep_plain} from the unweighted cumulative mean - the "
+        "fixture's volume is too flat to catch a dropped weighting"
+    )
+    if anchor > 0:
+        assert sep_rolling > 0.1, (
+            f"{label} sits {sep_rolling} from the rolling VWAP over the same "
+            "span - the fixture cannot tell the two forms apart"
+        )
+    else:
+        # Anchored at bar 0 the rolling window over the same span has exactly
+        # ONE value, at the last bar, and the anchored line agrees with it
+        # there by definition. Asserted rather than skipped: it is the one
+        # place the two forms provably coincide, and vwap()'s docstring says
+        # so ("period = length yields one value at the last bar").
+        assert sep_rolling == 0.0, (
+            f"{label} disagrees with the rolling VWAP at the one bar they "
+            f"share ({sep_rolling})"
+        )
+    print(
+        f"  {label}: pandas replication (no TA-Lib anchored VWAP); first "
+        f"valid at {anchor}, range {v.min():.4f}..{v.max():.4f}, "
+        f"{sep_rolling:.4f} from the rolling VWAP over the same span and "
+        f"{sep_plain:.4f} from the unweighted cumulative mean"
+    )
+    return {"avwap": col(v)}
+
 
 def _assert_talib_exact(ours: pd.Series, ref_values, label: str) -> float:
     """Mask FIRST, then values. `nanmax(|a-b|)` is blind to a one-sided NaN,
@@ -6265,6 +6690,98 @@ cases = [
         "params": {},
         "expected": market_facilitation_index(),
     },
+    {
+        "study": "twiggsMoneyFlow",
+        "params": {},
+        "expected": twiggs_money_flow(21),
+    },
+    {
+        # A short period, where the Wilder seed is a much smaller share of the
+        # history and the reading swings across its whole range.
+        "study": "twiggsMoneyFlow",
+        "params": {"period": 5},
+        "expected": twiggs_money_flow(5),
+    },
+    {
+        # A dead band wide enough that several bars are undecided, which is
+        # what exercises the direction-persists rule.
+        "study": "tradeVolumeIndex",
+        "params": {"minTick": 0.5},
+        "expected": trade_volume_index(0.5),
+    },
+    {
+        # A narrow band: almost every bar decides its own direction, so this
+        # case pins the accumulation rather than the persistence.
+        "study": "tradeVolumeIndex",
+        "params": {"minTick": 0.05},
+        "expected": trade_volume_index(0.05, min_undecided=3),
+    },
+    {
+        "study": "shinoharaIntensityRatio",
+        "params": {},
+        "expected": shinohara_intensity_ratio(26),
+    },
+    {
+        # A short window, where the two ratios swing much further and the
+        # per-column warm-up difference is easier to see.
+        "study": "shinoharaIntensityRatio",
+        "params": {"period": 5},
+        "expected": shinohara_intensity_ratio(5),
+    },
+    {
+        # Elder's own periods. Warm-up 34 of the fixture's 80 bars, so the
+        # case still has 46 verdicts to check.
+        "study": "elderImpulse",
+        "params": {},
+        "expected": elder_impulse(13, 12, 26, 9),
+    },
+    {
+        # Short periods, so the verdicts start at bar 8 and the whole fixture
+        # is covered — and so the two knobs are shown to be knobs.
+        "study": "elderImpulse",
+        "params": {
+            "emaPeriod": 5,
+            "fastPeriod": 3,
+            "slowPeriod": 7,
+            "signalPeriod": 4,
+        },
+        "expected": elder_impulse(5, 3, 7, 4),
+    },
+    {
+        "study": "movingAverageCross",
+        "params": {},
+        "expected": moving_average_cross(10, 30, "sma"),
+    },
+    {
+        # A recursive type and shorter periods: the K2 engine's array door,
+        # more crossings, and a warm-up that is not the window's.
+        "study": "movingAverageCross",
+        "params": {"fastPeriod": 5, "slowPeriod": 12, "maType": "ema"},
+        "expected": moving_average_cross(5, 12, "ema"),
+    },
+    {
+        # The 80-bar fixture only turns twice, so the default case above sees
+        # one cross of each sign. The LONG input turns repeatedly, which is
+        # what actually exercises a signal column.
+        "study": "movingAverageCross",
+        "params": {},
+        "input": "long",
+        "expected": moving_average_cross(10, 30, "sma", long=True),
+    },
+    {
+        # Mid-series: the half of the fixture before the anchor must be null
+        # and the half after must be the running average from it.
+        "study": "anchoredVwap",
+        "params": {"anchor": 40},
+        "expected": anchored_vwap(40),
+    },
+    {
+        # Anchored on bar 0, which is the cumulative-from-inception form and
+        # the case where every bar contributes.
+        "study": "anchoredVwap",
+        "params": {"anchor": 0},
+        "expected": anchored_vwap(0),
+    },
 ]
 
 out = {
@@ -6982,6 +7499,76 @@ out = {
                 "gap), a flat bar is 0 (a genuine zero over a real volume). "
                 "Linear in price, INVERSELY proportional to volume, and "
                 "shift-invariant in price. pandas replication, no TA-Lib"
+            ),
+            "twiggsMoneyFlow": (
+                "Colin Twiggs' money flow, default 21: the close's location "
+                "in the bar's TRUE range (max(high, prevClose) down to "
+                "min(low, prevClose)) times volume, Wilder-smoothed against a "
+                "matching Wilder smoothing of volume. F-AMBIG on the "
+                "smoothing - Wilder's exponential form ships (Incredible "
+                "Charts / Twiggs' own published algorithm) and the WINDOW-SUM "
+                "fork sits 0.0706 away at 21; chaikinMoneyFlow(21) sits "
+                "0.1494 away, which is wider than the reading's own range. "
+                "The denominator is blanked wherever the numerator is, so the "
+                "two smoothings consume the same bars. First valid at "
+                "`period` (bar 0 has no true range). No TA-Lib TMF"
+            ),
+            "tradeVolumeIndex": (
+                "Tick-direction accumulation: +1 above the dead band, -1 "
+                "below it, and the PREVIOUS direction on an undecided bar "
+                "(the band is closed on both sides). minTick is REQUIRED. "
+                "Opens at 0, no warm-up; no first direction is invented. "
+                "A pandas TRANSCRIPTION of the same machine, separated from "
+                "the non-persisting fork (54584 at minTick 0.5). The "
+                "UP-SEEDED fork is invisible on this fixture - bar 1 carries "
+                "the largest close-to-close move, so it is decisive at any "
+                "minTick worth testing - and the generator asserts that "
+                "agreement is still exact; it is pinned TypeScript-side"
+            ),
+            "shinoharaIntensityRatio": (
+                "The A and B ratios, 100 * sum(up) / sum(down) over 26 bars: "
+                "A against each bar's OWN open (sirStrong), B against the "
+                "PREVIOUS close (sirWeak). F-AMBIG is a NAMING fork - the "
+                "arithmetic is the standard pair and the strong/weak labels "
+                "come from the corpus' own list; the two columns sit 23312 "
+                "apart, so the labels carry information. Separated from the "
+                "same-bar-close misreading (22863). Per-column warm-up 25 / "
+                "26. Neither is bounded and B INVERTS on a gappy tape "
+                "(prevClose - low goes negative), which this fixture does: "
+                "sirWeak spans -22761..7620. No TA-Lib Shinohara"
+            ),
+            "elderImpulse": (
+                "+1 when EMA(13) AND the MACD histogram both rose, -1 when "
+                "both fell, 0 otherwise; every EMA is POND's first-sample "
+                "seed, so the histogram is the one macd() produces. A "
+                "three-valued column, so the separations are COUNTS of "
+                "disagreeing bars rather than distances: 20 of 46 against the "
+                "EMA-only build and 20 against the histogram-only one. First "
+                "valid at max(emaPeriod, slow + signal - 1) = 34. No TA-Lib "
+                "Elder Impulse"
+            ),
+            "movingAverageCross": (
+                "The cross EVENT: +1 on the bar the fast average crosses "
+                "above the slow one, -1 below, 0 otherwise, carrying the last "
+                "NON-ZERO sign so an exact tie is not a cross and a "
+                "touch-and-retreat is not either. The seed bar reports "
+                "nothing, so the head is slowPeriod. A TRANSCRIPTION of the "
+                "same machine; separated from the REGIME column (852 of 870 "
+                "bars on the long input) and from the one-bar-late report "
+                "(35). The tie rule cannot be separated here - the fixture "
+                "holds no exact tie, which the generator asserts - and is "
+                "pinned TypeScript-side. No TA-Lib MA cross"
+            ),
+            "anchoredVwap": (
+                "cumsum(typicalPrice * volume) / cumsum(volume) from the "
+                "first bar at or after the anchor, earlier bars null. The "
+                "oracle series keys each bar by its ROW INDEX in ms, so an "
+                "anchor of n is the bar at index n. Separated from the "
+                "unweighted cumulative mean (1.71 at anchor 40) and from the "
+                "ROLLING vwap over the same span (5.05) - except at anchor 0, "
+                "where the rolling window has exactly one value, at the last "
+                "bar, and the two provably coincide (asserted at 0.0). No "
+                "TA-Lib anchored VWAP"
             ),
         },
     },

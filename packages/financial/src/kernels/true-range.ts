@@ -89,3 +89,52 @@ export function atrValues(
 ): Float64Array {
   return wilderValues(trueRangeValues(high, low, close), period, 1);
 }
+
+/**
+ * **True high and true low** — the two bounds {@link trueRangeValues} takes
+ * the width of, kept apart:
+ *
+ * ```
+ * trueHigh[i] = max(high[i], close[i−1])
+ * trueLow[i]  = min(low[i],  close[i−1])
+ * ```
+ *
+ * `trueHigh − trueLow` **is** the true range (the three-term `max` is the same
+ * number written another way), so this adds no new definition — it names the
+ * *bounds* rather than the span, which is what a study needs when it places a
+ * price **inside** the true range instead of measuring it.
+ *
+ * The consumer is {@link twiggsMoneyFlow}: Colin Twiggs' correction to Chaikin
+ * Money Flow is to read the close's location in the bar's **true** range
+ * rather than its own, so a bar that gapped away from the previous close is
+ * scored against the ground it actually covered. It lives here rather than in
+ * that study because the quantity belongs to the true range, and because the
+ * studies README puts the loop in the kernel.
+ *
+ * `NaN` marks a gap ([PND-STUDYBOX]) and `Math.max` / `Math.min` return `NaN`
+ * if any argument is `NaN`, which is the answer this wants. As with
+ * {@link trueRangeValues}, **bar 0 is `NaN` in both arrays** — it has no
+ * previous close, so it has no true bounds — and a bar whose own close is
+ * missing costs the **next** bar, not itself.
+ *
+ * O(N), one pass, two allocations.
+ */
+export function trueRangeBoundsValues(
+  high: Float64Array,
+  low: Float64Array,
+  close: Float64Array,
+): { trueHigh: Float64Array; trueLow: Float64Array } {
+  const length = high.length;
+  const trueHigh = new Float64Array(length);
+  const trueLow = new Float64Array(length);
+  if (length === 0) return { trueHigh, trueLow };
+
+  trueHigh[0] = NaN;
+  trueLow[0] = NaN;
+  for (let i = 1; i < length; i += 1) {
+    const prevClose = close[i - 1]!;
+    trueHigh[i] = Math.max(high[i]!, prevClose);
+    trueLow[i] = Math.min(low[i]!, prevClose);
+  }
+  return { trueHigh, trueLow };
+}

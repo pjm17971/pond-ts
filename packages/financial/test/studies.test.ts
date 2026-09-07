@@ -99,6 +99,12 @@ import {
   schaffTrendCycle,
   prettyGoodOscillator,
   swingIndex,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
   accumulativeSwingIndex,
   randomWalkIndex,
   ravi,
@@ -6882,10 +6888,11 @@ describe('the two-series oracle cases are in the fixture', () => {
     // 1 pmo, 2 stochRsi, 2 tsi, 2 maDev), + 18 momentum/trend leftovers,
     // + 7 price transforms & BoP (1 each for the four transforms,
     // 3 balanceOfPower), + 8 bands (2 starc, 2 highLow, 2 bandwidth, 2 %B),
-    // + 3 per-bar (prime bands, prime oscillator, Bill Williams' MFI). A
-    // case that silently disappears takes its study's only value check with
-    // it, and nothing else would notice.
-    expect(fixture.cases).toHaveLength(195);
+    // + 3 per-bar (prime bands, prime oscillator, Bill Williams' MFI), + 13
+    // volume/misc leftovers (2 tmf, 2 tvi, 2 sir, 2 elder, 3 cross, 2 avwap).
+    // A case that silently disappears takes its study's only value check
+    // with it, and nothing else would notice.
+    expect(fixture.cases).toHaveLength(208);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -10409,5 +10416,899 @@ describe('marketFacilitationIndex', () => {
     );
     const twice = marketFacilitationIndex(src);
     expect(() => marketFacilitationIndex(twice as never)).toThrow(/collides/);
+  });
+});
+
+/* ========================================================================== */
+/* The volume and miscellaneous leftovers (corpus §6.6 / §6.4 / §6.1).        */
+/*                                                                            */
+/* The oracle pins the values on a clean 80-bar fixture. What is pinned here  */
+/* is what it cannot see: the hand-computed arithmetic on a tiny fixture, the */
+/* required options and their validation, the zero-denominator guards, where  */
+/* a missing cell lands, and the tie / persistence rules of the two state     */
+/* machines (which a smooth fixture never exercises).                          */
+/* ========================================================================== */
+
+/** OHLCV bars with every column optional, so a case can punch a hole in any
+ *  one of them. Row = `[open, high, low, close, volume]`. */
+const holeyBars = (
+  rows: Array<
+    [
+      number | undefined,
+      number | undefined,
+      number | undefined,
+      number | undefined,
+      number | undefined,
+    ]
+  >,
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: rows.map(([o, h, l, c, v], i) => [i, o, h, l, c, v]) as never,
+  });
+
+describe('twiggsMoneyFlow', () => {
+  // Four bars, `period: 2`, worked by hand. Bar 0 has no previous close, so
+  // it has no true range and no flow.
+  //  bar 1: prevC 11    → trh 13,   trl 11   → clv  0.5 → flow  100 (v 200)
+  //  bar 2: prevC 12.5  → trh 14,   trl 12   → clv −0.8 → flow −240 (v 300)
+  //  bar 3: prevC 12.2  → trh 12.6, trl 10.6 → clv  0.8 → flow  320 (v 400)
+  // Wilder(2) seeds on bars 1–2: (100 − 240)/2 = −70 over (200 + 300)/2 = 250.
+  const tmfRows: Array<[number, number, number, number]> = [
+    [12, 10, 11, 100],
+    [13, 11, 12.5, 200],
+    [14, 12, 12.2, 300],
+    [12.6, 10.6, 12.4, 400],
+  ];
+
+  it('is Wilder(flow) / Wilder(volume) on the TRUE range, hand-computed', () => {
+    const v = col(twiggsMoneyFlow(ohlcv(tmfRows), { period: 2 }), 'tmf');
+    expect(v).toHaveLength(4);
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined(); // the Wilder seed lands at bar `period`
+    expect(v[2]).toBeCloseTo(-70 / 250, 12);
+    // (−70·1 + 320)/2 = 125 over (250 + 400)/2 = 325.
+    expect(v[3]).toBeCloseTo(125 / 325, 12);
+  });
+
+  it('reads the TRUE range, not the bar’s own — the gap bar is the proof', () => {
+    // Bar 1 gaps DOWN from a close of 11 to a bar of 8…10 and closes on its
+    // own high. On the bar's own range that is clv = +1 (maximum
+    // accumulation); on the true range (10 down to 8, since prevClose 11 is
+    // above the high) it is (2·10 − 11 − 8)/3 = +1/3.
+    const gapped: Array<[number, number, number, number]> = [
+      [12, 10, 11, 100],
+      [10, 8, 10, 100],
+    ];
+    const v = col(twiggsMoneyFlow(ohlcv(gapped), { period: 1 }), 'tmf');
+    expect(v[1]).toBeCloseTo(1 / 3, 12);
+    // Chaikin's own-range reading of the same bar, for contrast.
+    expect(col(chaikinMoneyFlow(ohlcv(gapped), { period: 1 }), 'cmf')[1]).toBe(
+      1,
+    );
+  });
+
+  it('a flat TRUE range contributes zero flow and its volume — the study reads 0, not missing (Layer-2 review of #712)', () => {
+    // Bar 1 is halted at the previous close: high = low = prevClose = 11, so
+    // trueHigh === trueLow. The kernel's flat-bar rule (clv = 0) is pinned
+    // at the kernel; this pins it through the study: the bar's flow is 0,
+    // its volume still lands in the denominator, and the reading is an
+    // exact 0 rather than a 0/0.
+    const halted: Array<[number, number, number, number]> = [
+      [12, 10, 11, 100],
+      [11, 11, 11, 100],
+    ];
+    const v = col(twiggsMoneyFlow(ohlcv(halted), { period: 1 }), 'tmf');
+    expect(v[1]).toBe(0);
+  });
+
+  it('blanks the DENOMINATOR wherever the numerator is blank', () => {
+    // Bar 1's high is missing, so it has no flow. If the volume smoothing
+    // did not blank the same bar it would seed a bar earlier and fold bar 1's
+    // volume — 9000 here — into a denominator whose numerator never saw it.
+    const v = col(
+      twiggsMoneyFlow(
+        holeyBars([
+          [11, 12, 10, 11, 100],
+          [12, undefined, 11, 12.5, 9000],
+          [12, 14, 12, 12.2, 300],
+          [12, 12.6, 10.6, 12.4, 400],
+        ]),
+        { period: 2 },
+      ),
+      'tmf',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeUndefined(); // the seed shifted a bar with the numerator
+    // Bars 2–3 only: flow −240 and 320 over volumes 300 and 400.
+    expect(v[3]).toBeCloseTo((-240 + 320) / (300 + 400), 12);
+  });
+
+  it('an interior gap ends the reading — Wilder has no state to carry', () => {
+    const v = col(
+      twiggsMoneyFlow(
+        holeyBars([
+          [11, 12, 10, 11, 100],
+          [12, 13, 11, 12.5, 200],
+          [12, 14, 12, 12.2, 300],
+          [12, 12.6, 10.6, undefined, 400],
+          [12, 12.6, 10.6, 12.4, 400],
+          [12, 12.6, 10.6, 12.4, 400],
+        ]),
+        { period: 2 },
+      ),
+      'tmf',
+    );
+    expect(v[2]).toBeCloseTo(-70 / 250, 12);
+    expect(v[3]).toBeUndefined(); // no close, so no flow
+    expect(v[4]).toBeUndefined(); // no PREVIOUS close, so no true range
+    expect(v[5]).toBeUndefined(); // a complete bar, but the recursion is dead
+  });
+
+  it('an all-zero volume is a literal 0/0 and needs no guard', () => {
+    // The flow is `clv · volume`, so a zero volume zeroes it too: this case
+    // reads `undefined` from the arithmetic alone.
+    const zeroed = ohlcv(tmfRows.map(([h, l, c]) => [h, l, c, 0]));
+    const v = col(twiggsMoneyFlow(zeroed, { period: 2 }), 'tmf');
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('the zero-denominator guard is LIVE: without it the reading is ±Infinity', () => {
+    // The case that makes the guard testable, and it needs a volume column
+    // that changes sign — reachable exactly as `negativeVolumeIndex`'s
+    // zero-base case is, by redirecting an input at another study's output.
+    //  bar 1: close on the true high  → clv +1, v  100 → flow +100
+    //  bar 2: close on the true low   → clv −1, v −100 → flow +100
+    // so the smoothed flow is 100 over a smoothed volume of exactly 0.
+    const v = col(
+      twiggsMoneyFlow(
+        ohlcv([
+          [12, 10, 11, 100],
+          [13, 11, 13, 100],
+          [13, 11, 11, -100],
+        ]),
+        { period: 2 },
+      ),
+      'tmf',
+    );
+    expect(v[2]).toBeUndefined();
+  });
+
+  it('defaults to period 21 and the `tmf` name; honours every column option', () => {
+    const wavy = ohlcv(
+      Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3.5) + 0.3 * i;
+        return [c + 0.6, c - 0.7, c, 1000 + 100 * (i % 7)] as [
+          number,
+          number,
+          number,
+          number,
+        ];
+      }),
+    );
+    const v = col(twiggsMoneyFlow(wavy), 'tmf');
+    expect(v[20]).toBeUndefined();
+    expect(v[21]).toBeDefined(); // the default period is 21
+    const named = twiggsMoneyFlow(wavy, {
+      output: 'twiggs',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      volume: 'volume',
+    });
+    expect(col(named, 'twiggs')[21]).toBeCloseTo(v[21]!, 12);
+    expect(
+      col(twiggsMoneyFlow(wavy, { volume: 'nope' as never }), 'tmf').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a bad period and a colliding output column', () => {
+    const b = ohlcv(tmfRows);
+    expect(() => twiggsMoneyFlow(b, { period: 0 })).toThrow(/period/);
+    expect(() => twiggsMoneyFlow(b, { period: 2.5 })).toThrow(/period/);
+    const once = twiggsMoneyFlow(b, { period: 2 });
+    expect(() => twiggsMoneyFlow(once as never, { period: 2 })).toThrow(
+      /collides/,
+    );
+  });
+});
+
+describe('tradeVolumeIndex', () => {
+  // closes 100 → 100.2 → 100.3 → 101.5 → 100.9 → 100.9, minTick 0.5,
+  // volumes 10, 20, 30, 40, 50, 60.
+  //  bar 1: +0.2 — inside the dead band, and no direction yet → nothing
+  //  bar 2: +0.1 — still inside it → nothing
+  //  bar 3: +1.2 — decisive UP    → +40 → 40
+  //  bar 4: −0.6 — decisive DOWN  → −50 → −10
+  //  bar 5:  0.0 — inside the band, so the DOWN direction persists → −70
+  const tviCloses = [100, 100.2, 100.3, 101.5, 100.9, 100.9];
+  const tviVolumes = [10, 20, 30, 40, 50, 60];
+  const tviBars = () => cv(tviCloses, tviVolumes);
+
+  it('accumulates signed volume on the tick direction, hand-computed', () => {
+    const v = col(tradeVolumeIndex(tviBars(), { minTick: 0.5 }), 'tvi');
+    expect(v).toEqual([0, 0, 0, 40, -10, -70]);
+  });
+
+  it('an undecided bar keeps the LAST direction — the whole study', () => {
+    // Bar 5 does not move at all. `obv` would add nothing for it; this adds
+    // its volume on the down side, because that is where the tape was going.
+    // A build without the persistence would read −10 at bar 5.
+    expect(col(tradeVolumeIndex(tviBars(), { minTick: 0.5 }), 'tvi')[5]).toBe(
+      -70,
+    );
+  });
+
+  it('does not invent a first direction (the up-seeded vendor fork)', () => {
+    // Bars 1 and 2 are inside the dead band with no direction established,
+    // so they contribute nothing. A build seeding the direction to +1 would
+    // read 0, 20, 50, 90 here.
+    const v = col(tradeVolumeIndex(tviBars(), { minTick: 0.5 }), 'tvi');
+    expect(v.slice(0, 4)).toEqual([0, 0, 0, 40]);
+  });
+
+  it('a move of exactly `minTick` is NOT decisive — the band is closed', () => {
+    const v = col(
+      tradeVolumeIndex(cv([100, 100.5, 101.5], [10, 20, 30]), {
+        minTick: 0.5,
+      }),
+      'tvi',
+    );
+    expect(v[1]).toBe(0); // exactly one tick: undecided
+    expect(v[2]).toBe(30); // a whole point: decisive
+  });
+
+  it('has no warm-up: bar 0 is the base, and the base is 0', () => {
+    expect(
+      col(tradeVolumeIndex(cv([5], [42]), { minTick: 0.01 }), 'tvi'),
+    ).toEqual([0]);
+  });
+
+  it('a LEADING gap shifts the start; an INTERIOR one ends the index', () => {
+    // `cumulativeValues`' asymmetry, and OBV's — not `negativeVolumeIndex`'s
+    // re-seed, because this level is a total of volume.
+    const leading = col(
+      tradeVolumeIndex(
+        cvGappy(
+          [undefined, undefined, 100, 100.2, 101.5],
+          [10, 20, 30, 40, 50],
+        ),
+        { minTick: 0.5 },
+      ),
+      'tvi',
+    );
+    expect(leading).toEqual([undefined, undefined, 0, 0, 50]);
+
+    const interior = col(
+      tradeVolumeIndex(
+        cvGappy([100, 101.5, undefined, 102, 103.5], [10, 20, 30, 40, 50]),
+        { minTick: 0.5 },
+      ),
+      'tvi',
+    );
+    expect(interior).toEqual([0, 20, undefined, undefined, undefined]);
+
+    // A missing VOLUME ends it just as a missing close does — the bar's
+    // contribution is unknown either way.
+    const noVolume = col(
+      tradeVolumeIndex(
+        cvGappy([100, 101.5, 102, 103.5], [10, 20, undefined, 40]),
+        { minTick: 0.5 },
+      ),
+      'tvi',
+    );
+    expect(noVolume).toEqual([0, 20, undefined, undefined]);
+  });
+
+  it('rejects a non-positive, missing or non-finite minTick', () => {
+    const b = tviBars();
+    expect(() => tradeVolumeIndex(b, { minTick: 0 })).toThrow(/minTick/);
+    expect(() => tradeVolumeIndex(b, { minTick: -1 })).toThrow(/minTick/);
+    expect(() => tradeVolumeIndex(b, { minTick: NaN })).toThrow(/minTick/);
+    expect(() => tradeVolumeIndex(b, { minTick: Infinity })).toThrow(/minTick/);
+    expect(() =>
+      tradeVolumeIndex(b, {} as unknown as { minTick: number }),
+    ).toThrow(/minTick/);
+  });
+
+  it('honours output, column and volume; a misnamed input reads all-missing', () => {
+    const named = tradeVolumeIndex(tviBars(), {
+      output: 'tick',
+      column: 'close',
+      volume: 'volume',
+      minTick: 0.5,
+    });
+    expect(col(named, 'tick')[5]).toBe(-70);
+    expect(
+      col(
+        tradeVolumeIndex(tviBars(), {
+          volume: 'nope' as never,
+          minTick: 0.5,
+        }),
+        'tvi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+    const once = tradeVolumeIndex(tviBars(), { minTick: 0.5 });
+    expect(() => tradeVolumeIndex(once as never, { minTick: 0.5 })).toThrow(
+      /collides/,
+    );
+  });
+});
+
+describe('shinoharaIntensityRatio', () => {
+  // Three bars, `period: 2`, worked by hand. Row = [open, high, low, close].
+  //  strong up   h − o      = 4, 4, 2       strong down o − l = 1, 2, 4
+  //  weak   up   h − prevC  = _, 5, 1       weak   down prevC − l = _, 1, 5
+  const sirRows: Array<[number, number, number, number]> = [
+    [100, 104, 99, 102],
+    [103, 107, 101, 105],
+    [104, 106, 100, 101],
+  ];
+
+  it('is 100 · Σup / Σdown for each pair, hand-computed', () => {
+    const r = shinoharaIntensityRatio(ohlcBars(sirRows), { period: 2 });
+    const strong = col(r, 'sirStrong');
+    const weak = col(r, 'sirWeak');
+    expect(strong[0]).toBeUndefined();
+    expect(strong[1]).toBeCloseTo((100 * (4 + 4)) / (1 + 2), 10);
+    expect(strong[2]).toBeCloseTo((100 * (4 + 2)) / (2 + 4), 10);
+    // The weak pair reads the PREVIOUS close, so its window starts one bar
+    // later — the per-column warm-up, not a shared one.
+    expect(weak[0]).toBeUndefined();
+    expect(weak[1]).toBeUndefined();
+    expect(weak[2]).toBeCloseTo((100 * (5 + 1)) / (1 + 5), 10);
+  });
+
+  it('warms up per column: strong at period − 1, weak at period', () => {
+    const r = shinoharaIntensityRatio(wavyOhlc(40), { period: 6 });
+    const strong = col(r, 'sirStrong');
+    const weak = col(r, 'sirWeak');
+    expect(strong[4]).toBeUndefined();
+    expect(strong[5]).toBeDefined();
+    expect(weak[5]).toBeUndefined();
+    expect(weak[6]).toBeDefined();
+  });
+
+  it('a zero denominator reads undefined, with a NON-zero numerator', () => {
+    // Every open is exactly its low, so Σ(open − low) is 0 while
+    // Σ(high − open) is 40 — the guard is live, and without it the reading
+    // would be Infinity, which `withColumn` rejects outright.
+    const v = col(
+      shinoharaIntensityRatio(
+        ohlcBars([
+          [100, 120, 100, 110],
+          [110, 130, 110, 120],
+        ]),
+        { period: 2 },
+      ),
+      'sirStrong',
+    );
+    expect(v[1]).toBeUndefined();
+  });
+
+  it('a totally flat window is 0/0 and is undefined too', () => {
+    const v = col(
+      shinoharaIntensityRatio(
+        ohlcBars([
+          [100, 100, 100, 100],
+          [100, 100, 100, 100],
+        ]),
+        { period: 2 },
+      ),
+      'sirStrong',
+    );
+    expect(v[1]).toBeUndefined();
+  });
+
+  it('the B ratio goes NEGATIVE on a gap-up bar, honestly', () => {
+    // `prevClose − low` is negative when the bar opened above the previous
+    // close and never traded back to it. Not a defect — see the docstring.
+    const v = col(
+      shinoharaIntensityRatio(
+        ohlcBars([
+          [100, 104, 99, 100],
+          [110, 114, 109, 112],
+        ]),
+        { period: 1 },
+      ),
+      'sirWeak',
+    );
+    // up = 114 − 100 = 14, down = 100 − 109 = −9.
+    expect(v[1]).toBeCloseTo((100 * 14) / -9, 10);
+  });
+
+  it('honours prefix and every column option; rejects a bad period', () => {
+    const bars40 = wavyOhlc(40);
+    const named = shinoharaIntensityRatio(bars40, {
+      prefix: 'shino',
+      open: 'open',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      period: 6,
+    });
+    expect(col(named, 'shinoStrong')[10]).toBeCloseTo(
+      col(shinoharaIntensityRatio(bars40, { period: 6 }), 'sirStrong')[10]!,
+      10,
+    );
+    expect(
+      col(
+        shinoharaIntensityRatio(bars40, { open: 'nope' as never }),
+        'sirStrong',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+    expect(() => shinoharaIntensityRatio(bars40, { period: 0 })).toThrow(
+      /period/,
+    );
+    const once = shinoharaIntensityRatio(bars40, { period: 6 });
+    expect(() => shinoharaIntensityRatio(once as never, { period: 6 })).toThrow(
+      /collides/,
+    );
+  });
+});
+
+describe('elderImpulse', () => {
+  // The smallest periods the study allows (`fastPeriod` 1, `slowPeriod` 2,
+  // `signalPeriod` 1, `emaPeriod` 1) make every stage transparent:
+  //   emaPeriod 1   → the EMA IS the close
+  //   fast 1        → the fast EMA is the close too
+  //   slow 2        → α = 2/3, seeded on the first close
+  //   signal 1      → the signal IS the line, so the histogram is 0 forever
+  // and a histogram that never moves means the verdict is 0 on every bar
+  // whatever the trend does — which is the tie rule, hand-checkable.
+  const flatHistCloses = [10, 12, 11, 14, 13, 15];
+
+  it('a never-moving histogram makes every verdict 0, whatever the trend does', () => {
+    const v = col(
+      elderImpulse(bars(flatHistCloses), {
+        emaPeriod: 1,
+        fastPeriod: 1,
+        slowPeriod: 2,
+        signalPeriod: 1,
+      }),
+      'impulse',
+    );
+    // The MACD line starts at bar 1 (`slowPeriod` 2), so the histogram does
+    // too and the verdict — which needs two of them — starts at bar 2.
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v.slice(2)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('is +1 only when BOTH rise and −1 only when BOTH fall, hand-checked', () => {
+    // Checked against the two arrays the study composes on, bar by bar, so
+    // the assertion is the RULE rather than a table of numbers copied from a
+    // run. `ema()` and `macd()` are the same calls the study makes.
+    const closes = wavyCloses;
+    const source = bars(closes);
+    const opts = {
+      emaPeriod: 5,
+      fastPeriod: 3,
+      slowPeriod: 7,
+      signalPeriod: 4,
+    } as const;
+    const impulse = col(elderImpulse(source, opts), 'impulse');
+    const trend = col(ema(source, { period: 5 }), 'ema');
+    const hist = col(
+      macd(source, { fastPeriod: 3, slowPeriod: 7, signalPeriod: 4 }),
+      'macdHist',
+    );
+    let seen = { up: 0, flat: 0, down: 0 };
+    for (let i = 1; i < closes.length; i += 1) {
+      if (
+        trend[i] === undefined ||
+        trend[i - 1] === undefined ||
+        hist[i] === undefined ||
+        hist[i - 1] === undefined
+      ) {
+        expect(impulse[i], `bar ${i}`).toBeUndefined();
+        continue;
+      }
+      const up = trend[i]! > trend[i - 1]! && hist[i]! > hist[i - 1]!;
+      const down = trend[i]! < trend[i - 1]! && hist[i]! < hist[i - 1]!;
+      const want = up ? 1 : down ? -1 : 0;
+      expect(impulse[i], `bar ${i}`).toBe(want);
+      if (want === 1) seen.up += 1;
+      else if (want === -1) seen.down += 1;
+      else seen.flat += 1;
+    }
+    // All three verdicts must actually occur, or the loop above proves
+    // nothing about two of the branches.
+    expect(seen.up).toBeGreaterThan(0);
+    expect(seen.flat).toBeGreaterThan(0);
+    expect(seen.down).toBeGreaterThan(0);
+  });
+
+  it('only ever emits −1, 0 or +1', () => {
+    const v = col(elderImpulse(bars(wavyCloses)), 'impulse');
+    for (const x of v) {
+      if (x !== undefined) expect([-1, 0, 1]).toContain(x);
+    }
+  });
+
+  it('warms up one bar after the slower input has TWO values', () => {
+    // At the defaults the histogram starts at bar 33 and the EMA at 12, so
+    // the verdict starts at 34.
+    const long = Array.from(
+      { length: 60 },
+      (_, i) => 100 + 8 * Math.sin(i / 3.5) + 0.3 * i,
+    );
+    const v = col(elderImpulse(bars(long)), 'impulse');
+    expect(v[33]).toBeUndefined();
+    expect(v[34]).toBeDefined();
+  });
+
+  it('the default emaPeriod is 13 — and 12 is a different column', () => {
+    // Elder's 13 is a real default, not decoration: on a 200-bar wave the
+    // 12-span EMA turns a bar earlier twice, and the verdict changes with
+    // it. Without this the default is untested — the two agree on every one
+    // of the fixture's other 164 defined bars (measured).
+    const wave = Array.from(
+      { length: 200 },
+      (_, i) => 100 + 9 * Math.sin(i / 7.3) + 4 * Math.sin(i / 2.9) + 0.05 * i,
+    );
+    const base = col(elderImpulse(bars(wave)), 'impulse');
+    expect(base).toEqual(
+      col(elderImpulse(bars(wave), { emaPeriod: 13 }), 'impulse'),
+    );
+    const twelve = col(elderImpulse(bars(wave), { emaPeriod: 12 }), 'impulse');
+    expect(base[104]).not.toBe(twelve[104]);
+    expect(base[154]).not.toBe(twelve[154]);
+  });
+
+  it('blanks the bar where the TREND has no predecessor, not just the histogram', () => {
+    // Reachable only when the EMA is the slower of the two inputs, which is
+    // why it needs its own case: at `emaPeriod` 20 against a histogram that
+    // is ready at bar 10, bar 19 has an EMA value but no previous one. A
+    // build that only tested the current bar would read `0` there — a
+    // verdict, from one comparison it could not make.
+    const long = Array.from(
+      { length: 40 },
+      (_, i) => 100 + 8 * Math.sin(i / 3.5) + 0.3 * i,
+    );
+    const v = col(
+      elderImpulse(bars(long), {
+        emaPeriod: 20,
+        fastPeriod: 3,
+        slowPeriod: 7,
+        signalPeriod: 4,
+      }),
+      'impulse',
+    );
+    expect(v[18]).toBeUndefined();
+    expect(v[19]).toBeUndefined();
+    expect(v[20]).toBeDefined();
+  });
+
+  it('reads the same MACD histogram `macd()` would, not a second derivation', () => {
+    // The composition claim, pinned: the study appends no MACD columns of
+    // its own, and its scratch prefix does not leak.
+    const r = elderImpulse(bars(wavyCloses));
+    expect(r.schema.map((c) => c.name)).toEqual(['time', 'close', 'impulse']);
+  });
+
+  it('rejects a bad period, an inverted fast/slow pair, and a collision', () => {
+    const b = bars(wavyCloses);
+    expect(() => elderImpulse(b, { emaPeriod: 0 })).toThrow(/emaPeriod/);
+    expect(() => elderImpulse(b, { signalPeriod: 2.5 })).toThrow(
+      /signalPeriod/,
+    );
+    expect(() => elderImpulse(b, { fastPeriod: 26, slowPeriod: 12 })).toThrow(
+      /elderImpulse fastPeriod/,
+    );
+    const once = elderImpulse(b);
+    expect(() => elderImpulse(once as never)).toThrow(/collides/);
+  });
+
+  it('honours column and output', () => {
+    const r = elderImpulse(sma(bars(wavyCloses), { period: 3 }), {
+      column: 'sma',
+      output: 'elder',
+      emaPeriod: 5,
+      fastPeriod: 3,
+      slowPeriod: 7,
+      signalPeriod: 4,
+    });
+    expect(col(r, 'elder').some((x) => x !== undefined)).toBe(true);
+    expect(col(r, 'impulse').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('movingAverageCross', () => {
+  // `fastPeriod: 1, slowPeriod: 2` makes the machine transparent: the fast
+  // average IS the close and the slow one is the mean of this bar and the
+  // last, so `fast − slow` is exactly half the bar-to-bar change and its
+  // sign is the sign of that change. Exact ties are then reachable by
+  // repeating a close — which is the point, because a tie is what the naive
+  // rule gets wrong.
+  const tiny = { fastPeriod: 1, slowPeriod: 2 } as const;
+
+  it('reports the crossing bar only, and nothing on the seed bar', () => {
+    //            change:  _   +   −   0   −   +
+    const v = col(
+      movingAverageCross(bars([10, 12, 11, 11, 10, 12]), tiny),
+      'maCross',
+    );
+    expect(v[0]).toBeUndefined(); // the slow average does not exist yet
+    expect(v[1]).toBeUndefined(); // the seed bar: nothing to have crossed FROM
+    expect(v[2]).toBe(-1); // above → below
+    expect(v[3]).toBe(0); // exactly equal is NOT a cross
+    expect(v[4]).toBe(0); // …and coming back to the SAME side is not either
+    expect(v[5]).toBe(1); // below → above
+  });
+
+  it('a touch that retreats is not a cross (the naive rule’s bug)', () => {
+    // Bars 3 and 4 above: `below → equal → below` is one continuous regime.
+    // A build comparing against the PREVIOUS sign rather than the last
+    // NON-ZERO one reports a `−1` at bar 4 — a crossing back to a side it
+    // never left.
+    const v = col(
+      movingAverageCross(bars([10, 12, 11, 11, 10, 12]), tiny),
+      'maCross',
+    );
+    expect(v[4]).toBe(0);
+  });
+
+  it('a crossing THROUGH equality fires on the far-side bar', () => {
+    //            change:  _   +   −   0   +
+    const v = col(
+      movingAverageCross(bars([10, 12, 11, 11, 12]), tiny),
+      'maCross',
+    );
+    expect(v[2]).toBe(-1);
+    expect(v[3]).toBe(0);
+    expect(v[4]).toBe(1);
+  });
+
+  it('a run that opens on an exact tie does not report arriving on a side', () => {
+    //            change:  _   0   +
+    const v = col(movingAverageCross(bars([10, 10, 12]), tiny), 'maCross');
+    expect(v[1]).toBeUndefined(); // the seed
+    expect(v[2]).toBe(0); // it has not been on a side yet, so this is no cross
+  });
+
+  it('warms up to the bar AFTER both averages exist', () => {
+    const v = col(movingAverageCross(bars(k2Closes(60))), 'maCross');
+    expect(v[28]).toBeUndefined();
+    expect(v[29]).toBeUndefined(); // the 30-bar average's first bar: the seed
+    expect(v[30]).toBeDefined();
+  });
+
+  it('a gap RESETS the machine — the next complete bar is a fresh seed', () => {
+    // [PND-SFOLD]: a machine that did not see a bar cannot know whether the
+    // pair crossed on it. Here bar 3's close is missing, so bar 3 reports
+    // nothing and bar 4 becomes a seed and reports nothing either — even
+    // though the sign flipped across the hole.
+    const gappy = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: [
+        [0, 10],
+        [1, 12],
+        [2, 14],
+        [3, undefined],
+        [4, 9],
+        [5, 8],
+      ] as never,
+    });
+    const v = col(movingAverageCross(gappy as never, tiny), 'maCross');
+    expect(v[2]).toBe(0);
+    expect(v[3]).toBeUndefined();
+    expect(v[4]).toBeUndefined(); // the fresh seed, not a `−1`
+    expect(v[5]).toBe(0); // …and the new run has been on one side only
+  });
+
+  it('honours maType, and the two types give different signals', () => {
+    const closes = k2Closes(80);
+    const asSma = col(
+      movingAverageCross(bars(closes), { fastPeriod: 5, slowPeriod: 12 }),
+      'maCross',
+    );
+    const asEma = col(
+      movingAverageCross(bars(closes), {
+        fastPeriod: 5,
+        slowPeriod: 12,
+        maType: 'ema',
+      }),
+      'maCross',
+    );
+    expect(asSma.some((x) => x !== undefined && x !== 0)).toBe(true);
+    expect(asEma).not.toEqual(asSma);
+  });
+
+  it('only ever emits −1, 0 or +1', () => {
+    for (const x of col(movingAverageCross(bars(k2Closes(120))), 'maCross')) {
+      if (x !== undefined) expect([-1, 0, 1]).toContain(x);
+    }
+  });
+
+  it('rejects an inverted pair, a bad period or maType, and a collision', () => {
+    const b = bars(k2Closes(60));
+    expect(() =>
+      movingAverageCross(b, { fastPeriod: 30, slowPeriod: 10 }),
+    ).toThrow(/movingAverageCross fastPeriod/);
+    expect(() =>
+      movingAverageCross(b, { fastPeriod: 10, slowPeriod: 10 }),
+    ).toThrow(/movingAverageCross fastPeriod/);
+    expect(() => movingAverageCross(b, { fastPeriod: 0 })).toThrow(
+      /fastPeriod/,
+    );
+    expect(() => movingAverageCross(b, { maType: 'nope' as never })).toThrow();
+    const once = movingAverageCross(b);
+    expect(() => movingAverageCross(once as never)).toThrow(/collides/);
+  });
+
+  it('honours column and output', () => {
+    const r = movingAverageCross(sma(bars(k2Closes(80)), { period: 3 }), {
+      column: 'sma',
+      output: 'goldenCross',
+      fastPeriod: 5,
+      slowPeriod: 12,
+    });
+    expect(col(r, 'goldenCross').some((x) => x !== undefined)).toBe(true);
+    expect(col(r, 'maCross').every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('anchoredVwap', () => {
+  // `ohlcv` keys each bar by its row index (in ms), so an anchor of `n` is
+  // the bar at index `n`. Typical prices 11, 12, 15, 9 on volumes 100…400.
+  const avwapRows: Array<[number, number, number, number]> = [
+    [12, 10, 11, 100],
+    [14, 10, 12, 200],
+    [16, 14, 15, 300],
+    [10, 8, 9, 400],
+  ];
+
+  it('accumulates from the anchor bar, hand-computed', () => {
+    const v = col(anchoredVwap(ohlcv(avwapRows), { anchor: 1 }), 'avwap');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(12, 12); // the anchor bar is its own typical price
+    expect(v[2]).toBeCloseTo((12 * 200 + 15 * 300) / 500, 12);
+    expect(v[3]).toBeCloseTo((12 * 200 + 15 * 300 + 9 * 400) / 900, 12);
+  });
+
+  it('takes a Date as well as epoch milliseconds', () => {
+    const asDate = col(
+      anchoredVwap(ohlcv(avwapRows), { anchor: new Date(1) }),
+      'avwap',
+    );
+    expect(asDate).toEqual(
+      col(anchoredVwap(ohlcv(avwapRows), { anchor: 1 }), 'avwap'),
+    );
+  });
+
+  it('snaps FORWARD to the first bar at or after the anchor', () => {
+    // An anchor between two bars belongs to the later one.
+    const v = col(anchoredVwap(ohlcv(avwapRows), { anchor: 1.5 }), 'avwap');
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo(15, 12);
+  });
+
+  it('an anchor before the series covers all of it; one after leaves it empty', () => {
+    const early = col(
+      anchoredVwap(ohlcv(avwapRows), { anchor: -1000 }),
+      'avwap',
+    );
+    expect(early[0]).toBeCloseTo(11, 12);
+    const late = col(anchoredVwap(ohlcv(avwapRows), { anchor: 99 }), 'avwap');
+    expect(late.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('blanks the DENOMINATOR wherever the numerator is blank', () => {
+    // Bar 0's high is missing, so it has no typical price. If the volume sum
+    // did not blank the same bar it would carry 9999 shares the price sum
+    // never saw, and bar 1 would read 2400/10199 instead of 12.
+    const v = col(
+      anchoredVwap(
+        holeyBars([
+          [11, undefined, 10, 11, 9999],
+          [12, 14, 10, 12, 200],
+          [15, 16, 14, 15, 300],
+        ]),
+        { anchor: 0 },
+      ),
+      'avwap',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(12, 12);
+    expect(v[2]).toBeCloseTo((12 * 200 + 15 * 300) / 500, 12);
+  });
+
+  it('an interior gap ENDS the line — the cumulative rule, not a re-anchor', () => {
+    const v = col(
+      anchoredVwap(
+        holeyBars([
+          [11, 12, 10, 11, 100],
+          [12, 14, 10, 12, 200],
+          [15, 16, 14, undefined, 300],
+          [9, 10, 8, 9, 400],
+        ]),
+        { anchor: 0 },
+      ),
+      'avwap',
+    );
+    expect(v[1]).toBeCloseTo((11 * 100 + 12 * 200) / 300, 12);
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeUndefined();
+  });
+
+  it('a zero cumulative volume reads undefined rather than ±Infinity', () => {
+    // The guard is live, and the case that makes it so needs a volume column
+    // that changes sign — reachable by redirecting `volume` at another
+    // study's output, as `negativeVolumeIndex`'s zero-base case is.
+    const v = col(
+      anchoredVwap(
+        ohlcv([
+          [12, 10, 11, 100],
+          [14, 10, 12, -100],
+        ]),
+        { anchor: 0 },
+      ),
+      'avwap',
+    );
+    expect(v[0]).toBeCloseTo(11, 12);
+    expect(v[1]).toBeUndefined();
+  });
+
+  it('an all-zero volume is a literal 0/0 and is undefined too', () => {
+    const v = col(
+      anchoredVwap(ohlcv(avwapRows.map(([hi, lo, c]) => [hi, lo, c, 0])), {
+        anchor: 0,
+      }),
+      'avwap',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('rejects a missing or non-finite anchor, and a colliding output', () => {
+    const b = ohlcv(avwapRows);
+    expect(() => anchoredVwap(b, { anchor: NaN })).toThrow(/anchor/);
+    expect(() => anchoredVwap(b, { anchor: Infinity })).toThrow(/anchor/);
+    expect(() => anchoredVwap(b, {} as unknown as { anchor: number })).toThrow(
+      /anchor/,
+    );
+    expect(() => anchoredVwap(b, { anchor: new Date('nope') })).toThrow(
+      /anchor/,
+    );
+    const once = anchoredVwap(b, { anchor: 0 });
+    expect(() => anchoredVwap(once as never, { anchor: 0 })).toThrow(
+      /collides/,
+    );
+  });
+
+  it('honours output and every column option', () => {
+    const named = anchoredVwap(ohlcv(avwapRows), {
+      anchor: 1,
+      output: 'sessionVwap',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      volume: 'volume',
+    });
+    expect(col(named, 'sessionVwap')[3]).toBeCloseTo(10500 / 900, 12);
+    expect(
+      col(
+        anchoredVwap(ohlcv(avwapRows), {
+          anchor: 0,
+          volume: 'nope' as never,
+        }),
+        'avwap',
+      ).every((x) => x === undefined),
+    ).toBe(true);
   });
 });

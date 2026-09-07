@@ -115,9 +115,39 @@ export function accumulationDistributionValues(
   close: Float64Array,
   volume: Float64Array,
 ): Float64Array {
+  return cumulativeValues(moneyFlowVolumeValues(high, low, close, volume));
+}
+
+/**
+ * **Money-flow volume** — {@link clvValues} weighted by volume, `clv · volume`,
+ * which is the per-bar term of the whole money-flow family:
+ * {@link accumulationDistributionValues} accumulates it, Chaikin Money Flow
+ * takes its volume-weighted mean over a window, and {@link twiggsMoneyFlow}
+ * Wilder-smooths it against a matching smoothing of volume.
+ *
+ * It is named here rather than written out in each consumer for the reason the
+ * A/D line and the Chaikin oscillator already share `clvValues`: the term is
+ * the *definition*, and two derivations of it could drift. `twiggsMoneyFlow`
+ * is the one caller that does not pass the bar's own high and low — it passes
+ * {@link trueRangeBoundsValues}' true high and true low, which is exactly what
+ * makes it Twiggs' variant rather than Chaikin's.
+ *
+ * Every edge is {@link clvValues}' unchanged: a **flat range** contributes `0`
+ * (the numerator is algebraically zero, so the bar makes no contribution
+ * rather than none at all), and a missing high, low, close **or volume** makes
+ * the term `NaN` on its own — the multiplication needs no guard for it.
+ *
+ * O(N), one pass over `clvValues`' own, one allocation.
+ */
+export function moneyFlowVolumeValues(
+  high: Float64Array,
+  low: Float64Array,
+  close: Float64Array,
+  volume: Float64Array,
+): Float64Array {
   const clv = clvValues(high, low, close);
   // Derive in place — `clv` is this function's own buffer, and nothing else
   // reads it. A missing volume makes the term NaN on its own.
   for (let i = 0; i < clv.length; i += 1) clv[i] = clv[i]! * volume[i]!;
-  return cumulativeValues(clv);
+  return clv;
 }
