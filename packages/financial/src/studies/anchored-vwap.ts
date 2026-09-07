@@ -4,7 +4,7 @@ import type {
   TimeSeries,
 } from 'pond-ts';
 import { DEFAULT_OHLCV } from '../contract/columns.js';
-import { cumulativeValues } from '../kernels/cumulative.js';
+import { anchoredVwapValues } from '../kernels/anchored-vwap.js';
 import { assertNoColumn, columnValues } from '../kernels/rolling.js';
 import { typicalPriceValues } from '../kernels/typical-price.js';
 
@@ -51,13 +51,12 @@ export interface AnchoredVwapOptions<
  * running line. The two are genuinely different studies and this is the one
  * with no window at all.
  *
- * The **third** form — VWAP that **resets every session** — is still not
- * here, and that is the calendar gap rather than an oversight: it needs
- * session boundaries, which is [PND-TCAL] / the corpus' **G4**. What makes
- * this form shippable today is that its anchor is a **user parameter**, so
- * no calendar is consulted. A caller who wants the session form today
- * partitions on the session and runs this per partition with each session's
- * first timestamp.
+ * The **third** form — VWAP that **resets every session** — is
+ * {@link sessionVwap}, which needed the session boundaries the trading
+ * calendar supplies ([PND-TCAL] / the corpus' **G4**) and now shares this
+ * study's kernel: it is this same accumulation re-anchored at every session
+ * open. What made *this* form shippable before the calendar was that its
+ * anchor is a **user parameter**, so no calendar is consulted.
  *
  * ## `anchor` is REQUIRED, and it is a TIME, not an index
  *
@@ -81,30 +80,33 @@ export interface AnchoredVwapOptions<
  *
  * ## Composed, not new arithmetic
  *
- * {@link typicalPriceValues} for the price and {@link cumulativeValues} for
- * both running sums — the same two kernels `vwap` and `obv` are built from.
- * The only thing this study owns is the anchor: it blanks both terms before
- * the anchor bar, and `cumulativeValues`' documented rule that **a leading
- * run of gaps shifts the start** then does the rest, with no arithmetic here
- * at all.
+ * {@link typicalPriceValues} for the price and `anchoredVwapValues` for the
+ * ratio of running sums. The only thing this study owns is the anchor: it
+ * builds a **single anchor group** (`NaN` before the anchor bar, one id from
+ * there on) and the kernel does the rest, with no arithmetic here at all.
+ * {@link sessionVwap} is the same call with each bar's **session id** in place
+ * of that one group — which is why the two studies share a kernel rather than
+ * a family resemblance.
  *
- * The denominator is also blanked wherever the **numerator** is, before
- * either is accumulated. That is not tidiness: a bar with a volume but a
- * missing `high` would otherwise contribute to `Σ volume` and not to
+ * The denominator is blanked wherever the **numerator** is, before either is
+ * accumulated (in the kernel). That is not tidiness: a bar with a volume but
+ * a missing `high` would otherwise contribute to `Σ volume` and not to
  * `Σ price·volume`, which is a VWAP quietly biased toward zero — the #710
  * rule (two accumulations of two columns must consume the same bars),
  * pinned by a test.
  *
  * ## Edges
  *
- * - **An interior gap ENDS the line.** Both sums are `cumulativeValues`, so a
+ * - **An interior gap ENDS the line.** Both sums are running sums, so a
  *   missing term makes every later level a known sum plus an unknown. That
  *   is {@link obv}'s rule and the A/D line's, and it is right here for the
  *   same reason it is right there: the reading is a *level*, and skipping
  *   the bar would report an average price that silently excludes volume that
  *   traded. It is **not** {@link negativeVolumeIndex}'s re-seed, which is
  *   for an index measured from an arbitrary base. A caller who needs
- *   continuity fills first, or re-anchors after the hole.
+ *   continuity fills first, or re-anchors after the hole —
+ *   {@link sessionVwap}, on the same kernel, re-anchors automatically at the
+ *   next session open.
  * - **Zero cumulative volume → `undefined`.** Reachable when the anchor
  *   falls on a run of zero-volume bars: there is nothing to weight by, so
  *   there is no average price — not `0`, and not the plain mean of typical
@@ -144,28 +146,16 @@ export function anchoredVwap<
   // a timeRange- or interval-keyed series anchors on each bar's beginning.
   const keys = (wide.keyColumn() as unknown as { begin: Float64Array }).begin;
 
+  // One anchor group, opening at the first bar at or after `anchor` and
+  // running to the end of the series — the whole of this study's difference
+  // from `sessionVwap`, which passes each bar's session id instead.
   const length = typical.length;
-  const flow = new Float64Array(length);
-  const weight = new Float64Array(length);
+  const anchors = new Float64Array(length);
   for (let i = 0; i < length; i += 1) {
-    // Before the anchor the bar is not part of this VWAP at all, and a
-    // `NaN` here is exactly the "leading gap" `cumulativeValues` steps over.
-    // The two arrays are blanked TOGETHER so the sums consume the same bars
-    // (see the docstring).
-    const f = keys[i]! < anchor ? NaN : typical[i]! * volume[i]!;
-    flow[i] = f;
-    weight[i] = Number.isNaN(f) ? NaN : volume[i]!;
+    anchors[i] = keys[i]! < anchor ? NaN : 0;
   }
-
-  const numerator = cumulativeValues(flow);
-  const denominator = cumulativeValues(weight);
-  const values = new Float64Array(length);
-  for (let i = 0; i < length; i += 1) {
-    const d = denominator[i]!;
-    // Live guard: the division is at the OUTPUT, and a run of zero-volume
-    // bars does not force the numerator to zero once `high`/`low`/`close`
-    // can be redirected.
-    values[i] = d === 0 ? NaN : numerator[i]! / d;
-  }
-  return series.withColumn(output, values);
+  return series.withColumn(
+    output,
+    anchoredVwapValues(typical, volume, anchors),
+  );
 }

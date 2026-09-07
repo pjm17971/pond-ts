@@ -86,6 +86,21 @@ and a doc note, not a second study that differs invisibly.
     complete rows ending at `i`, so `run === 1` is the seed bar; **a missing
     cell resets the machine**, and the kernel NaN-fills the outputs, so a
     step that writes nothing warms up.
+  - `sessionIdValues(keys, sessions, stamped)` and
+    `previousSessionHlcValues(ids, high, low, close)` (`kernels/session.ts`) —
+    kernel **K11**: the merge walk that places each bar in its session
+    (`O(N + sessions)`, and the same walk `TradingCalendar.tagSessions`
+    appends as a column), and each session's aggregate high/low/close held
+    across the **next** session. A study that resets or anchors on the
+    trading day takes its sessions through `SessionAnchorOptions`
+    (`contract/session-anchor.ts`) — `sessions` (a calendar or session list)
+    or `session` (a session-id column) — and never derives session
+    boundaries itself.
+  - `anchoredVwapValues(typical, volume, anchors)`
+    (`kernels/anchored-vwap.ts`) — `Σ tp·vol / Σ vol` accumulated per **anchor
+    group**, where a change of id restarts both sums and a `NaN` id
+    contributes nothing. One group is `anchoredVwap`; one id per session is
+    `sessionVwap`.
   - `clvValues(high, low, close)` and
     `accumulationDistributionValues(high, low, close, volume)`
     (`kernels/close-location.ts`) — where the close sits in the bar's own

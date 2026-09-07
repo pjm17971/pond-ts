@@ -96,6 +96,9 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
   typicalPrice,
   medianPrice,
   weightedClose,
@@ -111,6 +114,36 @@ import {
 } from '../dist/index.js';
 
 const PERIOD = 20;
+
+/** The two calendars the session-anchored studies are benchmarked against.
+ *  `makeBars` stamps bar `i` at `1_700_000_000_000 + i * 60_000` — one-minute
+ *  bars round the clock — so a 1M-bar run spans ~694 days.
+ *
+ *  - `equity` is a 09:30-16:00 America/New_York weekday schedule: ~520
+ *    sessions, and only ~27% of the bars fall in one, so the closed-time path
+ *    carries most of the walk.
+ *  - `allDay` is one 24-hour session per calendar day: ~760 sessions and every
+ *    bar in one.
+ *
+ *  Running both is the O(N + sessions) evidence: the session count changes by
+ *  ~1.5x and the in-session fraction by ~3.7x while the cost stays flat. A
+ *  per-bar search over the schedule would be 1e6 x 5e2 = 5e8 comparisons and
+ *  would not be within an order of magnitude of these numbers. */
+const CAL_FROM = '2023-11-01';
+const CAL_TO = '2025-11-01';
+const equityCalendar = TradingCalendar.fromRules(
+  { timeZone: 'America/New_York', open: '09:30', close: '16:00' },
+  { from: CAL_FROM, to: CAL_TO },
+);
+const allDayCalendar = TradingCalendar.fromRules(
+  {
+    timeZone: 'UTC',
+    open: '00:00',
+    close: '24:00',
+    weekmask: [1, 2, 3, 4, 5, 6, 7],
+  },
+  { from: CAL_FROM, to: CAL_TO },
+);
 
 /** `priceScale` multiplies every price column and leaves volume alone. It
  *  exists for the two prime studies, whose per-bar cost is the only one in
@@ -239,6 +272,9 @@ function scaleResults(length) {
   const { series, close, benchmark: benchmarkColumn } = makeBars(length);
   // ~1e7 prices, for the two prime studies whose cost grows with magnitude.
   const pricesX1e5 = makeBars(length, 1e5).series;
+  // Pre-tagged, for the session studies' column door — the shape a consumer
+  // who already ran `partitionBy(session)` hands them.
+  const tagged = equityCalendar.tagSessions(series);
   return {
     length,
     results: [
@@ -663,6 +699,34 @@ function scaleResults(length) {
         anchoredVwap(series, {
           anchor: 1_700_000_000_000 + Math.floor(length / 2) * 60_000,
         }),
+      ),
+      // The session-anchored pair (assessment 6.9 / G4). `sessionVwap` is
+      // `anchoredVwap`'s kernel with a session id per bar, so the two should
+      // sit within the id walk of each other; `pivotPoints` is one aggregate
+      // pass plus one arithmetic pass per column, so `camarilla` (9 columns)
+      // should sit above `standard` (7) by two column writes and nothing else.
+      // The two calendars differ in session count and in-session fraction —
+      // see the note on `equityCalendar` for what that is measuring.
+      benchmark('tagSessions(equity ~520 sessions)', () =>
+        equityCalendar.tagSessions(series),
+      ),
+      benchmark('sessionVwap({ sessions: equity ~520 })', () =>
+        sessionVwap(series, { sessions: equityCalendar }),
+      ),
+      benchmark('sessionVwap({ sessions: allDay ~760 })', () =>
+        sessionVwap(series, { sessions: allDayCalendar }),
+      ),
+      benchmark('sessionVwap({ session: column })', () =>
+        sessionVwap(tagged, { session: 'session' }),
+      ),
+      benchmark('pivotPoints({ sessions: equity, standard })', () =>
+        pivotPoints(series, { sessions: equityCalendar }),
+      ),
+      benchmark('pivotPoints({ sessions: equity, camarilla })', () =>
+        pivotPoints(series, { sessions: equityCalendar, method: 'camarilla' }),
+      ),
+      benchmark('pivotPoints({ session: column, standard })', () =>
+        pivotPoints(tagged, { session: 'session' }),
       ),
     ],
   };

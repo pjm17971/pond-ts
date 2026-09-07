@@ -118,8 +118,12 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  sessionVwap,
+  pivotPoints,
+  TradingCalendar,
+  generateSessions,
 } from '../src/index.js';
-import type { PriceOscillatorMode } from '../src/index.js';
+import type { PivotMethod, PriceOscillatorMode } from '../src/index.js';
 
 interface OracleCase {
   study: string;
@@ -160,13 +164,16 @@ interface OracleCase {
     limit?: number;
     minTick?: number;
     anchor?: number;
+    method?: PivotMethod;
   };
   /** Which input the case was generated over. Absent means the 80-bar
    *  OHLCV fixture; `'long'` means the 900-bar close-only one, which the
    *  three studies whose warm-up does not fit in 80 bars need (Special K
    *  reaches bar 724) and which two more use because the short fixture
-   *  cannot exercise their reading (see the generator). */
-  input?: 'long';
+   *  cannot exercise their reading (see the generator); `'session'` means
+   *  the SAME 80 bars keyed onto a real trading-session clock, which the two
+   *  session-anchored studies need (80 milliseconds is not a trading week). */
+  input?: 'long' | 'session';
   expected: Record<string, Array<number | null>>;
 }
 interface Oracle {
@@ -179,6 +186,7 @@ interface Oracle {
     lows: number[];
     volumes: number[];
     benchmarks: number[];
+    sessionTimes: number[];
   };
   cases: OracleCase[];
 }
@@ -262,6 +270,50 @@ function benchmarkSeries(): TimeSeries<never> {
       oracle.input.benchmarks[i]!,
     ]),
   }) as unknown as TimeSeries<never>;
+}
+
+/** The same 80 OHLCV bars keyed onto the generator's trading-session clock —
+ *  30-minute bars on a 09:30–16:00 America/New_York grid over six sessions,
+ *  plus the two bars that fall in no session. Only the two session-anchored
+ *  studies read it. */
+function sessionSeries(): TimeSeries<never> {
+  return new TimeSeries({
+    name: 'oracle',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number' },
+      { name: 'high', kind: 'number' },
+      { name: 'low', kind: 'number' },
+      { name: 'close', kind: 'number' },
+      { name: 'volume', kind: 'number' },
+    ],
+    rows: oracle.input.closes.map((c, i) => [
+      oracle.input.sessionTimes[i]!,
+      oracle.input.opens[i]!,
+      oracle.input.highs[i]!,
+      oracle.input.lows[i]!,
+      c,
+      oracle.input.volumes[i]!,
+    ]),
+  }) as unknown as TimeSeries<never>;
+}
+
+/** The calendar the generator laid the session clock out on, rebuilt from the
+ *  same rules rather than from a table in the fixture — so a disagreement
+ *  between our Temporal session generation and Python's `zoneinfo` fails these
+ *  cases instead of hiding behind a shared input. */
+function sessionCalendar(): TradingCalendar {
+  return TradingCalendar.fromSessions(
+    generateSessions(
+      {
+        timeZone: 'America/New_York',
+        open: '09:30',
+        close: '16:00',
+        holidays: ['2024-01-15'],
+      },
+      { from: '2024-01-08', to: '2024-01-16' },
+    ),
+  );
 }
 
 function run(c: OracleCase): unknown {
@@ -632,6 +684,13 @@ function run(c: OracleCase): unknown {
       return shinoharaIntensityRatio(ohlcSeries(), p as { period?: number });
     case 'anchoredVwap':
       return anchoredVwap(ohlcSeries(), p as { anchor: number });
+    case 'sessionVwap':
+      return sessionVwap(sessionSeries(), { sessions: sessionCalendar() });
+    case 'pivotPoints':
+      return pivotPoints(sessionSeries(), {
+        sessions: sessionCalendar(),
+        ...(p as { method?: PivotMethod }),
+      });
     case 'movingAverageCross':
       return movingAverageCross(
         source(),

@@ -16,6 +16,7 @@ import {
   type DateRange,
   type SessionRules,
 } from './rules.js';
+import { sessionIdValues } from '../kernels/session.js';
 
 /** An instant range for session queries — `[start, end)` epoch-ms. */
 export interface InstantRange {
@@ -274,37 +275,29 @@ export class TradingCalendar {
    * Default column name `"session"` (override with `column`). Throws if a
    * column of that name already exists (a fresh column is appended, per
    * `withColumn`). O(n + sessions) — a single merge walk over the (sorted)
-   * events and sessions; materializes the events once to read their instants.
+   * key instants and sessions, reading the key column **columnar** rather
+   * than materializing an `Event` per row (that read alone was ~95 ms of the
+   * 121 ms this cost at 1M bars). The walk itself is `sessionIdValues`,
+   * shared with the session-anchored studies' `sessions` option, so tagging a
+   * series and handing a study the calendar are the same anchoring.
    */
   tagSessions<S extends SeriesSchema, const Name extends string = 'session'>(
     series: TimeSeries<S>,
     options: { column?: Name; stamped?: 'open' | 'close' } = {},
   ): TimeSeries<TaggedSchema<S, Name>> {
     const column = (options.column ?? 'session') as Name;
-    const closeStamped = options.stamped === 'close';
-    const events = series.toArray();
-    const ids = new Array<number | undefined>(events.length);
-    const sessions = this.#sessions;
-    let c = 0;
-    for (let i = 0; i < events.length; i++) {
-      const t = events[i]!.begin();
-      // Events are ascending by begin and sessions by open, so the cursor only
-      // moves forward. Skip sessions that already ended relative to t: for
-      // close-stamped bars a bar *at* the close still belongs to that session,
-      // so only skip once t is strictly past the close.
-      while (
-        c < sessions.length &&
-        (closeStamped ? sessions[c]!.close < t : sessions[c]!.close <= t)
-      )
-        c++;
-      const s = c < sessions.length ? sessions[c]! : undefined;
-      const inSession =
-        s !== undefined &&
-        (closeStamped
-          ? t > s.open && t <= s.close
-          : t >= s.open && t < s.close);
-      ids[i] = inSession ? s!.open : undefined;
-    }
+    // The key axis' START, read columnar — `begin` is the field every key
+    // variant carries. The walk itself is `sessionIdValues`, shared with the
+    // session-anchored studies' `sessions` door, so tagging a series and
+    // handing a study the calendar are provably the same anchoring rather
+    // than two loops that agree until one is edited.
+    const keys = (series.keyColumn() as unknown as { begin: Float64Array })
+      .begin;
+    const ids = sessionIdValues(
+      keys,
+      this.#sessions,
+      options.stamped ?? 'open',
+    );
     return series.withColumn(column, ids) as unknown as TimeSeries<
       TaggedSchema<S, Name>
     >;

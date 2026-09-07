@@ -265,6 +265,14 @@ import type { MovingAverageCrossOptions } from './studies/moving-average-cross.j
 import { movingAverageCross as movingAverageCrossStudy } from './studies/moving-average-cross.js';
 import type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
 import { anchoredVwap as anchoredVwapStudy } from './studies/anchored-vwap.js';
+import type { SessionVwapOptions } from './studies/session-vwap.js';
+import { sessionVwap as sessionVwapStudy } from './studies/session-vwap.js';
+import type { PivotMethod } from './kernels/pivot.js';
+import type {
+  PivotPointsOptions,
+  PivotPointsResult,
+} from './studies/pivot-points.js';
+import { pivotPoints as pivotPointsStudy } from './studies/pivot-points.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -813,6 +821,18 @@ declare module 'pond-ts' {
     anchoredVwap<const Output extends string = 'avwap'>(
       options: AnchoredVwapOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Session VWAP — exactly one of `sessions` / `session`. */
+    sessionVwap<const Output extends string = 'svwap'>(
+      options: SessionVwapOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Pivot Points — the column set follows `method`
+     *  (`'camarilla'` adds `${Prefix}R4` / `${Prefix}S4`). */
+    pivotPoints<
+      const Prefix extends string = 'pp',
+      const Method extends PivotMethod = 'standard',
+    >(
+      options: PivotPointsOptions<S, Prefix, Method>,
+    ): PivotPointsResult<S, Prefix, Method>;
   }
 }
 
@@ -1448,4 +1468,16 @@ proto.anchoredVwap = function (
   options: AnchoredVwapOptions<SeriesSchema, string>,
 ) {
   return anchoredVwapStudy(this, options);
+};
+proto.sessionVwap = function (
+  this: TimeSeries<SeriesSchema>,
+  options: SessionVwapOptions<SeriesSchema, string>,
+) {
+  return sessionVwapStudy(this, options);
+};
+proto.pivotPoints = function (
+  this: TimeSeries<SeriesSchema>,
+  options: PivotPointsOptions<SeriesSchema, string, PivotMethod>,
+) {
+  return pivotPointsStudy(this, options);
 };

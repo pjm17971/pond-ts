@@ -1297,7 +1297,11 @@ pandas-oracle-verified) have shipped. Plan:
   +1/0/−1 verdict), `movingAverageCross` (the cross EVENT as a signal
   column) and `anchoredVwap` (the user-anchored form; the session-reset
   form still waits on [PND-TCAL]).
-  **One hundred and one studies shipped** — every corpus row that needed only
+  Batch eight opened the calendar gate: `sessionVwap` and `pivotPoints`
+  (standard / Fibonacci / Woodie / Camarilla) anchor on `TradingCalendar`
+  sessions or a session-id column — the two doors run one `sessionIdValues`
+  walk, which also made `tagSessions` 5× faster, bit-identical.
+  **One hundred and three studies shipped** — every corpus row that needed only
   a kernel is in. What remains of the 124 is gated on core capabilities, not
   on `@pond-ts/financial`:
   - **G5 — forward displacement past the series end** (3): Ichimoku Cloud
