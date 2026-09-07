@@ -1301,7 +1301,15 @@ pandas-oracle-verified) have shipped. Plan:
   (standard / Fibonacci / Woodie / Camarilla) anchor on `TradingCalendar`
   sessions or a session-id column — the two doors run one `sessionIdValues`
   walk, which also made `tagSessions` 5× faster, bit-identical.
-  **One hundred and three studies shipped** — every corpus row that needed only
+  Its second half shipped **Ichimoku** (displacement as data — every column
+  keyed to the bar it is computed from, `ichimokuOffsets` for the chart —
+  and Chikou raw, not pre-shifted, because a look-ahead column would be the
+  package's only one) and **ZigZag** in its batch form (confirmed pivots,
+  direction and the interpolated line; the last leg is absent by design and
+  the live repaint contract is the recorded ask). The charts asks this
+  creates — C2 per-layer `xOffsetBars` with forward projection space, and C3
+  crossing-band fill for the cloud — are the next library-side lever.
+  **One hundred and five studies shipped** — every corpus row that needed only
   a kernel is in. What remains of the 124 is gated on core capabilities, not
   on `@pond-ts/financial`:
   - **G5 — forward displacement past the series end** (3): Ichimoku Cloud

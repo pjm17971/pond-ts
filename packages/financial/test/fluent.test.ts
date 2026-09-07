@@ -104,6 +104,8 @@ import {
   elderImpulse,
   movingAverageCross,
   anchoredVwap,
+  ichimoku,
+  zigZag,
   sessionVwap,
   pivotPoints,
   TradingCalendar,
@@ -1629,5 +1631,81 @@ describe('the session-anchored pair through the fluent door', () => {
       ).toBe(true);
     }
     expect(chained.length).toBe(24);
+  });
+});
+
+describe('fluent: Ichimoku and ZigZag', () => {
+  /** Bars that swing far enough for ZigZag to confirm several pivots and
+   *  long enough for Ichimoku's 52-bar window to print. */
+  const swingBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 120 }, (_, i) => {
+        const c = 100 + 14 * Math.sin(i / 11) + 4 * Math.sin(i / 3.1);
+        return [
+          i,
+          c + 0.5 + 0.6 * Math.abs(Math.sin(i / 2.1)),
+          c - 0.5 - 0.6 * Math.abs(Math.cos(i / 1.7)),
+          c,
+        ];
+      }) as Array<[number, number, number, number]>,
+    });
+
+  it('ichimoku through the fluent door equals the standalone function', () => {
+    const opts = { conversionPeriod: 7, basePeriod: 21, spanBPeriod: 40 };
+    const fluent = swingBars().ichimoku(opts);
+    const standalone = ichimoku(swingBars(), opts);
+    for (const name of [
+      'ichiTenkan',
+      'ichiKijun',
+      'ichiSenkouA',
+      'ichiSenkouB',
+      'ichiChikou',
+    ]) {
+      expect(col(fluent, name), name).toEqual(col(standalone, name));
+      expect(
+        col(fluent, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('zigZag through the fluent door equals the standalone function', () => {
+    const opts = { deviation: 6 } as const;
+    const fluent = swingBars().zigZag(opts);
+    const standalone = zigZag(swingBars(), opts);
+    for (const name of ['zzPivot', 'zzDirection', 'zzLine']) {
+      expect(col(fluent, name), name).toEqual(col(standalone, name));
+      expect(
+        col(fluent, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('chains both in one expression, eight columns on one series', () => {
+    const chained = swingBars().ichimoku().zigZag({ deviation: 6 });
+    for (const name of [
+      'ichiTenkan',
+      'ichiKijun',
+      'ichiSenkouA',
+      'ichiSenkouB',
+      'ichiChikou',
+      'zzPivot',
+      'zzDirection',
+      'zzLine',
+    ]) {
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+    expect(chained.length).toBe(120);
   });
 });

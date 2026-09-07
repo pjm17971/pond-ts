@@ -262,6 +262,14 @@ export { movingAverageCross } from './studies/moving-average-cross.js';
 export type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
 export { anchoredVwap } from './studies/anchored-vwap.js';
 export type {
+  IchimokuOptions,
+  IchimokuOffsetOptions,
+  IchimokuOffsets,
+} from './studies/ichimoku.js';
+export { ichimoku, ichimokuOffsets } from './studies/ichimoku.js';
+export type { ZigZagOptions } from './studies/zig-zag.js';
+export { zigZag } from './studies/zig-zag.js';
+export type {
   SessionSource,
   SessionAnchorOptions,
 } from './contract/session-anchor.js';

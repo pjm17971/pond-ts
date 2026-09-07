@@ -6107,6 +6107,240 @@ for _a, _b in (
 print(f"  pivotPoints: method separations on R1 {_pp_seps}")
 
 
+# --------------------------------------------------------------------------
+# Ichimoku Kinko Hyo (6.4, G5) and ZigZag (6.4, G6) -- the two most-used
+# studies left in the corpus, each in the form that needs no core change.
+
+
+def ichimoku(conv: int = 9, base: int = 26, spanb: int = 52, disp: int = 26) -> dict:
+    """Ichimoku's five lines, keyed to the bar each is COMPUTED FROM.
+
+    The study deliberately applies no displacement (assessment G5: there are
+    no rows past the last bar for the forward spans to land on, and a
+    pre-shifted Chikou would be a look-ahead column), so `disp` must change
+    nothing -- which is what the case at a different displacement pins.
+
+    No TA-Lib Ichimoku. Separated from the COMMON SLIP: taking the ranges
+    over the close instead of the bar's high and low.
+    """
+    tenkan = (h.rolling(conv).max() + low_s.rolling(conv).min()) / 2
+    kijun = (h.rolling(base).max() + low_s.rolling(base).min()) / 2
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (h.rolling(spanb).max() + low_s.rolling(spanb).min()) / 2
+    chikou = s.copy()
+    label = f"ichimoku({conv}, {base}, {spanb}, {disp})"
+
+    # The analytic first-valid bars: each line waits for its OWN window, and
+    # Senkou A inherits the later of the two it averages.
+    for name, series_, want in (
+        ("tenkan", tenkan, conv - 1),
+        ("kijun", kijun, base - 1),
+        ("senkouA", senkou_a, max(conv, base) - 1),
+        ("senkouB", senkou_b, spanb - 1),
+        ("chikou", chikou, 0),
+    ):
+        got = series_.first_valid_index()
+        assert got == want, f"{label} {name} first valid at {got}, expected {want}"
+
+    # The slip: the same construction over CLOSES. It is the build a reader
+    # who has only seen the formula written as "(highest + lowest) / 2" would
+    # produce, and it is wrong on every bar.
+    t_c = (s.rolling(conv).max() + s.rolling(conv).min()) / 2
+    k_c = (s.rolling(base).max() + s.rolling(base).min()) / 2
+    b_c = (s.rolling(spanb).max() + s.rolling(spanb).min()) / 2
+    slips = {}
+    for name, ours, theirs in (
+        ("tenkan", tenkan, t_c),
+        ("kijun", kijun, k_c),
+        ("senkouA", senkou_a, (t_c + k_c) / 2),
+        ("senkouB", senkou_b, b_c),
+    ):
+        m = ours.notna() & theirs.notna()
+        slips[name] = float(np.max(np.abs(ours[m] - theirs[m])))
+        assert slips[name] > 0.1, (
+            f"{label} sits only {slips[name]} from the close-based build - "
+            "the fixture's bars are too narrow to catch the slip"
+        )
+
+    # And what the DISPLACEMENT would have cost, had the study applied it.
+    # These are the numbers on the docstring: getting the offset wrong is a
+    # different indicator, not a rounding difference.
+    disps = {}
+    for name, series_, n in (
+        ("senkouA", senkou_a, disp),
+        ("senkouB", senkou_b, disp),
+        ("chikou", chikou, -disp),
+    ):
+        moved = series_.shift(n)
+        m = series_.notna() & moved.notna()
+        disps[name] = float(np.max(np.abs(series_[m] - moved[m])))
+        assert disps[name] > 1.0, (
+            f"{label} {name} moves only {disps[name]} under its own "
+            "displacement - the fixture cannot show that the offset matters"
+        )
+
+    print(
+        f"  {label}: pandas replication (no TA-Lib Ichimoku); first valid "
+        f"{conv - 1}/{base - 1}/{max(conv, base) - 1}/{spanb - 1}/0, "
+        f"close-based slip up to "
+        f"{slips['tenkan']:.4f}/{slips['kijun']:.4f}/"
+        f"{slips['senkouA']:.4f}/{slips['senkouB']:.4f} "
+        f"(tenkan/kijun/A/B), displacement worth "
+        f"{disps['senkouA']:.4f}/{disps['senkouB']:.4f}/{disps['chikou']:.4f}"
+    )
+    return {
+        "ichiTenkan": col(tenkan),
+        "ichiKijun": col(kijun),
+        "ichiSenkouA": col(senkou_a),
+        "ichiSenkouB": col(senkou_b),
+        "ichiChikou": col(chikou),
+    }
+
+
+def _zig_zag_machine(hi, lo, deviation: float, absolute: bool = False):
+    """A TRANSCRIPTION of `studies/zig-zag.ts`'s fold, not an independent
+    derivation -- ZigZag has no vendor reference to derive against, so what
+    this buys is the SEPARATIONS below, plus a second pair of eyes on the
+    seed and the one-pivot-per-bar invariant.
+
+    `absolute=True` is the fork that reads `deviation` as a price move rather
+    than a percent -- the one a reader who saw "deviation: 5" might guess.
+    """
+    n = len(hi)
+    thr = deviation / 100.0
+    pivots = []  # (bar, price, direction of the leg STARTING here)
+    d = 0
+    ext_v, ext_i = hi[0], 0
+    ctr_v, ctr_i = lo[0], 0
+    for i in range(1, n):
+        if d == 0:
+            if hi[i] > ext_v:
+                ext_v, ext_i = hi[i], i
+            if lo[i] < ctr_v:
+                ctr_v, ctr_i = lo[i], i
+            gap = ext_v - ctr_v
+            if ext_i > ctr_i and (gap >= deviation if absolute else gap >= thr * ctr_v):
+                pivots.append((ctr_i, ctr_v, 1))
+                d, ctr_i = 1, -1
+            elif ctr_i > ext_i and (
+                gap >= deviation if absolute else gap >= thr * ext_v
+            ):
+                pivots.append((ext_i, ext_v, -1))
+                d, ext_v, ext_i, ctr_i = -1, ctr_v, ctr_i, -1
+        elif d == 1:
+            if hi[i] > ext_v:
+                ext_v, ext_i, ctr_i = hi[i], i, -1
+                continue
+            if ctr_i < 0 or lo[i] < ctr_v:
+                ctr_v, ctr_i = lo[i], i
+            gap = ext_v - ctr_v
+            if (gap >= deviation) if absolute else (gap >= thr * ext_v):
+                pivots.append((ext_i, ext_v, -1))
+                d, ext_v, ext_i, ctr_i = -1, ctr_v, ctr_i, -1
+        else:
+            if lo[i] < ext_v:
+                ext_v, ext_i, ctr_i = lo[i], i, -1
+                continue
+            if ctr_i < 0 or hi[i] > ctr_v:
+                ctr_v, ctr_i = hi[i], i
+            gap = ctr_v - ext_v
+            if (gap >= deviation) if absolute else (gap >= thr * ext_v):
+                pivots.append((ext_i, ext_v, 1))
+                d, ext_v, ext_i, ctr_i = 1, ctr_v, ctr_i, -1
+    return pivots
+
+
+def _zig_zag_columns(hi, pivots):
+    """The three columns the study appends, from the confirmed pivots."""
+    n = len(hi)
+    pivot = [math.nan] * n
+    direction = [math.nan] * n
+    line = [math.nan] * n
+    for k, (idx, value, leg) in enumerate(pivots):
+        pivot[idx] = value
+        stop = pivots[k + 1][0] if k + 1 < len(pivots) else n - 1
+        for j in range(idx, stop):
+            direction[j] = leg
+        if k + 1 < len(pivots):
+            to = pivots[k + 1][1]
+            span = stop - idx
+            for j in range(idx, stop + 1):
+                line[j] = value + (to - value) * (j - idx) / span
+            line[idx], line[stop] = value, to
+        else:
+            direction[stop] = leg
+    return (
+        pd.Series(pivot, dtype="float64"),
+        pd.Series(direction, dtype="float64"),
+        pd.Series(line, dtype="float64"),
+    )
+
+
+def zig_zag(deviation: float = 5.0, source: str = "highLow", long_input: bool = False):
+    """ZigZag at a percent reversal threshold, on high/low or on the close."""
+    if long_input:
+        hi = lo = list(long_closes)
+        label = f"zigZag({deviation}, long closes)"
+    elif source == "close":
+        hi = lo = list(closes)
+        label = f"zigZag({deviation}, close-based)"
+    else:
+        hi, lo = list(highs), list(lows)
+        label = f"zigZag({deviation})"
+
+    pivots = _zig_zag_machine(hi, lo, deviation)
+    assert len(pivots) >= 3, (
+        f"{label} confirms only {len(pivots)} pivots - a case with fewer "
+        "than three cannot show a completed leg between two of them"
+    )
+    bars = [p[0] for p in pivots]
+    assert bars == sorted(set(bars)), (
+        f"{label} pivot bars {bars} are not strictly increasing - the "
+        "one-pivot-per-bar invariant is broken"
+    )
+    legs = [p[2] for p in pivots]
+    assert all(a != b for a, b in zip(legs, legs[1:])), (
+        f"{label} legs {legs} do not alternate"
+    )
+    pivot, direction, line = _zig_zag_columns(hi, pivots)
+
+    notes = []
+    if not long_input:
+        # The close-based fork: the same machine with the extremes taken from
+        # the close. (On the close-based case it IS the case, so skip it.)
+        if source != "close":
+            other = _zig_zag_machine(list(closes), list(closes), deviation)
+            same_bars = [p[0] for p in other] == bars
+            moved = (
+                max(abs(a[1] - b[1]) for a, b in zip(pivots, other))
+                if same_bars
+                else float("nan")
+            )
+            notes.append(
+                f"close-based fork: {len(other)} pivots at "
+                f"{[p[0] for p in other]}"
+                + (f", values up to {moved:.4f} away" if same_bars else "")
+            )
+            assert (
+                not same_bars or moved > 0.1
+            ), f"{label} is indistinguishable from the close-based fork"
+        # The absolute-deviation fork: `deviation` read as a price move.
+        absolute = _zig_zag_machine(hi, lo, deviation, absolute=True)
+        notes.append(
+            f"absolute fork: {len(absolute)} pivots at {[p[0] for p in absolute]}"
+        )
+    print(
+        f"  {label}: pandas transcription (no TA-Lib ZigZag); "
+        f"{len(pivots)} pivots at {bars}"
+        + ("; " + "; ".join(notes) if notes else "")
+    )
+    return {
+        "zzPivot": col(pivot),
+        "zzDirection": col(direction),
+        "zzLine": col(line),
+    }
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -7015,6 +7249,55 @@ cases = [
         "params": {"anchor": 0},
         "expected": anchored_vwap(0),
     },
+    # Ichimoku at Hosoda's published parameters. Senkou B's 52-bar window
+    # leaves 29 bars of readings on the 80-bar fixture, which is the case
+    # that pins the longest warm-up.
+    {"study": "ichimoku", "params": {}, "expected": ichimoku()},
+    {
+        # The same displacement the default case ran, spelled out, and a
+        # SHORTER one below it: `displacement` is metadata and must change no
+        # value in any column. The two cases carry byte-identical expected
+        # arrays, so a build that shifted anything fails one of them.
+        "study": "ichimoku",
+        "params": {"displacement": 5},
+        "expected": ichimoku(disp=5),
+    },
+    {
+        # Retuned windows -- the parameter set is a knob, and short windows
+        # move all five warm-ups so a hard-coded 9/26/52 fails here.
+        "study": "ichimoku",
+        "params": {"conversionPeriod": 5, "basePeriod": 13, "spanBPeriod": 26},
+        "expected": ichimoku(5, 13, 26),
+    },
+    # ZigZag at the default 5%: three confirmed pivots on the 80-bar fixture,
+    # so one completed leg sits between two of them and the last leg is
+    # provisional (no pivot, no line -- the G6 shape).
+    {"study": "zigZag", "params": {}, "expected": zig_zag()},
+    {
+        # A tighter threshold: six pivots, five completed legs, and the case
+        # where the close-based fork finds a different pivot SET rather than
+        # the same set at different prices.
+        "study": "zigZag",
+        "params": {"deviation": 2},
+        "expected": zig_zag(2),
+    },
+    {
+        # The close-based fork as a first-class case: it needs no option,
+        # only `high` and `low` pointed at the close, and the oracle runs the
+        # same machine over the closes to prove the recipe is the study.
+        "study": "zigZag",
+        "params": {"deviation": 2, "high": "close", "low": "close"},
+        "expected": zig_zag(2, source="close"),
+    },
+    {
+        # The LONG close-only input, where the tape actually turns: fifteen
+        # pivots against the short fixture's six, so the interpolated line is
+        # exercised over legs of very different lengths (13 bars to 213).
+        "study": "zigZag",
+        "params": {"deviation": 2, "high": "close", "low": "close"},
+        "input": "long",
+        "expected": zig_zag(2, long_input=True),
+    },
     # The session-anchored pair. These are the only cases on the SESSION clock
     # (`"input": "session"`) -- same 80 bars of OHLCV, keyed onto a real
     # 09:30-16:00 America/New_York grid; the vitest side rebuilds the calendar
@@ -7806,6 +8089,40 @@ out = {
                 "(35). The tie rule cannot be separated here - the fixture "
                 "holds no exact tie, which the generator asserts - and is "
                 "pinned TypeScript-side. No TA-Lib MA cross"
+            ),
+            "ichimoku": (
+                "Hosoda's five lines: Tenkan (HH+LL)/2 over 9, Kijun over "
+                "26, Senkou A the mean of the two, Senkou B over 52, Chikou "
+                "the close. The ranges are the bar's HIGH and LOW, not the "
+                "close -- the common slip, measured up to 0.2281 / 0.2383 / "
+                "0.2226 / 0.2328 on this fixture's deliberately narrow bars. "
+                "DISPLACEMENT IS DATA-ONLY: the study keys every column to "
+                "the bar it is computed from and shifts nothing (assessment "
+                "G5 -- there are no rows past the last bar for the forward "
+                "spans, and a pre-shifted Chikou would be a look-ahead "
+                "column), so a case at displacement 5 carries the same "
+                "expected values as the default. Had it applied them the "
+                "columns would move by up to 11.8087 / 5.1103 / 17.5998. "
+                "Per-column warm-up 8 / 25 / 25 / 51 / 0, asserted "
+                "analytically. No TA-Lib Ichimoku"
+            ),
+            "zigZag": (
+                "Percent-reversal pivots: a leg turns when price retraces "
+                "`deviation` percent from the leg's running extreme, "
+                "measured against the PEAK on a fall and against the TROUGH "
+                "on a rise. Extremes from high/low; the close-based fork "
+                "needs no option (point `high` and `low` at the close) and "
+                "ships as its own case. The pivot is written at the bar its "
+                "extreme OCCURRED, so all three columns repaint (G6), and "
+                "the last leg is provisional: no pivot, no line, direction "
+                "only. A pandas TRANSCRIPTION of the same fold, whose value "
+                "is the separations: at 5% the ABSOLUTE-deviation fork finds "
+                "a fourth pivot (bar 69) the percent rule does not, and at "
+                "2% the close-based fork finds four pivots against high/low's "
+                "six. The two rules this fixture cannot separate -- a bar "
+                "whose own range clears the threshold, and a run whose high "
+                "and low extremes fall on one bar -- are pinned "
+                "TypeScript-side. No TA-Lib ZigZag"
             ),
             "anchoredVwap": (
                 "cumsum(typicalPrice * volume) / cumsum(volume) from the "

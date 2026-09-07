@@ -335,3 +335,111 @@ export function rollingExtremesValues(
   }
   return { highest, lowest };
 }
+
+/**
+ * **The highest of one array and the lowest of ANOTHER, over a strict
+ * window** — the bar-range pair {@link highestLowestValues} produces, with
+ * {@link rollingExtremesValues}' strict missing-cell rule and over raw
+ * arrays rather than a series.
+ *
+ * ## Why a third door and not two `rollingExtremesValues` calls
+ *
+ * That one returns the max **and** min of a *single* array, so a caller who
+ * wants `max(high)` beside `min(low)` has to call it twice and throw away
+ * half of each answer — four deques where two would do. For one window that
+ * is invisible; {@link ichimoku} builds **three** windows and the waste was
+ * measured at 1M bars as the study's whole cost: six passes at **414 ms**
+ * against **213 ms** for the three this door makes, on a study that measured
+ * 404 ms end to end. So the door exists for exactly the reason the paired
+ * {@link highestLowestValues} exists — the caller wants a *bar range*, not
+ * two independent extremes — and this is the strict-rule, raw-array spelling
+ * of it.
+ *
+ * ## Missing cells: strict, and over BOTH arrays together
+ *
+ * Every one of the `period` cells of `highs` **and** of `lows` must be
+ * finite, or the bar reads `NaN` on **both** outputs. That is deliberately
+ * stricter than a per-array rule and it is what the consumers want: a bar
+ * range whose top is known and whose bottom is not is not a range, and every
+ * caller here goes on to combine the two (`(HH + LL) / 2`), where a `NaN`
+ * would propagate anyway. Stating it in the kernel means both outputs blank
+ * the same rows rather than each carrying its own hole — the #710 SMI rule.
+ *
+ * ## Cost — O(N), one pass, independent of `period`
+ *
+ * Two monotonic deques over ring buffers, exactly as
+ * {@link rollingExtremesValues} keeps them, but reading a different array
+ * each: the max deque walks `highs`, the min deque walks `lows`, and one
+ * shared `missing` counter covers both. Each index is pushed and popped at
+ * most once per deque.
+ */
+export function rollingBarExtremesValues(
+  highs: Float64Array,
+  lows: Float64Array,
+  period: number,
+): { highest: Float64Array; lowest: Float64Array } {
+  const length = highs.length;
+  const highest = new Float64Array(length).fill(NaN);
+  const lowest = new Float64Array(length).fill(NaN);
+  const capacity = Math.max(1, Math.min(period, length));
+  const maxRing = new Int32Array(capacity);
+  const minRing = new Int32Array(capacity);
+  let maxHead = 0;
+  let maxCount = 0;
+  let minHead = 0;
+  let minCount = 0;
+  let missing = 0;
+
+  for (let i = 0; i < length; i += 1) {
+    const high = highs[i]!;
+    const low = lows[i]!;
+    // The window is [i - period + 1, i]; count the bars in it that are
+    // incomplete on EITHER side (see the header).
+    const leaving = i - period;
+    if (
+      leaving >= 0 &&
+      !(Number.isFinite(highs[leaving]!) && Number.isFinite(lows[leaving]!))
+    ) {
+      missing -= 1;
+    }
+    const complete = Number.isFinite(high) && Number.isFinite(low);
+    if (!complete) missing += 1;
+
+    while (maxCount > 0 && maxRing[maxHead]! <= i - period) {
+      maxHead = (maxHead + 1) % capacity;
+      maxCount -= 1;
+    }
+    while (minCount > 0 && minRing[minHead]! <= i - period) {
+      minHead = (minHead + 1) % capacity;
+      minCount -= 1;
+    }
+    // As in `rollingExtremesValues`, the guard preserves the deques'
+    // invariant rather than the answer — `missing` already carries the rule.
+    if (Number.isFinite(high)) {
+      while (
+        maxCount > 0 &&
+        highs[maxRing[(maxHead + maxCount - 1) % capacity]!]! <= high
+      ) {
+        maxCount -= 1;
+      }
+      maxRing[(maxHead + maxCount) % capacity] = i;
+      maxCount += 1;
+    }
+    if (Number.isFinite(low)) {
+      while (
+        minCount > 0 &&
+        lows[minRing[(minHead + minCount - 1) % capacity]!]! >= low
+      ) {
+        minCount -= 1;
+      }
+      minRing[(minHead + minCount) % capacity] = i;
+      minCount += 1;
+    }
+
+    if (i >= period - 1 && missing === 0) {
+      highest[i] = highs[maxRing[maxHead]!]!;
+      lowest[i] = lows[minRing[minHead]!]!;
+    }
+  }
+  return { highest, lowest };
+}

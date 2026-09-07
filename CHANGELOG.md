@@ -76,7 +76,7 @@ include new features and type-level changes; patch bumps are strictly additive.
   first-class input through one shared option shape, `SessionAnchorOptions`:
   exactly one of **`sessions`** (a `TradingCalendar` or a `Session[]` — the
   primary door — a calendar is narrowed with `sessionsInRange`, an explicit
-    list validated per call — and walked once, `O(N +
+  list validated per call — and walked once, `O(N +
 sessions)`) or **`session`** (the name of a session-id column, what
   `TradingCalendar.tagSessions` appends — the door for a series already
   partitioned by session), plus `stamped: 'open' | 'close'` on the calendar
@@ -124,6 +124,45 @@ low, close, prefix = 'pp' })`** — each session's support/resistance ladder
     sequential loops; the vitest side rebuilds the calendar from the same rules
     rather than from a table, so a Temporal/`zoneinfo` disagreement about a
     session boundary fails the case rather than hiding.
+- `@pond-ts/financial`: **Ichimoku Cloud and ZigZag** (corpus §6.4) — the two
+  most-used studies left in the corpus, each shipped in the form that needs no
+  core change. Both take the uniform shape (bar columns plus a `prefix`,
+  bar-count periods, a length-preserving per-column warm-up, a fluent method)
+  and both have pandas oracle cases. One internal kernel helper rides with
+  them: **`rollingBarExtremesValues`** (the max of one array beside the min of
+  another over a strict window, in one deque walk), which the perf check
+  surfaced — Ichimoku on the single-array door spent 414 ms of its ~404 ms at
+  1M bars in six deque passes where three suffice; on the package bench the
+  study went 433.6 → 280.7 ms at 1M.
+  - **`ichimoku({ conversionPeriod = 9, basePeriod = 26, spanBPeriod = 52,
+displacement = 26, high, low, close, prefix = 'ichi' })`** — Hosoda's five
+    lines as `ichiTenkan` / `ichiKijun` / `ichiSenkouA` / `ichiSenkouB` /
+    `ichiChikou`, each the midpoint of the highest `high` and lowest `low` of
+    its own window (the Chikou span is the close). Per-column warm-up 8 / 25 /
+    25 / 51 / 0. **`displacement` changes no value**: the study keys every
+    column to the bar it is _computed from_ and shifts nothing — the forward
+    spans have no rows past the last bar to land on (assessment gap **G5**),
+    and a pre-shifted Chikou would be a look-ahead column, the one thing no
+    other column in the package is. The new **`ichimokuOffsets(options)`**
+    returns the per-column x-offset in bars (`+displacement` on the two spans,
+    `−displacement` on Chikou, `0` on the rest) for a chart to apply — the
+    data-side half of the charts ask **C2**. Measured against the common slip
+    (taking the ranges over the close): up to 0.2281 / 0.2383 / 0.2226 /
+    0.2328 on the oracle's deliberately narrow bars.
+  - **`zigZag({ deviation = 5, high, low, prefix = 'zz' })`** — the price path
+    reduced to its swings: `zzPivot` (the pivot price on its own bar),
+    `zzDirection` (`+1` rising / `−1` falling leg) and `zzLine` (the straight
+    line between consecutive pivots). A leg turns when price retraces
+    `deviation` **percent** from the leg's running extreme — measured against
+    the peak on a fall, the trough on a rise. **Every column repaints**
+    (assessment gap **G6**): a pivot is written at the bar its extreme
+    occurred but is not known until a later bar confirms it, so none of the
+    three may be fed to a backtest unlagged. The **last leg is provisional**
+    and therefore has no pivot and no line — only a direction. A gap resets
+    the machine _and_ discards the leg in force, and no line is drawn across
+    it. The close-based fork needs no option (`{ high: 'close', low: 'close' }`)
+    and ships as its own oracle case; the absolute-deviation fork is measured
+    at a whole extra pivot on the fixture.
 
 ### Changed
 

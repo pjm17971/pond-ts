@@ -265,6 +265,10 @@ import type { MovingAverageCrossOptions } from './studies/moving-average-cross.j
 import { movingAverageCross as movingAverageCrossStudy } from './studies/moving-average-cross.js';
 import type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
 import { anchoredVwap as anchoredVwapStudy } from './studies/anchored-vwap.js';
+import type { IchimokuOptions } from './studies/ichimoku.js';
+import { ichimoku as ichimokuStudy } from './studies/ichimoku.js';
+import type { ZigZagOptions } from './studies/zig-zag.js';
+import { zigZag as zigZagStudy } from './studies/zig-zag.js';
 import type { SessionVwapOptions } from './studies/session-vwap.js';
 import { sessionVwap as sessionVwapStudy } from './studies/session-vwap.js';
 import type { PivotMethod } from './kernels/pivot.js';
@@ -813,6 +817,27 @@ declare module 'pond-ts' {
     elderImpulse<const Output extends string = 'impulse'>(
       options?: ElderImpulseOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Ichimoku Kinko Hyo — five lines, no displacement applied. */
+    ichimoku<const Prefix extends string = 'ichi'>(
+      options?: IchimokuOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOptAll<
+        S,
+        [
+          `${Prefix}Tenkan`,
+          `${Prefix}Kijun`,
+          `${Prefix}SenkouA`,
+          `${Prefix}SenkouB`,
+          `${Prefix}Chikou`,
+        ]
+      >
+    >;
+    /** Fluent ZigZag (pivots, leg direction and the interpolated line). */
+    zigZag<const Prefix extends string = 'zz'>(
+      options?: ZigZagOptions<S, Prefix>,
+    ): TimeSeries<
+      AppendOptAll<S, [`${Prefix}Pivot`, `${Prefix}Direction`, `${Prefix}Line`]>
+    >;
     /** Fluent Moving Average Cross (a signal column: +1 / 0 / −1). */
     movingAverageCross<const Output extends string = 'maCross'>(
       options?: MovingAverageCrossOptions<S, Output>,
@@ -1480,4 +1505,16 @@ proto.pivotPoints = function (
   options: PivotPointsOptions<SeriesSchema, string, PivotMethod>,
 ) {
   return pivotPointsStudy(this, options);
+};
+proto.ichimoku = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: IchimokuOptions<SeriesSchema, string>,
+) {
+  return ichimokuStudy(this, options);
+};
+proto.zigZag = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ZigZagOptions<SeriesSchema, string>,
+) {
+  return zigZagStudy(this, options);
 };
