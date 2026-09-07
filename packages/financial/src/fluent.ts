@@ -201,6 +201,27 @@ import {
 } from './studies/volume-index.js';
 import type { KlingerOptions } from './studies/klinger.js';
 import { klinger as klingerStudy } from './studies/klinger.js';
+import type { StochasticMomentumIndexOptions } from './studies/stochastic-momentum-index.js';
+import { stochasticMomentumIndex as stochasticMomentumIndexStudy } from './studies/stochastic-momentum-index.js';
+import type { FisherTransformOptions } from './studies/fisher-transform.js';
+import { fisherTransform as fisherTransformStudy } from './studies/fisher-transform.js';
+import type { SchaffTrendCycleOptions } from './studies/schaff-trend-cycle.js';
+import { schaffTrendCycle as schaffTrendCycleStudy } from './studies/schaff-trend-cycle.js';
+import type { PrettyGoodOscillatorOptions } from './studies/pretty-good-oscillator.js';
+import { prettyGoodOscillator as prettyGoodOscillatorStudy } from './studies/pretty-good-oscillator.js';
+import type { SwingIndexOptions } from './studies/swing-index.js';
+import {
+  swingIndex as swingIndexStudy,
+  accumulativeSwingIndex as accumulativeSwingIndexStudy,
+} from './studies/swing-index.js';
+import type { RandomWalkIndexOptions } from './studies/random-walk-index.js';
+import { randomWalkIndex as randomWalkIndexStudy } from './studies/random-walk-index.js';
+import type { RaviOptions } from './studies/ravi.js';
+import { ravi as raviStudy } from './studies/ravi.js';
+import type { TrendIntensityIndexOptions } from './studies/trend-intensity-index.js';
+import { trendIntensityIndex as trendIntensityIndexStudy } from './studies/trend-intensity-index.js';
+import type { SpecialKOptions } from './studies/special-k.js';
+import { specialK as specialKStudy } from './studies/special-k.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -627,6 +648,46 @@ declare module 'pond-ts' {
     klinger<const Prefix extends string = 'kvo'>(
       options?: KlingerOptions<S, Prefix>,
     ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Stochastic Momentum Index (Blau; line + signal). */
+    stochasticMomentumIndex<const Prefix extends string = 'smi'>(
+      options?: StochasticMomentumIndexOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Ehlers Fisher Transform (line + one-bar-delayed trigger). */
+    fisherTransform<const Prefix extends string = 'fisher'>(
+      options?: FisherTransformOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, Prefix>, `${Prefix}Signal`>>;
+    /** Fluent Schaff Trend Cycle. */
+    schaffTrendCycle<const Output extends string = 'stc'>(
+      options?: SchaffTrendCycleOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Pretty Good Oscillator. */
+    prettyGoodOscillator<const Output extends string = 'pgo'>(
+      options?: PrettyGoodOscillatorOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Swing Index (Wilder; `limit` is required). */
+    swingIndex<const Output extends string = 'si'>(
+      options: SwingIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Accumulative Swing Index (Wilder; `limit` is required). */
+    accumulativeSwingIndex<const Output extends string = 'asi'>(
+      options: SwingIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Random Walk Index (`${prefix}High` + `${prefix}Low`). */
+    randomWalkIndex<const Prefix extends string = 'rwi'>(
+      options?: RandomWalkIndexOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}High`>, `${Prefix}Low`>>;
+    /** Fluent RAVI (Chande's Range Action Verification Index). */
+    ravi<const Output extends string = 'ravi'>(
+      options?: RaviOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Trend Intensity Index. */
+    trendIntensityIndex<const Output extends string = 'tii'>(
+      options?: TrendIntensityIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Pring's Special K. */
+    specialK<const Output extends string = 'specialK'>(
+      options?: SpecialKOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
 
@@ -1094,4 +1155,64 @@ proto.movingAverageDeviation = function (
   options?: MovingAverageDeviationOptions<SeriesSchema, string>,
 ) {
   return movingAverageDeviationStudy(this, options);
+};
+proto.stochasticMomentumIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: StochasticMomentumIndexOptions<SeriesSchema, string>,
+) {
+  return stochasticMomentumIndexStudy(this, options);
+};
+proto.fisherTransform = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: FisherTransformOptions<SeriesSchema, string>,
+) {
+  return fisherTransformStudy(this, options);
+};
+proto.schaffTrendCycle = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: SchaffTrendCycleOptions<SeriesSchema, string>,
+) {
+  return schaffTrendCycleStudy(this, options);
+};
+proto.prettyGoodOscillator = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: PrettyGoodOscillatorOptions<SeriesSchema, string>,
+) {
+  return prettyGoodOscillatorStudy(this, options);
+};
+proto.swingIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options: SwingIndexOptions<SeriesSchema, string>,
+) {
+  return swingIndexStudy(this, options);
+};
+proto.accumulativeSwingIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options: SwingIndexOptions<SeriesSchema, string>,
+) {
+  return accumulativeSwingIndexStudy(this, options);
+};
+proto.randomWalkIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RandomWalkIndexOptions<SeriesSchema, string>,
+) {
+  return randomWalkIndexStudy(this, options);
+};
+proto.ravi = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: RaviOptions<SeriesSchema, string>,
+) {
+  return raviStudy(this, options);
+};
+proto.trendIntensityIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: TrendIntensityIndexOptions<SeriesSchema, string>,
+) {
+  return trendIntensityIndexStudy(this, options);
+};
+proto.specialK = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: SpecialKOptions<SeriesSchema, string>,
+) {
+  return specialKStudy(this, options);
 };

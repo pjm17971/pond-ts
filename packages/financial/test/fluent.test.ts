@@ -76,6 +76,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -1130,5 +1140,125 @@ describe('fluent: the moving-average stacks', () => {
   it('honours prefix and type through the fluent door', () => {
     const two = stackBars().guppy().guppy({ type: 'sma', prefix: 'gs' });
     expect(col(two, 'gmmaS15')[40]).not.toBeCloseTo(col(two, 'gsS15')[40]!, 6);
+  });
+});
+
+describe('fluent: the momentum and trend leftovers', () => {
+  const leftoverBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 90 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.7) + 0.2 * i;
+        const o = c - 0.8 * Math.cos(i / 2.3);
+        return [
+          i,
+          o,
+          Math.max(o, c) + 0.5 + 0.6 * Math.abs(Math.sin(i / 2.1)),
+          Math.min(o, c) - 0.5 - 0.6 * Math.abs(Math.cos(i / 1.7)),
+          c,
+        ];
+      }) as Array<[number, number, number, number, number]>,
+    });
+
+  it('chains all ten and matches the standalone functions bar for bar', () => {
+    const smiOpts = { period: 6, longPeriod: 8, shortPeriod: 3 } as const;
+    const stcOpts = {
+      fastPeriod: 6,
+      slowPeriod: 14,
+      cyclePeriod: 5,
+    } as const;
+    const tiiOpts = { period: 8, maPeriod: 16 } as const;
+    const raviOpts = { shortPeriod: 5, longPeriod: 20 } as const;
+    const fluent = leftoverBars()
+      .stochasticMomentumIndex(smiOpts)
+      .fisherTransform({ period: 8 })
+      .schaffTrendCycle(stcOpts)
+      .prettyGoodOscillator({ period: 10 })
+      .swingIndex({ limit: 5 })
+      .accumulativeSwingIndex({ limit: 5 })
+      .randomWalkIndex({ period: 8 })
+      .ravi(raviOpts)
+      .trendIntensityIndex(tiiOpts);
+    const functional = trendIntensityIndex(
+      ravi(
+        randomWalkIndex(
+          accumulativeSwingIndex(
+            swingIndex(
+              prettyGoodOscillator(
+                schaffTrendCycle(
+                  fisherTransform(
+                    stochasticMomentumIndex(leftoverBars(), smiOpts),
+                    { period: 8 },
+                  ),
+                  stcOpts,
+                ),
+                { period: 10 },
+              ),
+              { limit: 5 },
+            ),
+            { limit: 5 },
+          ),
+          { period: 8 },
+        ),
+        raviOpts,
+      ),
+      tiiOpts,
+    );
+    for (const name of [
+      'smi',
+      'smiSignal',
+      'fisher',
+      'fisherSignal',
+      'stc',
+      'pgo',
+      'si',
+      'asi',
+      'rwiHigh',
+      'rwiLow',
+      'ravi',
+      'tii',
+    ]) {
+      expect(col(fluent, name), name).toEqual(col(functional, name));
+      expect(
+        col(fluent, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('specialK through the fluent door equals the standalone function', () => {
+    // Its 724-bar warm-up needs its own, longer, series.
+    const longBars = () =>
+      new TimeSeries({
+        name: 'bars',
+        schema: closeSchema,
+        rows: Array.from({ length: 740 }, (_, i) => [
+          i,
+          100 + 20 * Math.sin(i / 70) + 0.01 * i,
+        ]) as Array<[number, number]>,
+      });
+    const chained = longBars().specialK();
+    const standalone = specialK(longBars());
+    expect(col(chained, 'specialK')).toEqual(col(standalone, 'specialK'));
+    expect(col(chained, 'specialK').some((x) => typeof x === 'number')).toBe(
+      true,
+    );
+  });
+
+  it('honours prefix / output through the fluent door', () => {
+    const two = leftoverBars()
+      .randomWalkIndex({ period: 6 })
+      .randomWalkIndex({ period: 30, prefix: 'slow' });
+    expect(col(two, 'rwiHigh')[40]).not.toBeCloseTo(
+      col(two, 'slowHigh')[40]!,
+      6,
+    );
   });
 });

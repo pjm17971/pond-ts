@@ -80,6 +80,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../dist/index.js';
 
 const PERIOD = 20;
@@ -501,6 +511,41 @@ function scaleResults(length) {
       benchmark('negativeVolumeIndex()', () => negativeVolumeIndex(series)),
       benchmark('positiveVolumeIndex()', () => positiveVolumeIndex(series)),
       benchmark('klinger({ 34, 55, 13 })', () => klinger(series)),
+      // The momentum and trend leftovers (assessment 6.3 / 6.4 / 6.1).
+      // Everything here is a compose-only study except `randomWalkIndex`,
+      // whose kernel is the one deliberately O(N·period) walk in the batch:
+      // the two entries below sit side by side so the linearity in `period`
+      // stays visible, and the `swingIndexValues` pair shows the kernel's
+      // own cost against the study that appends it.
+      benchmark('stochasticMomentumIndex({ 13, 25, 2, 3 })', () =>
+        stochasticMomentumIndex(series),
+      ),
+      benchmark('fisherTransform({ period: 10 })', () =>
+        fisherTransform(series),
+      ),
+      benchmark('schaffTrendCycle({ 23, 50, 10 })', () =>
+        schaffTrendCycle(series),
+      ),
+      benchmark('prettyGoodOscillator({ period: 14 })', () =>
+        prettyGoodOscillator(series),
+      ),
+      benchmark('swingIndex({ limit: 5 })', () =>
+        swingIndex(series, { limit: 5 }),
+      ),
+      benchmark('accumulativeSwingIndex({ limit: 5 })', () =>
+        accumulativeSwingIndex(series, { limit: 5 }),
+      ),
+      benchmark('randomWalkIndex({ period: 14 })', () =>
+        randomWalkIndex(series),
+      ),
+      benchmark('randomWalkIndex({ period: 50 })', () =>
+        randomWalkIndex(series, { period: 50 }),
+      ),
+      benchmark('ravi({ 7, 65 })', () => ravi(series)),
+      benchmark('trendIntensityIndex({ 30, 60 })', () =>
+        trendIntensityIndex(series),
+      ),
+      benchmark('specialK()', () => specialK(series)),
     ],
   };
 }

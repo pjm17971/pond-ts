@@ -1846,6 +1846,177 @@ form goes first per iteration removed it. Duplicating the recursion instead
 of delegating would recover the 0.55 ms and was rejected: a second copy of
 the engine's EMA is precisely what the engine exists to prevent.
 
+**Landed — the momentum and trend leftovers (§6.3/§6.4).**
+`stochasticMomentumIndex`, `fisherTransform`, `schaffTrendCycle`,
+`prettyGoodOscillator`, `swingIndex`, `accumulativeSwingIndex`,
+`randomWalkIndex`, `ravi`, `trendIntensityIndex` and `specialK` — ten studies,
+plus two internal kernels (`swingIndexValues`, `randomWalkValues`) and a
+second, longer oracle input. Eighteen oracle cases; 177 in the fixture.
+Decisions:
+
+(1) **The oracle grew a second input, and it was Special K that forced it.**
+Pring's Special K first prints on bar **724** (a 530-bar rate of change
+smoothed over 195) and the fixture is 80 bars, so a case on it would have been
+entirely `null` and would have passed **vacuously** — the exact failure mode
+the "a name mismatch reads all-null and the test passes vacuously" note in the
+studies README warns about, arrived at from a different direction. The fix is
+a separate `longCloses` array of 900 bars in `input`, with cases carrying
+`"input": "long"` and the vitest side building a close-only series from it;
+extending `closes` instead would have recomputed all 159 existing cases and
+turned a ten-study addition into a whole-fixture diff. Four other cases moved
+onto it once it existed, and each move is a finding rather than a convenience:
+**TII** at Pee's own 30/60 needs 89 bars; **STC** at Schaff's 23/50/10 has six
+values on 80 bars and every one of them is exactly 0; **RAVI** at Chande's
+7/65 has sixteen, over which the fast average never once crosses below the
+slow one — so the **absolute value, which is the whole study**, would have
+been untested. The long series' drift is deliberately slight (0.01/bar against
+the short one's 0.15): at a 0.05 drift all twelve Special K terms are positive
+at once and the line runs 151.5…379.3 without ever crossing zero (measured).
+Three asserts in the generator hold all of that if the series ever changes.
+
+(2) **`swingIndex`'s `limit` is REQUIRED — the second required option in the
+package, after `benchmark`.** Wilder's `T` is the instrument's daily limit
+move: a fact about the contract, not about the study, and the ±100 bound the
+index is _defined_ by depends on it. Every candidate default is wrong in a way
+that does not announce itself — `1` (what several charting packages ship)
+rescales the reading by the instrument's price level, so two symbols' swing
+indices stop being comparable, and "the bar's own range" makes `K/limit` a
+ratio of two quantities that both move with volatility, i.e. a different
+indicator wearing this one's name. So it follows `correlation`'s `benchmark`
+precedent: the one number only the caller knows, named rather than guessed,
+with the docstring telling an equities caller that passing a typical daily
+range _is_ the choice they are making. `0`, negative and non-finite are
+rejected. The property tests carry the consequence: the study is
+scale-**equivariant**, and invariant only when `limit` scales too — a build
+that dropped the `K/limit` factor would be scale-invariant, which is what
+makes the pair a test rather than decoration.
+
+(3) **The Schaff Trend Cycle's flat window is a sharp edge, not a corner
+case, and the package's rule bites visibly.** The common TradingView port
+writes `nz(frac[1])` on a flat stochastic window — it repeats the previous
+reading as if it had been observed. This package does not, anywhere:
+`percentOfRangeValues` owns the rule and a flat window is `undefined`. What
+that costs here is worth recording, because it is not hypothetical: a
+sustained trend pins the **first** stochastic at 100 for `cyclePeriod` bars,
+the `0.5` smoothing of a constant is that constant, so the **second** window
+is exactly flat and the line goes missing during the strongest part of the
+move. On the package's own 80-bar oracle input at the defaults the MACD rises
+monotonically for sixteen bars and the line starts at bar **74** rather than
+the analytic **67** — so the generator asserts the analytic bar as a _lower
+bound_ plus a proof that every null past it really is a flat second window,
+rather than an equality that would have had to be fudged. Considered and
+rejected: holding the previous value for this one study, which would have
+made it the only place in the package that reports a position in a range with
+no positions in it.
+
+(4) **The Random Walk Index is the G2 shape, and it ships O(N·period)
+knowingly.** Its reducer needs a _different_ rolling statistic at every
+horizon inside the window — `meanTR(n)` for each `n` in `2 … period` — which
+none of `rollingValues`, `rollingExtremesValues` or `foldRows` can express.
+The one-`ATR(period)`-for-every-horizon shortcut is a **different indicator**,
+not an optimisation: it drops the `n`-specific volatility estimate that makes
+the `√n` comparison mean anything. So the sweep lives in
+`kernels/random-walk.ts`, folding one horizon at a time so that memory stays
+O(N) whatever `period` is, and the cost is documented rather than hidden —
+328 ms at `period 14` and 1194 ms at `period 50` on 1M bars, i.e. ~25 ms per
+horizon at both, with the two entries kept side by side in the bench so the
+linearity stays visible. The denominator is the `n`-bar **mean** true range
+rather than Wilder's ATR, on Poulos' own words and on the structural argument
+that `√n` is a claim about `n` independent steps; the Wilder variant is
+measured (0.190 apart at `period 14`) and its separation **shrinks with
+`period`** (0.031 at 30), because the recursion and the mean converge — so it
+is the short horizons where the choice shows. Also worth stating plainly, and
+missed by the "distance travelled" description: both columns go **negative**
+when every horizon fell.
+
+(5) **Three F-AMBIG forks, each named and measured.** `prettyGoodOscillator`
+ships Mark Johnson's span-EMA-of-true-range denominator; the Wilder-`ATR` port
+is 0.211 away at `period 14` (and 0.084 at 5, the harder case, which is why
+both are asserted). `trendIntensityIndex` ships M. H. Pee's **sums** of
+deviations rather than the common **count** of positive ones — the sum form is
+weighted by how far price strayed, which is the "intensity" the name refers
+to, and the count form is 28.85 away. `ravi` ships Chande's 7/65 and his
+**absolute value**: the signed form is 26.98 away on a reading whose own range
+is 0…16.40, i.e. more than the whole scale, because it goes negative where
+this one does not. `stochasticMomentumIndex` is a fourth in substance if not
+in the corpus' flag list: Blau's `(13, 25, 2)` ship and the short `(5, 3, 3)`
+fork sits 108.99 away.
+
+(6) **`undefined` for a `0/0` needed a sharper test than "is the numerator
+forced to zero", and TII is where it got one.** #699's rule says a forced-zero
+numerator makes the value `0` (a flat bar's close location) rather than
+missing (a stochastic's flat window). TII's denominator is `Σ|dev|`, so a zero
+denominator forces `Σpos = 0` **unconditionally** — there is no
+redirected-column escape, unlike every other study in this batch. It still
+reads `undefined`, and the reason is the refinement: a forced zero is
+necessary but not sufficient, because the answer also has to be _determined_.
+Here it is not — the ratio approaches 100 from a run of tiny positive
+deviations and 0 from tiny negative ones — so `0` would read "every deviation
+was negative", which is exactly what did not happen. `clvValues`' flat bar is
+the contrasting case, where `0` genuinely is the limit from either side. The
+same test settles `swingIndex`'s `R = 0` (`K` is zero on the same bars, so the
+expression is `0/0` however it is grouped) and, from the other side,
+`randomWalkIndex`'s zero denominator (`low[i−n]` sits outside the true-range
+window and is not forced to match today's high, so it is a real number over
+zero).
+
+(7) **A zero-denominator guard is only live if a test can reach it with a
+non-zero numerator — and three of ours could not.** The first mutation matrix
+had five survivors; two were provable and three were bad tests. `ravi`'s guard
+test used `[-1, 1, -1, 1]`, where the **short** average is zero too, so the
+division was a `0/0` and read `undefined` with or without the guard; the same
+for `randomWalkIndex` on an all-flat series and for `stochasticMomentumIndex`,
+whose redirected-`close` fixture was only twelve bars long against a 24-bar
+default warm-up, so the guard was never reached at all. Each now uses a
+fixture where the numerator is genuinely non-zero over a zero denominator
+(`[4, −6, 1, 1]`; a wide first bar closing on its own low, then a frozen tape;
+short periods on the flat series). The distinction matters more here than
+#703's dead-guard rule suggests, because `withColumn` **throws** on a
+non-finite cell rather than recording it (measured) — an unguarded division
+would not mislead, it would take the study down.
+
+(8) **Two mutations survive by proof, and both are recorded in the kernel.**
+`swingIndexValues`' three `R` branches are tried `A`, `B`, `D`, and swapping
+the first two changes no output: `A = B` forces either `t = 0` or `H = L`, and
+in both cases `A − 0.5·B = B − 0.5·A`. `randomWalkValues`' `i < n` half of its
+`blank` test is redundant because `meanTR(n)` is strict and therefore already
+`NaN` on those rows; it stays because it says at the point of use which rows
+are warm-up and keeps the loop off negative indices — the same reasoning
+`rollingExtremesValues`' `Number.isFinite` guard carries. 51 mutations, 49
+caught (1–15 failing tests each), 2 survivors, both explained above.
+
+(9) **Two Blau studies, one vocabulary.** `stochasticMomentumIndex` takes
+`longPeriod` / `shortPeriod` in that application order — the same two knobs
+`trueStrengthIndex` exposes, because they are the same double-smoothing by the
+same author, who writes both as `r` and `s`. `schaffTrendCycle` spells its
+look-back `cyclePeriod` rather than the vendors' bare `cycle`, and `ravi`
+`shortPeriod` / `longPeriod` rather than `short` / `long`, on the rule
+`trueStrengthIndex` set: bare "long" is position vocabulary in a financial
+package. The `0.5` recursions in the STC and the `0.33/0.67` in the Fisher
+transform are **constants, not options with defaults** — exposing Ehlers'
+clamp would invite a caller to set it to `1.0` and get a study that throws on
+real data.
+
+(10) **The state machines' oracles are transcriptions, and the write-up says
+so.** `fisherTransform` and `schaffTrendCycle` carry state, so their pandas
+side re-implements the same step rather than deriving the answer
+independently — the point the #708 review made, and it holds here. What
+carries the verification instead is stated on both docstrings and asserted in
+the generator: the analytic first-valid bar (or, for the STC, the bound plus a
+flat-window proof), and a measured separation from the plausible wrong turn —
+the high/low-extremes port (5.95) and the dropped second smoothing (3.80) for
+the Fisher, the unsmoothed double stochastic (98.30) for the STC. A
+transcription that agreed with the _wrong definition_ would still fail those.
+
+Perf at 1M bars (`scripts/perf-studies.mjs`, same run): `swingIndex` 21.8 ms,
+`accumulativeSwingIndex` 19.0, `ravi` 48.6, `prettyGoodOscillator` 54.8,
+`trendIntensityIndex` 70.5, `fisherTransform` 106.5, `schaffTrendCycle` 129.6,
+`stochasticMomentumIndex` 189.1, `specialK` 290.8, `randomWalkIndex` 328.1 at
+`period 14` and 1194.2 at 50. References on the same run: `ema()` 6.9,
+`sma()` 20.5, `bollinger()` 73.7, `donchian()` 143.3, `stochasticRsi()` 114.6.
+Only `randomWalkIndex` owns a super-linear cost, and it is the documented
+`O(N·period)`; everything else is its kernels'.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

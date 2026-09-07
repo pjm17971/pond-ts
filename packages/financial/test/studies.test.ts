@@ -82,6 +82,16 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  stochasticMomentumIndex,
+  fisherTransform,
+  schaffTrendCycle,
+  prettyGoodOscillator,
+  swingIndex,
+  accumulativeSwingIndex,
+  randomWalkIndex,
+  ravi,
+  trendIntensityIndex,
+  specialK,
 } from '../src/index.js';
 
 /** A close-only bar series at 1ms spacing (value = the close). */
@@ -6860,7 +6870,7 @@ describe('the two-series oracle cases are in the fixture', () => {
     // 1 pmo, 2 stochRsi, 2 tsi, 2 maDev). A case that silently disappears
     // takes its study's only value check with it, and nothing else would
     // notice.
-    expect(fixture.cases).toHaveLength(159);
+    expect(fixture.cases).toHaveLength(177);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -8420,5 +8430,1076 @@ describe('movingAverageDeviation', () => {
     );
     expect(v).toHaveLength(3);
     expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/* The momentum and trend leftovers (assessment 6.3 / 6.4 / 6.1):            */
+/* stochasticMomentumIndex, fisherTransform, schaffTrendCycle,               */
+/* prettyGoodOscillator, swingIndex / accumulativeSwingIndex,                */
+/* randomWalkIndex, ravi, trendIntensityIndex, specialK.                     */
+/*                                                                           */
+/* The oracle pins the VALUES on a clean 80-bar (and, for three of these, a  */
+/* 900-bar) fixture. What is pinned here is what it cannot see: the          */
+/* hand-computed arithmetic on tiny fixtures, the definition forks, the      */
+/* zero-denominator guards, WHERE the missing rows land, the state           */
+/* machines' reset rule, the defaults and the validation.                    */
+/* ========================================================================== */
+
+/** OHLC bars whose four prices may each be missing — the gap cases. */
+const momGappy = (
+  rows: Array<
+    [
+      number | undefined,
+      number | undefined,
+      number | undefined,
+      number | undefined,
+    ]
+  >,
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+    ] as const,
+    rows: rows.map(([o, h, l, c], i) => [i, o, h, l, c]) as Array<
+      [
+        number,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+        number | undefined,
+      ]
+    >,
+  });
+
+describe('stochasticMomentumIndex', () => {
+  it('is 100·M/H once both smoothings are the identity, hand-computed', () => {
+    // Span-1 EMAs have α = 2/(1+1) = 1, so both stages are the identity and
+    // the study reduces to the raw reading — which is what makes the
+    // arithmetic checkable by hand.
+    //   bar 1: HH = max(12,14) = 14, LL = min(10,11) = 10, mid = 12
+    //          M = 13 − 12 = 1, H = (14−10)/2 = 2  → 100·1/2 = 50
+    //   bar 2: HH = max(14,13) = 14, LL = min(11,12) = 11, mid = 12.5
+    //          M = 12.5 − 12.5 = 0                  → 0
+    const r = stochasticMomentumIndex(
+      hlcBars([
+        [12, 10, 11],
+        [14, 11, 13],
+        [13, 12, 12.5],
+      ]),
+      { period: 2, longPeriod: 1, shortPeriod: 1, signalPeriod: 1 },
+    );
+    expect(col(r, 'smi')).toEqual([undefined, 50, 0]);
+    // A span-1 signal is the line itself.
+    expect(col(r, 'smiSignal')).toEqual([undefined, 50, 0]);
+  });
+
+  it('smooths the numerator and the denominator SEPARATELY, hand-computed', () => {
+    // The same bars with the second stage at span 2 (α = 2/3), seeded on the
+    // first finite value and emitting once two have been consumed:
+    //   numerator   M = [_, 1, 0]      → EMA2 = [_, _, (2/3)·0 + (1/3)·1 = 1/3]
+    //   denominator H = [_, 2, 1.5]    → EMA2 = [_, _, (2/3)·1.5 + (1/3)·2 = 5/3]
+    //   smi[2] = 100 · (1/3) / (5/3) = 20
+    // A build that smoothed the RATIO instead would read 100·0/1.5 = 0 here.
+    const r = stochasticMomentumIndex(
+      hlcBars([
+        [12, 10, 11],
+        [14, 11, 13],
+        [13, 12, 12.5],
+      ]),
+      { period: 2, longPeriod: 1, shortPeriod: 2, signalPeriod: 1 },
+    );
+    expect(col(r, 'smi')).toEqual([undefined, undefined, 20]);
+  });
+
+  it('warms up per column: the line at period+long+short−3, the signal later', () => {
+    const r = stochasticMomentumIndex(hlcBars(wavyBars(60)), {
+      period: 4,
+      longPeriod: 5,
+      shortPeriod: 3,
+      signalPeriod: 4,
+    });
+    const line = col(r, 'smi');
+    const signal = col(r, 'smiSignal');
+    expect(line.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(line[9]).toBeDefined();
+    expect(signal.slice(0, 12).every((x) => x === undefined)).toBe(true);
+    expect(signal[12]).toBeDefined();
+    expect(line).toHaveLength(60);
+  });
+
+  it('stays inside −100…100 with the default close, on a real fixture', () => {
+    const line = col(stochasticMomentumIndex(hlcBars(wavyBars(80))), 'smi');
+    const values = line.filter((x) => x !== undefined) as number[];
+    expect(values.length).toBeGreaterThan(20);
+    expect(Math.max(...values.map(Math.abs))).toBeLessThanOrEqual(100);
+  });
+
+  it('a wholly flat range is undefined, and the guard is LIVE on a redirected close', () => {
+    // Every bar flat, so the smoothed denominator is exactly 0.
+    const flat = Array.from({ length: 12 }, () => [10, 10, 10]) as Array<
+      [number, number, number]
+    >;
+    expect(
+      col(stochasticMomentumIndex(hlcBars(flat), { period: 2 }), 'smi').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    // Now point `close` at a column the range does NOT bound: the numerator
+    // is no longer forced to zero, so without the guard the division would
+    // print ±Infinity rather than a reading. (`withColumn` rejects an
+    // infinity outright, so this would throw, not merely mislead.)
+    const outside = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'other', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 12 }, (_, i) => [
+        i,
+        10,
+        10,
+        10,
+        50 + i,
+      ]) as Array<[number, number, number, number, number]>,
+    });
+    // The periods have to be SHORT enough for the smoothed denominator to
+    // exist at all on twelve bars — at the defaults the whole column is
+    // still warming up and the guard is never reached (which is how a first
+    // draft of this test let the mutation survive).
+    const r = stochasticMomentumIndex(outside as never, {
+      period: 2,
+      longPeriod: 2,
+      shortPeriod: 2,
+      signalPeriod: 2,
+      close: 'other' as never,
+    });
+    expect(col(r, 'smi').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('renames both columns with `prefix` and honours the three input names', () => {
+    const r = stochasticMomentumIndex(hlcBars(wavyBars(60)), {
+      period: 4,
+      longPeriod: 5,
+      shortPeriod: 3,
+      signalPeriod: 2,
+      prefix: 'blau',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+    });
+    expect(col(r, 'blau')[30]).toBeDefined();
+    expect(col(r, 'blauSignal')[30]).toBeDefined();
+    expect(col(r, 'smi').every((x) => x === undefined)).toBe(true);
+    // A misnamed input reads all-missing, as every other study's does.
+    expect(
+      col(
+        stochasticMomentumIndex(hlcBars(wavyBars(60)), {
+          period: 4,
+          close: 'nope' as never,
+        }),
+        'smi',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('validates its four periods and a colliding prefix', () => {
+    const b = hlcBars(wavyBars(40));
+    expect(() => stochasticMomentumIndex(b, { period: 0 })).toThrow(TypeError);
+    expect(() => stochasticMomentumIndex(b, { longPeriod: 1.5 })).toThrow(
+      /longPeriod/,
+    );
+    expect(() => stochasticMomentumIndex(b, { shortPeriod: -1 })).toThrow(
+      /shortPeriod/,
+    );
+    expect(() => stochasticMomentumIndex(b, { signalPeriod: 0 })).toThrow(
+      /signalPeriod/,
+    );
+    const once = stochasticMomentumIndex(b);
+    expect(() => stochasticMomentumIndex(once as never)).toThrow(/collides/);
+  });
+});
+
+describe('fisherTransform', () => {
+  it('runs Ehlers’ two recursions from his implicit zeros, hand-computed', () => {
+    // period 2 over the MEDIAN price [11, 13, 12]:
+    //   bar 1: range {11,13} → position 100% → x = +1
+    //          value = 0.33·1 + 0.67·0 = 0.33
+    //          fish  = 0.5·ln(1.33/0.67) + 0.5·0
+    //   bar 2: range {13,12} → position 0%  → x = −1
+    //          value = 0.33·(−1) + 0.67·0.33
+    //          fish  = 0.5·ln((1+v)/(1−v)) + 0.5·fish[1]
+    const r = fisherTransform(
+      hlcBars([
+        [12, 10, 11],
+        [14, 12, 13],
+        [13, 11, 12],
+      ]),
+      { period: 2 },
+    );
+    const f1 = 0.5 * Math.log(1.33 / 0.67);
+    const v2 = 0.33 * -1 + 0.67 * 0.33;
+    const f2 = 0.5 * Math.log((1 + v2) / (1 - v2)) + 0.5 * f1;
+    const line = col(r, 'fisher');
+    expect(line[0]).toBeUndefined();
+    expect(line[1]).toBeCloseTo(f1, 12);
+    expect(line[2]).toBeCloseTo(f2, 12);
+    // The signal is the PREVIOUS bar's line, so it starts one bar later.
+    expect(col(r, 'fisherSignal')[1]).toBeUndefined();
+    expect(col(r, 'fisherSignal')[2]).toBeCloseTo(f1, 12);
+  });
+
+  it('clamps at ±0.999 rather than diverging at ±1', () => {
+    // A run of bars each making a new high keeps the normalised price at +1,
+    // so `value` converges on 1 geometrically and would send `ln` to
+    // infinity. Ehlers' clamp is what keeps the column finite — and the
+    // clamped value is reachable: 0.33·Σ0.67ᵏ passes 0.99 after 14 bars.
+    const rising = Array.from({ length: 30 }, (_, i) => [
+      10 + i,
+      9 + i,
+      9.5 + i,
+    ]) as Array<[number, number, number]>;
+    const line = col(fisherTransform(hlcBars(rising), { period: 2 }), 'fisher');
+    const values = line.filter((x) => x !== undefined) as number[];
+    expect(values.length).toBe(29);
+    expect(values.every((x) => Number.isFinite(x))).toBe(true);
+    // The clamp bounds each bar's transform at 0.5·ln(1.999/0.001) = 3.800,
+    // and the second smoothing `f = a + 0.5·f[−1]` converges to TWICE that
+    // — ln(1999) = 7.600 — which is the line's ceiling and where it lands.
+    const ceiling = Math.log(1.999 / 0.001);
+    expect(Math.max(...values)).toBeLessThanOrEqual(ceiling + 1e-9);
+    // Within 1e-5 of it after the run's 29 bars — the `0.5ᵏ` approach to the
+    // fixed point, not a different bound.
+    expect(Math.max(...values)).toBeGreaterThan(ceiling - 1e-4);
+  });
+
+  it('a flat window RESETS the machine — the bar is missing and the next re-seeds', () => {
+    // Bars 2 and 3 repeat bar 1 exactly, so the 2-bar median-price range is
+    // flat on bars 2 and 3 (a 0/0 → undefined), and bar 4 seeds a fresh run.
+    const r = fisherTransform(
+      hlcBars([
+        [12, 10, 11],
+        [14, 12, 13],
+        [14, 12, 13],
+        [14, 12, 13],
+        [16, 14, 15],
+      ]),
+      { period: 2 },
+    );
+    const line = col(r, 'fisher');
+    expect(line[0]).toBeUndefined();
+    expect(line[1]).toBeDefined();
+    expect(line[2]).toBeUndefined();
+    expect(line[3]).toBeUndefined();
+    // Bar 4 is the first bar of a FRESH run, so it re-seeds at Ehlers' zeros
+    // and prints 0.5·ln(1.33/0.67) again — the same value bar 1 printed,
+    // not a continuation of it.
+    expect(line[4]).toBeCloseTo(0.5 * Math.log(1.33 / 0.67), 12);
+    // …and the trigger is missing there, because there is no previous bar in
+    // the new run.
+    expect(col(r, 'fisherSignal')[4]).toBeUndefined();
+  });
+
+  it('a missing high or low resets the machine on exactly that bar', () => {
+    const r = fisherTransform(
+      momGappy([
+        [10, 12, 10, 11],
+        [12, 14, 12, 13],
+        [13, undefined, 11, 12],
+        [12, 16, 14, 15],
+        [15, 18, 16, 17],
+      ]),
+      { period: 2 },
+    );
+    const line = col(r, 'fisher');
+    // Bar 2's median price is missing, and so is every 2-bar range holding
+    // it — bars 2 and 3 — after which the machine re-seeds on bar 4.
+    expect(line[1]).toBeDefined();
+    expect(line[2]).toBeUndefined();
+    expect(line[3]).toBeUndefined();
+    expect(line[4]).toBeCloseTo(0.5 * Math.log(1.33 / 0.67), 12);
+  });
+
+  it('warms up at period − 1, the signal one bar later', () => {
+    const r = fisherTransform(hlcBars(wavyBars(40)), { period: 6 });
+    expect(
+      col(r, 'fisher')
+        .slice(0, 5)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(r, 'fisher')[5]).toBeDefined();
+    expect(col(r, 'fisherSignal')[5]).toBeUndefined();
+    expect(col(r, 'fisherSignal')[6]).toBeDefined();
+    expect(col(r, 'fisher')).toHaveLength(40);
+  });
+
+  it('period 1 makes every window flat, so the whole column is undefined', () => {
+    const r = fisherTransform(hlcBars(wavyBars(20)), { period: 1 });
+    expect(col(r, 'fisher').every((x) => x === undefined)).toBe(true);
+    expect(col(r, 'fisherSignal').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('renames both columns and validates', () => {
+    const b = hlcBars(wavyBars(30));
+    expect(
+      col(fisherTransform(b, { prefix: 'ehlers' }), 'ehlers')[20],
+    ).toBeDefined();
+    expect(() => fisherTransform(b, { period: 0 })).toThrow(/positive integer/);
+    const once = fisherTransform(b);
+    expect(() => fisherTransform(once as never)).toThrow(/collides/);
+  });
+});
+
+describe('schaffTrendCycle', () => {
+  it('is a stochastic of the MACD, 0.5-smoothed, twice — hand-computed', () => {
+    // fast 1 (EMA span 1 = the close itself), slow 2 (α = 2/3), cycle 2.
+    //   ema2  = [_, 12, 34/3, 124/9, 340/27]
+    //   macd  = [_, 1, −1/3, 11/9, −16/27]
+    //   k1    = [_, _, 0, 100, 0]        (strict 2-bar stochastic of macd)
+    //   d1    = [_, _, 0, 50, 25]        (seed 0, then += 0.5·(k1 − d1))
+    //   k2    = [_, _, _, 100, 0]        (strict 2-bar stochastic of d1)
+    //   stc   = [_, _, _, 100, 50]
+    const r = schaffTrendCycle(bars([10, 13, 11, 15, 12]), {
+      fastPeriod: 1,
+      slowPeriod: 2,
+      cyclePeriod: 2,
+    });
+    expect(col(r, 'stc')).toEqual([undefined, undefined, undefined, 100, 50]);
+  });
+
+  it('the 0.5 recursion is a real smoothing — the raw double stochastic differs', () => {
+    // The last bar above: the unsmoothed reading would be k2 = 0, the study
+    // says 50. Pinning it here as well as in the generator keeps the
+    // constant from being quietly dropped.
+    const r = schaffTrendCycle(bars([10, 13, 11, 15, 12]), {
+      fastPeriod: 1,
+      slowPeriod: 2,
+      cyclePeriod: 2,
+    });
+    expect(col(r, 'stc')[4]).toBe(50);
+    expect(col(r, 'stc')[4]).not.toBe(0);
+  });
+
+  it('warms up no earlier than slow + 2·cycle − 3, and stays in 0…100', () => {
+    const r = schaffTrendCycle(bars(k2Closes(120)), {
+      fastPeriod: 5,
+      slowPeriod: 12,
+      cyclePeriod: 4,
+    });
+    const v = col(r, 'stc');
+    expect(v).toHaveLength(120);
+    expect(v.slice(0, 17).every((x) => x === undefined)).toBe(true);
+    const values = v.filter((x) => x !== undefined) as number[];
+    expect(values.length).toBeGreaterThan(50);
+    expect(Math.min(...values)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...values)).toBeLessThanOrEqual(100);
+  });
+
+  it('a pinned first stochastic leaves the second window FLAT, so the bar is missing', () => {
+    // The sharp edge, pinned: a monotonically rising close makes the MACD
+    // rise monotonically too, which pins the first stochastic at 100 and
+    // makes `d1` constant — so the second window is exactly flat and the STC
+    // has no reading at all, rather than the previous one repeated.
+    const r = schaffTrendCycle(
+      bars(Array.from({ length: 40 }, (_, i) => 100 + i)),
+      { fastPeriod: 3, slowPeriod: 6, cyclePeriod: 3 },
+    );
+    expect(col(r, 'stc').every((x) => x === undefined)).toBe(true);
+  });
+
+  it('honours column and output, and validates its periods', () => {
+    const src = sma(bars(k2Closes(120)), { period: 3 });
+    const over = schaffTrendCycle(src as never, {
+      column: 'sma' as never,
+      fastPeriod: 5,
+      slowPeriod: 12,
+      cyclePeriod: 4,
+      output: 'cycle',
+    });
+    expect(col(over, 'cycle')).toHaveLength(120);
+    expect(col(over, 'cycle').some((x) => x !== undefined)).toBe(true);
+    const b = bars(k2Closes(60));
+    expect(() => schaffTrendCycle(b, { fastPeriod: 0 })).toThrow(/fastPeriod/);
+    expect(() => schaffTrendCycle(b, { cyclePeriod: 1.5 })).toThrow(
+      /cyclePeriod/,
+    );
+    expect(() =>
+      schaffTrendCycle(b, { fastPeriod: 20, slowPeriod: 20 }),
+    ).toThrow(/shorter than slowPeriod/);
+    const once = schaffTrendCycle(b);
+    expect(() => schaffTrendCycle(once as never)).toThrow(/collides/);
+  });
+});
+
+describe('prettyGoodOscillator', () => {
+  it('is (close − SMA) / EMA(true range), hand-computed', () => {
+    //   TR    = [_, 2, 3]                     (bar 2's |low − prevClose| = 3 wins)
+    //   EMA2  = [_, _, (2/3)·3 + (1/3)·2 = 8/3]
+    //   SMA2  = [_, 12, 11.75]
+    //   pgo[2] = (10.5 − 11.75) / (8/3) = −0.46875
+    const r = prettyGoodOscillator(
+      hlcBars([
+        [12, 10, 11],
+        [13, 11, 13],
+        [12, 10, 10.5],
+      ]),
+      { period: 2 },
+    );
+    const v = col(r, 'pgo');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo(-0.46875, 12);
+  });
+
+  it('the denominator is TRUE range, not the bar range', () => {
+    // A bar that gaps far above the previous close covers ground its own
+    // high−low span does not show. With plain range the denominator would be
+    // 2 on every bar; with true range bar 1 is 19.
+    const r = prettyGoodOscillator(
+      hlcBars([
+        [101, 99, 100],
+        [119, 117, 118],
+        [119, 117, 118],
+      ]),
+      { period: 1 },
+    );
+    // period 1: SMA(1) is the close itself, so the numerator is 0 and the
+    // reading is 0 — what the test pins is that it EXISTS from bar 1 (the
+    // true range's own first bar), which a plain-range build would put on
+    // bar 0.
+    expect(col(r, 'pgo')[0]).toBeUndefined();
+    expect(col(r, 'pgo')[1]).toBe(0);
+  });
+
+  it('warms up at `period`, one bar after the average', () => {
+    const v = col(
+      prettyGoodOscillator(hlcBars(wavyBars(40)), { period: 6 }),
+      'pgo',
+    );
+    expect(v.slice(0, 6).every((x) => x === undefined)).toBe(true);
+    expect(v[6]).toBeDefined();
+    expect(v).toHaveLength(40);
+  });
+
+  it('a zero true-range average is undefined, and the guard is LIVE', () => {
+    // Every bar identical, so every true range is 0 and the EMA is 0. The
+    // numerator is NOT forced to zero once `column` is redirected, which is
+    // what makes the guard load-bearing rather than decorative.
+    const flat = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'other', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 8 }, (_, i) => [
+        i,
+        10,
+        10,
+        10,
+        20 + i,
+      ]) as Array<[number, number, number, number, number]>,
+    });
+    expect(
+      col(prettyGoodOscillator(flat as never, { period: 2 }), 'pgo').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    // With `column` redirected the numerator is NOT zero, so without the
+    // guard this would divide a real number by zero and `withColumn` would
+    // throw on the infinity rather than record it.
+    expect(
+      col(
+        prettyGoodOscillator(flat as never, {
+          period: 2,
+          column: 'other' as never,
+        }),
+        'pgo',
+      ).every((x) => x === undefined),
+    ).toBe(true);
+  });
+
+  it('`column` follows a redirected `close` unless told otherwise', () => {
+    const named = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'settle', kind: 'number' },
+      ] as const,
+      rows: wavyBars(30).map(([h, l, c], i) => [i, h, l, c]) as Array<
+        [number, number, number, number]
+      >,
+    });
+    const redirected = prettyGoodOscillator(named as never, {
+      period: 5,
+      close: 'settle' as never,
+    });
+    const explicit = prettyGoodOscillator(named as never, {
+      period: 5,
+      close: 'settle' as never,
+      column: 'settle' as never,
+      output: 'pgo2' as never,
+    });
+    expect(col(redirected, 'pgo')).toEqual(col(explicit, 'pgo2'));
+  });
+
+  it('validates its period and a colliding output', () => {
+    const b = hlcBars(wavyBars(30));
+    expect(() => prettyGoodOscillator(b, { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    const once = prettyGoodOscillator(b);
+    expect(() => prettyGoodOscillator(once as never)).toThrow(/collides/);
+  });
+});
+
+describe('swingIndex / accumulativeSwingIndex', () => {
+  //   bar 1: A = |14−11| = 3, B = |10−11| = 1, D = |14−10| = 4  → D branch
+  //          R = 4 + 0.25·|11−10| = 4.25, K = 3
+  //          N = (13−11) + 0.5·(13−11) + 0.25·(11−10) = 3.25
+  //          SI = 50 · 3.25/4.25 · 3/5 = 22.941176470588236
+  //   bar 2: A = 0.5, B = 2, D = 2.5                            → D branch
+  //          R = 2.5 + 0.25·|13−11| = 3, K = 2
+  //          N = (11.5−13) + 0.5·(11.5−13) + 0.25·(13−11) = −1.75
+  //          SI = 50 · (−1.75)/3 · 2/5 = −11.666666666666666
+  const swingRows: Array<[number, number, number, number]> = [
+    [10, 12, 9, 11],
+    [11, 14, 10, 13],
+    [13, 13.5, 11, 11.5],
+  ];
+  const SI1 = (50 * 3.25 * 3) / (4.25 * 5);
+  const SI2 = (50 * -1.75 * 2) / (3 * 5);
+
+  it('is Wilder’s per-bar formula, hand-computed on two bars', () => {
+    const v = col(swingIndex(ohlcBars(swingRows), { limit: 5 }), 'si');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(SI1, 12);
+    expect(v[2]).toBeCloseTo(SI2, 12);
+    expect(v).toHaveLength(3);
+  });
+
+  it('picks the A branch of R when the bar gapped up past its own range', () => {
+    // A = |20−10| = 10, B = |19−10| = 9, D = 1 → A is the largest.
+    //   R = 10 − 0.5·9 + 0.25·|10−9| = 5.75, K = 10
+    //   N = (19.5−10) + 0.5·(19.5−19) + 0.25·(10−9) = 10
+    //   SI = 50 · 10/5.75 · 10/20 = 43.478260869565215
+    const v = col(
+      swingIndex(
+        ohlcBars([
+          [9, 11, 8, 10],
+          [19, 20, 19, 19.5],
+        ]),
+        { limit: 20 },
+      ),
+      'si',
+    );
+    expect(v[1]).toBeCloseTo((50 * 10 * 10) / (5.75 * 20), 12);
+  });
+
+  it('picks the B branch of R when the bar gapped down past its own range', () => {
+    // A = 9, B = 10, D = 1 → B is the largest, and yesterday's body is 0.
+    //   R = 10 − 0.5·9 = 5.5, K = 10
+    //   N = (9.5−19) + 0.5·(9.5−9) = −9.25
+    //   SI = 50 · (−9.25)/5.5 · 10/20 = −42.04545454545455
+    const v = col(
+      swingIndex(
+        ohlcBars([
+          [19, 20, 18, 19],
+          [9, 10, 9, 9.5],
+        ]),
+        { limit: 20 },
+      ),
+      'si',
+    );
+    expect(v[1]).toBeCloseTo((50 * -9.25 * 10) / (5.5 * 20), 12);
+  });
+
+  it('the ASI is the running total of exactly those swings', () => {
+    const v = col(
+      accumulativeSwingIndex(ohlcBars(swingRows), { limit: 5 }),
+      'asi',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(SI1, 12);
+    expect(v[2]).toBeCloseTo(SI1 + SI2, 12);
+  });
+
+  it('`limit` scales the reading — it is not a normalisation the study could drop', () => {
+    const half = col(swingIndex(ohlcBars(swingRows), { limit: 2.5 }), 'si');
+    expect(half[1]).toBeCloseTo(SI1 * 2, 12);
+  });
+
+  it('a fully halted two-bar stretch (R = 0) is undefined, not zero', () => {
+    // On bar 3 today's high, today's low, yesterday's close and yesterday's
+    // open are all 11, so R = 0 — and K = 0 with it, so there is no value
+    // the ratio takes. Bar 4 recovers.
+    const halted: Array<[number, number, number, number]> = [
+      [10, 11, 9, 10],
+      [10, 12, 10, 11],
+      [11, 12, 10, 11],
+      [11, 11, 11, 11],
+      [11, 13, 10, 12],
+    ];
+    const v = col(swingIndex(ohlcBars(halted), { limit: 5 }), 'si');
+    expect(v[1]).toBeDefined();
+    expect(v[2]).toBeDefined();
+    expect(v[3]).toBeUndefined();
+    expect(v[4]).toBeDefined();
+    // …and the ASI, being a running sum, ENDS there rather than skipping it:
+    // every level after an unknown term is a known sum plus an unknown.
+    const asi = col(
+      accumulativeSwingIndex(ohlcBars(halted), { limit: 5 }),
+      'asi',
+    );
+    expect(asi[1]).toBeDefined();
+    expect(asi[2]).toBeCloseTo(v[1]! + v[2]!, 12);
+    expect(asi[3]).toBeUndefined();
+    expect(asi[4]).toBeUndefined();
+  });
+
+  it('a missing price costs that bar and the next', () => {
+    const v = col(
+      swingIndex(
+        momGappy([
+          [10, 12, 9, 11],
+          [11, 14, 10, 13],
+          [13, 13.5, 11, undefined],
+          [11, 13, 10, 12],
+          [12, 14, 11, 13],
+        ]),
+        { limit: 5 },
+      ),
+      'si',
+    );
+    expect(v[1]).toBeDefined();
+    expect(v[2]).toBeUndefined();
+    // Bar 3 reads bar 2's close as `prevClose`, so it has no swing either.
+    expect(v[3]).toBeUndefined();
+    expect(v[4]).toBeDefined();
+  });
+
+  it('rejects a missing, zero, negative or non-finite limit', () => {
+    const b = ohlcBars(swingRows);
+    expect(() => swingIndex(b, { limit: 0 })).toThrow(
+      /limit must be a positive/,
+    );
+    expect(() => swingIndex(b, { limit: -1 })).toThrow(/limit/);
+    expect(() => swingIndex(b, { limit: Infinity })).toThrow(/limit/);
+    expect(() => swingIndex(b, {} as unknown as { limit: number })).toThrow(
+      /limit/,
+    );
+    expect(() => accumulativeSwingIndex(b, { limit: 0 })).toThrow(
+      /accumulativeSwingIndex limit/,
+    );
+  });
+
+  it('honours output and the four input names, and rejects a collision', () => {
+    const r = swingIndex(ohlcBars(swingRows), {
+      limit: 5,
+      open: 'open',
+      high: 'high',
+      low: 'low',
+      close: 'close',
+      output: 'swing',
+    });
+    expect(col(r, 'swing')[1]).toBeCloseTo(SI1, 12);
+    const once = swingIndex(ohlcBars(swingRows), { limit: 5 });
+    expect(() => swingIndex(once as never, { limit: 5 })).toThrow(/collides/);
+    const asiOnce = accumulativeSwingIndex(ohlcBars(swingRows), { limit: 5 });
+    expect(() =>
+      accumulativeSwingIndex(asiOnce as never, { limit: 5 }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('randomWalkIndex', () => {
+  it('is (high − low[−n]) / (meanTR(n)·√n), hand-computed at one horizon', () => {
+    //   TR       = [_, 2, 2]
+    //   meanTR(2)[2] = 2, so the denominator is 2√2
+    //   rwiHigh[2] = (14 − 10) / (2√2) = √2
+    //   rwiLow[2]  = (12 − 12) / (2√2) = 0
+    const r = randomWalkIndex(
+      hlcBars([
+        [12, 10, 11],
+        [13, 11, 12],
+        [14, 12, 13],
+      ]),
+      { period: 2 },
+    );
+    expect(col(r, 'rwiHigh')[0]).toBeUndefined();
+    expect(col(r, 'rwiHigh')[1]).toBeUndefined();
+    expect(col(r, 'rwiHigh')[2]).toBeCloseTo(Math.SQRT2, 12);
+    expect(col(r, 'rwiLow')[2]).toBeCloseTo(0, 12);
+  });
+
+  it('takes the MAXIMUM over the horizons, not the longest one', () => {
+    //   TR = [_, 2, 2, 7]
+    //   n = 2: meanTR = 4.5   → (20 − 11)/(4.5·√2) = √2      = 1.41421…
+    //   n = 3: meanTR = 11/3  → (20 − 10)/((11/3)·√3) = 30/(11√3) = 1.57459…
+    //   the max is the n = 3 term, so a single-horizon build reading only
+    //   n = period would agree here but a build reading only n = 2 would not.
+    const r = randomWalkIndex(
+      hlcBars([
+        [12, 10, 11],
+        [13, 11, 12],
+        [14, 12, 13],
+        [20, 13, 19],
+      ]),
+      { period: 3 },
+    );
+    expect(col(r, 'rwiHigh')[3]).toBeCloseTo(30 / (11 * Math.sqrt(3)), 12);
+    expect(col(r, 'rwiHigh')[3]).toBeGreaterThan(Math.SQRT2);
+    // rwiLow's n = 2 term is 0 and its n = 3 term is negative, so the max is 0.
+    expect(col(r, 'rwiLow')[3]).toBeCloseTo(0, 12);
+  });
+
+  it('is negative when every horizon fell — it is not bounded below by zero', () => {
+    // Falling three points a bar with a two-point range, so even the
+    // shortest horizon's `high − low[−2]` is −4.
+    const falling = Array.from({ length: 20 }, (_, i) => [
+      100 - 3 * i,
+      98 - 3 * i,
+      99 - 3 * i,
+    ]) as Array<[number, number, number]>;
+    const v = col(randomWalkIndex(hlcBars(falling), { period: 5 }), 'rwiHigh');
+    const values = v.filter((x) => x !== undefined) as number[];
+    expect(values.length).toBeGreaterThan(10);
+    expect(Math.max(...values)).toBeLessThan(0);
+  });
+
+  it('warms up at `period` and is STRICT — one missing horizon blanks the bar', () => {
+    const v = col(
+      randomWalkIndex(hlcBars(wavyBars(40)), { period: 6 }),
+      'rwiHigh',
+    );
+    expect(v.slice(0, 6).every((x) => x === undefined)).toBe(true);
+    expect(v[6]).toBeDefined();
+    expect(v).toHaveLength(40);
+    // A missing bar costs every horizon window that holds it — the bar
+    // itself and the `period` bars after it — then recovers.
+    const gappy = col(
+      randomWalkIndex(
+        momGappy(
+          Array.from({ length: 24 }, (_, i) =>
+            i === 10
+              ? [undefined, undefined, undefined, undefined]
+              : [100 + i, 101 + i, 99 + i, 100 + i],
+          ) as Array<
+            [
+              number | undefined,
+              number | undefined,
+              number | undefined,
+              number | undefined,
+            ]
+          >,
+        ),
+        { period: 3 },
+      ),
+      'rwiHigh',
+    );
+    expect(gappy[9]).toBeDefined();
+    expect(gappy.slice(10, 14).every((x) => x === undefined)).toBe(true);
+    expect(gappy[14]).toBeDefined();
+  });
+
+  it('a wholly flat horizon is undefined, and the guard is LIVE', () => {
+    // Every bar identical, so every mean true range is 0 — but so is every
+    // numerator, which makes this a 0/0 that reads `undefined` with or
+    // without the guard.
+    const flat = Array.from({ length: 10 }, () => [10, 10, 10]) as Array<
+      [number, number, number]
+    >;
+    expect(
+      col(randomWalkIndex(hlcBars(flat), { period: 3 }), 'rwiHigh').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    // The case that makes the guard load-bearing: a WIDE first bar closing
+    // at its own low, then a frozen tape. Every true range from bar 1 on is
+    // zero, so the denominator is zero — but `low[0]` is 5 and `high[2]` is
+    // 10, so the numerator is 5. Without the guard that is an infinity, and
+    // `withColumn` throws on one rather than recording it.
+    const frozen = randomWalkIndex(
+      hlcBars([
+        [20, 5, 10],
+        [10, 10, 10],
+        [10, 10, 10],
+      ]),
+      { period: 2 },
+    );
+    expect(col(frozen, 'rwiHigh')[2]).toBeUndefined();
+    expect(col(frozen, 'rwiLow')[2]).toBeUndefined();
+  });
+
+  it('rejects a period below 2, and a colliding prefix', () => {
+    const b = hlcBars(wavyBars(30));
+    expect(() => randomWalkIndex(b, { period: 1 })).toThrow(/at least 2/);
+    expect(() => randomWalkIndex(b, { period: 0 })).toThrow(/positive integer/);
+    const once = randomWalkIndex(b);
+    expect(() => randomWalkIndex(once as never)).toThrow(/collides/);
+    const named = randomWalkIndex(b, { period: 4, prefix: 'poulos' });
+    expect(col(named, 'poulosHigh')[10]).toBeDefined();
+    expect(col(named, 'poulosLow')[10]).toBeDefined();
+  });
+});
+
+describe('ravi', () => {
+  it('is 100·|SMA(short) − SMA(long)| / SMA(long), hand-computed', () => {
+    // SMA2[3] = 35, SMA4[3] = 25 → 100 · 10 / 25 = 40.
+    const v = col(
+      ravi(bars([10, 20, 30, 40]), { shortPeriod: 2, longPeriod: 4 }),
+      'ravi',
+    );
+    expect(v).toEqual([undefined, undefined, undefined, 40]);
+  });
+
+  it('is ABSOLUTE — a falling series reads the same magnitude', () => {
+    // SMA2[3] = 15, SMA4[3] = 25 → 100 · 10 / 25 = 40 again, where the
+    // signed form would read −40.
+    const v = col(
+      ravi(bars([40, 30, 20, 10]), { shortPeriod: 2, longPeriod: 4 }),
+      'ravi',
+    );
+    expect(v[3]).toBe(40);
+  });
+
+  it('warms up at max(short, long) − 1 and keeps the row count', () => {
+    const v = col(
+      ravi(bars(k2Closes(40)), { shortPeriod: 3, longPeriod: 10 }),
+      'ravi',
+    );
+    expect(v.slice(0, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+    expect(v).toHaveLength(40);
+  });
+
+  it('an inverted pair is allowed and gives the same non-negative reading', () => {
+    const a = col(
+      ravi(bars([10, 20, 30, 40]), { shortPeriod: 2, longPeriod: 4 }),
+      'ravi',
+    );
+    const b = col(
+      ravi(bars([10, 20, 30, 40]), {
+        shortPeriod: 4,
+        longPeriod: 2,
+        output: 'r2',
+      }),
+      'r2',
+    );
+    expect(a[3]).toBe(40);
+    // The denominator changes with the swap, so the numbers differ — what is
+    // pinned is that neither throws and both are non-negative.
+    expect(b[3]).toBeGreaterThan(0);
+  });
+
+  it('a zero long average is undefined, and the guard is LIVE', () => {
+    // A column that averages to exactly zero — reachable over an oscillator
+    // output, never over prices. The SHORT average must be non-zero there,
+    // or the division would be a 0/0 and read `undefined` with or without
+    // the guard (which is how a first draft let the mutation survive):
+    // 4 − 6 + 1 + 1 = 0, while the last two average to 1.
+    const v = col(
+      ravi(bars([4, -6, 1, 1]), { shortPeriod: 2, longPeriod: 4 }),
+      'ravi',
+    );
+    expect(v[3]).toBeUndefined();
+    // …and a 0/0 (both averages zero) is undefined too, from the same guard.
+    expect(
+      col(
+        ravi(bars([-1, 1, -1, 1]), { shortPeriod: 2, longPeriod: 4 }),
+        'ravi',
+      )[3],
+    ).toBeUndefined();
+  });
+
+  it('honours column and output, and validates', () => {
+    const src = sma(bars(k2Closes(40)), { period: 3 });
+    const over = ravi(src as never, {
+      column: 'sma' as never,
+      shortPeriod: 3,
+      longPeriod: 8,
+      output: 'chande',
+    });
+    expect(col(over, 'chande')).toHaveLength(40);
+    expect(col(over, 'chande').some((x) => x !== undefined)).toBe(true);
+    const b = bars(k2Closes(40));
+    expect(() => ravi(b, { shortPeriod: 0 })).toThrow(/shortPeriod/);
+    expect(() => ravi(b, { longPeriod: 1.5 })).toThrow(/longPeriod/);
+    const once = ravi(b, { longPeriod: 10 });
+    expect(() => ravi(once as never, { longPeriod: 10 })).toThrow(/collides/);
+  });
+});
+
+describe('trendIntensityIndex', () => {
+  it('is 100·Σpos/(Σpos + Σneg), hand-computed', () => {
+    //   SMA2 = [_, 11, 11.5, 13]
+    //   dev  = [_, 1, −0.5, 2]
+    //   over a 2-bar window: Σpos/Σ|dev| = 1/1.5 at bar 2, 2/2.5 at bar 3
+    const v = col(
+      trendIntensityIndex(bars([10, 12, 11, 15]), { period: 2, maPeriod: 2 }),
+      'tii',
+    );
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeUndefined();
+    expect(v[2]).toBeCloseTo((100 * 1) / 1.5, 12);
+    expect(v[3]).toBeCloseTo((100 * 2) / 2.5, 12);
+  });
+
+  it('weights by DISTANCE, not by a count of positive bars', () => {
+    // Three bars above the average by a hair and one far below it. The count
+    // form would read 75; the sum form reads far less, because the one large
+    // excursion outweighs the three small ones.
+    const v = col(
+      trendIntensityIndex(bars([100, 100.1, 100.1, 100.1, 90]), {
+        period: 4,
+        maPeriod: 2,
+      }),
+      'tii',
+    );
+    expect(v[4]).toBeDefined();
+    expect(v[4]!).toBeLessThan(20);
+  });
+
+  it('warms up at maPeriod + period − 2 and keeps the row count', () => {
+    const v = col(
+      trendIntensityIndex(bars(k2Closes(60)), { period: 5, maPeriod: 10 }),
+      'tii',
+    );
+    expect(v.slice(0, 13).every((x) => x === undefined)).toBe(true);
+    expect(v[13]).toBeDefined();
+    expect(v).toHaveLength(60);
+  });
+
+  it('stays inside 0…100 on a real fixture', () => {
+    const values = col(
+      trendIntensityIndex(bars(k2Closes(120)), { period: 10, maPeriod: 20 }),
+      'tii',
+    ).filter((x) => x !== undefined) as number[];
+    expect(values.length).toBeGreaterThan(50);
+    expect(Math.min(...values)).toBeGreaterThanOrEqual(0);
+    // The bound is exact in exact arithmetic; the sums are doubles, so a
+    // window with no negative deviations lands a few ulps above 100.
+    expect(Math.max(...values)).toBeLessThanOrEqual(100 + 1e-9);
+  });
+
+  it('a window of exactly-zero deviations is undefined, not 0 and not 50', () => {
+    // A constant series sits exactly on its own average, so Σ|dev| = 0. The
+    // numerator is forced to zero with it — but the ratio approaches 100
+    // from above and 0 from below, so there is no value to report.
+    const v = col(
+      trendIntensityIndex(bars([5, 5, 5, 5, 5]), { period: 2, maPeriod: 2 }),
+      'tii',
+    );
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('honours column and output, and validates', () => {
+    const src = sma(bars(k2Closes(60)), { period: 3 });
+    const over = trendIntensityIndex(src as never, {
+      column: 'sma' as never,
+      period: 5,
+      maPeriod: 10,
+      output: 'pee',
+    });
+    expect(col(over, 'pee')).toHaveLength(60);
+    expect(col(over, 'pee').some((x) => x !== undefined)).toBe(true);
+    const b = bars(k2Closes(60));
+    expect(() => trendIntensityIndex(b, { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => trendIntensityIndex(b, { maPeriod: 1.5 })).toThrow(/maPeriod/);
+    const once = trendIntensityIndex(b, { period: 5, maPeriod: 10 });
+    expect(() =>
+      trendIntensityIndex(once as never, { period: 5, maPeriod: 10 }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('specialK', () => {
+  it('is the weighted sum of twelve smoothed rates of change, hand-checked', () => {
+    // A constant 1% compounding series makes every percent rate of change
+    // exact: ROC(n) = (1.01ⁿ − 1)·100, and an SMA of a constant is that
+    // constant. So the line is Σ wᵢ·(1.01^rocᵢ − 1)·100 on every bar past
+    // the warm-up.
+    const closes = Array.from({ length: 760 }, (_, i) => 100 * 1.01 ** i);
+    const roc = [10, 15, 20, 30, 40, 65, 75, 100, 195, 265, 390, 530];
+    const weights = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4];
+    const expected = roc.reduce(
+      (acc, n, i) => acc + weights[i]! * (1.01 ** n - 1) * 100,
+      0,
+    );
+    const v = col(specialK(bars(closes)), 'specialK');
+    expect(v[724]).toBeCloseTo(expected, 6);
+    expect(v[759]).toBeCloseTo(expected, 6);
+  });
+
+  it('warms up at 724 — the slowest term’s roc + smooth − 1', () => {
+    const closes = Array.from({ length: 760 }, (_, i) => 100 * 1.01 ** i);
+    const v = col(specialK(bars(closes)), 'specialK');
+    expect(v).toHaveLength(760);
+    expect(v[723]).toBeUndefined();
+    expect(v[724]).toBeDefined();
+    expect(v.filter((x) => x !== undefined).length).toBe(760 - 724);
+  });
+
+  it('is exactly the sum of shipped primitives — all thirty-six constants', () => {
+    // The identity that pins the whole table at once, built from the
+    // package's own TA-Lib-verified `percentChange` and `sma`. From bar 724
+    // on, every smoothing window is entirely finite, so `sma()`'s
+    // ROW-counting window and the study's VALUE-counting one agree.
+    const closes = Array.from(
+      { length: 760 },
+      (_, i) => 100 + 20 * Math.sin(i / 70) + 6 * Math.sin(i / 21) + 0.01 * i,
+    );
+    const roc = [10, 15, 20, 30, 40, 65, 75, 100, 195, 265, 390, 530];
+    const smooth = [10, 10, 10, 15, 50, 65, 75, 100, 130, 130, 130, 195];
+    const weights = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4];
+    const terms = roc.map((n, i) =>
+      col(
+        sma(
+          percentChange(bars(closes), { periods: n, output: 'roc' }) as never,
+          { period: smooth[i]!, column: 'roc' as never, output: 'term' },
+        ),
+        'term',
+      ),
+    );
+    const line = col(specialK(bars(closes)), 'specialK');
+    for (let i = 0; i < 724; i += 1) {
+      expect(line[i], `bar ${i}`).toBeUndefined();
+    }
+    for (let i = 724; i < closes.length; i += 1) {
+      const expected = terms.reduce(
+        (acc, term, k) => acc + weights[k]! * term[i]!,
+        0,
+      );
+      expect(line[i], `bar ${i}`).toBeCloseTo(expected, 9);
+    }
+  });
+
+  it('a series shorter than the warm-up is all-undefined, length kept', () => {
+    const v = col(specialK(bars(k2Closes(300))), 'specialK');
+    expect(v).toHaveLength(300);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+
+  it('honours column and output, and rejects a collision', () => {
+    const closes = Array.from({ length: 740 }, (_, i) => 100 * 1.01 ** i);
+    const r = specialK(bars(closes), { output: 'pringSK' });
+    expect(col(r, 'pringSK')[730]).toBeDefined();
+    expect(col(r, 'specialK').every((x) => x === undefined)).toBe(true);
+    const once = specialK(bars(closes));
+    expect(() => specialK(once as never)).toThrow(/collides/);
   });
 });
