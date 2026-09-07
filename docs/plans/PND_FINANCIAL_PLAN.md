@@ -1037,6 +1037,17 @@ oracle could hold the fit itself to bar-for-bar vendor agreement (≤ 1.3e-12 at
 `period 14`, masks identical) and spend its separation asserts on the three
 columns that have no vendor at all (`linregR2`, `cfo`, `cog`). Decisions:
 
+_Post-merge review (Peter, 2026-09-07)._ Adversarial pass on the merged
+kernel: a window that **changes by ulps** (not flat, so the change counter
+does not fire) can leave the rolling `n·Σz² − (Σz)²` at `−1e-24`, and the
+closed-form ratio wrote a **negative r²** into a `0 … 1` column. Fixed in the
+kernel: when `spread ≤ 0` on a changing window it is recomputed two-pass and
+centred, and every emitted `r²` is pinned to 1. The lesson, recorded for every
+future rolling-moment kernel: **the change counter fixes mathematical
+degeneracy, not numerical degeneracy** — a statistic with a range needs its
+range enforced at the boundary, and the enforcement is an exact recompute of
+the offending window, not a tolerance tied to price magnitude.
+
 (1) **One kernel, one pass, and every reading is a projection of it.**
 `linearRegressionValues(values, period)` returns `{ slope, intercept, r2 }`;
 `linearRegressionAt(fit, x)` reads the fitted line at one `x`, and that is the
@@ -1222,6 +1233,20 @@ reason is (6).
 read **two instruments** — plus the K8 kernel `rollingBivariateValues`. Seven
 oracle cases; the two TA-Lib-backed studies agree with `CORREL` and `BETA`
 bar-for-bar (1.3e-12 and 1.1e-12 at the defaults). Decisions:
+
+_Post-merge review (Peter, 2026-09-07)._ Two findings, both fixed. (1) The
+public kernel did not validate `period` where `linearRegressionValues` does;
+it now asserts an integer `≥ 2`. (2) The K8 analogue of the regression
+finding: a window that changes by ulps could have its `m2` driven to `≤ 0` by
+the reverse-Welford removal, the clamp then read a variance of exactly 0, and
+`correlation` / `beta` reported a **false missing cell** on a window that was
+not flat. Fixed by enforcing the invariant "changes > 0 ⇒ variance > 0"
+directly: when a changing column's `m2` reads `≤ 0` the window is rebuilt on
+demand (Welford's `m2` is a sum of non-negative terms), O(period) per such
+window, no magnitude-tied tolerance. Also noted, not changed: rejecting
+`benchmark === column` is opinionated (`corr(x, x) = 1` is a valid identity);
+kept because a consumer who wants the identity has it in one line and the
+check catches the far more common copy-paste.
 
 (1) **The comparison series is a `benchmark` COLUMN, not a second
 `TimeSeries`, and this is the batch's load-bearing design choice.** Every study

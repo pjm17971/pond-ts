@@ -141,6 +141,17 @@ export interface RollingRegression {
  * the residue was a small wrong number, here it is a wrong number outside
  * the statistic's own range.
  *
+ * The counter settles *mathematical* degeneracy only. A window that changes
+ * by a few ulps is not flat, but the rolling `n·Σz² − (Σz)²` can still
+ * cancel to zero or below (reviewed 2026-09-07: a 3-bar window at
+ * `3.002998998997 ± 1e-15` read `spread = −1.0e-24` and a **negative r²**).
+ * When `spread ≤ 0` on a changing window the kernel recomputes that one
+ * window two-pass and centred — `Σ(dx·dz)² / (Σdx²·Σdz²)`, no cancelling
+ * subtraction — and every emitted `r²` is pinned to its bound of 1, so the
+ * column's `0 … 1` contract holds on every finite cell (property-tested over
+ * ulp-jittered input at four magnitudes and four periods). O(period) per
+ * such window, and only such windows.
+ *
  * ## Missing cells: the **strict** window, like `wma`
  *
  * A row is emitted once the window spans `period` rows **and every one of

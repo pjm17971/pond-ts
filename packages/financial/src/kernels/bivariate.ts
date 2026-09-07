@@ -75,6 +75,15 @@ export interface RollingBivariateMoments {
  *   interval that is scale-free (a fixed interval is simultaneously too long
  *   for a short `period` and too dear for a long one — the Codex finding on
  *   `rollingDeviationSd`). One extra accumulation per row at any `period`.
+ * - **Rebuild on demand when a changing column's `m2` reads `≤ 0`.** The
+ *   change counter (below) settles mathematical flatness; a window whose
+ *   values differ by ulps is not flat, yet the removal can drive `m2` to
+ *   zero or below and the clamp then reports a variance of 0 — a *false*
+ *   missing cell in `correlation` / `beta` (reviewed 2026-09-07). So the
+ *   invariant is enforced directly: a column that changes has a positive
+ *   variance, and when the accumulators disagree the window is rebuilt
+ *   fresh (Welford's `m2` is a sum of non-negative terms). O(period) per
+ *   such window; property-tested over ulp-jittered input.
  *
  * Measured over 200k rows at `period 30`, worst **absolute error in the
  * resulting correlation coefficient** (the scale that means something when
