@@ -253,6 +253,18 @@ import type { TrendIntensityIndexOptions } from './studies/trend-intensity-index
 import { trendIntensityIndex as trendIntensityIndexStudy } from './studies/trend-intensity-index.js';
 import type { SpecialKOptions } from './studies/special-k.js';
 import { specialK as specialKStudy } from './studies/special-k.js';
+import type { TwiggsMoneyFlowOptions } from './studies/twiggs-money-flow.js';
+import { twiggsMoneyFlow as twiggsMoneyFlowStudy } from './studies/twiggs-money-flow.js';
+import type { TradeVolumeIndexOptions } from './studies/trade-volume-index.js';
+import { tradeVolumeIndex as tradeVolumeIndexStudy } from './studies/trade-volume-index.js';
+import type { ShinoharaIntensityRatioOptions } from './studies/shinohara-intensity-ratio.js';
+import { shinoharaIntensityRatio as shinoharaIntensityRatioStudy } from './studies/shinohara-intensity-ratio.js';
+import type { ElderImpulseOptions } from './studies/elder-impulse.js';
+import { elderImpulse as elderImpulseStudy } from './studies/elder-impulse.js';
+import type { MovingAverageCrossOptions } from './studies/moving-average-cross.js';
+import { movingAverageCross as movingAverageCrossStudy } from './studies/moving-average-cross.js';
+import type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
+import { anchoredVwap as anchoredVwapStudy } from './studies/anchored-vwap.js';
 
 /** A series schema with one optional number column appended — the shape
  *  `TimeSeries.withColumn` (and hence `sma`) yields. */
@@ -776,6 +788,30 @@ declare module 'pond-ts' {
     /** Fluent Market Facilitation Index — `(high − low)/volume`. */
     marketFacilitationIndex<const Output extends string = 'bwmfi'>(
       options?: MarketFacilitationIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Twiggs Money Flow. */
+    twiggsMoneyFlow<const Output extends string = 'tmf'>(
+      options?: TwiggsMoneyFlowOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Trade Volume Index (`minTick` is required). */
+    tradeVolumeIndex<const Output extends string = 'tvi'>(
+      options: TradeVolumeIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Shinohara Intensity Ratio (`${prefix}Strong` + `${prefix}Weak`). */
+    shinoharaIntensityRatio<const Prefix extends string = 'sir'>(
+      options?: ShinoharaIntensityRatioOptions<S, Prefix>,
+    ): TimeSeries<AppendOpt<AppendOpt<S, `${Prefix}Strong`>, `${Prefix}Weak`>>;
+    /** Fluent Elder Impulse System (+1 / 0 / −1). */
+    elderImpulse<const Output extends string = 'impulse'>(
+      options?: ElderImpulseOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Moving Average Cross (a signal column: +1 / 0 / −1). */
+    movingAverageCross<const Output extends string = 'maCross'>(
+      options?: MovingAverageCrossOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Anchored VWAP (`anchor` is required). */
+    anchoredVwap<const Output extends string = 'avwap'>(
+      options: AnchoredVwapOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
   }
 }
@@ -1376,4 +1412,40 @@ proto.specialK = function (
   options?: SpecialKOptions<SeriesSchema, string>,
 ) {
   return specialKStudy(this, options);
+};
+proto.twiggsMoneyFlow = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: TwiggsMoneyFlowOptions<SeriesSchema, string>,
+) {
+  return twiggsMoneyFlowStudy(this, options);
+};
+proto.tradeVolumeIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options: TradeVolumeIndexOptions<SeriesSchema, string>,
+) {
+  return tradeVolumeIndexStudy(this, options);
+};
+proto.shinoharaIntensityRatio = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ShinoharaIntensityRatioOptions<SeriesSchema, string>,
+) {
+  return shinoharaIntensityRatioStudy(this, options);
+};
+proto.elderImpulse = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: ElderImpulseOptions<SeriesSchema, string>,
+) {
+  return elderImpulseStudy(this, options);
+};
+proto.movingAverageCross = function (
+  this: TimeSeries<SeriesSchema>,
+  options?: MovingAverageCrossOptions<SeriesSchema, string>,
+) {
+  return movingAverageCrossStudy(this, options);
+};
+proto.anchoredVwap = function (
+  this: TimeSeries<SeriesSchema>,
+  options: AnchoredVwapOptions<SeriesSchema, string>,
+) {
+  return anchoredVwapStudy(this, options);
 };

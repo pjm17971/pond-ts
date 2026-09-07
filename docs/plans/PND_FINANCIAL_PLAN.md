@@ -2183,6 +2183,178 @@ rule. One further mutation is a _proven_ no-op and is recorded as such rather
 than counted as a survivor: rewriting `m + -1 * stdDev * d` as
 `m - stdDev * d` is bit-identical in IEEE754.
 
+**Landed — the volume and miscellaneous leftovers (§6.6/§6.1).**
+`twiggsMoneyFlow`, `tradeVolumeIndex`, `shinoharaIntensityRatio`,
+`elderImpulse`, `movingAverageCross` and `anchoredVwap` — six studies, plus
+three internal kernel helpers (`trueRangeBoundsValues`,
+`moneyFlowVolumeValues`, `shinoharaTermsValues`) and eleven oracle cases; 190
+in the fixture. Decisions:
+
+(1) **Two of the six had to co-mask a numerator and a denominator, and the
+bug they avoid is the same one #710's SMI found.** `twiggsMoneyFlow` smooths
+`flow` and `volume` with two Wilder recursions, and `anchoredVwap`
+accumulates `price·volume` and `volume` with two running sums. In both, the
+numerator carries gaps the denominator does not — a bar with a volume but a
+missing `high` has no price term — and in both the kernel's own leading-gap
+rule then puts the two on **different bar sets**: `wilderValues` steps its
+seed over a leading `NaN`, and `cumulativeValues` starts at the first finite
+term. The fix is one line each (blank the weight wherever the flow is blank,
+_before_ smoothing), and it is a live one: a unit test punches a hole in bar
+1's `high` with a 9000-share volume and pins the answer at the two bars the
+numerator actually saw. Worth writing down as a rule rather than a per-study
+note: **any study that divides one accumulation by another must blank both on
+the same bars before either accumulates**, because every accumulating kernel
+in this package has a documented leading-gap rule and none of them are
+symmetric across two arrays.
+
+(2) **The gap rule for a cumulative K6 machine is OBV's, not NVI's, and the
+test is what the level MEANS.** `tradeVolumeIndex` is both a state machine
+(the carried tick direction) and a running volume total, so the two rules
+collide. It resets its _direction_ on a gap — the K6 rule, and unavoidable: a
+bar it did not see cannot tell it which way the tape went — but it does
+**not** re-seed the level; it marks it `NaN` and the arithmetic carries that
+forward. That is `cumulativeValues`' asymmetry reproduced inside a fold
+(leading gaps shift the start, an interior gap ends the line), and it is
+right for the same reason it is right for `obv`: the level is a total of
+volume, a quantity with units where the distance between two points is the
+reading, so a hole makes every later level wrong by whatever the missing bar
+traded. `negativeVolumeIndex` re-seeds and is also right, because it
+accumulates _returns_ from an arbitrary base. `anchoredVwap` takes the OBV
+rule for the same reason. So the question is not "is this a K6 machine" but
+"is the level a quantity or an index".
+
+(3) **`movingAverageCross`'s tie rule is the study, and it is why the machine
+carries the last NON-ZERO sign.** Two averages are exactly equal more often
+than a float argument suggests — a stepped price does it routinely — and the
+naive `sign(d[i]) !== sign(d[i−1])` gets two cases wrong: it fires twice for
+a crossing that passes through a tie, and it invents a crossing on a
+touch-and-retreat (`below → equal → below`), reporting a return to a side the
+pair never left. Carrying the last non-zero sign fixes both and makes a
+crossing _through_ equality fire on the far-side bar, which is the bar a
+reader watching the chart would call it. The oracle input contains **no**
+exact tie, so the rule cannot be separated there; the generator asserts that
+the naive build still agrees bar for bar, so the day the fixture grows a tie
+the "pinned TypeScript-side" note stops being quietly true, and the rule
+itself is pinned by unit tests at `fastPeriod 1 / slowPeriod 2`, where
+`fast − slow` is exactly half the bar-to-bar change and a repeated close _is_
+a tie.
+
+(4) **What a gap costs `movingAverageCross` depends entirely on `maType`, and
+at the default it costs nothing.** Measured on a 40-bar series with bar 30's
+close removed, at 3/6: `sma` **no missing cells at all** (the K2 column door
+counts _rows_, so both averages skip the missing cell and the fold never sees
+an incomplete row — the K6 reset never fires); `ema` two bars (the hole, then
+the fresh seed); `wma`/`hull` a whole window, seed at 36 (the array door
+waits for `period` finite _values_); `smma`/`kama` the rest of the series
+(Wilder). The first row is the sharp edge: a study can inherit a documented
+gap rule and still have none, because its inputs never gap. The table is in
+the docstring and pinned by a test with one case per door, rather than a
+sentence claiming the reset "usually" fires — the first draft said exactly
+that, with the wrong reason, and the probe disproved it.
+
+(5) **Three required options now exist in the package, and the third is
+`minTick`.** After `benchmark` and `swingIndex`'s `limit`,
+`tradeVolumeIndex` needs the instrument's minimum tick and cannot guess it:
+`0` collapses the dead band so the persistence rule — the only thing
+separating the study from OBV-with-a-carried-sign — never fires on float
+prices, and a fixed `0.01` is wrong by two orders of magnitude for a JPY
+cross and six for a crypto pair, producing a number rather than an error.
+`anchoredVwap`'s `anchor` is a fourth, and it is required for a different
+reason: it is not a fact about the instrument but the **question being
+asked**, and every default is a different indicator (the series start is a
+cumulative-from-inception VWAP; the last bar is a constant). It is a `Date`
+or epoch ms rather than a row index because that is what a caller has and
+because an index does not survive a filter, a join or a resample.
+
+(6) **`anchoredVwap` closes the half of VWAP `vwap()` named and left open —
+and leaves the third half open on purpose.** `vwap`'s docstring already
+recorded that the anchored form is _not_ a special case of the rolling one
+(`period = length` gives one value at the last bar, not a running line) and
+deferred it to "a session-anchored phase". That deferral conflated two
+things: the **anchor** and the **reset**. This study ships the anchor, which
+needs no calendar because it is a user parameter; the session-**reset** form
+still waits on [PND-TCAL] / **G4**, and a caller who needs it today
+partitions on the session and runs this per partition. The property test
+pins the relationship the two forms actually have: over a 140-bar series
+anchored at 40, the rolling form with `period 100` emits 41 values against
+the anchored line's 100, they differ everywhere they overlap except at the
+**last** bar, and there they agree exactly — which is what makes the
+difference a window rather than an arithmetic one.
+
+(7) **`elderImpulse`'s column is numeric because `withColumn` has no other
+door, and that is worth stating rather than assuming.** The corpus describes
+the output as a "categorical color column (string col OK)". It is not:
+`TimeSeries.withColumn` takes a `Float64Array` or a `(number | undefined)[]`
+and appends a **number** column, verified against
+`packages/core/src/batch/time-series.ts`. `+1 / 0 / −1` is the encoding —
+signed, so it sorts and sums the way the reading does, and a chart maps the
+sign to Elder's green/blue/red in one expression. The same question settles
+`movingAverageCross`, whose signal column is numeric for the same reason. If
+a categorical column is ever wanted, it is a core feature request, not a
+study workaround.
+
+(8) **Two F-AMBIG forks, and one of them is a naming fork.**
+`twiggsMoneyFlow` ships **Wilder's** exponential smoothing per the algorithm
+published on Twiggs' own site (Incredible Charts); the window-sum fork sits
+0.0706 away at `period 21` on a reading spanning −0.0279…0.1493, and
+`chaikinMoneyFlow(21)` — the study it corrects — sits 0.1494 away, wider than
+the whole reading. `shinoharaIntensityRatio`'s ambiguity is not arithmetic at
+all: the A and B ratios are standard, and what differs between vendors is
+which is charted as "strong". The labels come from the corpus' own list (A →
+`sirStrong`, B → `sirWeak`), and the test that matters is that they carry
+information — the two lines sit 23,312 apart on the oracle input. Neither
+gets a flag: a flag would make one study into two.
+
+(9) **`shinoharaIntensityRatio`'s B ratio inverts on a gappy tape, and that
+is documented rather than clamped.** `prevClose − low` is negative on a bar
+that gapped up and never traded back, so the denominator can approach zero
+from either side. The package's own oracle input gaps on 33 of its 80 bars
+and `sirWeak` there spans **−22,761.08 … 7,620.00** against a `sirStrong` of
+45.51 … 584.50. That is the definition — the ratio asks "how far above the
+previous close per unit below it", and on a market that never traded below it
+the answer is unbounded — and the honest response is to say so, with the
+worked case, and to pin a hand-computed negative reading in a unit test.
+Considered and rejected: clamping the negative terms to zero, which is a real
+vendor variant but a different study, and would hide exactly the tape
+condition the reading is reacting to.
+
+(10) **A shift-invariance property test needed a relative tolerance, and the
+reason is a finding.** `shinoharaIntensityRatio` is shift-invariant in exact
+arithmetic (every term is a difference of two prices), but not in floating
+point: the shifted run computes `(o + 5000) − (l + 5000)`, whose terms carry
+~1e-12 of relative error the unshifted run does not, and the B ratio
+**amplifies** it wherever its denominator is near zero. Measured at bar 101
+of the property fixture: 6.5e-9 absolute, 1.6e-12 relative. The test asserts
+the relative form and records both numbers, rather than loosening the
+absolute tolerance without saying why.
+
+(11) **Two survivors in the mutation matrices, both equivalent mutants, both
+kept.** `twiggsMoneyFlow`'s `wilderValues(flow, period, 1)` survives
+`start = 0` because the co-mask makes bar 0 `NaN` in both arrays — it is
+`atrValues`' redundant `start = 1`, kept for the reason that one is: it
+states at the call site why bar 0 is skipped. `shinoharaTermsValues`' `if (i
+
+> 0)`survives`i >= 0`because`close[-1]`on a typed array is`undefined`and the arithmetic yields`NaN`anyway; the branch is kept because relying on
+out-of-range read behaviour to produce a warm-up is not something the next
+editor should have to know. Two other mutants survived a first pass and were
+**tests missing, not dead code**:`elderImpulse`'s default `emaPeriod`(a
+12- and a 13-span EMA hardly ever have different slope signs — they agreed on
+all 46 verdicts of the oracle fixture; a 200-bar wave separates them on
+exactly two bars, and the test pins those) and its missing-previous-EMA guard
+(unreachable at every published period, because the histogram is always the
+slower input; at`emaPeriod 20`against a 7/4 MACD it is reachable, and bar 19
+would have read`0` — a verdict from a comparison the study could not make).
+
+Perf at 1M bars (`scripts/perf-studies.mjs`, one run): `tradeVolumeIndex`
+27.8 ms, `anchoredVwap` 32.0, `movingAverageCross` 44.3 (`ema`) / 55.0
+(`sma`), `twiggsMoneyFlow` 59.5, `elderImpulse` 87.5,
+`shinoharaIntensityRatio` 133.9 at `period 26` and 127.1 at 200 — **flat in
+`period`**, which is what its four `rollingMeanValues` scans should be and
+why the 26/200 pair is in the bench. References on the same run: `obv()`
+17.5, `vwap()` 56.0, `macd()` ~71, `sma()` ~21, `ema()` ~7,
+`foldRows(2 cols)` ~10. Everything here is compose-only; no study in the
+batch owns a super-linear cost.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

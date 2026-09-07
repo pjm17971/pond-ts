@@ -98,6 +98,12 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
 } from '../src/index.js';
 import '../src/fluent.js';
 
@@ -1430,5 +1436,126 @@ describe('fluent: the price transforms and Balance of Power', () => {
       .sma({ period: 5, column: 'typicalPrice', output: 'tpSma' });
     expect(col(chained, 'tpSma')[4]).toBeDefined();
     expect(col(chained, 'tpSma')[3]).toBeUndefined();
+  });
+});
+
+describe('fluent: the volume and miscellaneous leftovers', () => {
+  const volMiscBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number' },
+        { name: 'volume', kind: 'number' },
+      ] as const,
+      rows: Array.from({ length: 90 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.7) + 0.2 * i;
+        const o = c - 0.8 * Math.cos(i / 2.3);
+        return [
+          i,
+          o,
+          Math.max(o, c) + 0.5 + 0.6 * Math.abs(Math.sin(i / 2.1)),
+          Math.min(o, c) - 0.5 - 0.6 * Math.abs(Math.cos(i / 1.7)),
+          c,
+          1000 + 130 * ((i * 3) % 7),
+        ];
+      }) as Array<[number, number, number, number, number, number]>,
+    });
+
+  it('twiggsMoneyFlow through the fluent door equals the standalone function', () => {
+    const opts = { period: 8 } as const;
+    const fluent = volMiscBars().twiggsMoneyFlow(opts);
+    const standalone = twiggsMoneyFlow(volMiscBars(), opts);
+    expect(col(fluent, 'tmf')).toEqual(col(standalone, 'tmf'));
+    expect(col(fluent, 'tmf').some((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('tradeVolumeIndex through the fluent door equals the standalone function', () => {
+    const opts = { minTick: 0.2 } as const;
+    const fluent = volMiscBars().tradeVolumeIndex(opts);
+    const standalone = tradeVolumeIndex(volMiscBars(), opts);
+    expect(col(fluent, 'tvi')).toEqual(col(standalone, 'tvi'));
+    expect(col(fluent, 'tvi').some((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('shinoharaIntensityRatio through the fluent door equals the standalone function', () => {
+    const opts = { period: 10 } as const;
+    const fluent = volMiscBars().shinoharaIntensityRatio(opts);
+    const standalone = shinoharaIntensityRatio(volMiscBars(), opts);
+    for (const name of ['sirStrong', 'sirWeak']) {
+      expect(col(fluent, name), name).toEqual(col(standalone, name));
+      expect(
+        col(fluent, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('elderImpulse through the fluent door equals the standalone function', () => {
+    const opts = {
+      emaPeriod: 6,
+      fastPeriod: 3,
+      slowPeriod: 7,
+      signalPeriod: 4,
+    } as const;
+    const fluent = volMiscBars().elderImpulse(opts);
+    const standalone = elderImpulse(volMiscBars(), opts);
+    expect(col(fluent, 'impulse')).toEqual(col(standalone, 'impulse'));
+    expect(col(fluent, 'impulse').some((x) => typeof x === 'number')).toBe(
+      true,
+    );
+  });
+
+  it('movingAverageCross through the fluent door equals the standalone function', () => {
+    const opts = { fastPeriod: 5, slowPeriod: 14, maType: 'ema' } as const;
+    const fluent = volMiscBars().movingAverageCross(opts);
+    const standalone = movingAverageCross(volMiscBars(), opts);
+    expect(col(fluent, 'maCross')).toEqual(col(standalone, 'maCross'));
+    expect(col(fluent, 'maCross').some((x) => typeof x === 'number')).toBe(
+      true,
+    );
+  });
+
+  it('anchoredVwap through the fluent door equals the standalone function', () => {
+    const opts = { anchor: 30 } as const;
+    const fluent = volMiscBars().anchoredVwap(opts);
+    const standalone = anchoredVwap(volMiscBars(), opts);
+    expect(col(fluent, 'avwap')).toEqual(col(standalone, 'avwap'));
+    expect(col(fluent, 'avwap').some((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('chains all six leftovers in one expression', () => {
+    // The batch's own end-to-end: every method mounted, every column
+    // present, and the whole chain still one series.
+    const chained = volMiscBars()
+      .twiggsMoneyFlow({ period: 8 })
+      .tradeVolumeIndex({ minTick: 0.2 })
+      .shinoharaIntensityRatio({ period: 10 })
+      .elderImpulse({
+        emaPeriod: 6,
+        fastPeriod: 3,
+        slowPeriod: 7,
+        signalPeriod: 4,
+      })
+      .movingAverageCross({ fastPeriod: 5, slowPeriod: 14 })
+      .anchoredVwap({ anchor: 30 });
+    for (const name of [
+      'tmf',
+      'tvi',
+      'sirStrong',
+      'sirWeak',
+      'impulse',
+      'maCross',
+      'avwap',
+    ]) {
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+    expect(chained.length).toBe(90);
   });
 });

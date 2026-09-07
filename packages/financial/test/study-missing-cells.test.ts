@@ -91,6 +91,12 @@ import {
   schaffTrendCycle,
   prettyGoodOscillator,
   swingIndex,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
   accumulativeSwingIndex,
   randomWalkIndex,
   ravi,
@@ -2883,5 +2889,231 @@ describe('[PND-STUDYBOX] the price transforms: a gap costs exactly its bar', () 
         .every((x) => x === undefined),
     ).toBe(true);
     expect(typeof cells(out, 'bop')[20]).toBe('number');
+  });
+});
+
+describe('[PND-STUDYBOX] the volume and miscellaneous leftovers: where the missing rows are', () => {
+  /** Sixty wavy OHLCV bars; `hole` names a bar and a column to blank. */
+  const volMiscBars = (hole?: {
+    at: number;
+    column: 'open' | 'high' | 'low' | 'close' | 'volume';
+  }) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number', required: false },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+        { name: 'volume', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 60 }, (_, i) => {
+        const c = 100 + 7 * Math.sin(i / 3.1) + 0.25 * i;
+        const o = c - 0.7 * Math.cos(i / 2.3);
+        const row: Array<number | undefined> = [
+          i * MINUTE,
+          o,
+          Math.max(o, c) + 0.4 + 0.5 * Math.abs(Math.sin(i / 2.1)),
+          Math.min(o, c) - 0.4 - 0.5 * Math.abs(Math.cos(i / 1.7)),
+          c,
+          1000 + 120 * ((i * 3) % 7),
+        ];
+        if (hole !== undefined && hole.at === i) {
+          row[{ open: 1, high: 2, low: 3, close: 4, volume: 5 }[hole.column]] =
+            undefined;
+        }
+        return row;
+      }) as never,
+    });
+
+  it('tmf: the head is `period` — one past a window study’s — and a hole ends it', () => {
+    // Bar 0 has no previous close, so it has no true range; the Wilder seed
+    // therefore lands at bar `period` rather than `period − 1`.
+    const clean = twiggsMoneyFlow(volMiscBars(), { period: 6 });
+    expect(nullCountOf(clean, 'tmf')).toBe(6);
+    expect(typeof cells(clean, 'tmf')[6]).toBe('number');
+
+    // An interior hole in ANY of the four inputs ends the reading, because
+    // Wilder's recursion has no state to carry across it — the `atr` rule,
+    // and the difference from `chaikinMoneyFlow`, which recovers `period`
+    // bars later.
+    for (const column of ['high', 'low', 'close', 'volume'] as const) {
+      const holed = twiggsMoneyFlow(volMiscBars({ at: 30, column }), {
+        period: 6,
+      });
+      const v = cells(holed, 'tmf');
+      expect(typeof v[29], column).toBe('number');
+      expect(v[30], column).toBeUndefined();
+      expect(v[59], column).toBeUndefined();
+    }
+  });
+
+  it('tvi: no head at all, and an interior hole ENDS the index (obv\u2019s rule)', () => {
+    const clean = tradeVolumeIndex(volMiscBars(), { minTick: 0.2 });
+    expect(nullCountOf(clean, 'tvi')).toBe(0);
+    expect(cells(clean, 'tvi')[0]).toBe(0);
+
+    // A hole in either input it reads ends the level; a hole in one it does
+    // not read (`open`, `high`, `low`) is invisible to it.
+    for (const column of ['close', 'volume'] as const) {
+      const holed = tradeVolumeIndex(volMiscBars({ at: 30, column }), {
+        minTick: 0.2,
+      });
+      const v = cells(holed, 'tvi');
+      expect(typeof v[29], column).toBe('number');
+      expect(v[30], column).toBeUndefined();
+      expect(v[59], column).toBeUndefined();
+    }
+    expect(
+      nullCountOf(
+        tradeVolumeIndex(volMiscBars({ at: 30, column: 'high' }), {
+          minTick: 0.2,
+        }),
+        'tvi',
+      ),
+    ).toBe(0);
+  });
+
+  it('sir: the two columns have DIFFERENT heads, and different holes', () => {
+    const clean = shinoharaIntensityRatio(volMiscBars(), { period: 6 });
+    // Per-column warm-up: the strong pair reads one bar, the weak pair reads
+    // the previous close as well.
+    expect(nullCountOf(clean, 'sirStrong')).toBe(5);
+    expect(nullCountOf(clean, 'sirWeak')).toBe(6);
+
+    // A hole in `open` blanks the STRONG windows holding it and nothing
+    // else; a hole in `close` blanks the WEAK windows holding the bar AFTER
+    // it, and nothing else. Both are `rollingMeanValues`' rule (a window
+    // with a gap emits nothing) plus which column each pair reads.
+    const noOpen = shinoharaIntensityRatio(
+      volMiscBars({ at: 30, column: 'open' }),
+      { period: 6 },
+    );
+    const strong = cells(noOpen, 'sirStrong');
+    expect(typeof strong[29]).toBe('number');
+    for (let i = 30; i <= 35; i += 1)
+      expect(strong[i], `bar ${i}`).toBeUndefined();
+    expect(typeof strong[36]).toBe('number');
+    expect(nullCountOf(noOpen, 'sirWeak')).toBe(6); // untouched
+
+    const noClose = shinoharaIntensityRatio(
+      volMiscBars({ at: 30, column: 'close' }),
+      { period: 6 },
+    );
+    const weak = cells(noClose, 'sirWeak');
+    expect(typeof weak[30]).toBe('number'); // reads bar 29's close, which is there
+    for (let i = 31; i <= 36; i += 1)
+      expect(weak[i], `bar ${i}`).toBeUndefined();
+    expect(typeof weak[37]).toBe('number');
+    expect(nullCountOf(noClose, 'sirStrong')).toBe(5); // untouched
+  });
+
+  it('impulse: the head is one bar past the slower input, and a hole costs two bars', () => {
+    const opts = {
+      emaPeriod: 6,
+      fastPeriod: 3,
+      slowPeriod: 7,
+      signalPeriod: 4,
+    } as const;
+    const clean = elderImpulse(volMiscBars(), opts);
+    // The histogram starts at slow + signal - 2 = 9, the EMA at 5, and the
+    // verdict needs TWO of the slower: bar 10.
+    expect(nullCountOf(clean, 'impulse')).toBe(10);
+    expect(typeof cells(clean, 'impulse')[10]).toBe('number');
+
+    // A missing close blanks its own bar and the next (the verdict compares
+    // adjacent bars), then the column comes BACK — both recursions skip the
+    // gap and carry on, which is `ema`'s rule and not Wilder's.
+    const holed = elderImpulse(volMiscBars({ at: 30, column: 'close' }), opts);
+    const v = cells(holed, 'impulse');
+    expect(typeof v[29]).toBe('number');
+    expect(v[30]).toBeUndefined();
+    expect(v[31]).toBeUndefined();
+    expect(typeof v[32]).toBe('number');
+  });
+
+  it('maCross: the head is `slowPeriod`, and what a gap costs is `maType`\u2019s', () => {
+    const clean = movingAverageCross(volMiscBars(), {
+      fastPeriod: 3,
+      slowPeriod: 6,
+    });
+    // Bars 0..4 have no slow average; bar 5 has one but is the SEED, which
+    // reports nothing. So the head is `slowPeriod`, one longer than the
+    // average's own.
+    expect(nullCountOf(clean, 'maCross')).toBe(6);
+    expect(typeof cells(clean, 'maCross')[6]).toBe('number');
+
+    // At the default `sma` a hole costs NOTHING: the K2 column door counts
+    // rows, so both averages skip the missing cell and stay defined, and the
+    // fold never sees an incomplete row. The reset never fires — the sharp
+    // edge this test exists to pin.
+    const asSma = movingAverageCross(volMiscBars({ at: 30, column: 'close' }), {
+      fastPeriod: 3,
+      slowPeriod: 6,
+    });
+    expect(nullCountOf(asSma, 'maCross')).toBe(6);
+    expect(typeof cells(asSma, 'maCross')[30]).toBe('number');
+
+    // With `ema` the averages blank the gap bar and recover, so the RESET is
+    // what is visible: bar 30 is the hole, bar 31 the fresh seed.
+    const asEma = movingAverageCross(volMiscBars({ at: 30, column: 'close' }), {
+      fastPeriod: 3,
+      slowPeriod: 6,
+      maType: 'ema',
+    });
+    const e = cells(asEma, 'maCross');
+    expect(typeof e[29]).toBe('number');
+    expect(e[30]).toBeUndefined();
+    expect(e[31]).toBeUndefined();
+    expect(typeof e[32]).toBe('number');
+
+    // With `wma` the ARRAY door waits for `period` finite values, so the slow
+    // average is blank for a whole window and the seed lands at 36.
+    const asWma = movingAverageCross(volMiscBars({ at: 30, column: 'close' }), {
+      fastPeriod: 3,
+      slowPeriod: 6,
+      maType: 'wma',
+    });
+    const w = cells(asWma, 'maCross');
+    for (let i = 30; i <= 36; i += 1) expect(w[i], `bar ${i}`).toBeUndefined();
+    expect(typeof w[37]).toBe('number');
+
+    // With `smma` (Wilder) the averages never come back, so neither does the
+    // signal — the recursion's rule, inherited whole.
+    const asSmma = movingAverageCross(
+      volMiscBars({ at: 30, column: 'close' }),
+      { fastPeriod: 3, slowPeriod: 6, maType: 'smma' },
+    );
+    const m = cells(asSmma, 'maCross');
+    expect(typeof m[29]).toBe('number');
+    for (let i = 30; i < 60; i += 1) expect(m[i], `bar ${i}`).toBeUndefined();
+  });
+
+  it('avwap: everything before the anchor is missing, and a hole ends the line', () => {
+    // The anchor is a TIME, and `volMiscBars` keys bar `i` at `i` minutes.
+    const clean = anchoredVwap(volMiscBars(), { anchor: 20 * MINUTE });
+    expect(nullCountOf(clean, 'avwap')).toBe(20);
+    expect(typeof cells(clean, 'avwap')[20]).toBe('number');
+
+    // An interior hole in ANY of the four inputs ends the line — both sums
+    // are `cumulativeValues`, so every later level is a known sum plus an
+    // unknown. `obv`'s rule, not `negativeVolumeIndex`'s re-seed.
+    for (const column of ['high', 'low', 'close', 'volume'] as const) {
+      const holed = anchoredVwap(volMiscBars({ at: 30, column }), {
+        anchor: 20 * MINUTE,
+      });
+      const v = cells(holed, 'avwap');
+      expect(typeof v[29], column).toBe('number');
+      expect(v[30], column).toBeUndefined();
+      expect(v[59], column).toBeUndefined();
+    }
+
+    // A hole BEFORE the anchor is invisible: those bars were never part of
+    // this VWAP.
+    const early = anchoredVwap(volMiscBars({ at: 5, column: 'close' }), {
+      anchor: 20 * MINUTE,
+    });
+    expect(nullCountOf(early, 'avwap')).toBe(20);
   });
 });

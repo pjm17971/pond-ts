@@ -249,3 +249,15 @@ export type { TrendIntensityIndexOptions } from './studies/trend-intensity-index
 export { trendIntensityIndex } from './studies/trend-intensity-index.js';
 export type { SpecialKOptions } from './studies/special-k.js';
 export { specialK } from './studies/special-k.js';
+export type { TwiggsMoneyFlowOptions } from './studies/twiggs-money-flow.js';
+export { twiggsMoneyFlow } from './studies/twiggs-money-flow.js';
+export type { TradeVolumeIndexOptions } from './studies/trade-volume-index.js';
+export { tradeVolumeIndex } from './studies/trade-volume-index.js';
+export type { ShinoharaIntensityRatioOptions } from './studies/shinohara-intensity-ratio.js';
+export { shinoharaIntensityRatio } from './studies/shinohara-intensity-ratio.js';
+export type { ElderImpulseOptions } from './studies/elder-impulse.js';
+export { elderImpulse } from './studies/elder-impulse.js';
+export type { MovingAverageCrossOptions } from './studies/moving-average-cross.js';
+export { movingAverageCross } from './studies/moving-average-cross.js';
+export type { AnchoredVwapOptions } from './studies/anchored-vwap.js';
+export { anchoredVwap } from './studies/anchored-vwap.js';

@@ -70,6 +70,88 @@ include new features and type-level changes; patch bumps are strictly additive.
 
 ### Added
 
+- `@pond-ts/financial`: **the volume and miscellaneous leftovers** (corpus
+  §6.6 / §6.4 / §6.1) — six studies in the uniform shape (bar columns plus an
+  `output` or `prefix`, bar-count periods, a length-preserving per-column
+  warm-up, a fluent method), each with oracle cases. Two internal kernel
+  helpers ride with them: `trueRangeBoundsValues` (the true high / true low
+  the true range is the width of) and `moneyFlowVolumeValues` (the `clv ·
+volume` term the A/D line already accumulated, named so Twiggs can share
+  it).
+  - **`twiggsMoneyFlow({ period = 21, high, low, close, volume, output =
+'tmf' })`** — Colin Twiggs' correction to Chaikin Money Flow: the close's
+    location in the bar's **true** range (so a gap bar is scored against the
+    ground it covered), Wilder-smoothed against a matching smoothing of
+    volume rather than summed over a flat window. Bounded −1…1. **F-AMBIG**
+    on the smoothing: Wilder's exponential form ships (Incredible Charts /
+    Twiggs' own published algorithm) and the window-sum fork is measured at
+    **0.0706** away at `period 21`, where TMF itself spans −0.0279…0.1493;
+    `chaikinMoneyFlow(21)` sits **0.1494** away — wider than the whole
+    reading. Warm-up is `period` (bar 0 has no true range), and an interior
+    gap in any input **ends** the reading, where CMF recovers a window later.
+  - **`tradeVolumeIndex({ minTick, column = 'close', volume, output = 'tvi'
+})`** — tick-direction volume accumulation: `+1` above the dead band, `−1`
+    below it, and **the previous direction** on an undecided bar, which is
+    what the exchange tick rule does and what distinguishes it from `obv`
+    (which adds nothing for an unchanged close). **`minTick` is required**
+    and has no default — a fact about the instrument, like `swingIndex`'s
+    `limit`; `0`, negative and non-finite are rejected. The level starts at
+    `0`, no first direction is invented (the up-seeded vendor fork is pinned
+    by a unit test — the oracle input's first bar carries its largest move,
+    so the fork is invisible there, and the generator asserts that), and an
+    interior gap **ends** the index the way `obv` does rather than re-seeding
+    the way `negativeVolumeIndex` does.
+  - **`shinoharaIntensityRatio({ period = 26, open, high, low, close, prefix =
+'sir' })`** → `sirStrong`, `sirWeak` — Shinohara's A and B ratios,
+    `100·Σup/Σdown` over the window: A measured against each bar's **own
+    open**, B against the **previous close**. **F-AMBIG** on the A/B naming:
+    the arithmetic is the standard pair and the `strong` / `weak` labels come
+    from the corpus' own list; the alternative convention charts them the
+    other way round, and the two lines sit **23,312.47** apart on the oracle
+    input, so the labels carry information. Per-column warm-up (25 and 26 at
+    the default). Neither ratio is bounded, and **B inverts on a gappy tape**
+    — `prevClose − low` is negative on a bar that gapped up, which is the
+    definition, not a defect (documented, with the oracle input's own
+    −22,761…7,620 range as the worked case).
+  - **`elderImpulse({ emaPeriod = 13, fastPeriod = 12, slowPeriod = 26,
+signalPeriod = 9, column = 'close', output = 'impulse' })`** — Elder's
+    Impulse System: `+1` when the 13-bar EMA **and** the MACD histogram both
+    rise, `−1` when both fall, `0` otherwise. The column is **numeric**, not
+    the categorical colour the corpus describes — `TimeSeries.withColumn` has
+    no string door, so a study cannot append one; `+1 / 0 / −1` is signed, so
+    a chart maps it to Elder's green/blue/red in one expression. It calls
+    `macd()` under a scratch prefix rather than re-deriving the histogram, so
+    it is by construction the same MACD a caller charts beside it. Ties are
+    `0` (strict comparison on both sides), so it carries no state and needs
+    no gap rule of its own; warm-up 34 at the defaults.
+  - **`movingAverageCross({ fastPeriod = 10, slowPeriod = 30, maType = 'sma',
+column = 'close', output = 'maCross' })`** — a **signal** column: `+1` on
+    the bar the fast average crosses above the slow one, `−1` below, `0`
+    otherwise. The averages are not emitted (that is `movingAverage`'s job);
+    what this adds is the event, which needs memory of which side the pair
+    was last on — a K6 `foldRows` machine. **The tie rule is the design**: an
+    exact tie is not a cross, a touch-and-retreat is not a cross (the machine
+    carries the last **non-zero** sign), and a crossing _through_ a tie fires
+    on the far-side bar. `maType`, not `type`, because the column is a signal
+    rather than an average. The first bar on which both averages exist
+    reports `undefined`, not `0` — it is the seed. **What a gap costs depends
+    entirely on `maType`**, and the docstring carries the measured table: at
+    the default `sma` a hole costs _nothing_ (the K2 column door counts rows),
+    at `ema` two bars, at `wma`/`hull` a window, and at `smma`/`kama` the rest
+    of the series.
+  - **`anchoredVwap({ anchor, high, low, close, volume, output = 'avwap' })`**
+    — the cumulative `Σ typicalPrice·volume / Σ volume` from a chosen bar
+    onwards: the VWAP of the execution desk, and the half of VWAP that
+    `vwap()`'s docstring named and left open. **`anchor` is required** and is
+    a `Date` or epoch **milliseconds**, not a row index — the line starts at
+    the first bar at or after it, so an anchor between bars snaps forward, one
+    before the series covers all of it, and one after the last bar leaves the
+    column empty (not an error). The **session-reset** form still waits on
+    [PND-TCAL]; what makes this one shippable today is that its anchor is a
+    user parameter, so no calendar is consulted. An interior gap **ends** the
+    line (`obv`'s cumulative rule), and the volume sum is blanked wherever
+    the price sum is so the two consume the same bars.
+
 - `@pond-ts/financial`: **the momentum and trend leftovers** (corpus §6.3 /
   §6.4 / §6.1) — ten studies in the uniform shape (a `column` or the bar
   columns plus an `output` or `prefix`, bar-count periods, a length-preserving

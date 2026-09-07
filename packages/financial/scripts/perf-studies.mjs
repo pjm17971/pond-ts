@@ -90,6 +90,12 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
   typicalPrice,
   medianPrice,
   weightedClose,
@@ -626,6 +632,38 @@ function scaleResults(length) {
         trendIntensityIndex(series),
       ),
       benchmark('specialK()', () => specialK(series)),
+      // The volume and miscellaneous leftovers (assessment 6.6 / 6.4 / 6.1).
+      // Every one is compose-only: `twiggsMoneyFlow` is two column reads, a
+      // true-bounds pass and two Wilder recursions, so it should sit near
+      // `atr()`; the two K6 machines near `foldRows(2 cols)`; `elderImpulse`
+      // near `macd()` plus one EMA; `anchoredVwap` near two cumulative
+      // passes. The only entry with a window is the Shinohara pair, which is
+      // four `rollingMeanValues` scans and should be FLAT in `period` — the
+      // 26 / 200 pair below is what shows that.
+      benchmark('twiggsMoneyFlow({ period: 21 })', () =>
+        twiggsMoneyFlow(series),
+      ),
+      benchmark('tradeVolumeIndex({ minTick: 0.01 })', () =>
+        tradeVolumeIndex(series, { minTick: 0.01 }),
+      ),
+      benchmark('shinoharaIntensityRatio({ period: 26 })', () =>
+        shinoharaIntensityRatio(series),
+      ),
+      benchmark('shinoharaIntensityRatio({ period: 200 })', () =>
+        shinoharaIntensityRatio(series, { period: 200 }),
+      ),
+      benchmark('elderImpulse({ 13, 12, 26, 9 })', () => elderImpulse(series)),
+      benchmark('movingAverageCross({ 10, 30, sma })', () =>
+        movingAverageCross(series),
+      ),
+      benchmark('movingAverageCross({ 10, 30, ema })', () =>
+        movingAverageCross(series, { maType: 'ema' }),
+      ),
+      benchmark('anchoredVwap({ anchor: midpoint })', () =>
+        anchoredVwap(series, {
+          anchor: 1_700_000_000_000 + Math.floor(length / 2) * 60_000,
+        }),
+      ),
     ],
   };
 }

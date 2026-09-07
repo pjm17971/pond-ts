@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { trueRangeValues } from '../src/kernels/true-range.js';
+import {
+  trueRangeBoundsValues,
+  trueRangeValues,
+} from '../src/kernels/true-range.js';
 
 /*
  * Tested directly, because `atr` alone cannot discriminate these: a Layer-2
@@ -84,5 +87,58 @@ describe('trueRangeValues', () => {
 
   it('handles an empty input', () => {
     expect(trueRangeValues(arr(), arr(), arr())).toHaveLength(0);
+  });
+});
+
+describe('trueRangeBoundsValues', () => {
+  it('widens the bar to the previous close on whichever side gapped', () => {
+    // Bar 1 gaps UP away from a close of 100: its low (105) is above it, so
+    // the true low is the previous close and the true high is its own high.
+    const { trueHigh, trueLow } = trueRangeBoundsValues(
+      arr(101, 108),
+      arr(99, 105),
+      arr(100, 106),
+    );
+    expect(read(trueHigh)).toEqual([undefined, 108]);
+    expect(read(trueLow)).toEqual([undefined, 100]);
+  });
+
+  it('leaves a bar that contains the previous close alone', () => {
+    const { trueHigh, trueLow } = trueRangeBoundsValues(
+      arr(101, 103),
+      arr(99, 99),
+      arr(100, 100),
+    );
+    expect(read(trueHigh)).toEqual([undefined, 103]);
+    expect(read(trueLow)).toEqual([undefined, 99]);
+  });
+
+  it('is exactly the two halves of trueRangeValues', () => {
+    // The claim that makes this a re-naming rather than a second definition,
+    // pinned on bars that gap both ways and on one that does not.
+    const high = arr(101, 108, 96, 104);
+    const low = arr(99, 105, 92, 95);
+    const close = arr(100, 106, 94, 103);
+    const { trueHigh, trueLow } = trueRangeBoundsValues(high, low, close);
+    const tr = trueRangeValues(high, low, close);
+    for (let i = 1; i < tr.length; i += 1) {
+      expect(trueHigh[i]! - trueLow[i]!, `bar ${i}`).toBeCloseTo(tr[i]!, 12);
+    }
+  });
+
+  it('bar 0 is missing in both, and a missing close costs the NEXT bar', () => {
+    const { trueHigh, trueLow } = trueRangeBoundsValues(
+      arr(101, 103, 105),
+      arr(99, 99, 101),
+      arr(100, NaN, 104),
+    );
+    expect(read(trueHigh)).toEqual([undefined, 103, undefined]);
+    expect(read(trueLow)).toEqual([undefined, 99, undefined]);
+  });
+
+  it('an empty input gives two empty arrays', () => {
+    const { trueHigh, trueLow } = trueRangeBoundsValues(arr(), arr(), arr());
+    expect(trueHigh).toHaveLength(0);
+    expect(trueLow).toHaveLength(0);
   });
 });

@@ -141,6 +141,12 @@ import {
   ravi,
   trendIntensityIndex,
   specialK,
+  twiggsMoneyFlow,
+  tradeVolumeIndex,
+  shinoharaIntensityRatio,
+  elderImpulse,
+  movingAverageCross,
+  anchoredVwap,
 } from '../src/index.js';
 
 const closeSchema = [
@@ -4899,5 +4905,533 @@ describe('[talib] the bands tail: three different scale/shift signatures', () =>
         (x) => x === undefined,
       ),
     ).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/* The volume and miscellaneous leftovers (corpus §6.6 / §6.4 / §6.1).        */
+/*                                                                            */
+/* One claim per study, and each is chosen so that the obvious wrong turn     */
+/* fails it:                                                                  */
+/*                                                                            */
+/*  twiggsMoneyFlow      price-scale AND price-shift INVARIANT (a ratio of    */
+/*      price differences; the previous close shifts with the bar), and       */
+/*      volume-scale invariant (a weighted mean of its own weight).           */
+/*  tradeVolumeIndex     volume-EQUIVARIANT (it accumulates volume) and       */
+/*      price-shift invariant; price-scale invariant ONLY when `minTick`      */
+/*      scales with the prices — the true statement names the parameter, as   */
+/*      `swingIndex`'s `limit` does.                                          */
+/*  shinoharaIntensityRatio  price-scale AND price-shift INVARIANT: every     */
+/*      term of both sums is a difference of two prices, so a scale factor    */
+/*      cancels between numerator and denominator and a shift cancels inside  */
+/*      each term.                                                            */
+/*  elderImpulse / movingAverageCross   invariant under any POSITIVE scale    */
+/*      and any shift: both read only the SIGN of a difference of averages,   */
+/*      and every average here is affine-equivariant.                         */
+/*  anchoredVwap         price-EQUIVARIANT (it is an average price) and       */
+/*      volume-scale invariant (the weights cancel).                          */
+/* ========================================================================== */
+
+const volMiscSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'open', kind: 'number' },
+  { name: 'high', kind: 'number' },
+  { name: 'low', kind: 'number' },
+  { name: 'close', kind: 'number' },
+  { name: 'volume', kind: 'number' },
+] as const;
+
+/** Non-degenerate OHLCV bars, long enough for the slowest warm-up in the
+ *  batch (`elderImpulse` at the defaults first prints on bar 34). `k` scales
+ *  every price, `shift` adds to every price, `vk` scales every volume. The
+ *  closes wander in both directions so the two signal columns actually fire,
+ *  and the volumes vary so a dropped weighting is visible. */
+const volMiscBars = (n = 140, k = 1, shift = 0, vk = 1) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: volMiscSchema,
+    rows: Array.from({ length: n }, (_, i) => {
+      const c = 100 + 9 * Math.sin(i / 7.3) + 4 * Math.sin(i / 2.9) + 0.05 * i;
+      const o = c - 0.8 * Math.cos(i / 2.1);
+      return [
+        i,
+        o * k + shift,
+        (Math.max(o, c) + 0.5 + 0.7 * Math.abs(Math.sin(i / 2.3))) * k + shift,
+        (Math.min(o, c) - 0.5 - 0.7 * Math.abs(Math.cos(i / 1.9))) * k + shift,
+        c * k + shift,
+        (1200 + 300 * ((i * 3) % 7) + 55 * (i % 4)) * vk,
+      ];
+    }) as Array<[number, number, number, number, number, number]>,
+  });
+
+/** An all-missing OHLCV series of `length` rows. */
+const emptyVolMiscBars = (length: number) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'open', kind: 'number', required: false },
+      { name: 'high', kind: 'number', required: false },
+      { name: 'low', kind: 'number', required: false },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'volume', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]) as never,
+  });
+
+describe('[talib] twiggsMoneyFlow is invariant in price (both ways) and in volume', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+
+  it('scaling every price leaves it unchanged', () => {
+    const base = col(twiggsMoneyFlow(volMiscBars() as never), 'tmf');
+    expect(base.filter((x) => x !== undefined).length).toBe(140 - 21);
+    expect(new Set(base).size).toBeGreaterThan(50); // it actually moves
+    expectSame(base, col(twiggsMoneyFlow(volMiscBars(140, K) as never), 'tmf'));
+  });
+
+  it('SHIFTING every price leaves it unchanged too (the true bounds shift with it)', () => {
+    // This is the half a CMF-shaped study also has; what makes the pair a
+    // test is the gap bar, which only the true range sees.
+    const base = col(twiggsMoneyFlow(volMiscBars() as never), 'tmf');
+    expectSame(
+      base,
+      col(twiggsMoneyFlow(volMiscBars(140, 1, SHIFT) as never), 'tmf'),
+    );
+  });
+
+  it('scaling every volume leaves it unchanged (it is its own weight)', () => {
+    const base = col(twiggsMoneyFlow(volMiscBars() as never), 'tmf');
+    expectSame(
+      base,
+      col(twiggsMoneyFlow(volMiscBars(140, 1, 0, 1e6) as never), 'tmf'),
+    );
+  });
+
+  it('is bounded −1 … +1 on bars whose close sits inside them', () => {
+    for (const x of col(twiggsMoneyFlow(volMiscBars() as never), 'tmf')) {
+      if (x !== undefined) expect(Math.abs(x)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    // The `rsi(sma(...))` shape, with `close` redirected at a smoothed column.
+    const chained = twiggsMoneyFlow(
+      sma(volMiscBars() as never, { period: 5, output: 'smaClose' }) as never,
+      { period: 4, close: 'smaClose' as never },
+    );
+    const v = col(chained, 'tmf');
+    expect(v).toHaveLength(140);
+    // The SMA starts at bar 4, so the flow starts at bar 5 and the Wilder
+    // seed lands three bars later.
+    expect(firstValid(v)).toBe(8);
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(twiggsMoneyFlow(emptyVolMiscBars(40) as never), 'tmf');
+    expect(v).toHaveLength(40);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] tradeVolumeIndex is volume-equivariant, and price-invariant only with `minTick`', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const TICK = 1;
+
+  it('the dead band actually bites on this fixture', () => {
+    // The control for everything below: with a band of 1 the reading differs
+    // from one with no band at all, so the persistence rule is live here.
+    const banded = col(
+      tradeVolumeIndex(volMiscBars() as never, { minTick: TICK }),
+      'tvi',
+    );
+    const bandless = col(
+      tradeVolumeIndex(volMiscBars() as never, { minTick: 1e-9 }),
+      'tvi',
+    );
+    expect(banded.at(-1)).not.toBeCloseTo(bandless.at(-1)!, 6);
+    expect(banded.filter((x) => x !== undefined).length).toBe(140);
+  });
+
+  it('scaling every volume scales the whole line (it is a sum of volumes)', () => {
+    const base = col(
+      tradeVolumeIndex(volMiscBars() as never, { minTick: TICK }),
+      'tvi',
+    );
+    expect(base.some((x) => x !== undefined && x !== 0)).toBe(true);
+    expectLinear(
+      base,
+      col(
+        tradeVolumeIndex(volMiscBars(140, 1, 0, K) as never, {
+          minTick: TICK,
+        }),
+        'tvi',
+      ),
+      K,
+    );
+  });
+
+  it('SHIFTING every price changes nothing (only differences are read)', () => {
+    const base = col(
+      tradeVolumeIndex(volMiscBars() as never, { minTick: TICK }),
+      'tvi',
+    );
+    expectSame(
+      base,
+      col(
+        tradeVolumeIndex(volMiscBars(140, 1, SHIFT) as never, {
+          minTick: TICK,
+        }),
+        'tvi',
+      ),
+    );
+  });
+
+  it('scaling the prices alone CHANGES it; scaling `minTick` with them does not', () => {
+    // The true statement names the parameter, as `swingIndex`'s does: the
+    // dead band is in price units, so a scaled price against a fixed band
+    // reclassifies bars.
+    const base = col(
+      tradeVolumeIndex(volMiscBars() as never, { minTick: TICK }),
+      'tvi',
+    );
+    const scaledAlone = col(
+      tradeVolumeIndex(volMiscBars(140, K) as never, { minTick: TICK }),
+      'tvi',
+    );
+    expect(scaledAlone.at(-1)).not.toBeCloseTo(base.at(-1)!, 6);
+    expectSame(
+      base,
+      col(
+        tradeVolumeIndex(volMiscBars(140, K) as never, { minTick: TICK * K }),
+        'tvi',
+      ),
+    );
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    const chained = tradeVolumeIndex(
+      sma(volMiscBars() as never, { period: 5, output: 'smaClose' }) as never,
+      { column: 'smaClose' as never, minTick: 0.2 },
+    );
+    const v = col(chained, 'tvi');
+    expect(v).toHaveLength(140);
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBe(0); // the level starts on the SMA's first bar
+    expect(v.filter((x) => x !== undefined).length).toBe(136);
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(
+      tradeVolumeIndex(emptyVolMiscBars(40) as never, { minTick: 0.5 }),
+      'tvi',
+    );
+    expect(v).toHaveLength(40);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] shinoharaIntensityRatio is scale- AND shift-invariant', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const opts = { period: 12 } as const;
+
+  it('scaling every price leaves both columns unchanged', () => {
+    // Every term of both sums is a difference of two prices, so the factor
+    // cancels between numerator and denominator.
+    for (const name of ['sirStrong', 'sirWeak']) {
+      const base = col(
+        shinoharaIntensityRatio(volMiscBars() as never, opts),
+        name,
+      );
+      expect(
+        base.some((x) => x !== undefined && x !== 100),
+        name,
+      ).toBe(true);
+      expectSame(
+        base,
+        col(shinoharaIntensityRatio(volMiscBars(140, K) as never, opts), name),
+      );
+    }
+  });
+
+  it('SHIFTING every price leaves both columns unchanged (relatively)', () => {
+    // The shift cancels INSIDE each term, which is the half a percent-of-
+    // price study does not have: a build that divided by a price level
+    // instead of by the down-sum would fail this.
+    //
+    // Compared RELATIVELY rather than absolutely, and that is a real finding
+    // rather than a loosened test. The invariance is exact in arithmetic but
+    // not in floating point: the shifted run computes `(o + 5000) − (l +
+    // 5000)`, whose terms carry ~1e-12 of relative error the unshifted run
+    // does not, and the B ratio AMPLIFIES it wherever its denominator is
+    // near zero (which this fixture's gaps make it — see the study
+    // docstring). At bar 101 the two runs read 4101.6117303237 and
+    // 4101.6117303172: 6.5e-9 apart absolutely, 1.6e-12 relatively.
+    for (const name of ['sirStrong', 'sirWeak']) {
+      const base = col(
+        shinoharaIntensityRatio(volMiscBars() as never, opts),
+        name,
+      );
+      const shifted = col(
+        shinoharaIntensityRatio(volMiscBars(140, 1, SHIFT) as never, opts),
+        name,
+      );
+      for (let i = 0; i < base.length; i += 1) {
+        if (base[i] === undefined) {
+          expect(shifted[i], `${name} bar ${i}`).toBeUndefined();
+        } else {
+          const scale = Math.max(1, Math.abs(base[i]!));
+          expect(
+            (shifted[i]! - base[i]!) / scale,
+            `${name} bar ${i}`,
+          ).toBeCloseTo(0, 9);
+        }
+      }
+    }
+  });
+
+  it('the two columns are genuinely different lines', () => {
+    // The F-AMBIG fork is a NAMING one, so the test that matters is that the
+    // labels carry information: a build that swapped them would be visibly
+    // wrong rather than equivalent.
+    const strong = col(
+      shinoharaIntensityRatio(volMiscBars() as never, opts),
+      'sirStrong',
+    );
+    const weak = col(
+      shinoharaIntensityRatio(volMiscBars() as never, opts),
+      'sirWeak',
+    );
+    let apart = 0;
+    for (let i = 0; i < strong.length; i += 1) {
+      if (strong[i] !== undefined && weak[i] !== undefined) {
+        apart = Math.max(apart, Math.abs(strong[i]! - weak[i]!));
+      }
+    }
+    expect(apart).toBeGreaterThan(10);
+  });
+
+  it('all-missing input yields all-missing columns', () => {
+    const r = shinoharaIntensityRatio(emptyVolMiscBars(40) as never, opts);
+    for (const name of ['sirStrong', 'sirWeak']) {
+      const v = col(r, name);
+      expect(v, name).toHaveLength(40);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('[talib] elderImpulse is invariant under any POSITIVE scale and any shift', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const opts = {
+    emaPeriod: 6,
+    fastPeriod: 4,
+    slowPeriod: 9,
+    signalPeriod: 3,
+  } as const;
+  const closes = (a = 1, b = 0) =>
+    bars(
+      Array.from(
+        { length: 140 },
+        (_, i) =>
+          (100 + 9 * Math.sin(i / 7.3) + 4 * Math.sin(i / 2.9) + 0.05 * i) * a +
+          b,
+      ),
+    );
+
+  it('scaling every price leaves every verdict unchanged', () => {
+    // Each stage is affine-equivariant and only the SIGN of a change is
+    // read, so a positive factor cannot move a verdict.
+    const base = col(elderImpulse(closes(), opts), 'impulse');
+    expect(new Set(base.filter((x) => x !== undefined))).toEqual(
+      new Set([-1, 0, 1]),
+    );
+    expectSame(base, col(elderImpulse(closes(K), opts), 'impulse'));
+  });
+
+  it('SHIFTING every price leaves every verdict unchanged', () => {
+    expectSame(
+      col(elderImpulse(closes(), opts), 'impulse'),
+      col(elderImpulse(closes(1, SHIFT), opts), 'impulse'),
+    );
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    const chained = elderImpulse(
+      sma(closes(), { period: 5, output: 'smaClose' }),
+      { ...opts, column: 'smaClose' },
+    );
+    const v = col(chained, 'impulse');
+    expect(v).toHaveLength(140);
+    // The SMA's own four-bar head pushes the whole thing four bars later
+    // than the bare-close run, rather than emptying the column.
+    expect(firstValid(v)).toBe(
+      firstValid(col(elderImpulse(closes(), opts), 'impulse')) + 4,
+    );
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(elderImpulse(emptyCloses(60), opts), 'impulse');
+    expect(v).toHaveLength(60);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] movingAverageCross is invariant under any POSITIVE scale and any shift', () => {
+  const K = 1000;
+  const SHIFT = 5000;
+  const opts = { fastPeriod: 5, slowPeriod: 14 } as const;
+  const closes = (a = 1, b = 0) =>
+    bars(
+      Array.from(
+        { length: 200 },
+        (_, i) =>
+          (100 + 9 * Math.sin(i / 7.3) + 4 * Math.sin(i / 2.9) + 0.05 * i) * a +
+          b,
+      ),
+    );
+
+  it('scaling every price leaves every signal on the same bar', () => {
+    const base = col(movingAverageCross(closes(), opts), 'maCross');
+    // The control: the fixture must actually cross, both ways.
+    expect(base.filter((x) => x === 1).length).toBeGreaterThan(2);
+    expect(base.filter((x) => x === -1).length).toBeGreaterThan(2);
+    expectSame(base, col(movingAverageCross(closes(K), opts), 'maCross'));
+  });
+
+  it('SHIFTING every price leaves every signal on the same bar', () => {
+    expectSame(
+      col(movingAverageCross(closes(), opts), 'maCross'),
+      col(movingAverageCross(closes(1, SHIFT), opts), 'maCross'),
+    );
+  });
+
+  it('holds for every MA type in the menu', () => {
+    // The invariance is the K2 engine's (every type is affine-equivariant),
+    // so it should hold across the whole menu rather than for `sma` alone.
+    for (const maType of MA_TYPES) {
+      const o = { ...opts, maType };
+      expectSame(
+        col(movingAverageCross(closes(), o), 'maCross'),
+        col(movingAverageCross(closes(K), o), 'maCross'),
+      );
+      expectSame(
+        col(movingAverageCross(closes(), o), 'maCross'),
+        col(movingAverageCross(closes(1, SHIFT), o), 'maCross'),
+      );
+    }
+  });
+
+  it('composes over another study’s output: length kept, warm-up composed', () => {
+    const chained = movingAverageCross(
+      sma(closes(), { period: 5, output: 'smaClose' }),
+      { ...opts, column: 'smaClose' },
+    );
+    const v = col(chained, 'maCross');
+    expect(v).toHaveLength(200);
+    expect(v.some((x) => x === 1 || x === -1)).toBe(true);
+    // The SMA's own four-bar head does NOT shift the result, because the
+    // averages come from the column door, which counts rows rather than
+    // values — the same asymmetry the gap table in the docstring records.
+    expect(firstValid(v)).toBe(
+      firstValid(col(movingAverageCross(closes(), opts), 'maCross')),
+    );
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(movingAverageCross(emptyCloses(60), opts), 'maCross');
+    expect(v).toHaveLength(60);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] anchoredVwap scales with price and not with volume', () => {
+  const K = 1000;
+  const anchor = 40;
+
+  it('scaling every price scales the line', () => {
+    const base = col(anchoredVwap(volMiscBars() as never, { anchor }), 'avwap');
+    expect(base.filter((x) => x !== undefined).length).toBe(100);
+    expectLinear(
+      base,
+      col(anchoredVwap(volMiscBars(140, K) as never, { anchor }), 'avwap'),
+      K,
+    );
+  });
+
+  it('scaling every volume leaves it unchanged (the weights cancel)', () => {
+    expectSame(
+      col(anchoredVwap(volMiscBars() as never, { anchor }), 'avwap'),
+      col(
+        anchoredVwap(volMiscBars(140, 1, 0, 1e6) as never, { anchor }),
+        'avwap',
+      ),
+    );
+  });
+
+  it('sits inside the range of the typical prices it averages', () => {
+    // A weighted mean cannot leave the convex hull of its values — the
+    // bound a build that summed the wrong pair would break.
+    const v = col(anchoredVwap(volMiscBars() as never, { anchor }), 'avwap');
+    const bars = volMiscBars();
+    const tp = (
+      bars as never as { events: Array<{ data(): Record<string, number> }> }
+    ).events
+      .map((e) => {
+        const d = e.data();
+        return (d.high! + d.low! + d.close!) / 3;
+      })
+      .slice(anchor);
+    const lo = Math.min(...tp);
+    const hi = Math.max(...tp);
+    for (const x of v) {
+      if (x !== undefined) {
+        expect(x).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(x).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    }
+  });
+
+  it('the anchor is what makes it differ from `vwap` over the same span', () => {
+    // The two are different studies, not two spellings: the rolling form is
+    // emitted only once its window spans `period` rows.
+    const anchored = col(
+      anchoredVwap(volMiscBars() as never, { anchor }),
+      'avwap',
+    );
+    const rolling = col(
+      vwap(volMiscBars() as never, { period: 140 - anchor }),
+      'vwap',
+    );
+    // The rolling form waits for its window: 41 values from bar 99, against
+    // the anchored line's 100 from bar 40. Only at the LAST bar does its
+    // window cover exactly the anchored span — everywhere else it looks back
+    // past the anchor, which is the whole difference.
+    expect(rolling.filter((x) => x !== undefined).length).toBe(41);
+    expect(anchored.filter((x) => x !== undefined).length).toBe(100);
+    expect(anchored.at(-1)).toBeCloseTo(rolling.at(-1)!, 9);
+    expect(anchored[120]).not.toBeCloseTo(rolling[120]!, 6);
+  });
+
+  it('all-missing input yields an all-missing column', () => {
+    const v = col(
+      anchoredVwap(emptyVolMiscBars(40) as never, { anchor: 0 }),
+      'avwap',
+    );
+    expect(v).toHaveLength(40);
+    expect(v.every((x) => x === undefined)).toBe(true);
   });
 });
