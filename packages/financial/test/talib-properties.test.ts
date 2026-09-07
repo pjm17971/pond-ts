@@ -5193,7 +5193,7 @@ describe('[talib] shinoharaIntensityRatio is scale- AND shift-invariant', () => 
           expect(
             (shifted[i]! - base[i]!) / scale,
             `${name} bar ${i}`,
-          ).toBeCloseTo(0, 9);
+          ).toBeCloseTo(0, 11);
         }
       }
     }

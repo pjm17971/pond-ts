@@ -159,9 +159,15 @@ function crossStep(
  * | `maType` | what the column does |
  * | --- | --- |
  * | `sma` | **nothing at all** — the column door counts *rows*, so both averages skip the missing cell and stay defined; the reset never fires |
- * | `ema` | bars 30–31 `undefined` (the gap bar, then the fresh seed), back at 32 |
- * | `wma` `hull` | bars 30–36 `undefined` — the array door waits for `period` finite *values*, so the slow average is blank for a whole window, and the seed lands at 36 |
+ * | `ema` `dema` `tema` | bars 30–31 `undefined` (the gap bar, then the fresh seed), back at 32 |
+ * | `zlema` | bars 30–33 `undefined` — its lag term reads a bar the hole removed, so the seed lands two bars later than `ema`'s; back at 34 |
+ * | `wma` `trima` | bars 30–36 `undefined` — the array door waits for `period` finite *values*, so the slow average is blank for a whole window; back at 37 |
+ * | `hull` | bars 30–37 `undefined` — one bar longer than `wma`: the final √period smoothing waits on the two rebuilt WMAs; back at 38 |
  * | `smma` `kama` | `undefined` **to the end** — Wilder's recursion has no state to carry across a hole, so the inputs never complete again |
+ *
+ * (Every one of the ten `MaType`s, re-measured at integration on the same
+ * 40-bar setup — a Layer-2 review caught `hull` a bar short and four types
+ * missing from the first draft of this table.)
  *
  * The first row is the sharp edge worth naming: at the default `sma` this
  * study has **no gap behaviour of its own**, and a caller who needs the hole
