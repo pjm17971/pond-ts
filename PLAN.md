@@ -1014,6 +1014,18 @@ width="auto">`, and an omitted `width` means the same. Three consumers hit
   (`snapshot.partitionBy().toMap()`) per host. A `LiveView`-aware input — or
   a documented cheap-handle idiom for live charts — closes it. Overlaps
   [PND-PARITY] / the live layer.
+- **[PND-XOFFSET]** — Per-layer bar offset and forward projection space
+  (the assessment's **C2**), plus a crossing-band fill (**C3**). `ichimoku`
+  now ships its spans keyed to the bar they are computed from and
+  `ichimokuOffsets` says how far to draw them (+26 forward, chikou −26
+  back); Alligator / Gator would use the same lever. Charts needs (a)
+  x-domain padding measured in **bars** past the last datum and (b) a
+  per-layer `xOffsetBars` — trivial on a daily grid, calendar arithmetic
+  intraday (it lands on `scaleTradingTime`) — and (c) a `BandChart` mode
+  that fills between two _crossing_ columns with the colour flipping by
+  which is on top (the cloud; generally useful for price-vs-MA shading).
+  Data side is done; this is the charts half. Breakout:
+  `docs/plans/PND_CHARTS_PLAN.md`.
 - **[PND-ANNRFC]** — Write the short `docs/rfcs/annotations.md` design
   record the owner asked for (confirm still wanted).
 - **[PND-APIREV-REST]** — What the 2026-08 API review left open after
@@ -1308,30 +1320,28 @@ pandas-oracle-verified) have shipped. Plan:
   direction and the interpolated line; the last leg is absent by design and
   the live repaint contract is the recorded ask). The charts asks this
   creates — C2 per-layer `xOffsetBars` with forward projection space, and C3
-  crossing-band fill for the cloud — are the next library-side lever.
+  crossing-band fill for the cloud — are tracked as [PND-XOFFSET] under
+  `@pond-ts/charts`.
   **One hundred and five studies shipped** — every corpus row that needed only
   a kernel is in. What remains of the 124 is gated on core capabilities, not
   on `@pond-ts/financial`:
-  - **G5 — forward displacement past the series end** (3): Ichimoku Cloud
-    (Senkou spans plotted 26 bars ahead), Alligator, Gator Oscillator. A
-    study can emit the value on the bar it is _computed_ from today; the
-    displaced rendering needs a per-layer bar offset in charts (C2) or a
-    series door that extends the time axis. Decide the door, then these are
-    a small batch.
-  - **G6 — repainting studies** (5): ZigZag, Darvas Box, Fractal Chaos Bands
-    and Oscillator, Williams Fractals. Each is a `foldRows` machine that
+  - **G5 — forward displacement past the series end** (2): Alligator and
+    Gator Oscillator. Ichimoku settled the door — emit on the bar the value
+    is computed from and hand the chart an offset map — so these are a
+    small batch once [PND-XOFFSET] gives the offset somewhere to land.
+  - **G6 — repainting studies** (4): Darvas Box, Fractal Chaos Bands and
+    Oscillator, Williams Fractals. Each is a `foldRows` machine that
     _rewrites earlier bars_ when a pivot confirms, which the batch layer
-    can express (a final pass) but the live layer cannot without a repaint
-    contract ([PND-LIVE] question). Ship batch-only with a documented
-    "confirmed at bar N" column, or wait for the contract — a decision.
-  - **G4 — calendar-gated** (4): session-reset VWAP, Pivot Points
-    (standard / Fibonacci), Projected Aggregate Volume, Projected Volume at
-    Time. All need [PND-TCAL]'s session anchors (midnight ET / 5pm forex /
-    6pm metals); `anchoredVwap` already carries the arithmetic.
+    can express (a final pass — ZigZag is the shipped precedent) but the
+    live layer cannot without a repaint contract ([PND-LIVE] question).
+    Ship batch-only with a documented "confirmed at bar N" column, or wait
+    for the contract — a decision.
+  - **G4 — calendar-gated** (2): Projected Aggregate Volume and Projected
+    Volume at Time. Both need a per-session volume profile over prior
+    sessions on top of the `sessionIdValues` walk; low value, deferred.
   - **Skipped by decision** (6): GoNoGo Trend (F-LEGAL), Depth of Market and
     Option Sentiment (F-DATA), Volume Chart / Underlay and Valuation Lines
     (F-CHART), Volume Profile (a `byColumn` recipe, not a study).
-    Left open here as before: the session-anchored studies above.
     Package-wide questions surfaced by the wave, none blocking:
     `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine proves every
     EMA-family formula on TA-Lib's seed and bounds the transient, so the

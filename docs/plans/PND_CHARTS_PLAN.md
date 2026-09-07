@@ -4150,3 +4150,36 @@ Not built, deliberately:
   and the fix that isn't a truncation (measure, then flip inward) is real work
   for a case no consumer has hit — documented on `axisPillX` as a sharp edge
   instead.
+
+## [PND-XOFFSET] — Per-layer bar offset, forward projection space, crossing-band fill (C2 + C3)
+
+**Why now.** `@pond-ts/financial`'s `ichimoku` (#716) ships every column
+keyed to the bar it is computed from, and exposes the displacement as data
+(`ichimokuOffsets`: Senkou A/B +26 bars forward, Chikou −26 back). The
+assessment (§5 G5, §9 C2/C3) recommended this data/marks split over faking
+future-keyed rows, and it leaves the drawing half to charts. Alligator and
+Gator (the other two G5 studies) would ride the same lever.
+
+**What charts needs.**
+
+1. **Forward projection space** — an x-domain that extends `n` **bars** past
+   the last datum. On a uniform daily grid this is `lastTime + n · barSize`;
+   intraday it is calendar arithmetic (`TradingCalendar.barSequence`) and
+   belongs with `scaleTradingTime` (Phase 2 of the trading-calendar RFC).
+2. **Per-layer `xOffsetBars`** — a layer prop that draws a series shifted by
+   `n` bars (positive = forward) without touching its data. Same arithmetic
+   as (1), applied per mark.
+3. **Crossing-band fill (C3)** — `BandChart` fills a `lo ≤ hi` envelope;
+   the cloud is a band between two _crossing_ columns whose fill colour
+   flips by which is on top. Ask: a band between two arbitrary columns with
+   a two-colour `fillBy: 'order'` mode. Generally useful beyond Ichimoku
+   (price-vs-MA shading, spread charts).
+
+**Sequencing.** (1) and (2) on the daily grid first — they are a few lines
+in the x-scale and the layer draw — with the intraday form gated on
+`scaleTradingTime`; (3) is independent and small. A Storybook fan-out per
+the CLAUDE.md stories rule: `Layers/Offset` with `Forward`, `Back`,
+`WithProjectionSpace`, and `Bands/Crossing` with `Order`, `Fixed`.
+
+**Consumer.** Tidal draws Ichimoku; the website's financial hub gets a cloud
+example once this lands.
