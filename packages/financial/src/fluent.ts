@@ -748,7 +748,7 @@ declare module 'pond-ts' {
         `${Prefix}Lower`
       >
     >;
-    /** Fluent High Low Bands — MA(median price) × (1 ± shift%). */
+    /** Fluent High Low Bands — MA(median price) × (1 ± percent%). */
     highLowBands<const Prefix extends string = 'hlb'>(
       options?: HighLowBandsOptions<S, Prefix>,
     ): TimeSeries<

@@ -551,7 +551,7 @@ function scaleResults(length) {
       // price; `highLowBands` is a median price, one MA and two multiplies,
       // so it should read near `envelope`. The two Bollinger derivatives
       // run the SAME avg+stdev rolling pass `bollinger` makes and then one
-      // per-row division, so each should sit just above `bollinger()` — a
+      // per-row division, so each should sit near `bollinger()` — measured a
       // number materially higher would mean the σ was being computed twice.
       benchmark('starcBands({ 20, 15, 2, sma })', () => starcBands(series)),
       benchmark('highLowBands({ 10, 1%, trima })', () => highLowBands(series)),

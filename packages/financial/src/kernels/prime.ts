@@ -53,6 +53,16 @@
  * either over a high-priced instrument at scale. It is published here rather
  * than buried because it is the sharpest edge in the package.
  *
+ * The cost keeps growing as √n past that, and the domain guard is only
+ * `MAX_SAFE_INTEGER`, so the **usable** ceiling matters more than the legal
+ * one. Measured per bar, one `nearestPrime` call: 0.002 ms at ~1e2, 0.02 ms
+ * at ~1e7, 0.13 ms at ~1e9, 0.9 ms at ~1e10, **7.7 ms at ~1e12** and
+ * **290 ms at ~1e15** (Layer-2 review of #711 measured the same shape). A
+ * dollar-volume or market-cap column sits at 1e10–1e12: ten thousand bars
+ * of it is a minute, not a blink. Treat ~1e9 as the practical ceiling for
+ * interactive use; above it the study is correct but slow, and the sieve
+ * this docstring describes is the fix if a consumer needs it.
+ *
  * **No sieve — considered, and rejected on the numbers above.** A segmented
  * sieve over the observed price range would collapse the 1e7 column to
  * roughly the 1e2 one, and it needs: a `Uint8Array` the width of the price

@@ -89,9 +89,12 @@ function meanAndSd(
  * recoverable from the `bollinger` columns (they are missing there and this
  * is `0`); everywhere else it is, bit-for-bit.
  *
- * The one genuine `0/0` is a window that is flat **at zero** — every value
- * exactly `0`, so the centre is `0` too. That reads `undefined`, and the
- * guard is at the output and therefore live.
+ * A zero **centre** reads `undefined`, and the guard is at the output and
+ * therefore live. Two windows get there: one flat **at zero** (every value
+ * exactly `0`, a genuine `0/0`), and one **zero-mean but not flat** (values
+ * summing to zero with a positive σ — an oscillator column crossing its
+ * axis), where the ratio is `±∞` and has no finite reading either. Both are
+ * pinned by tests (Layer-2 review of #711 asked for the second to be named).
  *
  * ## Edges
  *

@@ -88,7 +88,7 @@ export interface PrimeNumberOscillatorOptions<
  * - **A gap in either input costs that column on that bar only.**
  * - **Cost grows with the price LEVEL**, not the series length — the one
  *   operator here that does, and steeply. Measured at 1M bars: **78 ms** at
- *   ordinary equity prices, **6.5 s** at ~1e7. Know that number before
+ *   ordinary equity prices, **6.5 s** at ~1e7, and per bar 7.7 ms at ~1e12 and 290 ms at ~1e15 (see the kernel's table; ~1e9 is the practical ceiling). Know that number before
  *   running this over a high-priced instrument at scale; the kernel's cost
  *   note explains why there is no sieve and what would change that.
  */
@@ -157,7 +157,9 @@ export function primeNumberBands<
  *   the absence rather than skipping it. Multiplying every price by `k` does
  *   not multiply the reading by anything, and adding a constant does not
  *   leave it alone — the primes do not move with the data.
- * - **Runs over any column**, including another study's output; the
+ * - **Runs over any column**, including another study's output — but mind
+ *   the magnitude: a dollar-volume column at 1e12 costs ~8 ms **per bar**
+ *   (the kernel's cost table), so "any column" means any price-like one; the
  *   composition rule is the same as everywhere else, and a source warm-up
  *   simply carries through (`NaN` in, `NaN` out).
  * - **Cost grows with the price level**, steeply: measured at 1M bars,
