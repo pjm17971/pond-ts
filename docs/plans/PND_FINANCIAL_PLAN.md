@@ -2017,6 +2017,172 @@ Perf at 1M bars (`scripts/perf-studies.mjs`, same run): `swingIndex` 21.8 ms,
 Only `randomWalkIndex` owns a super-linear cost, and it is the documented
 `O(N·period)`; everything else is its kernels'.
 
+**Landed — the bands and price-transform tail (§6.2/§6.8).** `typicalPrice`,
+`medianPrice`, `weightedClose`, `averagePrice`, `balanceOfPower`,
+`starcBands`, `highLowBands`, `bollingerBandwidth`, `bollingerPercentB`,
+`primeNumberBands`, `primeNumberOscillator` and `marketFacilitationIndex` —
+twelve studies (nineteen columns), plus one new kernel file
+(`kernels/prime.ts`) and two additions to `kernels/typical-price.ts`. Eighteen
+oracle cases; 177 in the fixture. Decisions:
+
+(1) **Five of the twelve are EXACT against TA-Lib**, and that is the whole
+reason the batch is cheap to trust. `typicalPrice` = `TYPPRICE`, `medianPrice`
+= `MEDPRICE`, `weightedClose` = `WCLPRICE`, `averagePrice` = `AVGPRICE`, raw
+`balanceOfPower` = `BOP`, all at `0.0` difference with identical (empty)
+warm-up masks. Getting there required matching TA-Lib's **summation order**,
+which is load-bearing rather than pedantic: addition does not associate, and
+summing `averagePrice` in OHLC order instead of TA-Lib's `h + l + c + o`
+moves the reading by **2.8e-14** on the oracle's fixture — invisible on a
+chart, fatal to a bar-for-bar claim. The generator asserts both the exact
+agreement and that the reordering is non-zero, so the kernel comment saying
+"the order matters" is backed by a number.
+
+(2) **`weightedCloseValues` / `averagePriceValues` went into
+`kernels/typical-price.ts` against the two-consumer rule.** Each has exactly
+one caller. They are there because that file _is_ the named per-bar
+price-summary family (typical, median, bar range) and splitting it so
+`(h+l+c)/3` is a kernel while `(h+l+2c)/4` is a loop inside a study would
+leave a reader hunting for the second half. Neither is exported from the
+barrel, so the public surface is unchanged — the `alphaEmaValues` treatment.
+The four studies share one file (`price-transform.ts`) on the
+`rolling-stat.ts` precedent: a family of one-line studies over a shared
+options shape lives together, while a study with its own substantial edges
+gets its own file.
+
+(3) **Two step-0 identities were found, recorded, and pinned rather than
+used as a reason not to ship.** `starcBands` **is** `movingAverage` followed
+by `atrBands` around that average; `highLowBands` **is** `envelope` over a
+`medianPrice` column. Both are asserted **bit-for-bit** in
+`test/studies.test.ts`, not described in prose. They ship anyway because the
+composition needs a scratch column on the caller's series, the corpus names
+both, and — for STARC — the centre is _computed_ and therefore earns a column
+where `atrBands`' caller-supplied field does not (the `keltner`/`bollinger`
+rule). The package now has three ATR channels and the STARC docstring
+tabulates the only thing separating them: `keltner` centres on typical price,
+`starcBands` on the close, `atrBands` on an existing column with no centre.
+
+(4) **STARC's centre takes the K2 engine's COLUMN door, not its array door**,
+and that choice is what makes (3)'s identity hold on a series with missing
+cells. The input is a raw price column rather than a derived array, so
+`'sma'` keeps `sma()`'s rows-not-contributors contract and its accelerated
+path; the array door would blank every window containing a gap and the
+identity with `movingAverage` would part company there.
+
+(5) **A flat window splits `bollingerBandwidth` from `bollingerPercentB`, and
+the pair is the clearest statement of the flat rule the package has.**
+BandWidth answers `0`: its numerator is `2·stdDev·σ`, _forced_ to zero, over a
+non-zero centre — a real reading ("the bands have no width", which is what a
+squeeze is). %B answers `undefined`: its numerator is zero only _because_ the
+denominator is (a flat window's price is its own mean), a genuine `0/0`.
+`bollinger` itself is `undefined` there, so the documented consequence is that
+on a flat stretch BandWidth is deliberately **not** recoverable from its band
+columns; everywhere else it is, bit-for-bit — which is why both studies
+re-form the bands with `bollinger`'s own expression rather than simplifying to
+`2·k·σ` (the two agree in real arithmetic and not in IEEE754, and both
+simplifications are in the mutation matrix and both die).
+
+(6) **Two form choices went opposite ways on purpose.** BandWidth ships
+`×100` (StockCharts / ChartIQ / TradingView) rather than Bollinger's own bare
+ratio; %B ships as a **decimal** (`0` = lower band, `1` = upper) rather than
+`×100`, because its whole reading is "above 1 / below 0". The rule behind both
+is the same — match the chart a caller is comparing against, per study — and
+each docstring says which convention it took and how to recover the other.
+
+(7) **`balanceOfPower` is F-AMBIG and ships the TA-Lib-pinnable half by
+default.** TA-Lib's `BOP` is the raw per-bar ratio; ChartIQ smooths it. Raw is
+the default (exact); `period` (+ `maType`, the shared menu) gives the smoothed
+form. **`maType` without `period` throws** — an option that silently does
+nothing is worse than an error. Its flat bar reads `0`, and the argument is
+algebraic rather than borrowed: a bar with `high === low` traded at one price,
+so its open and close are that price and the numerator is exactly zero (the
+`clvValues` rule from #699, applied fresh). TA-Lib agrees, though it gets
+there through a `high − low < 1e-8` threshold where we test `range === 0`
+exactly; the generator asserts the fixture's narrowest bar (0.70) is clear of
+that gap so the exactness is not quietly resting on it.
+
+(8) **`marketFacilitationIndex` defaults to `bwmfi`, not `mfi`, and the
+collision is the reason.** `moneyFlowIndex` — Quong & Soudack's
+RSI-on-money-flow, an entirely different indicator published under the same
+abbreviation — already owns `mfi`, and two studies cannot share a default
+output: appending both would throw. `bwmfi` is Bill Williams' initials in
+front of it, which is what MetaTrader calls it for the same reason, and a
+test appends both to one series. This is the second such collision in the
+package (`relativeVigorIndex` / `relativeVolatilityIndex`), so API.md now
+carries a note for each. It ships with **no `scale` option**: unlike
+`easeOfMovement`, whose `100_000_000` is a _published_ constant two vendors
+share, no constant is standard here, and exposing one would be inventing a
+default rather than matching one.
+
+(9) **The prime studies are the odd pair out and the docstrings say so.**
+They compute a property of the _number line_ that the data lands on, not a
+statistic of the data: no window, no warm-up, no history, and — uniquely in
+the package — **no homogeneity property at all**. The property tests assert
+that _absence_ rather than skipping the check, and they had to be measured to
+be written: scaling moves every one of 80 bars, but a `+50` shift moves only
+**60 of 80** (the other twenty land the same distance from a different prime
+by coincidence), which is exactly the accident a "shift-invariant" claim would
+otherwise be built on. Two open conventions are pinned: `pno = price − prime`
+(the phrase's own word order; the mirror is `−pno`), and an **equidistant tie
+goes to the lower prime**, so `pno(6) = +1`. A price **below 2** is outside the
+domain and every prime output is `undefined` — two is the smallest prime, so
+there is nothing to bracket with, and reporting the prime "above" −1000 as `2`
+would be a distance measured across an empty half-line. The oracle replicates
+both over a **pure-Python sieve of Eratosthenes** rather than `sympy`: the
+venv does not carry it, and a library would be a poor independent reference
+for a study whose entire content is which integers are prime.
+
+(10) **The prime studies' cost is the sharpest edge in the package, and it is
+published rather than buried.** Primality is trial division to `√n` and the
+search walks the local prime gap, so the per-bar cost grows with the price
+_magnitude_ — the only operators here that do. Measured at 1M bars:
+`primeNumberBands` **78 ms** at ordinary equity prices and **6465 ms** at
+~1e7; `primeNumberOscillator` **55 ms** and **6548 ms**. An ~85× jump. **No
+sieve**: a segmented sieve over the observed price range would collapse the
+1e7 column, and it was considered and rejected on the grounds that it needs a
+`Uint8Array` the width of the price range (unbounded for an instrument that
+has trended), a fallback for ranges too wide to sieve, and a second code path
+to test — for two studies whose reading is a property of the integers. The
+kernel docstring, the study docstrings, API.md and the benchmark all carry the
+numbers, and the kernel note is written as the brief for the sieve if a caller
+ever reports the cost. **This is the item in this batch most likely to be
+argued with**, so it is flagged here rather than left to be discovered.
+
+(11) **`shift` vs `percent`: flagged by the builder, resolved by renaming.**
+The builder spelled `highLowBands`' half-width `shift` (ChartIQ's label for
+this indicator) where `envelope` spells the same quantity in the same units
+`percent`, and named it as a deliberate inconsistency for review. The
+integrator renamed it to **`percent`**: the `type` / `maType` split names two
+different roles, but this is one knob, and a consumer who has written
+`envelope({ percent })` should write `highLowBands({ percent })` without
+looking it up. The docstring records the rename and ChartIQ's label.
+
+(12) **Three docstring claims were written from precedent and were wrong; the
+missing-cell tests caught all three.** Worth recording because the pattern
+will recur: (a) a missing close does **not** blank `starcBands`' centre — the
+column door's `avg` skips a missing cell, so the centre is drawn through the
+gap and only the ATR half propagates, and it does so from the bar _after_ the
+gap (true range reads the previous close), not from the gap bar; (b)
+`bollingerBandwidth` loses **nothing** to a gap because it reads only window
+statistics, while `bollingerPercentB` loses exactly one bar because it also
+reads that bar's own price; (c) neither Bollinger derivative composes its
+warm-up with its source's — over `sma(3)` both start at bar 4, their own
+`period − 1`, which is `bollinger`'s inherited behaviour and is asserted to
+agree with it. Each is now stated on the docstring as measured rather than
+assumed.
+
+(13) **Two mutation survivors were fixed the two different ways the rule
+allows.** `balanceOfPower`'s flat-bar branch ignoring a missing body, and
+`bollingerBandwidth`'s zero-centre guard, both survived because no test
+reached the corner — those got tests (the second needed a window whose _mean_
+is zero but which is not flat: an all-zero window reaches `NaN` through the
+numerator anyway, so it never exercised the guard). `nearestPrime`'s own
+domain guard survived because it was **dead**: outside the domain both
+brackets already return `NaN`, the comparison is `false`, and the `NaN` upper
+bracket is returned — so the guard was deleted rather than tested, per #703's
+rule. One further mutation is a _proven_ no-op and is recorded as such rather
+than counted as a survivor: rewriting `m + -1 * stdDev * d` as
+`m - stdDev * d` is bit-identical in IEEE754.
+
 **Fan-out mechanics (how the three parallel study PRs were run).** One
 builder agent per study group on `isolation: "worktree"` branches
 (`fanout/returns`, `fanout/stoch`, `fanout/volume`), Opus models per Peter,

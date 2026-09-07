@@ -82,6 +82,18 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
   stochasticMomentumIndex,
   fisherTransform,
   schaffTrendCycle,
@@ -6867,10 +6879,13 @@ describe('the two-series oracle cases are in the fixture', () => {
     ) as { cases: Array<{ study: string }> };
     // 119 cases before the two-series batch, + 7 there, + 8 K7 regression,
     // + 10 K6 state machines, + 15 MA stacks (2 guppy, 4 rainbow, 2 kst,
-    // 1 pmo, 2 stochRsi, 2 tsi, 2 maDev). A case that silently disappears
-    // takes its study's only value check with it, and nothing else would
-    // notice.
-    expect(fixture.cases).toHaveLength(177);
+    // 1 pmo, 2 stochRsi, 2 tsi, 2 maDev), + 18 momentum/trend leftovers,
+    // + 7 price transforms & BoP (1 each for the four transforms,
+    // 3 balanceOfPower), + 8 bands (2 starc, 2 highLow, 2 bandwidth, 2 %B),
+    // + 3 per-bar (prime bands, prime oscillator, Bill Williams' MFI). A
+    // case that silently disappears takes its study's only value check with
+    // it, and nothing else would notice.
+    expect(fixture.cases).toHaveLength(195);
     const counts = new Map<string, number>();
     for (const c of fixture.cases) {
       counts.set(c.study, (counts.get(c.study) ?? 0) + 1);
@@ -6885,6 +6900,18 @@ describe('the two-series oracle cases are in the fixture', () => {
     expect(counts.get('negativeVolumeIndex')).toBe(1);
     expect(counts.get('positiveVolumeIndex')).toBe(1);
     expect(counts.get('klinger')).toBe(2);
+    expect(counts.get('typicalPrice')).toBe(1);
+    expect(counts.get('medianPrice')).toBe(1);
+    expect(counts.get('weightedClose')).toBe(1);
+    expect(counts.get('averagePrice')).toBe(1);
+    expect(counts.get('balanceOfPower')).toBe(3);
+    expect(counts.get('starcBands')).toBe(2);
+    expect(counts.get('highLowBands')).toBe(2);
+    expect(counts.get('bollingerBandwidth')).toBe(2);
+    expect(counts.get('bollingerPercentB')).toBe(2);
+    expect(counts.get('primeNumberBands')).toBe(1);
+    expect(counts.get('primeNumberOscillator')).toBe(1);
+    expect(counts.get('marketFacilitationIndex')).toBe(1);
   });
 });
 
@@ -9539,5 +9566,848 @@ describe('specialK', () => {
     expect(col(r, 'specialK').every((x) => x === undefined)).toBe(true);
     const once = specialK(bars(closes));
     expect(() => specialK(once as never)).toThrow(/collides/);
+  });
+});
+
+/* ========================================================================== */
+/* The K3 price transforms and Balance of Power (assessment §6.8).            */
+/*                                                                            */
+/* The oracle pins all five against TA-Lib bar-for-bar (TYPPRICE / MEDPRICE / */
+/* WCLPRICE / AVGPRICE / BOP, all EXACT). What is pinned here is what it      */
+/* cannot see: the hand-computed arithmetic on a tiny fixture, the flat-bar   */
+/* rule, the "no warm-up" claim, the defaults, and validation.                */
+/* ========================================================================== */
+
+/** Three hand-workable OHLC bars. Rows are [open, high, low, close], and the
+ *  numbers are chosen so the four transforms all DIFFER on every bar (a
+ *  fixture where typical == median would let a swapped formula pass). */
+const T3: Array<[number, number, number, number]> = [
+  [10, 12, 9, 11],
+  [11, 13, 10, 10],
+  [10, 14, 8, 13],
+];
+
+describe('the price transforms (typical / median / weightedClose / average)', () => {
+  it('are the four hand-computed per-bar means, from bar 0', () => {
+    const src = ohlcBars(T3);
+    // (h + l + c)/3: 32/3, 33/3, 35/3.
+    expect(col(typicalPrice(src), 'typicalPrice')).toEqual([
+      32 / 3,
+      11,
+      35 / 3,
+    ]);
+    // (h + l)/2: 10.5, 11.5, 11.
+    expect(col(medianPrice(src), 'medianPrice')).toEqual([10.5, 11.5, 11]);
+    // (h + l + 2c)/4: 43/4, 43/4, 48/4.
+    expect(col(weightedClose(src), 'weightedClose')).toEqual([
+      10.75, 10.75, 12,
+    ]);
+    // (o + h + l + c)/4: 42/4, 44/4, 45/4.
+    expect(col(averagePrice(src), 'averagePrice')).toEqual([10.5, 11, 11.25]);
+  });
+
+  it('have NO warm-up — bar 0 carries a value on all four', () => {
+    // The claim the docstrings make, and the one a reader is most likely to
+    // assume wrong (every other study in the package warms up).
+    const src = ohlcBars(T3);
+    expect(col(typicalPrice(src), 'typicalPrice')[0]).toBeDefined();
+    expect(col(medianPrice(src), 'medianPrice')[0]).toBeDefined();
+    expect(col(weightedClose(src), 'weightedClose')[0]).toBeDefined();
+    expect(col(averagePrice(src), 'averagePrice')[0]).toBeDefined();
+  });
+
+  it('are the same numbers the studies that derive them privately use', () => {
+    // `vwap` and `keltner` build a typical price internally; this study must
+    // be that same quantity or the two would silently disagree.
+    const rows = wavyBars(30).map(
+      ([h, l, c], i) =>
+        [c - 0.3 * Math.cos(i), h, l, c] as [number, number, number, number],
+    );
+    const tp = col(typicalPrice(ohlcBars(rows)), 'typicalPrice');
+    // sma(1) of the typical-price column is that column, so a 1-bar Keltner
+    // centre over the same bars is the same array — the cross-check that
+    // does not need either study's internals.
+    const kc = col(
+      keltner(ohlcBars(rows), { period: 1, atrPeriod: 2, maType: 'sma' }),
+      'kcMiddle',
+    );
+    for (let i = 0; i < rows.length; i += 1) {
+      expect(kc[i], `bar ${i}`).toBe(tp[i]);
+    }
+  });
+
+  it('honour their column redirects and outputs', () => {
+    const src = ohlcBars(T3);
+    // Point `high` and `low` at the same column and the median collapses to
+    // it — the cheapest proof both names are actually read.
+    const flat = col(
+      medianPrice(src, { high: 'close', low: 'close', output: 'm' }),
+      'm',
+    );
+    expect(flat).toEqual([11, 10, 13]);
+    // `close` on the shared options type is IGNORED by medianPrice.
+    const withClose = col(
+      medianPrice(src, { close: 'open', output: 'm2' }),
+      'm2',
+    );
+    expect(withClose).toEqual([10.5, 11.5, 11]);
+  });
+
+  it('validate their output names', () => {
+    const src = ohlcBars(T3);
+    expect(() => typicalPrice(src, { output: 'close' })).toThrow(/collides/);
+    expect(() => medianPrice(src, { output: 'high' })).toThrow(/collides/);
+    expect(() => weightedClose(src, { output: 'low' })).toThrow(/collides/);
+    expect(() => averagePrice(src, { output: 'open' })).toThrow(/collides/);
+  });
+
+  it('default their output names to the transform name', () => {
+    // Every other test names an output explicitly or reads the default once;
+    // this pins all four defaults so a renamed constant cannot slip through.
+    const src = ohlcBars(T3);
+    const all = averagePrice(weightedClose(medianPrice(typicalPrice(src))));
+    const last = all.events.at(-1)!.data();
+    expect(Object.keys(last)).toEqual(
+      expect.arrayContaining([
+        'typicalPrice',
+        'medianPrice',
+        'weightedClose',
+        'averagePrice',
+      ]),
+    );
+  });
+});
+
+describe('balanceOfPower', () => {
+  it('is the body over the range, hand-computed', () => {
+    // (11−10)/3 = 1/3; (10−11)/3 = −1/3; (13−10)/6 = 1/2.
+    const v = col(balanceOfPower(ohlcBars(T3)), 'bop');
+    expect(v).toEqual([1 / 3, -1 / 3, 0.5]);
+  });
+
+  it('is raw by default — no warm-up, no smoothing', () => {
+    const v = col(balanceOfPower(ohlcBars(T3)), 'bop');
+    expect(v[0]).toBeDefined();
+    expect(v).toHaveLength(3);
+  });
+
+  it('smooths with the K2 menu when `period` is given', () => {
+    // SMA(2) of [1/3, −1/3, 1/2] is [undefined, 0, 1/12].
+    const v = col(balanceOfPower(ohlcBars(T3), { period: 2 }), 'bop');
+    expect(v[0]).toBeUndefined();
+    expect(v[1]).toBeCloseTo(0, 12);
+    expect(v[2]).toBeCloseTo(1 / 12, 12);
+    // …and the maType is honoured: a 2-bar WMA weights the newer bar 2:1,
+    // so bar 1 is (2·(−1/3) + 1·(1/3))/3 = −1/9.
+    const wma = col(
+      balanceOfPower(ohlcBars(T3), { period: 2, maType: 'wma' }),
+      'bop',
+    );
+    expect(wma[1]).toBeCloseTo(-1 / 9, 12);
+  });
+
+  it('a flat bar is 0, not missing — the numerator is forced to zero', () => {
+    // A bar with no range traded at one price, so open == close and the body
+    // is exactly 0. The clvValues rule (#699), and TA-Lib's answer too.
+    const flat: Array<[number, number, number, number]> = [
+      [10, 10, 10, 10],
+      [10, 12, 9, 11],
+      [12, 12, 12, 12],
+    ];
+    expect(col(balanceOfPower(ohlcBars(flat)), 'bop')).toEqual([0, 1 / 3, 0]);
+  });
+
+  it('a FLAT bar with a missing close is still missing, not 0', () => {
+    // The flat-bar branch returns 0 without dividing, so it would happily
+    // report a reading for a bar that has no close at all. The guard inside
+    // it is what stops that, and nothing else in the suite reaches this
+    // corner (flat range AND a gap on the same bar) — the mutation matrix
+    // found it surviving.
+    const src = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number' },
+        { name: 'high', kind: 'number' },
+        { name: 'low', kind: 'number' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: [
+        [0, 10, 10, 10, 10],
+        [1, 10, 10, 10, undefined],
+        [2, 10, 12, 9, 11],
+      ] as never,
+    });
+    expect(col(balanceOfPower(src as never), 'bop')).toEqual([
+      0,
+      undefined,
+      1 / 3,
+    ]);
+  });
+
+  it('a zero range with a non-zero body still reads 0 (redirected columns)', () => {
+    // Only reachable by pointing `open`/`close` somewhere else; ±Infinity is
+    // not a reading, and clvValues answers the same way for the same reason.
+    const rows: Array<[number, number, number, number]> = [[10, 11, 11, 13]];
+    expect(col(balanceOfPower(ohlcBars(rows)), 'bop')).toEqual([0]);
+  });
+
+  it('stays inside [−1, 1] on real bars', () => {
+    const rows = wavyBars(40).map(
+      ([h, l, c], i) =>
+        [c - 0.4 * Math.cos(i / 1.7), h, l, c] as [
+          number,
+          number,
+          number,
+          number,
+        ],
+    );
+    const v = col(balanceOfPower(ohlcBars(rows)), 'bop');
+    expect(v.every((x) => x !== undefined && x >= -1 && x <= 1)).toBe(true);
+    // …and it genuinely changes sign, or the bound is vacuous.
+    expect(v.some((x) => x! > 0)).toBe(true);
+    expect(v.some((x) => x! < 0)).toBe(true);
+  });
+
+  it('throws on a maType with no period — a silent no-op is worse', () => {
+    const src = ohlcBars(T3);
+    expect(() => balanceOfPower(src, { maType: 'ema' })).toThrow(
+      /needs a period/,
+    );
+    // With a period it is fine.
+    expect(() =>
+      balanceOfPower(src, { period: 2, maType: 'ema' }),
+    ).not.toThrow();
+  });
+
+  it('validates its options', () => {
+    const src = ohlcBars(T3);
+    expect(() => balanceOfPower(src, { period: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => balanceOfPower(src, { period: 1.5 })).toThrow(
+      /positive integer/,
+    );
+    expect(() =>
+      balanceOfPower(src, { period: 2, maType: 'nope' as never }),
+    ).toThrow(/unknown moving-average type/);
+    expect(() => balanceOfPower(src, { output: 'close' })).toThrow(/collides/);
+  });
+
+  it('period longer than the series is all-undefined, length kept', () => {
+    const v = col(balanceOfPower(ohlcBars(T3), { period: 5 }), 'bop');
+    expect(v).toHaveLength(3);
+    expect(v.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+/* ========================================================================== */
+/* The bands and channels tail (assessment §6.2).                             */
+/*                                                                            */
+/* The oracle pins the values. What is pinned here is the arithmetic on a     */
+/* hand-workable fixture, the STEP-0 identities each study composes to (STARC  */
+/* == movingAverage + atrBands; highLowBands == envelope over medianPrice;     */
+/* the two Bollinger derivatives == arithmetic on bollinger's own columns),    */
+/* the flat-window fork between bandwidth and %B, and validation.             */
+/* ========================================================================== */
+
+describe('starcBands', () => {
+  it('is MA(close) ± multiplier × ATR, hand-checked', () => {
+    // On the steady fixture the close is 100 every bar, so a 3-bar SMA of it
+    // is 100 from bar 2. True range is max(2, |101−100|, |99−100|) = 2 from
+    // bar 1, so ATR(3) = 2 from bar 3. Bands are 100 ± 2 × 2.
+    const r = starcBands(k2Steady(8), {
+      period: 3,
+      atrPeriod: 3,
+      multiplier: 2,
+      maType: 'sma',
+    });
+    expect(col(r, 'starcMiddle').slice(0, 2)).toEqual([undefined, undefined]);
+    expect(col(r, 'starcMiddle')[2]).toBeCloseTo(100, 12);
+    expect(
+      col(r, 'starcUpper')
+        .slice(0, 3)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(col(r, 'starcUpper')[3]).toBeCloseTo(104, 12);
+    expect(col(r, 'starcLower')[3]).toBeCloseTo(96, 12);
+  });
+
+  it('IS movingAverage + atrBands around it — the step-0 identity', () => {
+    // The reason this study is thin: `starcBands` computes nothing that
+    // composing the two shipped primitives would not. What it adds is the
+    // centre column and a name. Pinned bit-for-bit, not to rounding.
+    const src = k2Wavy(60);
+    const starc = starcBands(src, {
+      period: 8,
+      atrPeriod: 5,
+      multiplier: 2.5,
+      maType: 'sma',
+    });
+    const composed = atrBands(
+      movingAverage(src, { period: 8, type: 'sma', output: 'centre' }),
+      { column: 'centre', period: 5, multiplier: 2.5 },
+    );
+    for (let i = 0; i < src.length; i += 1) {
+      expect(col(starc, 'starcMiddle')[i], `middle ${i}`).toBe(
+        col(composed, 'centre')[i],
+      );
+      expect(col(starc, 'starcUpper')[i], `upper ${i}`).toBe(
+        col(composed, 'atrbUpper')[i],
+      );
+      expect(col(starc, 'starcLower')[i], `lower ${i}`).toBe(
+        col(composed, 'atrbLower')[i],
+      );
+    }
+  });
+
+  it('is NOT keltner — the centre is the close, not the typical price', () => {
+    // The distinction that makes it a separate study rather than a preset.
+    const src = k2Wavy(60);
+    const starc = col(
+      starcBands(src, { period: 10, atrPeriod: 10, maType: 'sma' }),
+      'starcMiddle',
+    );
+    const kc = col(
+      keltner(src, { period: 10, atrPeriod: 10, maType: 'sma' }),
+      'kcMiddle',
+    );
+    let differed = 0;
+    for (let i = 0; i < src.length; i += 1) {
+      if (starc[i] === undefined) continue;
+      if (Math.abs(starc[i]! - kc[i]!) > 1e-9) differed += 1;
+    }
+    expect(differed).toBeGreaterThan(40);
+  });
+
+  it('warms up per column: centre at the MA’s bar, bands at max(centre, ATR)', () => {
+    const src = k2Wavy(60);
+    // Centre later than the ATR.
+    const slow = starcBands(src, { period: 20, atrPeriod: 5, maType: 'sma' });
+    expect(col(slow, 'starcMiddle')[18]).toBeUndefined();
+    expect(col(slow, 'starcMiddle')[19]).toBeDefined();
+    expect(col(slow, 'starcUpper')[18]).toBeUndefined();
+    expect(col(slow, 'starcUpper')[19]).toBeDefined();
+    // …and the other way round: bands wait for the ATR.
+    const fast = starcBands(src, {
+      period: 4,
+      atrPeriod: 12,
+      maType: 'sma',
+      prefix: 'st2',
+    });
+    expect(col(fast, 'st2Middle')[3]).toBeDefined();
+    expect(col(fast, 'st2Upper')[11]).toBeUndefined();
+    expect(col(fast, 'st2Upper')[12]).toBeDefined();
+  });
+
+  it('defaults to 20 / 15 / 2 / sma', () => {
+    const src = k2Wavy(60);
+    const bare = starcBands(src);
+    const explicit = starcBands(src, {
+      period: 20,
+      atrPeriod: 15,
+      multiplier: 2,
+      maType: 'sma',
+      prefix: 'st2',
+    });
+    for (const suffix of ['Middle', 'Upper', 'Lower']) {
+      expect(col(bare, `starc${suffix}`), suffix).toEqual(
+        col(explicit, `st2${suffix}`),
+      );
+    }
+    expect(col(bare, 'starcMiddle')[18]).toBeUndefined();
+    expect(col(bare, 'starcMiddle')[19]).toBeDefined();
+  });
+
+  it('validates its options', () => {
+    const src = k2Wavy(30);
+    expect(() => starcBands(src, { period: 0 })).toThrow(/positive integer/);
+    expect(() => starcBands(src, { atrPeriod: 0 })).toThrow(
+      /atrPeriod.*positive integer/,
+    );
+    expect(() => starcBands(src, { multiplier: 0 })).toThrow(
+      /multiplier must be a positive finite number/,
+    );
+    expect(() => starcBands(src, { maType: 'nope' as never })).toThrow(
+      /unknown moving-average type/,
+    );
+    const clash = movingAverage(src, { period: 3, output: 'starcMiddle' });
+    expect(() => starcBands(clash as never)).toThrow(/collides/);
+  });
+});
+
+describe('highLowBands', () => {
+  it('is MA(median price) × (1 ± percent%), hand-checked', () => {
+    // The steady fixture's median price is (101 + 99)/2 = 100 every bar, so
+    // any 3-bar average of it is 100 from bar 2, and a 1% shift puts the
+    // bands at 101 and 99.
+    const r = highLowBands(k2Steady(8), {
+      period: 3,
+      percent: 1,
+      maType: 'sma',
+    });
+    expect(col(r, 'hlbMiddle')[2]).toBeCloseTo(100, 12);
+    expect(col(r, 'hlbUpper')[2]).toBeCloseTo(101, 12);
+    expect(col(r, 'hlbLower')[2]).toBeCloseTo(99, 12);
+    expect(col(r, 'hlbMiddle').slice(0, 2)).toEqual([undefined, undefined]);
+  });
+
+  it('IS envelope over a medianPrice column — the step-0 identity', () => {
+    // Nothing new is computed here; what ships is the name and not having
+    // to carry a scratch column. Pinned bit-for-bit at the default `trima`
+    // (where both routes are the same K2 call — see the docstring's note
+    // about `sma`'s two doors).
+    const src = k2Wavy(60);
+    const hlb = highLowBands(src, { period: 10, percent: 2, maType: 'trima' });
+    const composed = envelope(medianPrice(src), {
+      column: 'medianPrice',
+      period: 10,
+      percent: 2,
+      maType: 'trima',
+    });
+    for (const [a, b] of [
+      ['hlbMiddle', 'envMiddle'],
+      ['hlbUpper', 'envUpper'],
+      ['hlbLower', 'envLower'],
+    ] as const) {
+      expect(col(hlb, a), a).toEqual(col(composed, b));
+    }
+  });
+
+  it('reads the median price, not the close', () => {
+    // The separation from `envelope` over the close, which is the study
+    // this would silently become if `high`/`low` were ignored.
+    const src = k2Wavy(60);
+    const hlb = col(highLowBands(src, { period: 10 }), 'hlbMiddle');
+    const overClose = col(
+      envelope(src, { period: 10, percent: 1, maType: 'trima' }),
+      'envMiddle',
+    );
+    let differed = 0;
+    for (let i = 0; i < src.length; i += 1) {
+      if (hlb[i] === undefined) continue;
+      if (Math.abs(hlb[i]! - overClose[i]!) > 1e-9) differed += 1;
+    }
+    expect(differed).toBeGreaterThan(40);
+  });
+
+  it('bands are MULTIPLICATIVE — the width grows with the centre', () => {
+    // The property an additive band would fail, and the reason the study is
+    // not shift-equivariant.
+    const src = k2Wavy(60);
+    const r = highLowBands(src, { period: 5, percent: 5 });
+    const widths: number[] = [];
+    for (let i = 0; i < src.length; i += 1) {
+      const u = col(r, 'hlbUpper')[i];
+      const l = col(r, 'hlbLower')[i];
+      if (u !== undefined && l !== undefined) widths.push(u - l);
+    }
+    expect(widths.length).toBeGreaterThan(40);
+    expect(Math.max(...widths) - Math.min(...widths)).toBeGreaterThan(1e-6);
+    // …and the width is exactly 2·percent% of the centre on every bar.
+    for (let i = 0; i < src.length; i += 1) {
+      const m = col(r, 'hlbMiddle')[i];
+      const u = col(r, 'hlbUpper')[i];
+      const l = col(r, 'hlbLower')[i];
+      if (m === undefined) continue;
+      expect(u! - l!, `bar ${i}`).toBeCloseTo(2 * 0.05 * m, 9);
+    }
+  });
+
+  it('defaults to 10 / 1% / trima', () => {
+    const src = k2Wavy(40);
+    const bare = highLowBands(src);
+    const explicit = highLowBands(src, {
+      period: 10,
+      percent: 1,
+      maType: 'trima',
+      prefix: 'h2',
+    });
+    for (const suffix of ['Middle', 'Upper', 'Lower']) {
+      expect(col(bare, `hlb${suffix}`), suffix).toEqual(
+        col(explicit, `h2${suffix}`),
+      );
+    }
+    expect(col(bare, 'hlbMiddle')[8]).toBeUndefined();
+    expect(col(bare, 'hlbMiddle')[9]).toBeDefined();
+  });
+
+  it('validates its options', () => {
+    const src = k2Wavy(30);
+    expect(() => highLowBands(src, { period: 0 })).toThrow(/positive integer/);
+    expect(() => highLowBands(src, { percent: 0 })).toThrow(
+      /percent must be a positive finite number/,
+    );
+    expect(() => highLowBands(src, { maType: 'nope' as never })).toThrow(
+      /unknown moving-average type/,
+    );
+    const clash = movingAverage(src, { period: 3, output: 'hlbLower' });
+    expect(() => highLowBands(clash as never)).toThrow(/collides/);
+  });
+});
+
+describe('bollingerBandwidth / bollingerPercentB', () => {
+  it('are the hand-computed readings on a tiny window', () => {
+    // Closes 10, 12, 14 over a 3-bar window: mean 12, population σ =
+    // sqrt(8/3). At stdDev 2 the bands are 12 ± 2σ, so
+    //   bbWidth  = 100·4σ/12
+    //   percentB = (14 − (12 − 2σ)) / (4σ) = (2 + 2σ)/(4σ)
+    const sd = Math.sqrt(8 / 3);
+    const src = bars([10, 12, 14]);
+    expect(
+      col(bollingerBandwidth(src, { period: 3, stdDev: 2 }), 'bbWidth')[2],
+    ).toBeCloseTo((100 * 4 * sd) / 12, 10);
+    expect(
+      col(bollingerPercentB(src, { period: 3, stdDev: 2 }), 'percentB')[2],
+    ).toBeCloseTo((2 + 2 * sd) / (4 * sd), 10);
+  });
+
+  it('are exactly arithmetic on bollinger’s own columns', () => {
+    // Bit-for-bit, not to rounding — the reason both studies re-form the
+    // bands with `bollinger`'s expression instead of simplifying.
+    const closes = k2Closes(60);
+    const bb = bollinger(bars(closes), { period: 20, stdDev: 2 });
+    const width = col(
+      bollingerBandwidth(bars(closes), { period: 20, stdDev: 2 }),
+      'bbWidth',
+    );
+    const pb = col(
+      bollingerPercentB(bars(closes), { period: 20, stdDev: 2 }),
+      'percentB',
+    );
+    let checked = 0;
+    for (let i = 0; i < closes.length; i += 1) {
+      const m = col(bb, 'bbMiddle')[i];
+      const u = col(bb, 'bbUpper')[i];
+      const l = col(bb, 'bbLower')[i];
+      if (m === undefined || u === undefined || l === undefined) {
+        expect(width[i], `width ${i}`).toBeUndefined();
+        expect(pb[i], `percentB ${i}`).toBeUndefined();
+        continue;
+      }
+      expect(width[i], `width ${i}`).toBe((100 * (u - l)) / m);
+      expect(pb[i], `percentB ${i}`).toBe((closes[i]! - l) / (u - l));
+      checked += 1;
+    }
+    expect(checked).toBe(41);
+  });
+
+  it('a flat window splits them: bandwidth 0, %B undefined', () => {
+    // The clearest illustration of the package's flat rule. BandWidth's
+    // numerator is 2·k·σ — FORCED to zero — over a non-zero centre, so 0 is
+    // a real reading. %B's numerator is zero only BECAUSE the denominator
+    // is (a flat window's price is its own mean), so it is a genuine 0/0.
+    const flat = bars([5, 5, 5, 5, 6, 7]);
+    expect(
+      col(bollingerBandwidth(flat, { period: 3 }), 'bbWidth').slice(2, 4),
+    ).toEqual([0, 0]);
+    expect(
+      col(bollingerPercentB(flat, { period: 3 }), 'percentB').slice(2, 4),
+    ).toEqual([undefined, undefined]);
+    // …and `bollinger` itself is undefined there, which is why bandwidth is
+    // NOT recoverable from its columns on a flat stretch.
+    expect(col(bollinger(flat, { period: 3 }), 'bbUpper')[2]).toBeUndefined();
+  });
+
+  it('a window flat AT ZERO is a 0/0 for bandwidth too', () => {
+    // The reason the centre is checked before the forced-zero numerator.
+    const zeros = bars([0, 0, 0, 1, 2]);
+    expect(
+      col(bollingerBandwidth(zeros, { period: 3 }), 'bbWidth')[2],
+    ).toBeUndefined();
+  });
+
+  it('a window whose MEAN is zero but is not flat is missing, not infinite', () => {
+    // The case that actually exercises the guard: σ > 0 over a centre of
+    // exactly 0, so the division is a real number over zero. Without the
+    // guard that is ±Infinity, which `withColumn` REJECTS rather than
+    // mapping to a gap — so the guard is the difference between a missing
+    // cell and a throw. (The all-zero window above reaches NaN on its own
+    // and does not test it; the mutation matrix found that out.)
+    const centred = bars([-1, 0, 1, 5, 6]);
+    const v = col(bollingerBandwidth(centred, { period: 3 }), 'bbWidth');
+    expect(v[2]).toBeUndefined();
+    expect(v[3]).toBeDefined();
+  });
+
+  it('%B is unbounded — a price outside its bands reads past 0 and 1', () => {
+    // The whole use of the study; a clamp would destroy it. A single spike
+    // is NOT the way to show it — the outlier is inside the window it is
+    // measured against, so it inflates σ and %B creeps up to 1 without
+    // crossing (measured: 0.99996 on a 10 → 20 jump at period 5). What does
+    // cross is an ordinary two-frequency series, where a swing leaves a band
+    // built from the quieter bars behind it — the oracle's own input shape,
+    // whose %B spans −0.2069…1.0855 over 80 bars (measured; the single-sine
+    // `k2Closes` is too smooth to break out of its own 20-bar band at all).
+    const twoTone = Array.from(
+      { length: 80 },
+      (_, i) => 100 + 0.15 * i + 6 * Math.sin(i / 9) + 2 * Math.sin(i / 3.3),
+    );
+    const v = col(
+      bollingerPercentB(bars(twoTone), { period: 20, stdDev: 2 }),
+      'percentB',
+    );
+    expect(v.some((x) => x !== undefined && x > 1)).toBe(true);
+    expect(v.some((x) => x !== undefined && x < 0)).toBe(true);
+  });
+
+  it('warm up over period − 1 rows and default to 20 / 2', () => {
+    const closes = k2Closes(60);
+    for (const [study, name] of [
+      [bollingerBandwidth, 'bbWidth'],
+      [bollingerPercentB, 'percentB'],
+    ] as const) {
+      const bare = col(study(bars(closes)), name);
+      expect(bare[18], name).toBeUndefined();
+      expect(bare[19], name).toBeDefined();
+      expect(bare, name).toEqual(
+        col(study(bars(closes), { period: 20, stdDev: 2 }), name),
+      );
+    }
+  });
+
+  it('validate their options', () => {
+    const src = bars(k2Closes(40));
+    for (const study of [bollingerBandwidth, bollingerPercentB] as const) {
+      expect(() => study(src, { period: 0 })).toThrow(/positive integer/);
+      expect(() => study(src, { stdDev: 0 })).toThrow(
+        /stdDev must be a positive finite number/,
+      );
+      expect(() => study(src, { output: 'close' })).toThrow(/collides/);
+    }
+  });
+
+  it('period longer than the series is all-undefined, length kept', () => {
+    for (const [study, name] of [
+      [bollingerBandwidth, 'bbWidth'],
+      [bollingerPercentB, 'percentB'],
+    ] as const) {
+      const v = col(study(bars([1, 2, 3]), { period: 5 }), name);
+      expect(v, name).toHaveLength(3);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+  });
+});
+
+/* ========================================================================== */
+/* The prime studies (§6.2 / §6.3) and Bill Williams' MFI (§6.6).             */
+/*                                                                            */
+/* The prime pair is the odd one out in the package: a step function of the   */
+/* PRICE LEVEL rather than a statistic, with no window, no warm-up and no     */
+/* homogeneity property at all. What is pinned here is the bracketing, the    */
+/* tie-break, the domain edge at 2, and — for the MFI — the name collision    */
+/* with the money-flow study that already owns `mfi`.                         */
+/* ========================================================================== */
+
+describe('primeNumberBands', () => {
+  it('brackets each bar with the primes either side, hand-checked', () => {
+    // [h, l]: 100.2/99.5 → 101 and 97; 114/112 → 127 and 113 (the wide gap);
+    // 13/13 → 13 and 13 (a bar sitting exactly on a prime).
+    const src = hlcBars([
+      [100.2, 99.5, 100],
+      [114, 112, 113],
+      [13, 13, 13],
+    ]);
+    const r = primeNumberBands(src);
+    expect(col(r, 'pnbUpper')).toEqual([101, 127, 13]);
+    expect(col(r, 'pnbLower')).toEqual([97, 109, 13]);
+  });
+
+  it('has NO warm-up and appends two columns, not three', () => {
+    const r = primeNumberBands(hlcBars([[100.2, 99.5, 100]]));
+    expect(col(r, 'pnbUpper')[0]).toBe(101);
+    const last = r.events.at(-1)!.data() as Record<string, unknown>;
+    expect(Object.keys(last)).not.toContain('pnbMiddle');
+  });
+
+  it('contains the bar on every row of a real series', () => {
+    const src = k2Wavy(60);
+    const r = primeNumberBands(src);
+    const high = col(src as never, 'high');
+    const low = col(src as never, 'low');
+    for (let i = 0; i < src.length; i += 1) {
+      expect(col(r, 'pnbUpper')[i]!, `upper ${i}`).toBeGreaterThanOrEqual(
+        high[i]!,
+      );
+      expect(col(r, 'pnbLower')[i]!, `lower ${i}`).toBeLessThanOrEqual(low[i]!);
+    }
+    // …and it genuinely STEPS rather than sitting on one pair all series.
+    expect(new Set(col(r, 'pnbUpper')).size).toBeGreaterThan(3);
+  });
+
+  it('a price below 2 has no bands — the domain rule', () => {
+    // Two is the smallest prime, so there is nothing below to bracket with,
+    // and the upper band is withheld too rather than reported as 2: the
+    // study stops in one place, not two.
+    const r = primeNumberBands(
+      hlcBars([
+        [1.5, 0.5, 1],
+        [3, 2, 2.5],
+      ]),
+    );
+    expect(col(r, 'pnbUpper')[0]).toBeUndefined();
+    expect(col(r, 'pnbLower')[0]).toBeUndefined();
+    expect(col(r, 'pnbUpper')[1]).toBe(3);
+    expect(col(r, 'pnbLower')[1]).toBe(2);
+  });
+
+  it('honours prefix and column redirects, and validates the names', () => {
+    const src = hlcBars([[100.2, 99.5, 100]]);
+    const named = primeNumberBands(src, { prefix: 'p2' });
+    expect(col(named, 'p2Upper')).toEqual([101]);
+    // Redirecting both at `close` collapses the bands onto that one price.
+    const onClose = primeNumberBands(src, {
+      high: 'close',
+      low: 'close',
+      prefix: 'p3',
+    });
+    expect(col(onClose, 'p3Upper')).toEqual([101]);
+    expect(col(onClose, 'p3Lower')).toEqual([97]);
+    const clash = primeNumberBands(src, { prefix: 'p4' });
+    expect(() => primeNumberBands(clash as never, { prefix: 'p4' })).toThrow(
+      /collides/,
+    );
+  });
+});
+
+describe('primeNumberOscillator', () => {
+  it('is price − nearestPrime(price), signed, hand-checked', () => {
+    // 100.1 → 101 → −0.9 (above is nearer);  98.4 → 97 → +1.4;  97 → 0.
+    const v = col(primeNumberOscillator(bars([100.1, 98.4, 97])), 'pno');
+    expect(v[0]!).toBeCloseTo(-0.9, 12);
+    expect(v[1]!).toBeCloseTo(1.4, 12);
+    expect(v[2]).toBe(0);
+  });
+
+  it('breaks a tie to the LOWER prime, so pno(6) is +1', () => {
+    // The convention is arbitrary and therefore has to be pinned, not left
+    // to whichever comparison was written first.
+    expect(col(primeNumberOscillator(bars([6, 9, 15])), 'pno')).toEqual([
+      1, 2, 2,
+    ]);
+  });
+
+  it('has no warm-up and crosses zero on a real series', () => {
+    const v = col(primeNumberOscillator(bars(k2Closes(60))), 'pno');
+    expect(v[0]).toBeDefined();
+    expect(v.some((x) => x! > 0)).toBe(true);
+    expect(v.some((x) => x! < 0)).toBe(true);
+  });
+
+  it('is bounded by half the local prime gap', () => {
+    // Near 100–115 the widest gap the series reaches into is 113 → 127, so
+    // no reading may exceed 7. A study that found the next prime ABOVE
+    // rather than the nearest would break this on the first bar past 113.
+    const v = col(primeNumberOscillator(bars(k2Closes(60))), 'pno');
+    expect(Math.max(...v.map((x) => Math.abs(x!)))).toBeLessThanOrEqual(7);
+  });
+
+  it('a price below 2 is outside the domain', () => {
+    expect(col(primeNumberOscillator(bars([1.5, 0, -5, 3])), 'pno')).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      0,
+    ]);
+  });
+
+  it('runs over another study’s output and carries its warm-up', () => {
+    const src = sma(bars(k2Closes(30)), { period: 5 });
+    const v = col(
+      primeNumberOscillator(src, { column: 'sma', output: 'pnoSma' }),
+      'pnoSma',
+    );
+    expect(v).toHaveLength(30);
+    expect(v[3]).toBeUndefined();
+    expect(v[4]).toBeDefined();
+  });
+
+  it('validates its output name', () => {
+    expect(() =>
+      primeNumberOscillator(bars([100]), { output: 'close' }),
+    ).toThrow(/collides/);
+  });
+});
+
+describe('marketFacilitationIndex', () => {
+  it('is (high − low) / volume, hand-checked', () => {
+    // Ranges 2, 4, 0 over volumes 100, 200, 400.
+    const r = marketFacilitationIndex(
+      ohlcv([
+        [11, 9, 10, 100],
+        [14, 10, 12, 200],
+        [12, 12, 12, 400],
+      ]),
+    );
+    expect(col(r, 'bwmfi')).toEqual([0.02, 0.02, 0]);
+  });
+
+  it('defaults to `bwmfi`, so it sits beside moneyFlowIndex’s `mfi`', () => {
+    // The collision this default exists for: both studies are published as
+    // "MFI", and appending both to one series has to work.
+    const src = ohlcv(
+      Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 6 * Math.sin(i / 3) + 0.2 * i;
+        return [c + 0.5, c - 0.5, c, 1000 + 100 * (i % 7)] as [
+          number,
+          number,
+          number,
+          number,
+        ];
+      }),
+    );
+    const both = marketFacilitationIndex(moneyFlowIndex(src, { period: 14 }));
+    const last = both.events.at(-1)!.data() as Record<string, unknown>;
+    expect(typeof last.mfi).toBe('number');
+    expect(typeof last.bwmfi).toBe('number');
+    // …and they are nowhere near each other, being different indicators.
+    expect(last.bwmfi as number).toBeLessThan(1);
+    expect(last.mfi as number).toBeGreaterThan(1);
+  });
+
+  it('a zero-volume bar is undefined — the guard is live', () => {
+    // Without it the division is ±Infinity, which `withColumn` REJECTS with
+    // a throw rather than mapping to a gap.
+    const r = marketFacilitationIndex(
+      ohlcv([
+        [11, 9, 10, 100],
+        [14, 10, 12, 0],
+        [12, 11, 11, 200],
+      ]),
+    );
+    expect(col(r, 'bwmfi')).toEqual([0.02, undefined, 0.005]);
+  });
+
+  it('a flat bar reads 0 — a genuine zero over a real volume', () => {
+    const r = marketFacilitationIndex(ohlcv([[10, 10, 10, 500]]));
+    expect(col(r, 'bwmfi')).toEqual([0]);
+  });
+
+  it('has no warm-up and honours its column redirects', () => {
+    const src = ohlcv([[11, 9, 10, 100]]);
+    expect(col(marketFacilitationIndex(src), 'bwmfi')[0]).toBe(0.02);
+    // Point `high` and `low` at the same column and the range collapses.
+    expect(
+      col(
+        marketFacilitationIndex(src, {
+          high: 'close',
+          low: 'close',
+          output: 'flat',
+        }),
+        'flat',
+      ),
+    ).toEqual([0]);
+  });
+
+  it('validates its output name', () => {
+    const src = ohlcv([[11, 9, 10, 100]]);
+    expect(() => marketFacilitationIndex(src, { output: 'close' })).toThrow(
+      /collides/,
+    );
+    const twice = marketFacilitationIndex(src);
+    expect(() => marketFacilitationIndex(twice as never)).toThrow(/collides/);
   });
 });

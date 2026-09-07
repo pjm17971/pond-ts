@@ -118,6 +118,19 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollinger,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
   stochasticMomentumIndex,
   fisherTransform,
   schaffTrendCycle,
@@ -4431,5 +4444,460 @@ describe('[talib] the swing index is scale-EQUIVARIANT unless `limit` scales too
         name,
       ).toBe(true);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The K3 price transforms are EQUIVARIANT in both scale and shift — they      */
+/* are weighted MEANS of prices, so they live in the price's own units and     */
+/* move with its level. Balance of Power is the mirror: a ratio of two         */
+/* differences, so it is INVARIANT in both. Asserting each study against the   */
+/* wrong one of the pair is what stops a normalisation creeping into a         */
+/* transform, or a level leaking into the ratio.                               */
+/* -------------------------------------------------------------------------- */
+
+const PRICE_TRANSFORMS = [
+  ['typicalPrice', typicalPrice],
+  ['medianPrice', medianPrice],
+  ['weightedClose', weightedClose],
+  ['averagePrice', averagePrice],
+] as const;
+
+describe('[talib] the price transforms are scale- AND shift-EQUIVARIANT', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('scaling every price scales all four by the same factor', () => {
+    for (const [name, study] of PRICE_TRANSFORMS) {
+      const base = col(study(k2Bars(40) as never), name);
+      const scaled = col(study(k2Bars(40, K) as never), name);
+      expect(base.filter((x) => x !== undefined).length, name).toBe(40);
+      expectLinear(base, scaled, K);
+    }
+  });
+
+  it('shifting every price shifts all four by the same constant', () => {
+    // The half a normalised study would fail: a transform that divided by
+    // the price level would pass the scale test above and fail this.
+    for (const [name, study] of PRICE_TRANSFORMS) {
+      const base = col(study(k2Bars(40) as never), name);
+      const moved = col(study(k2Bars(40, 1, SHIFT) as never), name);
+      for (let i = 0; i < base.length; i += 1) {
+        expect(moved[i]! - SHIFT, `${name}[${i}]`).toBeCloseTo(base[i]!, 6);
+      }
+    }
+  });
+
+  it('each transform is DISTINCT from the others on this input', () => {
+    // Without this the two assertions above hold for four copies of one
+    // formula. Every pair must differ on some bar.
+    const values = PRICE_TRANSFORMS.map(([name, study]) =>
+      col(study(k2Bars(40) as never), name),
+    );
+    for (let a = 0; a < values.length; a += 1) {
+      for (let b = a + 1; b < values.length; b += 1) {
+        const differs = values[a]!.some(
+          (x, i) => Math.abs(x! - values[b]![i]!) > 1e-9,
+        );
+        expect(
+          differs,
+          `${PRICE_TRANSFORMS[a]![0]} vs ${PRICE_TRANSFORMS[b]![0]}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('a transform over another study’s output keeps its length', () => {
+    // The composition rule: redirect `high`/`low` at a smoothed column and
+    // the transform picks up THAT column's warm-up rather than emptying.
+    const src = sma(k2Bars(40) as never, { period: 5, output: 'smooth' });
+    const out = medianPrice(src as never, {
+      high: 'smooth' as never,
+      low: 'close' as never,
+      output: 'm' as never,
+    });
+    const v = col(out, 'm');
+    expect(v).toHaveLength(40);
+    expect(firstValid(v)).toBe(4);
+  });
+
+  it('all-missing bars yield all-missing transforms', () => {
+    const empty = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number', required: false },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => [
+        i,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]) as never,
+    });
+    for (const [name, study] of PRICE_TRANSFORMS) {
+      const v = col(study(empty as never), name);
+      expect(v, name).toHaveLength(30);
+      expect(
+        v.every((x) => x === undefined),
+        name,
+      ).toBe(true);
+    }
+    const bop = col(balanceOfPower(empty as never), 'bop');
+    expect(bop).toHaveLength(30);
+    expect(bop.every((x) => x === undefined)).toBe(true);
+  });
+});
+
+describe('[talib] balanceOfPower is scale- AND shift-INVARIANT', () => {
+  const K = 1000;
+  const SHIFT = 500;
+
+  it('neither scaling nor shifting every price moves the reading', () => {
+    // Body and range are both DIFFERENCES of prices: a common multiplier
+    // cancels in the ratio, a common offset in each difference. This is the
+    // rsi side of the scale pair, not the atr side.
+    const base = col(balanceOfPower(k2Bars(40) as never), 'bop');
+    expect(base.filter((x) => x !== undefined).length).toBe(40);
+    // Not constant, or invariance would hold vacuously.
+    expect(new Set(base).size).toBeGreaterThan(30);
+    expect(base.some((x) => x! > 0)).toBe(true);
+    expect(base.some((x) => x! < 0)).toBe(true);
+    expectSame(base, col(balanceOfPower(k2Bars(40, K) as never), 'bop'));
+    expectSame(base, col(balanceOfPower(k2Bars(40, 1, SHIFT) as never), 'bop'));
+  });
+
+  it('the smoothed form is invariant too, and composes its warm-up', () => {
+    const opts = { period: 6, maType: 'ema' } as const;
+    const base = col(balanceOfPower(k2Bars(40) as never, opts), 'bop');
+    expectSame(base, col(balanceOfPower(k2Bars(40, K) as never, opts), 'bop'));
+    expect(firstValid(base)).toBe(5);
+    expect(base).toHaveLength(40);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The bands tail. Three different scale/shift signatures sit here and the     */
+/* differences are the point:                                                  */
+/*                                                                             */
+/*   starcBands       linear in price AND translation-EQUIVARIANT (an ATR      */
+/*                    half-width is a difference, so the width is unmoved)     */
+/*   highLowBands     linear in price but NOT translation-equivariant (a       */
+/*                    PERCENT half-width scales with the level it is a         */
+/*                    percent of)                                              */
+/*   bollingerBandwidth  scale-INVARIANT, NOT shift-invariant (ratio of a      */
+/*                    difference to a level)                                   */
+/*   bollingerPercentB   scale- AND shift-INVARIANT (ratio of two differences) */
+/*                                                                             */
+/* Asserting each against the wrong one of these would pass for two of them,   */
+/* which is why all four claims are written out per study.                     */
+/* -------------------------------------------------------------------------- */
+
+describe('[talib] the bands tail: three different scale/shift signatures', () => {
+  const K = 1000;
+  const SHIFT = 500;
+  const BANDS = ['Middle', 'Upper', 'Lower'] as const;
+
+  it('starcBands scales LINEARLY and TRANSLATES, width unchanged', () => {
+    const opts = { period: 6, atrPeriod: 5, maType: 'sma' } as const;
+    const base = starcBands(k2Bars(40), opts);
+    const scaled = starcBands(k2Bars(40, K), opts);
+    const moved = starcBands(k2Bars(40, 1, SHIFT), opts);
+    for (const suffix of BANDS) {
+      const name = `starc${suffix}`;
+      const b = col(base, name);
+      expect(b.filter((x) => x !== undefined).length, name).toBeGreaterThan(25);
+      expectLinear(b, col(scaled, name), K);
+      const m = col(moved, name);
+      for (let i = 0; i < b.length; i += 1) {
+        if (b[i] === undefined) continue;
+        expect(m[i]! - SHIFT, `${name}[${i}]`).toBeCloseTo(b[i]!, 6);
+      }
+    }
+    // The width is an ATR, a DIFFERENCE, so a shift leaves it alone.
+    for (let i = 0; i < 40; i += 1) {
+      const bw = col(base, 'starcUpper')[i];
+      if (bw === undefined) continue;
+      expect(
+        col(moved, 'starcUpper')[i]! - col(moved, 'starcLower')[i]!,
+        `width ${i}`,
+      ).toBeCloseTo(bw - col(base, 'starcLower')[i]!, 6);
+    }
+  });
+
+  it('highLowBands scales LINEARLY but does NOT translate — the percent-band delta', () => {
+    const opts = { period: 6, percent: 2, maType: 'sma' } as const;
+    const base = highLowBands(k2Bars(40), opts);
+    const scaled = highLowBands(k2Bars(40, K), opts);
+    const moved = highLowBands(k2Bars(40, 1, SHIFT), opts);
+    for (const suffix of BANDS) {
+      const name = `hlb${suffix}`;
+      expectLinear(col(base, name), col(scaled, name), K);
+    }
+    // The CENTRE translates (it is a mean of prices)…
+    for (let i = 0; i < 40; i += 1) {
+      const b = col(base, 'hlbMiddle')[i];
+      if (b === undefined) continue;
+      expect(col(moved, 'hlbMiddle')[i]! - SHIFT, `centre ${i}`).toBeCloseTo(
+        b,
+        6,
+      );
+    }
+    // …but the WIDTH does not: it is a percent of a centre that moved, so
+    // it grows by exactly `2·percent%·SHIFT`. A band study that used an
+    // absolute half-width would fail this while passing the scale test.
+    let widened = 0;
+    for (let i = 0; i < 40; i += 1) {
+      const b = col(base, 'hlbUpper')[i];
+      if (b === undefined) continue;
+      const baseWidth = b - col(base, 'hlbLower')[i]!;
+      const movedWidth =
+        col(moved, 'hlbUpper')[i]! - col(moved, 'hlbLower')[i]!;
+      expect(movedWidth - baseWidth, `width ${i}`).toBeCloseTo(
+        2 * 0.02 * SHIFT,
+        6,
+      );
+      widened += 1;
+    }
+    expect(widened).toBeGreaterThan(25);
+  });
+
+  it('bollingerBandwidth is scale-INVARIANT and NOT shift-invariant', () => {
+    const opts = { period: 10, stdDev: 2 } as const;
+    const base = col(bollingerBandwidth(bars(stackWavy()), opts), 'bbWidth');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(60);
+    expect(new Set(base).size).toBeGreaterThan(50);
+    // Numerator and denominator scale together.
+    expectSame(
+      base,
+      col(bollingerBandwidth(bars(stackWavy(K)), opts), 'bbWidth'),
+    );
+    // A shift moves the DENOMINATOR only, so the reading has to move.
+    const moved = col(
+      bollingerBandwidth(bars(stackWavy(1, SHIFT)), opts),
+      'bbWidth',
+    );
+    let differed = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      if (base[i] === undefined) continue;
+      if (Math.abs(moved[i]! - base[i]!) > 1e-6) differed += 1;
+    }
+    expect(differed).toBeGreaterThan(60);
+  });
+
+  it('bollingerPercentB is scale- AND shift-INVARIANT', () => {
+    // The half bandwidth does not satisfy — both are ratios, but %B's
+    // numerator is a DIFFERENCE of prices where bandwidth's denominator is
+    // a level.
+    const opts = { period: 10, stdDev: 2 } as const;
+    const base = col(bollingerPercentB(bars(stackWavy()), opts), 'percentB');
+    expect(base.filter((x) => x !== undefined).length).toBeGreaterThan(60);
+    expect(new Set(base).size).toBeGreaterThan(50);
+    expectSame(
+      base,
+      col(bollingerPercentB(bars(stackWavy(K)), opts), 'percentB'),
+    );
+    expectSame(
+      base,
+      col(bollingerPercentB(bars(stackWavy(1, SHIFT)), opts), 'percentB'),
+    );
+  });
+
+  it('the bands tail composes over another study’s output', () => {
+    // A study over a study must preserve length and produce values, not
+    // empty the column. Both start at bar 4 — their OWN `period − 1` — and
+    // not at 6 (the source's warm-up plus theirs): core's count-window
+    // counts ROWS for `minSamples` and its reducers skip a missing cell, so
+    // the first full-width window emits over the three `sma` values it
+    // holds. That is `bollinger`'s own behaviour, inherited rather than
+    // chosen, and it is what these two must match to stay arithmetic on its
+    // columns.
+    const src = sma(bars(stackWavy()), { period: 3 });
+    const width = col(
+      bollingerBandwidth(src as never, {
+        column: 'sma' as never,
+        period: 5,
+      }),
+      'bbWidth',
+    );
+    expect(width).toHaveLength(80);
+    expect(firstValid(width)).toBe(4);
+    const pb = col(
+      bollingerPercentB(src as never, { column: 'sma' as never, period: 5 }),
+      'percentB',
+    );
+    expect(pb).toHaveLength(80);
+    expect(firstValid(pb)).toBe(4);
+    // …and `bollinger` itself agrees, which is the claim that matters.
+    expect(
+      firstValid(
+        col(
+          bollinger(src as never, { column: 'sma' as never, period: 5 }),
+          'bbUpper',
+        ),
+      ),
+    ).toBe(4);
+  });
+
+  it('the prime studies have NO homogeneity property — asserted, not skipped', () => {
+    // The one pair in the package with neither invariance nor equivariance:
+    // the primes near 2p are not twice the primes near p, and they do not
+    // translate either. Asserting the ABSENCE is what stops a future reader
+    // assuming a property nobody checked.
+    const base = col(primeNumberOscillator(bars(stackWavy())), 'pno');
+    expect(base.filter((x) => x !== undefined).length).toBe(80);
+    expect(new Set(base).size).toBeGreaterThan(50);
+
+    const scaled = col(primeNumberOscillator(bars(stackWavy(3))), 'pno');
+    const shifted = col(primeNumberOscillator(bars(stackWavy(1, 50))), 'pno');
+    let movedByScale = 0;
+    let movedByShift = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      // Not linear: `scaled` is nowhere near `3 × base`.
+      if (Math.abs(scaled[i]! - 3 * base[i]!) > 1e-6) movedByScale += 1;
+      // Not shift-invariant: `shifted` is nowhere near `base`.
+      if (Math.abs(shifted[i]! - base[i]!) > 1e-6) movedByShift += 1;
+    }
+    // Measured on this input: scaling moves EVERY bar (80/80), a +50 shift
+    // moves 60 of 80 — the other 20 land at the same distance from a
+    // different prime by coincidence, which is exactly the kind of accident
+    // a "shift-invariant" claim would be built on if nobody counted.
+    expect(movedByScale).toBe(80);
+    expect(movedByShift).toBe(60);
+
+    // The bands say the same thing, and additionally always contain the bar.
+    const bandsBase = primeNumberBands(k2Bars(40));
+    const bandsScaled = primeNumberBands(k2Bars(40, 3));
+    let bandMoved = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (
+        Math.abs(
+          col(bandsScaled, 'pnbUpper')[i]! - 3 * col(bandsBase, 'pnbUpper')[i]!,
+        ) > 1e-6
+      ) {
+        bandMoved += 1;
+      }
+    }
+    expect(bandMoved).toBeGreaterThan(30);
+  });
+
+  it('marketFacilitationIndex is linear in price, inverse in volume, shift-invariant', () => {
+    // Three claims, and the middle one is the one a reader would not guess:
+    // "linear in price like every other absolute study" is two thirds of it.
+    const K = 7;
+    const base = col(marketFacilitationIndex(volumeBars(1, 1)), 'bwmfi');
+    expect(base.filter((x) => x !== undefined).length).toBe(40);
+    expect(new Set(base).size).toBeGreaterThan(30);
+    sameShape(base, col(marketFacilitationIndex(volumeBars(K, 1)), 'bwmfi'), K);
+    sameShape(
+      base,
+      col(marketFacilitationIndex(volumeBars(1, K)), 'bwmfi'),
+      1 / K,
+    );
+    // Shift-invariant in price: the range is a difference, so a common
+    // offset cancels. `volumeBars` scales rather than shifts, so the shifted
+    // series is built here.
+    const shifted = new TimeSeries({
+      name: 'bars',
+      schema: ohlcvSchema,
+      rows: Array.from({ length: 40 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+        const v = 1000 + 700 * Math.sin(i / 2.3) + (i % 7 === 3 ? 5000 : 0);
+        return [i, c + 1.1 + 500, c - 0.8 + 500, c + 500, v];
+      }) as Array<[number, number, number, number, number]>,
+    });
+    expectSame(base, col(marketFacilitationIndex(shifted), 'bwmfi'));
+  });
+
+  it('all-missing input yields all-missing prime studies and bwmfi', () => {
+    const emptyOhlcv = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+        { name: 'volume', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 20 }, (_, i) => [
+        i,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]) as never,
+    });
+    for (const name of ['pnbUpper', 'pnbLower']) {
+      expect(
+        col(primeNumberBands(emptyOhlcv as never), name).every(
+          (x) => x === undefined,
+        ),
+        name,
+      ).toBe(true);
+    }
+    expect(
+      col(primeNumberOscillator(emptyOhlcv as never), 'pno').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    expect(
+      col(marketFacilitationIndex(emptyOhlcv as never), 'bwmfi').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('all-missing input yields all-missing bands', () => {
+    const emptyOhlc = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => [
+        i,
+        undefined,
+        undefined,
+        undefined,
+      ]) as never,
+    });
+    for (const suffix of BANDS) {
+      expect(
+        col(starcBands(emptyOhlc as never), `starc${suffix}`).every(
+          (x) => x === undefined,
+        ),
+        suffix,
+      ).toBe(true);
+      expect(
+        col(highLowBands(emptyOhlc as never), `hlb${suffix}`).every(
+          (x) => x === undefined,
+        ),
+        suffix,
+      ).toBe(true);
+    }
+    const emptyClose = new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => [i, undefined]) as never,
+    });
+    expect(
+      col(bollingerBandwidth(emptyClose as never), 'bbWidth').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
+    expect(
+      col(bollingerPercentB(emptyClose as never), 'percentB').every(
+        (x) => x === undefined,
+      ),
+    ).toBe(true);
   });
 });

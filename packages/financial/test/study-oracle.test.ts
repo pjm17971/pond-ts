@@ -90,6 +90,18 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
   stochasticMomentumIndex,
   fisherTransform,
   schaffTrendCycle,
@@ -485,6 +497,50 @@ function run(c: OracleCase): unknown {
       );
     case 'priceMomentumOscillator':
       return priceMomentumOscillator(series(), p as Record<string, never>);
+    case 'typicalPrice':
+      return typicalPrice(ohlcSeries(), p as Record<string, never>);
+    case 'medianPrice':
+      return medianPrice(ohlcSeries(), p as Record<string, never>);
+    case 'weightedClose':
+      return weightedClose(ohlcSeries(), p as Record<string, never>);
+    case 'averagePrice':
+      return averagePrice(ohlcSeries(), p as Record<string, never>);
+    case 'balanceOfPower':
+      return balanceOfPower(
+        ohlcSeries(),
+        p as { period?: number; maType?: MaType },
+      );
+    case 'starcBands':
+      return starcBands(
+        ohlcSeries(),
+        p as {
+          period?: number;
+          atrPeriod?: number;
+          multiplier?: number;
+          maType?: MaType;
+        },
+      );
+    case 'highLowBands':
+      return highLowBands(
+        ohlcSeries(),
+        p as { period?: number; percent?: number; maType?: MaType },
+      );
+    case 'bollingerBandwidth':
+      return bollingerBandwidth(
+        series(),
+        p as { period?: number; stdDev?: number },
+      );
+    case 'bollingerPercentB':
+      return bollingerPercentB(
+        series(),
+        p as { period?: number; stdDev?: number },
+      );
+    case 'primeNumberBands':
+      return primeNumberBands(ohlcSeries(), p as Record<string, never>);
+    case 'primeNumberOscillator':
+      return primeNumberOscillator(series(), p as Record<string, never>);
+    case 'marketFacilitationIndex':
+      return marketFacilitationIndex(ohlcSeries(), p as Record<string, never>);
     case 'kst':
       return kst(series(), p as { signalPeriod?: number });
     case 'rainbowOscillator':

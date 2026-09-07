@@ -4996,6 +4996,459 @@ def special_k() -> dict:
 
 
 
+def _assert_talib_exact(ours: pd.Series, ref_values, label: str) -> float:
+    """Mask FIRST, then values. `nanmax(|a-b|)` is blind to a one-sided NaN,
+    so a study that warmed up a bar early would pass a values-only check."""
+    ref = pd.Series(ref_values)
+    assert list(ours.isna()) == list(ref.isna()), (
+        f"{label} warm-up differs from TA-Lib: ours first valid "
+        f"{ours.first_valid_index()}, TA-Lib {ref.first_valid_index()}"
+    )
+    delta = float(np.nanmax(np.abs(ours - ref)))
+    assert delta == 0.0, f"{label} disagrees with TA-Lib by {delta} (want EXACT)"
+    return delta
+
+
+_H = np.asarray(highs, dtype=float)
+_L = np.asarray(lows, dtype=float)
+_C = np.asarray(closes, dtype=float)
+_O = np.asarray(opens, dtype=float)
+
+
+def typical_price() -> dict:
+    """Typical price (h+l+c)/3 -- TA-Lib TYPPRICE, EXACT, no warm-up."""
+    v = (h + low_s + s) / 3
+    assert v.first_valid_index() == 0, "typicalPrice must be defined on bar 0"
+    if talib is not None:
+        d = _assert_talib_exact(v, talib.TYPPRICE(_H, _L, _C), "typicalPrice")
+        print(f"  typicalPrice: matches TA-Lib TYPPRICE EXACTLY ({d}), no warm-up")
+    return {"typicalPrice": col(v)}
+
+
+def median_price() -> dict:
+    """Median price (h+l)/2 -- TA-Lib MEDPRICE, EXACT, no warm-up."""
+    v = (h + low_s) / 2
+    assert v.first_valid_index() == 0, "medianPrice must be defined on bar 0"
+    if talib is not None:
+        d = _assert_talib_exact(v, talib.MEDPRICE(_H, _L), "medianPrice")
+        print(f"  medianPrice: matches TA-Lib MEDPRICE EXACTLY ({d}), no warm-up")
+    # It must NOT coincide with the typical price on this fixture, or the
+    # two cases could not tell one transform from the other.
+    sep = float(np.max(np.abs(v - (h + low_s + s) / 3)))
+    assert sep > 0.05, (
+        f"medianPrice sits only {sep} from typicalPrice on this fixture -- "
+        "the two transforms would be indistinguishable"
+    )
+    return {"medianPrice": col(v)}
+
+
+def weighted_close() -> dict:
+    """Weighted close (h+l+2c)/4 -- TA-Lib WCLPRICE, EXACT, no warm-up.
+
+    The SUMMATION ORDER is TA-Lib's, `h + l + c*2`, and so is ours: addition
+    does not associate, so a rearrangement costs the exactness asserted here.
+    """
+    v = (h + low_s + s * 2) / 4
+    assert v.first_valid_index() == 0, "weightedClose must be defined on bar 0"
+    # The separation from typicalPrice is `(c - (h+l)/2) / 6`, and this
+    # fixture's bars are deliberately NARROW (see the highs/lows note), so
+    # it is small in absolute terms -- 0.0417 at its widest. That is still
+    # ~8e7 times the 1e-9 tolerance the vitest oracle compares at, so the
+    # case does tell the two transforms apart; the threshold below says so
+    # explicitly rather than pretending the gap is large.
+    sep = float(np.max(np.abs(v - (h + low_s + s) / 3)))
+    assert sep > 1e-3, (
+        f"weightedClose sits only {sep} from typicalPrice -- within reach of "
+        "the oracle's 1e-9 comparison, so the fixture could not tell the "
+        "close's weight apart"
+    )
+    if talib is not None:
+        d = _assert_talib_exact(v, talib.WCLPRICE(_H, _L, _C), "weightedClose")
+        print(
+            f"  weightedClose: matches TA-Lib WCLPRICE EXACTLY ({d}), no "
+            f"warm-up; {sep:.4f} from typicalPrice (narrow bars, but 1e7x the "
+            "oracle tolerance)"
+        )
+    return {"weightedClose": col(v)}
+
+
+def average_price() -> dict:
+    """Average price (o+h+l+c)/4 -- TA-Lib AVGPRICE, EXACT, no warm-up.
+
+    TA-Lib sums `high + low + close + open`, and so do we. Summing in OHLC
+    order instead is a DIFFERENT floating-point result -- measured below and
+    asserted to be non-zero, which is why the kernel's comment names the
+    order as load-bearing rather than incidental.
+    """
+    v = (h + low_s + s + o_s) / 4
+    assert v.first_valid_index() == 0, "averagePrice must be defined on bar 0"
+    if talib is not None:
+        d = _assert_talib_exact(v, talib.AVGPRICE(_O, _H, _L, _C), "averagePrice")
+        # The OHLC-order sum, for the record: same value to a chart, a
+        # different double.
+        ohlc_order = (o_s + h + low_s + s) / 4
+        order_gap = float(np.max(np.abs(v - ohlc_order)))
+        assert order_gap > 0.0, (
+            "the OHLC summation order happens to agree bit-for-bit on this "
+            "fixture -- the kernel's 'order is load-bearing' note would be "
+            "unsupported; pick a fixture where it is not"
+        )
+        print(
+            f"  averagePrice: matches TA-Lib AVGPRICE EXACTLY ({d}), no "
+            f"warm-up; the OHLC summation order differs by {order_gap:.3g}"
+        )
+    return {"averagePrice": col(v)}
+
+
+def balance_of_power(n=None, kind: str = "sma") -> dict:
+    """Balance of Power (Igor Livshin): (close - open) / (high - low).
+
+    RAW is TA-Lib's BOP and is asserted EXACT against it. The optional
+    smoothing (ChartIQ's form) has no TA-Lib function, so that case is a
+    pandas replication over the same raw array with the analytic first valid
+    bar asserted.
+
+    TA-Lib returns 0.0 when `high - low < 1e-8`; we test `range == 0`
+    exactly. The assert below holds the fixture clear of that gap, so the
+    exactness claimed here is not quietly resting on a threshold.
+    """
+    rng = h - low_s
+    assert float(rng.min()) > 1e-8, (
+        f"the fixture has a bar with range {float(rng.min())} -- inside "
+        "TA-Lib's 1e-8 flat threshold, so BOP exactness would be a coincidence"
+    )
+    raw = (s - o_s) / rng
+    assert float(raw.abs().max()) <= 1.0, "BOP must stay within [-1, 1] on real bars"
+    assert (raw > 0).any() and (raw < 0).any(), (
+        "BOP never changes sign on this fixture -- a dropped sign would pass"
+    )
+
+    if talib is not None:
+        d = _assert_talib_exact(raw, talib.BOP(_O, _H, _L, _C), "balanceOfPower")
+        print(
+            f"  balanceOfPower(raw): matches TA-Lib BOP EXACTLY ({d}); range "
+            f"{raw.min():.4f}..{raw.max():.4f}, no warm-up"
+        )
+
+    if n is None:
+        return {"bop": col(raw)}
+
+    v = _ma_over(raw, kind, n)
+    label = f"balanceOfPower({n},{kind})"
+    expected = {"sma": n - 1, "ema": n - 1, "wma": n - 1}.get(kind)
+    assert expected is not None, f"{label}: no analytic warm-up for {kind}"
+    assert v.first_valid_index() == expected, (
+        f"{label} first valid at {v.first_valid_index()}, expected {expected}"
+    )
+    # The smoothed line must be materially calmer than the raw one, or the
+    # case would not distinguish "smoothed" from "forgot to smooth".
+    sep = float(np.max(np.abs(v.dropna() - raw[v.notna()])))
+    assert sep > 0.05, f"{label} sits only {sep} from the raw BOP"
+    print(
+        f"  {label}: pandas replication (TA-Lib BOP is raw only); first valid "
+        f"at {expected}, {sep:.4f} from the raw line"
+    )
+    return {"bop": col(v)}
+
+
+def starc_bands(n: int, atr_n: int, mult: float, kind: str) -> dict:
+    """STARC Bands (Manning Stoller): MA(CLOSE) +/- mult * ATR(atr_n).
+
+    Distinct from keltner (MA of TYPICAL PRICE) and from atrBands (bands
+    around an EXISTING column, no middle). pandas replication on the same
+    `_atr_series` TA-Lib's ATR is asserted against, so the numbers are
+    TA-Lib's ATR with arithmetic on top; no TA-Lib STARC exists.
+
+    The asserts that earn their keep: the per-column warm-up (centre at the
+    MA's own bar, bands at max(centre, ATR)), and the SEPARATION from
+    keltner at the same parameters -- if the two agreed on this fixture the
+    case could not tell a close-centred channel from a typical-price one.
+    """
+    mid = _ma_over(s, kind, n)
+    a = _atr_series(atr_n)
+    upper, lower = mid + mult * a, mid - mult * a
+
+    label = f"starcBands({n},{atr_n},{mult},{kind})"
+    expected_mid = {"sma": n - 1, "ema": n - 1, "wma": n - 1}.get(kind)
+    assert expected_mid is not None, f"{label}: no analytic warm-up for {kind}"
+    assert mid.first_valid_index() == expected_mid, (
+        f"{label} centre first valid at {mid.first_valid_index()}, expected "
+        f"{expected_mid}"
+    )
+    assert upper.first_valid_index() == max(expected_mid, atr_n), (
+        f"{label} bands first valid at {upper.first_valid_index()}, expected "
+        f"max(centre, ATR) = {max(expected_mid, atr_n)} -- the per-column rule"
+    )
+    # Not keltner: the centre is the CLOSE's average, not the typical
+    # price's, and the two must be distinguishable on this fixture.
+    kc_mid = _ma_over((h + low_s + s) / 3, kind, n)
+    sep = float(np.nanmax(np.abs(mid - kc_mid)))
+    assert sep > 0.01, (
+        f"{label} centre sits only {sep} from keltner's typical-price centre "
+        "-- the fixture cannot tell the two channels apart"
+    )
+    print(
+        f"  {label}: pandas replication on the TA-Lib-checked ATR; centre at "
+        f"{expected_mid}, bands at {max(expected_mid, atr_n)}, {sep:.4f} from "
+        f"keltner's centre"
+    )
+    return {
+        "starcMiddle": col(mid),
+        "starcUpper": col(upper),
+        "starcLower": col(lower),
+    }
+
+
+def high_low_bands(n: int, percent: float, kind: str) -> dict:
+    """High Low Bands: MA(median price) x (1 +/- percent%).
+
+    Three columns. No TA-Lib function; a pandas replication of the corpus
+    definition (assessment 6.2) with the analytic first valid bar asserted.
+
+    The MEDIAN price is the centre's input, not the close -- asserted here
+    by separation, because an envelope() over the close is the study this
+    would silently become.
+    """
+    med = (h + low_s) / 2
+    mid = _ma_over(med, kind, n)
+    f = percent / 100.0
+    upper, lower = mid * (1 + f), mid * (1 - f)
+
+    label = f"highLowBands({n},{percent},{kind})"
+    expected = {"sma": n - 1, "trima": n - 1, "wma": n - 1}.get(kind)
+    assert expected is not None, f"{label}: no analytic warm-up for {kind}"
+    assert mid.first_valid_index() == expected, (
+        f"{label} centre first valid at {mid.first_valid_index()}, expected "
+        f"{expected}"
+    )
+    close_centre = _ma_over(s, kind, n)
+    sep = float(np.nanmax(np.abs(mid - close_centre)))
+    assert sep > 0.01, (
+        f"{label} centre sits only {sep} from the same average of the CLOSE "
+        "-- the fixture cannot tell the median-price centre apart"
+    )
+    # The band spacing is MULTIPLICATIVE, so the width grows with the level.
+    widths = (upper - lower).dropna()
+    assert float(widths.max()) - float(widths.min()) > 1e-6, (
+        f"{label} band width is constant -- a percent band must widen with "
+        "the centre, and an additive bug would pass"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib High Low Bands); first "
+        f"valid at {expected}, {sep:.4f} from the close-centred average, "
+        f"width {float(widths.min()):.4f}..{float(widths.max()):.4f}"
+    )
+    return {
+        "hlbMiddle": col(mid),
+        "hlbUpper": col(upper),
+        "hlbLower": col(lower),
+    }
+
+
+def bollinger_bandwidth(n: int, k: float) -> dict:
+    """Bollinger BandWidth: 100 * (upper - lower) / middle.
+
+    The x100 (StockCharts / ChartIQ / TradingView) form, NOT Bollinger's
+    bare ratio -- the generator records the factor so the choice is visible
+    in the fixture rather than only in the docstring.
+    """
+    mid = s.rolling(n).mean()
+    sd = s.rolling(n).std(ddof=0)
+    v = 100 * (2 * k * sd) / mid
+
+    label = f"bollingerBandwidth({n},{k})"
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    assert (v.dropna() > 0).all(), f"{label} must be positive on a rising fixture"
+    # It has to VARY, or a squeeze reading would be meaningless.
+    assert float(v.max()) / float(v.min()) > 1.5, (
+        f"{label} spans only {float(v.min()):.4f}..{float(v.max()):.4f} -- too "
+        "flat for the fixture to exercise a width reading"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib BandWidth); first valid at "
+        f"{n - 1}, range {float(v.min()):.4f}..{float(v.max()):.4f} (x100 form)"
+    )
+    return {"bbWidth": col(v)}
+
+
+def bollinger_percent_b(n: int, k: float) -> dict:
+    """Bollinger %B: (price - lower) / (upper - lower), the DECIMAL form.
+
+    0 is the lower band, 1 the upper, and the fixture must put the close
+    outside both at some point or the reading's whole use (above 1 / below
+    0) goes untested.
+    """
+    mid = s.rolling(n).mean()
+    sd = s.rolling(n).std(ddof=0)
+    upper, lower = mid + k * sd, mid - k * sd
+    v = (s - lower) / (upper - lower)
+
+    label = f"bollingerPercentB({n},{k})"
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    assert (v.dropna() > 1).any() or (v.dropna() < 0).any(), (
+        f"{label} never leaves [0, 1] on this fixture -- the out-of-band "
+        "reading the study exists for is untested"
+    )
+    print(
+        f"  {label}: pandas replication (no TA-Lib %B); first valid at "
+        f"{n - 1}, range {float(v.min()):.4f}..{float(v.max()):.4f} (decimal, "
+        "not x100)"
+    )
+    return {"percentB": col(v)}
+
+
+def _sieve(limit: int) -> list:
+    """Primes up to `limit` by a plain sieve of Eratosthenes.
+
+    Deliberately NOT sympy: the oracle venv is pandas + TA-Lib and nothing
+    else, and a study whose whole content is "which integers are prime"
+    should not have its reference supplied by a library that might not be
+    installed. Twenty lines of pure Python is an independent implementation
+    of exactly the thing being checked.
+    """
+    flags = bytearray([1]) * (limit + 1)
+    flags[0:2] = b"\x00\x00"
+    p = 2
+    while p * p <= limit:
+        if flags[p]:
+            flags[p * p :: p] = bytearray(len(flags[p * p :: p]))
+        p += 1
+    return [i for i, f in enumerate(flags) if f]
+
+
+# The fixture's prices live around 100-115, so a sieve to 1000 covers every
+# bracketing prime with room to spare. Asserted below rather than assumed.
+_PRIMES = _sieve(1000)
+_PRIME_SET = set(_PRIMES)
+
+
+def _prime_at_or_above(x: float):
+    if not math.isfinite(x) or x < 2:
+        return None
+    n = math.ceil(x)
+    while n <= _PRIMES[-1]:
+        if n in _PRIME_SET:
+            return float(n)
+        n += 1
+    raise AssertionError(f"sieve limit {_PRIMES[-1]} too small for {x}")
+
+
+def _prime_at_or_below(x: float):
+    if not math.isfinite(x) or x < 2:
+        return None
+    n = math.floor(x)
+    while n >= 2:
+        if n in _PRIME_SET:
+            return float(n)
+        n -= 1
+    return None
+
+
+def _nearest_prime(x: float):
+    """Nearest prime to x; a TIE goes to the LOWER prime (our convention)."""
+    if not math.isfinite(x) or x < 2:
+        return None
+    below = _prime_at_or_below(x)
+    above = _prime_at_or_above(x)
+    if below is None:
+        return above
+    if above is None:
+        return below
+    return below if (x - below) <= (above - x) else above
+
+
+def prime_number_bands() -> dict:
+    """Prime Number Bands: the smallest prime >= high and the largest <= low.
+
+    A step function of the PRICE LEVEL, not a statistic -- no window, no
+    warm-up, no history. Replicated over the pure-Python sieve above.
+    """
+    upper = pd.Series([_prime_at_or_above(v) for v in highs], dtype="float64")
+    lower = pd.Series([_prime_at_or_below(v) for v in lows], dtype="float64")
+
+    assert upper.notna().all() and lower.notna().all(), (
+        "the fixture's prices are all well above 2, so no band may be null"
+    )
+    assert (upper.values >= np.asarray(highs)).all(), "upper band below its high"
+    assert (lower.values <= np.asarray(lows)).all(), "lower band above its low"
+    # It must actually STEP on this fixture -- a fixture where the bands never
+    # move would not distinguish the study from two constants.
+    steps = int((upper.diff().fillna(0) != 0).sum())
+    assert steps >= 3, f"upper band steps only {steps} times on this fixture"
+    print(
+        f"  primeNumberBands: pure-Python sieve replication (no TA-Lib); no "
+        f"warm-up, upper steps {steps} times over "
+        f"{float(upper.min()):.0f}..{float(upper.max()):.0f}"
+    )
+    return {"pnbUpper": col(upper), "pnbLower": col(lower)}
+
+
+def prime_number_oscillator() -> dict:
+    """Prime Number Oscillator: close - nearestPrime(close).
+
+    Sign convention is OURS and is pinned here: `price - prime`, so positive
+    means the price sits above the prime nearest it. Ties go to the LOWER
+    prime.
+    """
+    v = pd.Series(
+        [c - _nearest_prime(c) for c in closes],
+        dtype="float64",
+    )
+    assert v.notna().all(), "no close on this fixture is outside the domain"
+    # It must cross zero, or the sign convention is untested by the case.
+    assert (v > 0).any() and (v < 0).any(), (
+        "the oscillator never changes sign on this fixture"
+    )
+    # …and it must be bounded by HALF the largest prime gap the closes span,
+    # computed from the sieve rather than guessed. (The fixture's closes run
+    # to ~112 and the 113 -> 127 gap of 14 is the widest one they reach into,
+    # so the bound is 7 -- a first draft asserting "< 5" failed at 5.0109,
+    # which was the fixture telling the truth about that gap.)
+    lo_c, hi_c = float(min(closes)), float(max(closes))
+    span = [p for p in _PRIMES if lo_c - 20 <= p <= hi_c + 20]
+    half_gap = max(
+        (span[i + 1] - span[i]) / 2 for i in range(len(span) - 1)
+    )
+    assert float(v.abs().max()) <= half_gap, (
+        f"|pno| reaches {float(v.abs().max())} but the widest half-gap over "
+        f"the fixture's price range is {half_gap} -- the nearest prime is not "
+        "being found"
+    )
+    print(
+        f"  primeNumberOscillator: pure-Python sieve replication (no TA-Lib); "
+        f"no warm-up, range {float(v.min()):.4f}..{float(v.max()):.4f}, "
+        f"crosses zero, within the {half_gap:.1f} half-gap bound"
+    )
+    return {"pno": col(v)}
+
+
+def market_facilitation_index() -> dict:
+    """Bill Williams' MFI: (high - low) / volume, the RAW ratio (no scale).
+
+    Output column is `bwmfi`, NOT `mfi` -- moneyFlowIndex (an entirely
+    different indicator published under the same abbreviation) already owns
+    that name.
+    """
+    v = (h - low_s) / vol
+
+    assert v.first_valid_index() == 0, "bwmfi must be defined on bar 0"
+    assert (v.dropna() > 0).all(), "bwmfi must be positive on real bars"
+    # The volume spikes have to show: the index must vary by more than an
+    # order of magnitude, or a version that dropped the division would pass.
+    ratio = float(v.max()) / float(v.min())
+    assert ratio > 5, f"bwmfi spans only {ratio:.2f}x -- the volume spikes do not show"
+    print(
+        f"  marketFacilitationIndex: pandas replication (no TA-Lib); no "
+        f"warm-up, range {float(v.min()):.3g}..{float(v.max()):.3g} "
+        f"({ratio:.1f}x)"
+    )
+    return {"bwmfi": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -5735,6 +6188,83 @@ cases = [
         "input": "long",
         "expected": special_k(),
     },
+    # The K3 price transforms (assessment 6.8). All four are exact against
+    # TA-Lib and have no warm-up, so one case each is the whole story.
+    {"study": "typicalPrice", "params": {}, "expected": typical_price()},
+    {"study": "medianPrice", "params": {}, "expected": median_price()},
+    {"study": "weightedClose", "params": {}, "expected": weighted_close()},
+    {"study": "averagePrice", "params": {}, "expected": average_price()},
+    # Balance of Power: the raw TA-Lib form (the default) and the smoothed
+    # ChartIQ one, so both halves of the F-AMBIG fork are pinned.
+    {"study": "balanceOfPower", "params": {}, "expected": balance_of_power()},
+    {
+        "study": "balanceOfPower",
+        "params": {"period": 14, "maType": "sma"},
+        "expected": balance_of_power(14, "sma"),
+    },
+    {
+        "study": "balanceOfPower",
+        "params": {"period": 5, "maType": "ema"},
+        "expected": balance_of_power(5, "ema"),
+    },
+    # The bands and channels tail (assessment 6.2).
+    {
+        "study": "starcBands",
+        "params": {"period": 20, "atrPeriod": 15, "multiplier": 2, "maType": "sma"},
+        "expected": starc_bands(20, 15, 2, "sma"),
+    },
+    {
+        # A shorter centre than the ATR, so the per-column warm-up differs
+        # the OTHER way round (bands later than the centre).
+        "study": "starcBands",
+        "params": {"period": 5, "atrPeriod": 14, "multiplier": 1.5, "maType": "ema"},
+        "expected": starc_bands(5, 14, 1.5, "ema"),
+    },
+    {
+        "study": "highLowBands",
+        "params": {"period": 10, "percent": 1, "maType": "trima"},
+        "expected": high_low_bands(10, 1, "trima"),
+    },
+    {
+        # A different average and a wider shift, so neither default is the
+        # only thing the case pins.
+        "study": "highLowBands",
+        "params": {"period": 20, "percent": 3.5, "maType": "sma"},
+        "expected": high_low_bands(20, 3.5, "sma"),
+    },
+    {
+        "study": "bollingerBandwidth",
+        "params": {"period": 20, "stdDev": 2},
+        "expected": bollinger_bandwidth(20, 2),
+    },
+    {
+        "study": "bollingerBandwidth",
+        "params": {"period": 10, "stdDev": 1.5},
+        "expected": bollinger_bandwidth(10, 1.5),
+    },
+    {
+        "study": "bollingerPercentB",
+        "params": {"period": 20, "stdDev": 2},
+        "expected": bollinger_percent_b(20, 2),
+    },
+    {
+        "study": "bollingerPercentB",
+        "params": {"period": 10, "stdDev": 1.5},
+        "expected": bollinger_percent_b(10, 1.5),
+    },
+    # The prime studies (6.2 / 6.3) and Bill Williams' MFI (6.6). All three
+    # are per-bar and parameterless, so one case each is the whole story.
+    {"study": "primeNumberBands", "params": {}, "expected": prime_number_bands()},
+    {
+        "study": "primeNumberOscillator",
+        "params": {},
+        "expected": prime_number_oscillator(),
+    },
+    {
+        "study": "marketFacilitationIndex",
+        "params": {},
+        "expected": market_facilitation_index(),
+    },
 ]
 
 out = {
@@ -6349,6 +6879,109 @@ out = {
                 "price AND shift-INVARIANT (the constant cancels between the "
                 "price and its own average), which is exactly what the "
                 "percent form is not"
+            ),
+            "priceTransforms": (
+                "The K3 per-bar price summaries (assessment 6.8), all four "
+                "EXACT against TA-Lib with identical (empty) warm-up masks: "
+                "typicalPrice (h+l+c)/3 = TYPPRICE, medianPrice (h+l)/2 = "
+                "MEDPRICE, weightedClose (h+l+2c)/4 = WCLPRICE, averagePrice "
+                "(o+h+l+c)/4 = AVGPRICE. The SUMMATION ORDER is TA-Lib's in "
+                "both four-term cases - addition does not associate, and "
+                "summing averagePrice in OHLC order instead differs in the "
+                "last bits (asserted non-zero here), which is enough to lose "
+                "the exactness. No warm-up at all: a bar's own prices are all "
+                "any of them reads, so bar 0 is defined. Linear in price and "
+                "shift-EQUIVARIANT (they are weighted means of prices)"
+            ),
+            "balanceOfPower": (
+                "Igor Livshin's BOP = (close - open) / (high - low), the "
+                "body over the range, bounded [-1, 1]. The RAW per-bar form "
+                "is the default and is EXACT against TA-Lib BOP; the optional "
+                "`period` (+ maType) is ChartIQ's smoothed form, a pandas "
+                "replication with the analytic first valid bar asserted "
+                "(F-AMBIG: both conventions are in circulation, so the "
+                "TA-Lib-pinnable one ships as the default). A flat bar "
+                "(high == low) is 0, not null - the numerator is forced to "
+                "zero because a bar with no range traded at one price, the "
+                "clvValues rule from #699 - and TA-Lib agrees, though it gets "
+                "there via a 1e-8 threshold where we test range == 0 exactly; "
+                "the generator asserts the fixture's narrowest bar is clear "
+                "of that gap so the exactness is not resting on it. Scale- "
+                "AND shift-INVARIANT: both the body and the range are "
+                "differences of prices"
+            ),
+            "starcBands": (
+                "Manning Stoller's STARC: MA(CLOSE) +/- mult * ATR, defaults "
+                "20 / 15 / 2 / sma. Distinct from keltner (MA of TYPICAL "
+                "PRICE) and from atrBands (bands around an existing column, "
+                "no middle) -- the generator asserts the centre's separation "
+                "from keltner's on this fixture. Per-column warm-up: centre "
+                "at the MA's own bar, bands at max(centre, ATR). pandas "
+                "replication on the same _atr_series TA-Lib's ATR is checked "
+                "against; no TA-Lib STARC. Linear in price AND translation-"
+                "equivariant (the width is an ATR, a difference)"
+            ),
+            "highLowBands": (
+                "MA(median price) x (1 +/- shift%), defaults 10 / 1% / trima. "
+                "The corpus (6.2) names the formula but not the average, so "
+                "trima is pond's default and the whole MaType menu is "
+                "available. The centre is the MEDIAN price, and the generator "
+                "asserts its separation from the same average of the CLOSE "
+                "(which is what envelope() computes). MULTIPLICATIVE bands, "
+                "so the width grows with the level -- asserted, since an "
+                "additive bug would otherwise pass. Linear in price but NOT "
+                "shift-equivariant. Option spelled `shift` (this indicator's "
+                "own label) where envelope spells the same quantity `percent`"
+            ),
+            "bollingerDerived": (
+                "bollingerBandwidth = 100*(upper-lower)/middle (the "
+                "StockCharts / ChartIQ / TradingView x100 form, NOT "
+                "Bollinger's bare ratio) and bollingerPercentB = "
+                "(price-lower)/(upper-lower) (the DECIMAL form, 0 = lower "
+                "band and 1 = upper, NOT x100). Both run the same "
+                "rollingColumns avg+stdev pass bollinger itself makes "
+                "(population ddof=0), and both re-form the bands with "
+                "bollinger's own expression so the identities hold BIT-for-"
+                "bit rather than to rounding. A flat window splits them and "
+                "that is the point: bandwidth is 0 (its numerator is "
+                "2*k*sigma, forced to zero, over a non-zero centre) while %B "
+                "is null (a genuine 0/0 -- the numerator is zero only because "
+                "the denominator is), and bollinger's own bands are null "
+                "there too. Bandwidth is scale-invariant but NOT shift-"
+                "invariant; %B is both. First valid at period-1 for both. No "
+                "TA-Lib function for either"
+            ),
+            "primeStudies": (
+                "primeNumberBands = the smallest prime >= high and the "
+                "largest <= low (a band that CONTAINS the bar); "
+                "primeNumberOscillator = close - nearestPrime(close), our "
+                "sign convention (positive = the price sits above the prime "
+                "nearest it), with a TIE going to the LOWER prime. Both are "
+                "step functions of the PRICE LEVEL rather than statistics: no "
+                "window, no warm-up, no history, and NEITHER scale- nor "
+                "shift-equivariant (the primes do not move with the data) -- "
+                "the property tests assert that ABSENCE rather than skipping "
+                "it. A value below 2 has no prime neighbourhood and reads "
+                "null; so does anything past 2**53. Replicated over a "
+                "pure-Python sieve of Eratosthenes rather than sympy, which "
+                "the oracle venv does not carry -- and which would be a "
+                "poor reference anyway for a study whose whole content is "
+                "which integers are prime"
+            ),
+            "marketFacilitationIndex": (
+                "Bill Williams' MFI = (high - low) / volume, the RAW ratio. "
+                "Output is `bwmfi`, NOT `mfi`: moneyFlowIndex (Quong & "
+                "Soudack's RSI-on-money-flow, a different indicator "
+                "published under the same abbreviation) already owns that "
+                "name, and two studies cannot share a default output. No "
+                "`scale` option -- unlike easeOfMovement, whose 100_000_000 "
+                "is a PUBLISHED constant, no vendor constant is standard "
+                "here, so exposing one would be inventing a default. No "
+                "warm-up; a zero-volume bar is null (the guard is live -- "
+                "withColumn REJECTS an infinity rather than mapping it to a "
+                "gap), a flat bar is 0 (a genuine zero over a real volume). "
+                "Linear in price, INVERSELY proportional to volume, and "
+                "shift-invariant in price. pandas replication, no TA-Lib"
             ),
         },
     },

@@ -98,3 +98,80 @@ export function barRangeValues(
   }
   return out;
 }
+
+/**
+ * **Weighted close** — `(high + low + 2·close) / 4`, the per-bar price
+ * summary that counts the close twice. TA-Lib's `WCLPRICE`.
+ *
+ * The fourth member of this file's family, after {@link typicalPriceValues},
+ * {@link medianPriceValues} and {@link barRangeValues}: a bar reduced to one
+ * number, with the close given twice the weight of either extreme on the
+ * argument that the price the bar *settled* at says more about it than the
+ * two it merely touched.
+ *
+ * ## Why it lives here with only one consumer
+ *
+ * The two-consumer rule this package applies to kernel helpers would keep
+ * this inside `weightedClose` — it has exactly one caller today. It is here
+ * anyway because **this file _is_ the named per-bar price-summary family**:
+ * two of the four already lived here before this one did, and splitting the
+ * family so `(h+l+c)/3` is a kernel while `(h+l+2c)/4` is a loop inside a
+ * study would leave a reader hunting for the second half. It is **not**
+ * exported from the package barrel, so it adds no public surface — the same
+ * treatment `alphaEmaValues` gets.
+ *
+ * **The summation order is TA-Lib's**, `(h + l + c·2) / 4`, not a
+ * rearrangement of it: floating-point addition does not associate, so
+ * reordering the terms costs the bar-for-bar `WCLPRICE` agreement the oracle
+ * asserts.
+ *
+ * `NaN` marks a gap ([PND-STUDYBOX]) and propagates through the sum, so a bar
+ * with any of its three prices missing has no weighted close.
+ *
+ * O(N), one pass, one allocation.
+ */
+export function weightedCloseValues(
+  high: Float64Array,
+  low: Float64Array,
+  close: Float64Array,
+): Float64Array {
+  const length = high.length;
+  const out = new Float64Array(length);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = (high[i]! + low[i]! + close[i]! * 2) / 4;
+  }
+  return out;
+}
+
+/**
+ * **Average price** — `(high + low + close + open) / 4`, the mean of all four
+ * bar prices. TA-Lib's `AVGPRICE`, and the only member of this family that
+ * reads the **open**.
+ *
+ * Here rather than inside its study for the reason {@link
+ * weightedCloseValues} gives, and with the same **TA-Lib summation order**
+ * (`h + l + c + o`, *not* the OHLC order the name suggests) so the oracle's
+ * `AVGPRICE` agreement is bar-for-bar exact: summing in OHLC order instead
+ * moves the reading by up to **2.8e-14** on the oracle's own fixture
+ * (measured — `scripts/oracle/generate.py`'s `average_price` asserts both the
+ * exact agreement and that gap), which is the last-bit artefact of addition
+ * not associating rather than a different definition.
+ *
+ * `NaN` marks a gap ([PND-STUDYBOX]) and propagates through the sum, so a bar
+ * with any of its four prices missing has no average price.
+ *
+ * O(N), one pass, one allocation.
+ */
+export function averagePriceValues(
+  open: Float64Array,
+  high: Float64Array,
+  low: Float64Array,
+  close: Float64Array,
+): Float64Array {
+  const length = high.length;
+  const out = new Float64Array(length);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = (high[i]! + low[i]! + close[i]! + open[i]!) / 4;
+  }
+  return out;
+}

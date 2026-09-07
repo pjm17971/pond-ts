@@ -74,6 +74,18 @@ import {
   negativeVolumeIndex,
   positiveVolumeIndex,
   klinger,
+  typicalPrice,
+  medianPrice,
+  weightedClose,
+  averagePrice,
+  balanceOfPower,
+  starcBands,
+  highLowBands,
+  bollingerBandwidth,
+  bollingerPercentB,
+  primeNumberBands,
+  primeNumberOscillator,
+  marketFacilitationIndex,
   stochasticMomentumIndex,
   fisherTransform,
   schaffTrendCycle,
@@ -2609,5 +2621,267 @@ describe('[PND-STUDYBOX] the momentum and trend leftovers: where the missing row
         ).toBe(true);
       }
     }
+  });
+});
+
+describe('[PND-STUDYBOX] the price transforms: a gap costs exactly its bar', () => {
+  // No `!isNaN` assertions — `withColumn` maps NaN to missing on its typed
+  // door, so such a check can never fire. What is pinned is WHERE the
+  // missing rows are, and how many.
+  const gappyOhlc = (
+    gapAt: number | undefined,
+    column: 'open' | 'high' | 'low' | 'close',
+  ) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: [
+        { name: 'time', kind: 'time' },
+        { name: 'open', kind: 'number', required: false },
+        { name: 'high', kind: 'number', required: false },
+        { name: 'low', kind: 'number', required: false },
+        { name: 'close', kind: 'number', required: false },
+      ] as const,
+      rows: Array.from({ length: 30 }, (_, i) => {
+        const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+        const hide = (name: typeof column) => i === gapAt && column === name;
+        return [
+          i * MINUTE,
+          hide('open') ? undefined : c - 0.5 * Math.cos(i / 1.7),
+          hide('high') ? undefined : c + 0.4 + 0.6 * Math.abs(Math.sin(i / 2)),
+          hide('low') ? undefined : c - 0.5 - 0.6 * Math.abs(Math.cos(i / 2.5)),
+          hide('close') ? undefined : c,
+        ];
+      }) as never,
+    });
+
+  it('all four are complete with no gaps — there is no warm-up head', () => {
+    const src = gappyOhlc(undefined, 'close');
+    expect(nullCountOf(typicalPrice(src), 'typicalPrice')).toBe(0);
+    expect(nullCountOf(medianPrice(src), 'medianPrice')).toBe(0);
+    expect(nullCountOf(weightedClose(src), 'weightedClose')).toBe(0);
+    expect(nullCountOf(averagePrice(src), 'averagePrice')).toBe(0);
+    expect(nullCountOf(balanceOfPower(src), 'bop')).toBe(0);
+  });
+
+  it('a missing close costs one bar on the three that read it', () => {
+    const src = gappyOhlc(12, 'close');
+    for (const [out, name] of [
+      [typicalPrice(src), 'typicalPrice'],
+      [weightedClose(src), 'weightedClose'],
+      [averagePrice(src), 'averagePrice'],
+      [balanceOfPower(src), 'bop'],
+    ] as const) {
+      expect(nullCountOf(out, name), name).toBe(1);
+      expect(cells(out, name)[12], name).toBeUndefined();
+      expect(typeof cells(out, name)[11], name).toBe('number');
+      expect(typeof cells(out, name)[13], name).toBe('number');
+    }
+    // …and NONE on medianPrice, which does not read the close at all. That
+    // asymmetry is the reason `close` sits on the shared options type as an
+    // ignored field rather than being absent from it.
+    expect(nullCountOf(medianPrice(src), 'medianPrice')).toBe(0);
+  });
+
+  it('a missing open costs one bar on averagePrice and bop, none elsewhere', () => {
+    const src = gappyOhlc(7, 'open');
+    expect(nullCountOf(averagePrice(src), 'averagePrice')).toBe(1);
+    expect(cells(averagePrice(src), 'averagePrice')[7]).toBeUndefined();
+    expect(nullCountOf(balanceOfPower(src), 'bop')).toBe(1);
+    expect(cells(balanceOfPower(src), 'bop')[7]).toBeUndefined();
+    expect(nullCountOf(typicalPrice(src), 'typicalPrice')).toBe(0);
+    expect(nullCountOf(medianPrice(src), 'medianPrice')).toBe(0);
+    expect(nullCountOf(weightedClose(src), 'weightedClose')).toBe(0);
+  });
+
+  it('a missing high costs one bar on all five', () => {
+    const src = gappyOhlc(20, 'high');
+    for (const [out, name] of [
+      [typicalPrice(src), 'typicalPrice'],
+      [medianPrice(src), 'medianPrice'],
+      [weightedClose(src), 'weightedClose'],
+      [averagePrice(src), 'averagePrice'],
+      [balanceOfPower(src), 'bop'],
+    ] as const) {
+      expect(nullCountOf(out, name), name).toBe(1);
+      expect(cells(out, name)[20], name).toBeUndefined();
+    }
+  });
+
+  it('starcBands / highLowBands: where the missing rows are', () => {
+    const clean = gappyOhlc(undefined, 'close');
+    // STARC: centre at period − 1, bands at max(centre, ATR).
+    const starc = starcBands(clean, {
+      period: 4,
+      atrPeriod: 6,
+      maType: 'sma',
+    });
+    expect(nullCountOf(starc, 'starcMiddle')).toBe(3);
+    expect(nullCountOf(starc, 'starcUpper')).toBe(6);
+    expect(nullCountOf(starc, 'starcLower')).toBe(6);
+    // High Low Bands: all three together, at the average's own bar.
+    const hlb = highLowBands(clean, { period: 5, maType: 'sma' });
+    for (const name of ['hlbMiddle', 'hlbUpper', 'hlbLower']) {
+      expect(nullCountOf(hlb, name), name).toBe(4);
+      expect(typeof cells(hlb, name)[4], name).toBe('number');
+    }
+  });
+
+  it('starcBands: a missing close leaves the centre INTACT and stops the bands', () => {
+    // The two halves take different doors and it shows. The centre is an
+    // `sma` over a COLUMN, so it takes the K2 engine's column door — core's
+    // count-window `avg` counts ROWS for `minSamples` and SKIPS a missing
+    // cell, so the centre is drawn right through the gap (over `period − 1`
+    // contributors on the windows that contain it). The ATR is Wilder over
+    // TRUE range, which reads the PREVIOUS close: the gap costs bar 16's
+    // true range, and a recursion never gives that back — so the bands are
+    // defined ON bar 15 and blank from 16 to the end.
+    const out = starcBands(gappyOhlc(15, 'close'), {
+      period: 4,
+      atrPeriod: 6,
+      maType: 'sma',
+    });
+    const mid = cells(out, 'starcMiddle');
+    const up = cells(out, 'starcUpper');
+    expect(mid.slice(3).every((x) => typeof x === 'number')).toBe(true);
+    expect(nullCountOf(out, 'starcMiddle')).toBe(3);
+    expect(typeof up[15]).toBe('number');
+    expect(up.slice(16).every((x) => x === undefined)).toBe(true);
+    expect(nullCountOf(out, 'starcUpper')).toBe(6 + 14);
+  });
+
+  it('highLowBands: a missing HIGH blanks the window it falls in, and recovers', () => {
+    // The centre smooths a DERIVED array (the median price), so it takes the
+    // K2 engine's array door: a window type waits for `period` finite
+    // values, blanking every window that contains the gap rather than
+    // averaging a short one. Nothing propagates — there is no recursion.
+    const out = highLowBands(gappyOhlc(12, 'high'), {
+      period: 5,
+      maType: 'sma',
+    });
+    for (const name of ['hlbMiddle', 'hlbUpper', 'hlbLower']) {
+      const v = cells(out, name);
+      expect(typeof v[11], name).toBe('number');
+      expect(
+        v.slice(12, 17).every((x) => x === undefined),
+        name,
+      ).toBe(true);
+      expect(typeof v[17], name).toBe('number');
+      expect(nullCountOf(out, name), name).toBe(4 + 5);
+    }
+    // A missing CLOSE costs it nothing at all — it never reads one, so only
+    // the warm-up head is missing.
+    expect(
+      nullCountOf(
+        highLowBands(gappyOhlc(12, 'close'), { period: 5, maType: 'sma' }),
+        'hlbMiddle',
+      ),
+    ).toBe(4);
+  });
+
+  it('the prime studies: a gap costs one bar per column, and nothing else', () => {
+    // No window and no recursion, so there is nothing for a gap to spread
+    // into — the strictest form of "costs exactly its own bar".
+    const clean = primeNumberBands(gappyOhlc(undefined, 'close'));
+    expect(nullCountOf(clean, 'pnbUpper')).toBe(0);
+    expect(nullCountOf(clean, 'pnbLower')).toBe(0);
+
+    const hi = primeNumberBands(gappyOhlc(9, 'high'));
+    expect(nullCountOf(hi, 'pnbUpper')).toBe(1);
+    expect(cells(hi, 'pnbUpper')[9]).toBeUndefined();
+    // …and the LOWER band is untouched: the two columns read different
+    // inputs and neither shares the other's fate.
+    expect(nullCountOf(hi, 'pnbLower')).toBe(0);
+
+    const lo = primeNumberBands(gappyOhlc(9, 'low'));
+    expect(nullCountOf(lo, 'pnbLower')).toBe(1);
+    expect(nullCountOf(lo, 'pnbUpper')).toBe(0);
+
+    const osc = primeNumberOscillator(gappyOhlc(20, 'close') as never);
+    expect(nullCountOf(osc, 'pno')).toBe(1);
+    expect(cells(osc, 'pno')[20]).toBeUndefined();
+    expect(typeof cells(osc, 'pno')[21]).toBe('number');
+  });
+
+  it('marketFacilitationIndex: a gap in any of the three costs that bar', () => {
+    const withVolume = (gapAt: number | undefined, column: string) =>
+      new TimeSeries({
+        name: 'bars',
+        schema: [
+          { name: 'time', kind: 'time' },
+          { name: 'high', kind: 'number', required: false },
+          { name: 'low', kind: 'number', required: false },
+          { name: 'close', kind: 'number', required: false },
+          { name: 'volume', kind: 'number', required: false },
+        ] as const,
+        rows: Array.from({ length: 20 }, (_, i) => {
+          const c = 100 + 8 * Math.sin(i / 3) + 0.2 * i;
+          const hide = (name: string) => i === gapAt && column === name;
+          return [
+            i * MINUTE,
+            hide('high') ? undefined : c + 0.5,
+            hide('low') ? undefined : c - 0.5,
+            c,
+            hide('volume') ? undefined : 1000 + 100 * (i % 5),
+          ];
+        }) as never,
+      });
+
+    expect(
+      nullCountOf(marketFacilitationIndex(withVolume(undefined, '')), 'bwmfi'),
+    ).toBe(0);
+    for (const column of ['high', 'low', 'volume']) {
+      const out = marketFacilitationIndex(withVolume(7, column));
+      expect(nullCountOf(out, 'bwmfi'), column).toBe(1);
+      expect(cells(out, 'bwmfi')[7], column).toBeUndefined();
+      expect(typeof cells(out, 'bwmfi')[8], column).toBe('number');
+    }
+  });
+
+  it('bollingerBandwidth / bollingerPercentB: a gap costs %B one bar and bandwidth none', () => {
+    // The asymmetry between the two, and it is not obvious: both read the
+    // SAME window statistics, which core's count-window reducers compute
+    // over the contributors present (a missing cell is skipped, not fatal),
+    // so BandWidth — which reads nothing else — is drawn right through the
+    // gap. %B additionally reads the bar's OWN price in its numerator, so
+    // it loses exactly that bar and recovers on the next.
+    const clean = bollingerBandwidth(gappyOhlc(undefined, 'close'), {
+      period: 5,
+    });
+    expect(nullCountOf(clean, 'bbWidth')).toBe(4);
+    expect(typeof cells(clean, 'bbWidth')[4]).toBe('number');
+
+    const width = bollingerBandwidth(gappyOhlc(12, 'close'), { period: 5 });
+    expect(nullCountOf(width, 'bbWidth')).toBe(4);
+    expect(typeof cells(width, 'bbWidth')[12]).toBe('number');
+
+    const pb = bollingerPercentB(gappyOhlc(12, 'close'), { period: 5 });
+    const v = cells(pb, 'percentB');
+    expect(typeof v[11]).toBe('number');
+    expect(v[12]).toBeUndefined();
+    expect(typeof v[13]).toBe('number');
+    expect(nullCountOf(pb, 'percentB')).toBe(4 + 1);
+  });
+
+  it('smoothed balanceOfPower warms up on the average, and a gap is the maType’s rule', () => {
+    // The K2 ARRAY door: a window type waits for `period` finite VALUES, so
+    // the gap bar and the window that contains it are both blank, and the
+    // line recovers `period` bars later rather than propagating.
+    const out = balanceOfPower(gappyOhlc(15, 'high'), {
+      period: 5,
+      maType: 'sma',
+    });
+    expect(nullCountOf(out, 'bop')).toBe(4 + 5);
+    expect(
+      cells(out, 'bop')
+        .slice(0, 4)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'bop')[4]).toBe('number');
+    expect(
+      cells(out, 'bop')
+        .slice(15, 20)
+        .every((x) => x === undefined),
+    ).toBe(true);
+    expect(typeof cells(out, 'bop')[20]).toBe('number');
   });
 });
