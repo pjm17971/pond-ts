@@ -178,7 +178,9 @@ export function barsSinceExtremeValues(
 ): Float64Array {
   const length = values.length;
   const out = new Float64Array(length).fill(NaN);
-  const capacity = period + 1;
+  // The ring never holds more indices than the window has rows, so a period
+  // longer than the series (all-NaN output) need not reserve `period` slots.
+  const capacity = Math.max(1, Math.min(period + 1, length));
   const ring = new Int32Array(capacity);
   const wantMax = mode === 'max';
   let head = 0;
@@ -277,8 +279,13 @@ export function rollingExtremesValues(
   const length = values.length;
   const highest = new Float64Array(length).fill(NaN);
   const lowest = new Float64Array(length).fill(NaN);
-  const maxRing = new Int32Array(period);
-  const minRing = new Int32Array(period);
+  // Each deque holds at most one index per window row, so its ring is
+  // `min(period, length)` slots — a `period` longer than the series reserves
+  // nothing it cannot use (Layer-2 review of #709: 5e7 on 100 bars was 400 MB
+  // to return all-NaN).
+  const capacity = Math.max(1, Math.min(period, length));
+  const maxRing = new Int32Array(capacity);
+  const minRing = new Int32Array(capacity);
   let maxHead = 0;
   let maxCount = 0;
   let minHead = 0;
@@ -293,11 +300,11 @@ export function rollingExtremesValues(
     if (!Number.isFinite(value)) missing += 1;
 
     while (maxCount > 0 && maxRing[maxHead]! <= i - period) {
-      maxHead = (maxHead + 1) % period;
+      maxHead = (maxHead + 1) % capacity;
       maxCount -= 1;
     }
     while (minCount > 0 && minRing[minHead]! <= i - period) {
-      minHead = (minHead + 1) % period;
+      minHead = (minHead + 1) % capacity;
       minCount -= 1;
     }
     // A non-finite cell is never a candidate; `missing` is what makes the
@@ -305,19 +312,19 @@ export function rollingExtremesValues(
     if (Number.isFinite(value)) {
       while (
         maxCount > 0 &&
-        values[maxRing[(maxHead + maxCount - 1) % period]!]! <= value
+        values[maxRing[(maxHead + maxCount - 1) % capacity]!]! <= value
       ) {
         maxCount -= 1;
       }
-      maxRing[(maxHead + maxCount) % period] = i;
+      maxRing[(maxHead + maxCount) % capacity] = i;
       maxCount += 1;
       while (
         minCount > 0 &&
-        values[minRing[(minHead + minCount - 1) % period]!]! >= value
+        values[minRing[(minHead + minCount - 1) % capacity]!]! >= value
       ) {
         minCount -= 1;
       }
-      minRing[(minHead + minCount) % period] = i;
+      minRing[(minHead + minCount) % capacity] = i;
       minCount += 1;
     }
 

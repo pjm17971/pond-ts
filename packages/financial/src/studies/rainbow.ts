@@ -162,7 +162,12 @@ export interface RainbowOscillatorOptions<
   /** Look-back for the highest/lowest of `column`, in **bars**. **Default
    *  `10`.** */
   lookback?: number;
-  /** Which moving average the stack uses. **Default `'sma'`.** */
+  /** Which moving average the stack uses. **Default `'sma'`.** Spelled
+   *  `type`, not `maType`, by deliberate exception to the package's rule
+   *  (`type` when the columns ARE the averages, `maType` when an average
+   *  sits inside a study): this option IS {@link rainbow}'s `type`, passed
+   *  through unchanged to the same ten-stage stack, and a consumer who runs
+   *  both studies passes one spelling to both. */
   type?: MaType;
   /** Column-family prefix — appends `${prefix}`, `${prefix}Upper` and
    *  `${prefix}Lower`. **Default `'rbo'`.** */
