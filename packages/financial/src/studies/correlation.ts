@@ -115,13 +115,16 @@ export interface CorrelationOptions<
  * - **`benchmark` must differ from `column`.** Correlating a column with
  *   itself is `+1` by construction, so it is a mistake rather than a
  *   degenerate reading, and it throws.
- * - **No `±1` clamp, and the overshoot is real.** **Measured**: on
+ * - **`|r|` is pinned to 1, for last-ulp rounding only.** **Measured**: on
  *   `benchmark = −3 · column + 1000` — a perfectly anti-correlated pair —
- *   one window reads `−1.0000000000000002`, two ulps past the bound, while
- *   the `+1` side of the same test is bit-exact. A clamp would remove 2e-16
- *   that no caller's threshold can see, and it would be one more branch to
- *   keep alive; both halves are pinned by a test instead, so the behaviour
- *   is chosen rather than discovered on a chart.
+ *   the raw ratio reads `−1.0000000000000002` on one window, two ulps past
+ *   the bound, while the `+1` side is bit-exact. The first release shipped
+ *   that overshoot deliberately (a clamp can hide a wrong value); the
+ *   post-merge review of #706 found windows where the kernel's moments
+ *   were residues and the ratio read `|r| = 20.5`, and the answer to that
+ *   is in the kernel — it rebuilds any window whose moments are
+ *   ill-conditioned, verified against an exact reference — so the only
+ *   overshoot that can reach this line is rounding, and rounding is pinned.
  */
 export function correlation<
   S extends SeriesSchema,

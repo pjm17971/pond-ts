@@ -6319,10 +6319,11 @@ describe('correlation', () => {
         'corr',
       ).slice(4),
     ).toEqual(Array.from({ length: 8 }, () => 1));
-    // The negated pair is NOT bit-exact, and that is the measured reason
-    // there is no `±1` clamp: this input reads `-1.0000000000000002` on one
-    // bar, an overshoot of 2e-16 that no caller's threshold can see and that
-    // a guard would have to be written (and tested) to remove.
+    // The negated pair is NOT bit-exact at the kernel: this input's raw
+    // ratio reads `-1.0000000000000002` on one bar. Since #707 the study
+    // pins |r| to 1 — the kernel now rebuilds any window whose moments
+    // could overshoot materially, so what is left is last-ulp rounding,
+    // and the pin is asserted here as the bound holding on every bar.
     const negated = pairCloses.map((c) => -3 * c + 1000);
     const negatedCorr = col(
       correlation(pairBars(pairCloses, negated), {
@@ -6332,7 +6333,8 @@ describe('correlation', () => {
       'corr',
     ).slice(4);
     for (const r of negatedCorr) expect(r!).toBeCloseTo(-1, 14);
-    expect(negatedCorr.some((r) => r! < -1)).toBe(true);
+    expect(negatedCorr.every((r) => r! >= -1 && r! <= 1)).toBe(true);
+    expect(negatedCorr.some((r) => r === -1)).toBe(true);
   });
 
   it('a flat window on either side is undefined, not 0 (TA-Lib says 0)', () => {

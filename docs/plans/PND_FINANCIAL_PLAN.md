@@ -1334,10 +1334,11 @@ level: measured `0.976` on a random walk near 100 at `period 5`. The
 exactly-`1` pair for beta is a **pure scale**, `k·column`, and both are pinned.
 The `−1` side of correlation is where the last decision fell out: on
 `−3·column + 1000` one window reads `−1.0000000000000002`, two ulps past the
-bound, while the `+1` side is bit-exact. **No `±1` clamp ships** — it would
-remove 2e-16 no threshold can see, at the price of a branch to keep alive —
-and both halves are pinned by a test so the overshoot is chosen rather than
-discovered on a chart.
+bound, while the `+1` side is bit-exact. The batch shipped **no `±1` clamp** —
+it would remove 2e-16 no threshold can see, at the price of a branch to keep
+alive. That was reversed in #707 (below): once the kernel rebuilds every
+ill-conditioned window and is pinned to an exact reference, the only
+overshoot left is rounding, and `correlation` now pins `|r|` to 1 for it.
 
 (5) **The kernel is the numerics decision, and the naive form is not merely
 less accurate — it returns a negative variance.** `rollingBivariateValues`
