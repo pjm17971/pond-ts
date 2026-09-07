@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { exactRegression, lcg, plateaus } from './exact-rational.js';
 import {
   linearRegressionAt,
   linearRegressionValues,
@@ -332,6 +333,72 @@ describe('linearRegressionAt', () => {
       // The centred recompute answers almost every degenerate window; a
       // residual NaN is allowed only where the centred variance is itself 0.
       expect(degenerate).toBeLessThan(checked / 100);
+    });
+  });
+
+  describe('against an exact rational reference on plateau-stepped, ulp-jittered input', () => {
+    // Reviewed 2026-09-07 (Layer-2 on #707): the first fix triggered on the
+    // SIGN of the rolling spread, and a positive residue sailed through —
+    // r² = 5.8e-11 where the exact answer was 0.75, 3.0 (pinned to 1.0)
+    // where it was 0.43. This test computes the true r², slope and
+    // intercept of every changing window with BigInt rationals and pins the
+    // kernel to them, so neither the trigger nor the pin can hide a wrong
+    // value. It fails with the fix reverted.
+    it('every changing window reads within 1e-9 of the exact r², slope and intercept', () => {
+      const rnd = lcg(4242);
+      let windows = 0;
+      let unresolved = 0;
+      for (const magnitude of [1e-3, 1, 1e6, 1e12, 3.002998998997]) {
+        for (const step of [0, 1e-3, 1e-6, 1e-9, 1e-12]) {
+          for (const period of [2, 3, 5, 8, 13, 21, 30]) {
+            for (let trial = 0; trial < 1; trial += 1) {
+              const v = plateaus(period + 40, magnitude, step, rnd);
+              const { slope, intercept, r2 } = linearRegressionValues(
+                v,
+                period,
+              );
+              for (let i = period - 1; i < v.length; i += 1) {
+                const w = v.subarray(i - period + 1, i + 1);
+                let changes = 0;
+                for (let k = 1; k < period; k += 1)
+                  if (w[k] !== w[k - 1]) changes += 1;
+                if (changes === 0) {
+                  expect(slope[i], `flat slope[${i}]`).toBe(0);
+                  expect(r2[i], `flat r2[${i}]`).toBeNaN();
+                  continue;
+                }
+                windows += 1;
+                const exact = exactRegression(w);
+                const tag = `@${magnitude}/${step}/${period} bar ${i}`;
+                expect(
+                  Math.abs(slope[i]! - exact.slope),
+                  `slope ${tag}`,
+                ).toBeLessThanOrEqual(
+                  1e-9 * Math.max(1, Math.abs(exact.slope)),
+                );
+                expect(
+                  Math.abs(intercept[i]! - exact.intercept),
+                  `intercept ${tag}`,
+                ).toBeLessThanOrEqual(
+                  1e-9 * Math.max(1, Math.abs(exact.intercept)),
+                );
+                if (Number.isNaN(r2[i])) {
+                  unresolved += 1;
+                  continue;
+                }
+                expect(r2[i], `r2 range ${tag}`).toBeGreaterThanOrEqual(0);
+                expect(r2[i], `r2 range ${tag}`).toBeLessThanOrEqual(1);
+                expect(
+                  Math.abs(r2[i]! - exact.r2),
+                  `r2 ${tag}`,
+                ).toBeLessThanOrEqual(1e-9);
+              }
+            }
+          }
+        }
+      }
+      expect(windows).toBeGreaterThan(5000);
+      expect(unresolved).toBe(0);
     });
   });
 });

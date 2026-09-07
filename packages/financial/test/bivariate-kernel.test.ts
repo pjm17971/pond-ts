@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { exactBivariate, lcg, plateaus } from './exact-rational.js';
 import { rollingBivariateValues } from '../src/kernels/bivariate.js';
 
 /*
@@ -327,7 +328,7 @@ describe('rollingBivariateValues', () => {
       /positive integer/,
     );
     expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 1)).toThrow(
-      /period >= 2/,
+      /at least 2/,
     );
   });
 
@@ -382,5 +383,64 @@ describe('rollingBivariateValues', () => {
       }
     }
     expect(checked).toBeGreaterThan(5000);
+  });
+
+  it('every changing window reads within 1e-9 of the exact correlation on plateau-stepped, ulp-jittered input', () => {
+    // Reviewed 2026-09-07 (Layer-2 on #707): the first fix enforced
+    // "changes ⇒ variance > 0" but not the range — a tiny positive variance
+    // beside a covariance residue read |corr| = 20.5. This pins the emitted
+    // moments to an exact BigInt-rational reference on the input that makes
+    // the anchor go stale (plateau steps) and then asks about ulp-level
+    // windows. It fails with the fix reverted.
+    const rnd = lcg(31337);
+    let windows = 0;
+    for (const magnitude of [1e-3, 1, 1e6, 1e12, 3.002998998997]) {
+      for (const step of [0, 1e-9, 1e-6, 1e-3]) {
+        for (const period of [2, 3, 5, 8, 13, 23, 30]) {
+          for (let trial = 0; trial < 1; trial += 1) {
+            const x = plateaus(period + 40, magnitude, step, rnd);
+            const y = plateaus(period + 40, magnitude * 1.7, step, rnd);
+            const m = rollingBivariateValues(x, y, period);
+            for (let i = period - 1; i < x.length; i += 1) {
+              const wx = x.subarray(i - period + 1, i + 1);
+              const wy = y.subarray(i - period + 1, i + 1);
+              let cx = 0;
+              let cy = 0;
+              for (let k = 1; k < period; k += 1) {
+                if (wx[k] !== wx[k - 1]) cx += 1;
+                if (wy[k] !== wy[k - 1]) cy += 1;
+              }
+              const tag = `@${magnitude}/${step}/${period} bar ${i}`;
+              if (cx === 0) expect(m.varianceX[i], `flat varX ${tag}`).toBe(0);
+              else expect(m.varianceX[i], `varX ${tag}`).toBeGreaterThan(0);
+              if (cy === 0) expect(m.varianceY[i], `flat varY ${tag}`).toBe(0);
+              else expect(m.varianceY[i], `varY ${tag}`).toBeGreaterThan(0);
+              if (cx === 0 || cy === 0) continue;
+              windows += 1;
+              const exact = exactBivariate(wx, wy);
+              const corr =
+                m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!);
+              expect(Math.abs(corr), `|corr| ${tag}`).toBeLessThanOrEqual(
+                1 + 1e-9,
+              );
+              expect(
+                Math.abs(corr - exact.corr),
+                `corr ${tag}`,
+              ).toBeLessThanOrEqual(1e-9);
+              // The moments themselves, relative to the exact ones.
+              expect(
+                Math.abs(m.varianceX[i]! - exact.varianceX),
+                `varX value ${tag}`,
+              ).toBeLessThanOrEqual(1e-9 * exact.varianceX);
+              expect(
+                Math.abs(m.varianceY[i]! - exact.varianceY),
+                `varY value ${tag}`,
+              ).toBeLessThanOrEqual(1e-9 * exact.varianceY);
+            }
+          }
+        }
+      }
+    }
+    expect(windows).toBeGreaterThan(4000);
   });
 });

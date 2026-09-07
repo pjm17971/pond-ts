@@ -75,15 +75,20 @@ export interface RollingBivariateMoments {
  *   interval that is scale-free (a fixed interval is simultaneously too long
  *   for a short `period` and too dear for a long one — the Codex finding on
  *   `rollingDeviationSd`). One extra accumulation per row at any `period`.
- * - **Rebuild on demand when a changing column's `m2` reads `≤ 0`.** The
- *   change counter (below) settles mathematical flatness; a window whose
- *   values differ by ulps is not flat, yet the removal can drive `m2` to
- *   zero or below and the clamp then reports a variance of 0 — a *false*
- *   missing cell in `correlation` / `beta` (reviewed 2026-09-07). So the
- *   invariant is enforced directly: a column that changes has a positive
- *   variance, and when the accumulators disagree the window is rebuilt
- *   fresh (Welford's `m2` is a sum of non-negative terms). O(period) per
- *   such window; property-tested over ulp-jittered input.
+ * - **Rebuild on demand when a moment is ill-conditioned.** The change
+ *   counter (below) settles mathematical flatness; a window whose values
+ *   differ by ulps, or a plateau the anchor has gone stale across, is not
+ *   flat, yet its moments are then residues: `m2` driven to 0 (a *false*
+ *   missing cell), or a tiny positive `m2` beside a co-moment residue
+ *   (|corr| = 20.5, reviewed 2026-09-07). So the kernel also carries the
+ *   **gross** shifted squares that have passed through the moments since
+ *   the last rebuild — added and removed alike, the scale their residue
+ *   is measured against — and rebuilds the window fresh on its own first
+ *   pair whenever a changing column's `m2` is below `1e-3` of that, or
+ *   `cxy² > m2x · m2y` past rounding slack. O(period) per such window;
+ *   the property test checks the emitted correlation against an exact
+ *   BigInt-rational reference over plateau-stepped, ulp-jittered input.
+ *   Below |x| ≈ 1e-154 the squares underflow and the window reads flat.
  *
  * Measured over 200k rows at `period 30`, worst **absolute error in the
  * resulting correlation coefficient** (the scale that means something when
@@ -129,6 +134,14 @@ export interface RollingBivariateMoments {
  * O(N) time — one add, one remove and one amortised rebuild step per row —
  * three allocations.
  */
+/** See {@link linearRegressionValues}' `RELATIVE_SPREAD_FLOOR`: a moment
+ *  below this fraction of the gross shifted-squares magnitude that has
+ *  passed through it since the last rebuild is residue, not variance. */
+const RELATIVE_MOMENT_FLOOR = 1e-3;
+/** `cxy² ≤ m2x·m2y` exactly; a rebuilt window honours it to `O(period·ε)`,
+ *  so a violation past this slack means the co-moment has drifted. */
+const CAUCHY_SCHWARZ_SLACK = 1 + 1e-6;
+
 export function rollingBivariateValues(
   x: Float64Array,
   y: Float64Array,
@@ -137,7 +150,7 @@ export function rollingBivariateValues(
   assertPeriod(period);
   if (period < 2) {
     throw new TypeError(
-      'rollingBivariateValues needs period >= 2 (a one-bar window has no variance)',
+      'rollingBivariateValues period must be at least 2 (a one-bar window has no variance)',
     );
   }
   const length = x.length;
@@ -166,6 +179,12 @@ export function rollingBivariateValues(
   // between rebuilds — see "A flat window" above.
   let changesX = 0;
   let changesY = 0;
+  // GROSS shifted squares that have passed through the moments since the
+  // last rebuild — added and removed alike, never decreasing — the scale
+  // their residue is measured against (the current sums can themselves be
+  // residue after a plateau step).
+  let grossX = 0;
+  let grossY = 0;
   let windowStart = 0;
   let windowEnd = 0;
   // Rows in the window with a missing cell in EITHER column. The window is
@@ -195,12 +214,16 @@ export function rollingBivariateValues(
     m2x = 0;
     m2y = 0;
     cxy = 0;
+    grossX = 0;
+    grossY = 0;
     for (let k = windowStart; k < windowEnd; k += 1) {
       const u = x[k]!;
       const v = y[k]!;
       if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
       const su = u - anchorX;
       const sv = v - anchorY;
+      grossX += su * su;
+      grossY += sv * sv;
       count += 1;
       const dx = su - meanX;
       const dy = sv - meanY;
@@ -225,6 +248,8 @@ export function rollingBivariateValues(
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
+        grossX += su * su;
+        grossY += sv * sv;
         count += 1;
         const dx = su - meanX;
         const dy = sv - meanY;
@@ -252,6 +277,8 @@ export function rollingBivariateValues(
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
+        grossX += su * su;
+        grossY += sv * sv;
         if (count <= 1) {
           count = 0;
           meanX = 0;
@@ -307,7 +334,20 @@ export function rollingBivariateValues(
     // numerical, not mathematical, degeneracy, so the answer is a fresh
     // O(period) rebuild of this window: Welford's `m2` is a sum of
     // non-negative terms and is positive for any non-flat window.
-    if ((!flatX && m2x <= 0) || (!flatY && m2y <= 0)) rebuild();
+    if (
+      (!flatX && m2x < RELATIVE_MOMENT_FLOOR * grossX) ||
+      (!flatY && m2y < RELATIVE_MOMENT_FLOOR * grossY) ||
+      cxy * cxy > m2x * m2y * CAUCHY_SCHWARZ_SLACK
+    ) {
+      // Ill-conditioned, not flat: the moment is a residue beside the
+      // gross magnitude that has passed through it since the last rebuild
+      // (the anchor went stale across a plateau step), or the co-moment
+      // has drifted past what Cauchy–Schwarz allows. Rebuild this window
+      // fresh on its own first pair. With `gross = 0` the squares
+      // themselves underflowed (|x| ≲ 1e-154): nothing to rebuild from,
+      // and the window reads as flat.
+      rebuild();
+    }
     covariance[i] = flatX || flatY ? 0 : cxy / count;
     varianceX[i] = flatX ? 0 : m2x / count;
     varianceY[i] = flatY ? 0 : m2y / count;

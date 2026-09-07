@@ -142,15 +142,20 @@ export interface RollingRegression {
  * the statistic's own range.
  *
  * The counter settles *mathematical* degeneracy only. A window that changes
- * by a few ulps is not flat, but the rolling `n·Σz² − (Σz)²` can still
- * cancel to zero or below (reviewed 2026-09-07: a 3-bar window at
- * `3.002998998997 ± 1e-15` read `spread = −1.0e-24` and a **negative r²**).
- * When `spread ≤ 0` on a changing window the kernel recomputes that one
- * window two-pass and centred — `Σ(dx·dz)² / (Σdx²·Σdz²)`, no cancelling
- * subtraction — and every emitted `r²` is pinned to its bound of 1, so the
- * column's `0 … 1` contract holds on every finite cell (property-tested over
- * ulp-jittered input at four magnitudes and four periods). O(period) per
- * such window, and only such windows.
+ * by a few ulps, or a plateau the anchor has gone stale across, is not
+ * flat, but the rolling `n·Σz² − (Σz)²` is then a difference of two
+ * residue-carrying sums and can read anything: `−1e-24` (a negative r²),
+ * or a positive residue (r² = 5.8e-11 where the exact answer was 0.75,
+ * or 3.0 where it was 0.43 — both reviewed 2026-09-07). The sign is not
+ * the tell; the ratio of the difference to the gross magnitude that has
+ * passed through its terms since the last rebuild is. When `spread` is
+ * below `1e-3` of `period · gross(z²)` the kernel recomputes that
+ * one window two-pass on a fresh local anchor — slope, intercept and r²
+ * — and every emitted r² is pinned to its bound of 1. The property test
+ * checks the emitted values against an exact BigInt-rational reference
+ * over plateau-stepped, ulp-jittered input at five magnitudes, so the pin
+ * cannot mask a wrong value. O(period) per such window, and only such
+ * windows.
  *
  * ## Missing cells: the **strict** window, like `wma`
  *
@@ -166,6 +171,19 @@ export interface RollingRegression {
  *
  * O(N), one pass, three allocations.
  */
+/**
+ * A rolling sum carries an absolute error of about `ε` times the **gross**
+ * magnitude that has passed through it since the last rebuild — every term
+ * added and every term removed — not `ε` times its current value, which
+ * after a plateau step can itself be residue. So the tell for a degenerate
+ * `n·Σz² − (Σz)²` is its size against `period · gross(z²)`: below this
+ * fraction it is recomputed exactly; above it the rolling answer is good to
+ * ~`2e-13` at any `period`. A normal window (variance of the order of its
+ * own drift) sits at `0.1 … 1`, two decades up, so the recompute is the
+ * exception it is meant to be.
+ */
+const RELATIVE_SPREAD_FLOOR = 1e-3;
+
 export function linearRegressionValues(
   values: Float64Array,
   period: number,
@@ -193,6 +211,9 @@ export function linearRegressionValues(
   let sumZ = 0;
   let sumXZ = 0;
   let sumZZ = 0;
+  // Gross z² that has passed through `sumZZ` since the last rebuild (added
+  // and removed alike) — the scale its residue is measured against.
+  let grossZZ = 0;
   let missing = 0;
   // Changes strictly inside the window. Zero means flat, which is the one
   // state the accumulators cannot report exactly (see above). `NaN !== NaN`,
@@ -219,6 +240,7 @@ export function linearRegressionValues(
     sumXZ = sumXZ - sumZ + zOut + (period - 1) * zIn;
     sumZ = sumZ - zOut + zIn;
     sumZZ = sumZZ - zOut * zOut + zIn * zIn;
+    grossZZ += zOut * zOut + zIn * zIn;
 
     // The window [low, i] holds the changes at indices low+1 … i, so one
     // enters at `i` and one leaves at `low`.
@@ -233,6 +255,7 @@ export function linearRegressionValues(
       sumZ = 0;
       sumXZ = 0;
       sumZZ = 0;
+      grossZZ = 0;
       missing = 0;
       for (let k = low > 0 ? low : 0; k <= i; k += 1) {
         const y = values[k]!;
@@ -244,6 +267,7 @@ export function linearRegressionValues(
         sumZ += z;
         sumXZ += (k - low) * z;
         sumZZ += z * z;
+        grossZZ += z * z;
       }
     }
 
@@ -264,17 +288,22 @@ export function linearRegressionValues(
     // n·Σy² − (Σy)² is the window's own variance times n², translation-
     // invariant, so the shifted accumulators give it unchanged.
     const spread = period * sumZZ - sumZ * sumZ;
-    if (spread <= 0) {
+    if (spread <= 0 || spread < RELATIVE_SPREAD_FLOOR * period * grossZZ) {
       // Numerically degenerate, not flat: the window changes (the counter
-      // says so) but its values differ by so little that the rolling
-      // `n·Σz² − (Σz)²` cancelled to zero or below. A negative `spread`
-      // here put a negative r² into a column whose contract is 0 … 1
-      // (reviewed 2026-09-07, a 3-bar window at 3.002998998997 ± 1e-15).
-      // Recompute BOTH moments for this window two-pass and centred — no
-      // cancellation — so the ratio is a real r², not a ratio of residues.
-      // O(period), and only on a window this degenerate.
+      // says so) but its spread is tiny beside the frame it is measured
+      // in — the anchor went stale across a plateau step, or the values
+      // differ by ulps — so `n·Σz² − (Σz)²` is a difference of two nearly
+      // equal residue-carrying sums, and so is the slope numerator. The
+      // sign is NOT the tell (reviewed 2026-09-07: a positive residue read
+      // r² = 5.8e-11 where the exact answer was 0.75); the *ratio* of the
+      // difference to its terms is. Recompute this one window two-pass on
+      // a FRESH local anchor (its own first value, so every `v − local` is
+      // exact by Sterbenz and the deviations are formed at the window's
+      // own scale), for slope, intercept and r² alike. O(period), on such
+      // windows only.
+      const local = values[low]!;
       let meanZ = 0;
-      for (let k = low; k <= i; k += 1) meanZ += values[k]! - anchor;
+      for (let k = low; k <= i; k += 1) meanZ += values[k]! - local;
       meanZ /= period;
       const meanXc = (period - 1) / 2;
       let sxx = 0;
@@ -282,24 +311,26 @@ export function linearRegressionValues(
       let szz = 0;
       for (let k = low; k <= i; k += 1) {
         const dx = k - low - meanXc;
-        const dz = values[k]! - anchor - meanZ;
+        const dz = values[k]! - local - meanZ;
         sxx += dx * dx;
         sxz += dx * dz;
         szz += dz * dz;
       }
-      if (szz <= 0) {
-        // Still nothing to explain — treat as the flat case's 0/0.
-        continue;
-      }
-      // r² = Σ(dx·dz)² / (Σdx² · Σdz²) — the same ratio as below, on the
-      // centred sums (n·Σz² − (Σz)² is n·Σdz², and likewise for the others).
-      const r = (sxz * sxz) / (sxx * szz);
-      r2[i] = r > 1 ? 1 : r;
+      const mc = sxz / sxx;
+      slope[i] = mc;
+      intercept[i] = local + meanZ - mc * meanXc;
+      if (szz <= 0) continue; // nothing to explain — the flat case's 0/0
+      // r² = Σ(dx·dz)² / (Σdx² · Σdz²): the same ratio as below on the
+      // centred sums, where it cannot cancel.
+      const rc = (sxz * sxz) / (sxx * szz);
+      r2[i] = rc > 1 ? 1 : rc;
       continue;
     }
     const r = (numerator * numerator) / (denominator * spread);
     // r² is bounded by 1 in exact arithmetic; a last-ulp overshoot is not a
-    // reading, so it is pinned to the bound rather than reported.
+    // reading, so it is pinned to the bound rather than reported. The
+    // exact-rational test pins the value itself, so the pin cannot hide a
+    // materially wrong reading — the branch above is what stops those.
     r2[i] = r > 1 ? 1 : r;
   }
 

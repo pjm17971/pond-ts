@@ -159,7 +159,11 @@ export function correlation<
     // No zero-variance guard: the kernel writes a flat column's variance
     // and covariance as exact `0` (change counter), so this is already
     // `0/0` → `NaN` → a missing cell. See the kernel's "A flat window".
-    out[i] = covariance[i]! / Math.sqrt(varianceX[i]! * varianceY[i]!);
+    const r = covariance[i]! / Math.sqrt(varianceX[i]! * varianceY[i]!);
+    // |r| ≤ 1 in exact arithmetic; the kernel rebuilds any window whose
+    // moments could overshoot materially, so what is left is last-ulp
+    // rounding, pinned to the bound rather than reported.
+    out[i] = r > 1 ? 1 : r < -1 ? -1 : r;
   }
   return series.withColumn(output, out);
 }
