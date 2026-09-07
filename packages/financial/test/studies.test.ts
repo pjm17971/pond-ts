@@ -10496,6 +10496,20 @@ describe('twiggsMoneyFlow', () => {
     );
   });
 
+  it('a flat TRUE range contributes zero flow and its volume — the study reads 0, not missing (Layer-2 review of #712)', () => {
+    // Bar 1 is halted at the previous close: high = low = prevClose = 11, so
+    // trueHigh === trueLow. The kernel's flat-bar rule (clv = 0) is pinned
+    // at the kernel; this pins it through the study: the bar's flow is 0,
+    // its volume still lands in the denominator, and the reading is an
+    // exact 0 rather than a 0/0.
+    const halted: Array<[number, number, number, number]> = [
+      [12, 10, 11, 100],
+      [11, 11, 11, 100],
+    ];
+    const v = col(twiggsMoneyFlow(ohlcv(halted), { period: 1 }), 'tmf');
+    expect(v[1]).toBe(0);
+  });
+
   it('blanks the DENOMINATOR wherever the numerator is blank', () => {
     // Bar 1's high is missing, so it has no flow. If the volume smoothing
     // did not blank the same bar it would seed a bar earlier and fold bar 1's
