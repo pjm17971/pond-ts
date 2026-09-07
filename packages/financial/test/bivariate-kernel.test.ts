@@ -443,4 +443,27 @@ describe('rollingBivariateValues', () => {
     }
     expect(windows).toBeGreaterThan(4000);
   });
+
+  it('a subnormal-magnitude pair reads flat — the stated limit, pinned as a missing cell rather than a wrong number', () => {
+    // Squared deviations of a 1e-200 window underflow to 0; the moments are
+    // genuinely unrepresentable and the window reads flat. The exact
+    // reference still knows the dimensionless answer (corr = 1), which is
+    // the limit `correlation`'s docstring states (Codex review of #707).
+    const x = arr(1e-200, 2e-200, 3e-200, 4e-200);
+    const y = arr(2e-200, 4e-200, 6e-200, 8e-200);
+    const m = rollingBivariateValues(x, y, 3);
+    expect(m.varianceX[2]).toBe(0);
+    expect(m.covariance[2]).toBe(0);
+    expect(
+      m.covariance[2]! / Math.sqrt(m.varianceX[2]! * m.varianceY[2]!),
+    ).toBeNaN();
+    const exact = exactBivariate(x.subarray(0, 3), y.subarray(0, 3));
+    expect(exact.corr).toBe(1);
+    // And the sign is the rational's, not a double's: a negated pair reads −1.
+    const neg = exactBivariate(
+      x.subarray(0, 3),
+      Float64Array.from(y.subarray(0, 3), (v) => -v),
+    );
+    expect(neg.corr).toBe(-1);
+  });
 });

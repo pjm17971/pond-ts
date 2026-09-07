@@ -124,7 +124,10 @@ export function exactBivariate(
   if (mxx.n !== 0n && myy.n !== 0n) {
     // corr² exactly, then one square root; sign from the covariance.
     const c2 = toNumber(div(mul(cxy, cxy), mul(mxx, myy)));
-    corr = Math.sign(toNumber(cxy)) * Math.sqrt(c2);
+    // The sign from the rational itself: `toNumber(cxy)` underflows to 0
+    // below ~1e-308 and `Math.sign` then reads 0 (Codex review of #707).
+    const negative = cxy.n < 0n !== cxy.d < 0n;
+    corr = (cxy.n === 0n ? 0 : negative ? -1 : 1) * Math.sqrt(c2);
   }
   return { covariance, varianceX, varianceY, corr };
 }

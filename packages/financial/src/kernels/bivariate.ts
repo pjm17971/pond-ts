@@ -142,9 +142,11 @@ export interface RollingBivariateMoments {
  *  below this fraction of the gross shifted-squares magnitude that has
  *  passed through it since the last rebuild is residue, not variance. */
 const RELATIVE_MOMENT_FLOOR = 1e-3;
-/** `cxy² ≤ m2x·m2y` exactly; a rebuilt window honours it to `O(period·ε)`,
- *  so a violation past this slack means the co-moment has drifted. */
-const CAUCHY_SCHWARZ_SLACK = 1 + 1e-6;
+/** `cxy² ≤ m2x·m2y` exactly; a rebuilt window honours it to `O(period·ε)`
+ *  (measured ~1e-13 on r), so a violation past this slack means the
+ *  co-moment has drifted. 1e-9, not 1e-6: the looser value let a materially
+ *  wrong `r = 1.0000005` through (Codex review of #707). */
+const CAUCHY_SCHWARZ_SLACK = 1 + 1e-9;
 
 export function rollingBivariateValues(
   x: Float64Array,

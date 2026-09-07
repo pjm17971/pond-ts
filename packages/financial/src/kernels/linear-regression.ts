@@ -311,20 +311,36 @@ export function linearRegressionValues(
       for (let k = low; k <= i; k += 1) meanZ += values[k]! - local;
       meanZ /= period;
       const meanXc = (period - 1) / 2;
+      // Work in units of the window's largest deviation: r² is
+      // dimensionless and `slope` scales back by one multiply, so a window
+      // at a subnormal magnitude (a 1e-200 line, whose squared deviations
+      // underflow to 0 — Codex review of #707) still reads r² = 1 instead
+      // of "flat". `scale = 0` is the exactly-flat case, already handled
+      // by the change counter but repeated here for the branch's own sake.
+      let scale = 0;
+      for (let k = low; k <= i; k += 1) {
+        const a = Math.abs(values[k]! - local - meanZ);
+        if (a > scale) scale = a;
+      }
+      if (scale === 0) {
+        slope[i] = 0;
+        intercept[i] = local + meanZ;
+        continue;
+      }
       let sxx = 0;
       let sxz = 0;
       let szz = 0;
       for (let k = low; k <= i; k += 1) {
         const dx = k - low - meanXc;
-        const dz = values[k]! - local - meanZ;
+        const dz = (values[k]! - local - meanZ) / scale;
         sxx += dx * dx;
         sxz += dx * dz;
         szz += dz * dz;
       }
-      const mc = sxz / sxx;
+      const mc = (scale * sxz) / sxx;
       slope[i] = mc;
       intercept[i] = local + meanZ - mc * meanXc;
-      if (szz <= 0) continue; // nothing to explain — the flat case's 0/0
+      if (szz <= 0) continue; // cannot happen with scale > 0; kept as the 0/0 guard
       // r² = Σ(dx·dz)² / (Σdx² · Σdz²): the same ratio as below on the
       // centred sums, where it cannot cancel.
       const rc = (sxz * sxz) / (sxx * szz);

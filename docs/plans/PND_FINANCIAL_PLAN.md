@@ -1054,7 +1054,13 @@ plateau-stepped, ulp-jittered input at five magnitudes; the test fails with
 the fix reverted. The lesson, recorded for every future rolling-moment kernel:
 **the change counter fixes mathematical degeneracy, not numerical degeneracy**,
 the sign of a cancelled difference says nothing, and the honest scale for
-"is this residue?" is the gross magnitude the accumulator has seen.
+"is this residue?" is the gross magnitude the accumulator has seen. A Codex
+pass (Peter, 2026-09-07; ~456k windows at 1e-12 … 1e12, periods 2 … 200)
+found no error above 5.9e-13 at ordinary magnitudes and one uncovered class:
+a line at a **subnormal** magnitude (`1e-200`), whose centred squares
+underflowed inside the fallback itself. The fallback now works in units of
+the window's largest deviation — r² is dimensionless and the slope scales
+back by one multiply — so that window reads r² = 1.
 
 (1) **One kernel, one pass, and every reading is a projection of it.**
 `linearRegressionValues(values, period)` returns `{ slope, intercept, r2 }`;
@@ -1255,7 +1261,15 @@ have passed through its moments since the last rebuild and rebuilds the window
 on demand when a changing column's `m2` is below `1e-3` of that, or when
 `cxy² > m2x·m2y` past rounding slack; `correlation` pins `|r|` to 1 for the
 last-ulp case only. Verified against an exact BigInt-rational reference the
-same way as K7. Also noted, not changed: rejecting
+same way as K7. The Codex pass on #707 tightened both slacks from 1e-6 to
+1e-9 (rebuilt rounding measures ~1e-13; 1e-6 would have pinned a materially
+wrong `r = 1.0000005`), fixed a sign bug in the exact reference (the
+covariance sign was read from a double that underflows), and named the one
+class the kernel does not cover: a pair at **subnormal** magnitude, whose
+moments are genuinely unrepresentable, reads flat (`undefined`) even though
+the dimensionless correlation exists. Stated on `correlation` and pinned as a
+missing cell rather than engineered around — prices do not live at 1e-200.
+Also noted, not changed: rejecting
 `benchmark === column` is opinionated (`corr(x, x) = 1` is a valid identity);
 kept because a consumer who wants the identity has it in one line and the
 check catches the far more common copy-paste.

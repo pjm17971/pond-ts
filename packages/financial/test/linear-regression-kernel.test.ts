@@ -412,4 +412,24 @@ describe('linearRegressionAt', () => {
       expect(unresolved).toBe(0);
     });
   });
+
+  it('a line at a subnormal magnitude reads r² = 1 — the fallback works in units of the window spread (Codex review of #707)', () => {
+    const { slope, intercept, r2 } = linearRegressionValues(
+      arr(1e-200, 2e-200, 3e-200, 4e-200, 5e-200),
+      3,
+    );
+    for (let i = 2; i < 5; i += 1) {
+      expect(r2[i], `r2[${i}]`).toBe(1);
+      expect(slope[i], `slope[${i}]`).toBeCloseTo(1e-200, 212);
+      expect(intercept[i], `intercept[${i}]`).toBeCloseTo(
+        (i - 1) * 1e-200,
+        212,
+      );
+    }
+    const exact = exactRegression([1e-200, 2e-200, 3e-200]);
+    expect(exact.r2).toBe(1);
+    expect(Math.abs(slope[2]! - exact.slope)).toBeLessThanOrEqual(
+      1e-9 * exact.slope,
+    );
+  });
 });

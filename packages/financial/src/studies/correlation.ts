@@ -124,14 +124,23 @@ export interface CorrelationOptions<
  *   were residues and the ratio read `|r| = 20.5`, and the answer to that
  *   is in the kernel — it rebuilds any window whose moments are
  *   ill-conditioned, verified against an exact reference — so what reaches
- *   this line is rounding, and only rounding (within `1e-6`) is pinned;
+ *   this line is rounding, and only rounding (within `1e-9`) is pinned;
  *   anything further passes through unclamped, so a genuine anomaly is
  *   still loud rather than laundered into a plausible ±1.
+ * - **Subnormal magnitudes read `undefined`, not a wrong number.** Below a
+ *   window spread of about `1e-154` the kernel's squared deviations
+ *   underflow to 0 and the window reads flat, so `corr` is a missing cell
+ *   there even though the dimensionless answer exists (a `1e-200` line
+ *   correlates perfectly). Prices do not live there; the limit is stated
+ *   and pinned rather than engineered around (Codex review of #707 —
+ *   `linearRegression`'s r², whose fallback works on one column, does
+ *   rescale and reads 1).
  */
 /** How far past ±1 a reading may sit and still be called rounding. Measured
- *  overshoot on an exactly anti-correlated pair is 2e-16; the kernel's
- *  Cauchy–Schwarz rebuild slack is 1e-6 on r², i.e. 5e-7 on r. */
-const PIN_SLACK = 1e-6;
+ *  overshoot on an exactly anti-correlated pair is 2e-16 and on rebuilt
+ *  ill-conditioned windows ~1e-13; the kernel's Cauchy–Schwarz rebuild slack
+ *  is 1e-9 on r². Anything further is an anomaly and must stay visible. */
+const PIN_SLACK = 1e-9;
 
 export function correlation<
   S extends SeriesSchema,
