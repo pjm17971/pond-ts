@@ -1037,6 +1037,31 @@ oracle could hold the fit itself to bar-for-bar vendor agreement (≤ 1.3e-12 at
 `period 14`, masks identical) and spend its separation asserts on the three
 columns that have no vendor at all (`linregR2`, `cfo`, `cog`). Decisions:
 
+_Post-merge review (Peter, 2026-09-07)._ Adversarial pass on the merged
+kernel: a window that **changes by ulps** (not flat, so the change counter
+does not fire) can leave the rolling `n·Σz² − (Σz)²` at `−1e-24`, and the
+closed-form ratio wrote a **negative r²** into a `0 … 1` column. The first fix
+(#707, draft) triggered on the _sign_ of the spread, and the Layer-2 pass on it
+showed that was not the tell: a **positive** residue read `r² = 5.8e-11` where
+the exact answer was `0.75`, and `3.0` (pinned to `1.0`) where it was `0.43`.
+The shipped fix judges the spread against the **gross** magnitude that has
+passed through the rolling sums since the last rebuild (added and removed
+alike — a rolling sum's error is `ε` times that, not `ε` times its current
+value, which after a plateau step is itself residue): below `1e-3` of it the
+window is recomputed two-pass on a fresh local anchor, slope and intercept
+included. Verified against an exact BigInt-rational reference over
+plateau-stepped, ulp-jittered input at five magnitudes; the test fails with
+the fix reverted. The lesson, recorded for every future rolling-moment kernel:
+**the change counter fixes mathematical degeneracy, not numerical degeneracy**,
+the sign of a cancelled difference says nothing, and the honest scale for
+"is this residue?" is the gross magnitude the accumulator has seen. A Codex
+pass (Peter, 2026-09-07; ~456k windows at 1e-12 … 1e12, periods 2 … 200)
+found no error above 5.9e-13 at ordinary magnitudes and one uncovered class:
+a line at a **subnormal** magnitude (`1e-200`), whose centred squares
+underflowed inside the fallback itself. The fallback now works in units of
+the window's largest deviation — r² is dimensionless and the slope scales
+back by one multiply — so that window reads r² = 1.
+
 (1) **One kernel, one pass, and every reading is a projection of it.**
 `linearRegressionValues(values, period)` returns `{ slope, intercept, r2 }`;
 `linearRegressionAt(fit, x)` reads the fitted line at one `x`, and that is the
@@ -1223,6 +1248,32 @@ read **two instruments** — plus the K8 kernel `rollingBivariateValues`. Seven
 oracle cases; the two TA-Lib-backed studies agree with `CORREL` and `BETA`
 bar-for-bar (1.3e-12 and 1.1e-12 at the defaults). Decisions:
 
+_Post-merge review (Peter, 2026-09-07)._ Two findings, both fixed. (1) The
+public kernel did not validate `period` where `linearRegressionValues` does;
+it now asserts an integer `≥ 2`. (2) The K8 analogue of the regression
+finding: a window that changes by ulps could have its `m2` driven to `≤ 0` by
+the reverse-Welford removal, the clamp then read a variance of exactly 0, and
+`correlation` / `beta` reported a **false missing cell** on a window that was
+not flat. The first draft rebuilt only when `m2 ≤ 0`, which the Layer-2 pass
+showed was too narrow (a tiny positive `m2` beside a covariance residue read
+`|corr| = 20.5`). Shipped: the kernel carries the gross shifted squares that
+have passed through its moments since the last rebuild and rebuilds the window
+on demand when a changing column's `m2` is below `1e-3` of that, or when
+`cxy² > m2x·m2y` past rounding slack; `correlation` pins `|r|` to 1 for the
+last-ulp case only. Verified against an exact BigInt-rational reference the
+same way as K7. The Codex pass on #707 tightened both slacks from 1e-6 to
+1e-9 (rebuilt rounding measures ~1e-13; 1e-6 would have pinned a materially
+wrong `r = 1.0000005`), fixed a sign bug in the exact reference (the
+covariance sign was read from a double that underflows), and named the one
+class the kernel does not cover: a pair at **subnormal** magnitude, whose
+moments are genuinely unrepresentable, reads flat (`undefined`) even though
+the dimensionless correlation exists. Stated on `correlation` and pinned as a
+missing cell rather than engineered around — prices do not live at 1e-200.
+Also noted, not changed: rejecting
+`benchmark === column` is opinionated (`corr(x, x) = 1` is a valid identity);
+kept because a consumer who wants the identity has it in one line and the
+check catches the far more common copy-paste.
+
 (1) **The comparison series is a `benchmark` COLUMN, not a second
 `TimeSeries`, and this is the batch's load-bearing design choice.** Every study
 here names its comparison series with a required column on the series it is
@@ -1297,10 +1348,11 @@ level: measured `0.976` on a random walk near 100 at `period 5`. The
 exactly-`1` pair for beta is a **pure scale**, `k·column`, and both are pinned.
 The `−1` side of correlation is where the last decision fell out: on
 `−3·column + 1000` one window reads `−1.0000000000000002`, two ulps past the
-bound, while the `+1` side is bit-exact. **No `±1` clamp ships** — it would
-remove 2e-16 no threshold can see, at the price of a branch to keep alive —
-and both halves are pinned by a test so the overshoot is chosen rather than
-discovered on a chart.
+bound, while the `+1` side is bit-exact. The batch shipped **no `±1` clamp** —
+it would remove 2e-16 no threshold can see, at the price of a branch to keep
+alive. That was reversed in #707 (below): once the kernel rebuilds every
+ill-conditioned window and is pinned to an exact reference, the only
+overshoot left is rounding, and `correlation` now pins `|r|` to 1 for it.
 
 (5) **The kernel is the numerics decision, and the naive form is not merely
 less accurate — it returns a negative variance.** `rollingBivariateValues`

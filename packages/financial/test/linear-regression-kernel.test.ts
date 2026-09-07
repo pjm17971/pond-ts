@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { exactRegression, lcg, plateaus } from './exact-rational.js';
 import {
   linearRegressionAt,
   linearRegressionValues,
@@ -237,5 +238,198 @@ describe('linearRegressionAt', () => {
       undefined,
       12,
     ]);
+  });
+
+  describe('numerically degenerate windows — near-flat, not flat', () => {
+    // Reviewed 2026-09-07: a window that CHANGES (the counter is > 0) but by
+    // ulps left the rolling `n·Σz² − (Σz)²` at −1e-24, and the closed-form
+    // ratio put a NEGATIVE r² into a column whose contract is 0 … 1. The
+    // exact-flat counter does not see this: it is numerical, not
+    // mathematical, degeneracy. The kernel now recomputes such a window
+    // two-pass and centred, and pins r² to its bound.
+    const nextUp = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! + 1n;
+      return b[0]!;
+    };
+    const nextDown = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! - 1n;
+      return b[0]!;
+    };
+    const jitter = (
+      length: number,
+      base: number,
+      ulps: number,
+      seed: number,
+    ) => {
+      const out = new Float64Array(length);
+      let s = seed;
+      for (let i = 0; i < length; i += 1) {
+        // A 32-bit LCG via Math.imul: `s * a` in doubles loses the low bits
+        // above 2^53 and the modulus then reads a constant.
+        s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+        const k = ((s >>> 16) % (2 * ulps + 1)) - ulps;
+        let v = base;
+        for (let j = 0; j < Math.abs(k); j += 1)
+          v = k > 0 ? nextUp(v) : nextDown(v);
+        out[i] = v;
+      }
+      return out;
+    };
+
+    it("the reviewer's window — 3.0029989989969996 then two of 3.0029989989979997 at period 3 — reads r² in [0, 1]", () => {
+      const v = arr(
+        3.0029989989969996,
+        3.0029989989979997,
+        3.0029989989979997,
+        3.0029989989979997,
+        3.0029989989969996,
+        3.0029989989979997,
+        3.0029989989979997,
+      );
+      const { r2 } = linearRegressionValues(v, 3);
+      let finite = 0;
+      for (let i = 2; i < v.length; i += 1) {
+        const r = r2[i]!;
+        if (Number.isNaN(r)) continue;
+        finite += 1;
+        expect(r, `r2[${i}]`).toBeGreaterThanOrEqual(0);
+        expect(r, `r2[${i}]`).toBeLessThanOrEqual(1);
+      }
+      expect(finite).toBeGreaterThan(0);
+    });
+
+    it('every finite r² over ulp-jittered near-flat input is within [0, 1], at several periods and magnitudes', () => {
+      let checked = 0;
+      let degenerate = 0;
+      for (const base of [3.003, 100, 1e6, 1e12]) {
+        for (const period of [2, 3, 5, 14]) {
+          const v = jitter(600, base, 3, period * 7 + 1);
+          const { r2, slope } = linearRegressionValues(v, period);
+          for (let i = period - 1; i < v.length; i += 1) {
+            let changes = 0;
+            for (let k = i - period + 2; k <= i; k += 1)
+              if (v[k] !== v[k - 1]) changes += 1;
+            const r = r2[i]!;
+            if (changes === 0) {
+              expect(slope[i], `slope[${i}] flat`).toBe(0);
+              expect(r, `r2[${i}] flat`).toBeNaN();
+              continue;
+            }
+            checked += 1;
+            if (Number.isNaN(r)) {
+              degenerate += 1;
+              continue;
+            }
+            expect(r, `r2[${i}] @${base}/${period}`).toBeGreaterThanOrEqual(0);
+            expect(r, `r2[${i}] @${base}/${period}`).toBeLessThanOrEqual(1);
+          }
+        }
+      }
+      expect(checked).toBeGreaterThan(5000);
+      // The centred recompute answers almost every degenerate window; a
+      // residual NaN is allowed only where the centred variance is itself 0.
+      expect(degenerate).toBeLessThan(checked / 100);
+    });
+  });
+
+  describe('against an exact rational reference on plateau-stepped, ulp-jittered input', () => {
+    // Reviewed 2026-09-07 (Layer-2 on #707): the first fix triggered on the
+    // SIGN of the rolling spread, and a positive residue sailed through —
+    // r² = 5.8e-11 where the exact answer was 0.75, 3.0 (pinned to 1.0)
+    // where it was 0.43. This test computes the true r², slope and
+    // intercept of every changing window with BigInt rationals and pins the
+    // kernel to them, so neither the trigger nor the pin can hide a wrong
+    // value. It fails with the fix reverted.
+    it('every changing window reads within 1e-12 of the exact r² and intercept and relatively within 1e-9 of the exact slope', () => {
+      const rnd = lcg(4242);
+      let windows = 0;
+      let unresolved = 0;
+      for (const magnitude of [1e-3, 1, 1e6, 1e12, 3.002998998997]) {
+        for (const step of [0, 1e-3, 1e-6, 1e-9, 1e-12]) {
+          for (const period of [2, 3, 5, 8, 13, 21, 30]) {
+            for (let trial = 0; trial < 1; trial += 1) {
+              const v = plateaus(period + 40, magnitude, step, rnd);
+              const { slope, intercept, r2 } = linearRegressionValues(
+                v,
+                period,
+              );
+              for (let i = period - 1; i < v.length; i += 1) {
+                const w = v.subarray(i - period + 1, i + 1);
+                let changes = 0;
+                for (let k = 1; k < period; k += 1)
+                  if (w[k] !== w[k - 1]) changes += 1;
+                if (changes === 0) {
+                  expect(slope[i], `flat slope[${i}]`).toBe(0);
+                  expect(r2[i], `flat r2[${i}]`).toBeNaN();
+                  continue;
+                }
+                windows += 1;
+                const exact = exactRegression(w);
+                const tag = `@${magnitude}/${step}/${period} bar ${i}`;
+                // Relative, with a floor of ε times the window's own spread over the
+                // period (an exactly-zero exact slope on a symmetric window still
+                // leaves the kernel a rounding-sized value): no absolute 1e-9 — a
+                // near-flat window's exact slope is ~1e-19 and an absolute clause pinned
+                // nothing there (the pre-fix kernel passed one at 5e-4 of tolerance
+                // while 1477× off relative — second-pass review of #707).
+                let lo = w[0]!;
+                let hi = w[0]!;
+                for (let k = 1; k < period; k += 1) {
+                  if (w[k]! < lo) lo = w[k]!;
+                  if (w[k]! > hi) hi = w[k]!;
+                }
+                expect(
+                  Math.abs(slope[i]! - exact.slope),
+                  `slope ${tag}`,
+                ).toBeLessThanOrEqual(
+                  1e-9 * Math.abs(exact.slope) +
+                    (Number.EPSILON * (hi - lo)) / period,
+                );
+                expect(
+                  Math.abs(intercept[i]! - exact.intercept),
+                  `intercept ${tag}`,
+                ).toBeLessThanOrEqual(1e-12 * Math.abs(exact.intercept));
+                if (Number.isNaN(r2[i])) {
+                  unresolved += 1;
+                  continue;
+                }
+                expect(r2[i], `r2 range ${tag}`).toBeGreaterThanOrEqual(0);
+                expect(r2[i], `r2 range ${tag}`).toBeLessThanOrEqual(1);
+                expect(
+                  Math.abs(r2[i]! - exact.r2),
+                  `r2 ${tag}`,
+                ).toBeLessThanOrEqual(1e-12);
+              }
+            }
+          }
+        }
+      }
+      expect(windows).toBeGreaterThan(5000);
+      expect(unresolved).toBe(0);
+    });
+  });
+
+  it('a line at a subnormal magnitude reads r² = 1 — the fallback works in units of the window spread (Codex review of #707)', () => {
+    const { slope, intercept, r2 } = linearRegressionValues(
+      arr(1e-200, 2e-200, 3e-200, 4e-200, 5e-200),
+      3,
+    );
+    for (let i = 2; i < 5; i += 1) {
+      expect(r2[i], `r2[${i}]`).toBe(1);
+      expect(slope[i], `slope[${i}]`).toBeCloseTo(1e-200, 212);
+      expect(intercept[i], `intercept[${i}]`).toBeCloseTo(
+        (i - 1) * 1e-200,
+        212,
+      );
+    }
+    const exact = exactRegression([1e-200, 2e-200, 3e-200]);
+    expect(exact.r2).toBe(1);
+    expect(Math.abs(slope[2]! - exact.slope)).toBeLessThanOrEqual(
+      1e-9 * exact.slope,
+    );
   });
 });

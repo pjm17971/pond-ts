@@ -6319,10 +6319,11 @@ describe('correlation', () => {
         'corr',
       ).slice(4),
     ).toEqual(Array.from({ length: 8 }, () => 1));
-    // The negated pair is NOT bit-exact, and that is the measured reason
-    // there is no `±1` clamp: this input reads `-1.0000000000000002` on one
-    // bar, an overshoot of 2e-16 that no caller's threshold can see and that
-    // a guard would have to be written (and tested) to remove.
+    // The negated pair is NOT bit-exact at the kernel: this input's raw
+    // ratio reads `-1.0000000000000002` on one bar. Since #707 the study
+    // pins |r| to 1 — the kernel now rebuilds any window whose moments
+    // could overshoot materially, so what is left is last-ulp rounding,
+    // and the pin is asserted here as the bound holding on every bar.
     const negated = pairCloses.map((c) => -3 * c + 1000);
     const negatedCorr = col(
       correlation(pairBars(pairCloses, negated), {
@@ -6332,7 +6333,8 @@ describe('correlation', () => {
       'corr',
     ).slice(4);
     for (const r of negatedCorr) expect(r!).toBeCloseTo(-1, 14);
-    expect(negatedCorr.some((r) => r! < -1)).toBe(true);
+    expect(negatedCorr.every((r) => r! >= -1 && r! <= 1)).toBe(true);
+    expect(negatedCorr.some((r) => r === -1)).toBe(true);
   });
 
   it('a flat window on either side is undefined, not 0 (TA-Lib says 0)', () => {
@@ -6555,6 +6557,39 @@ describe('beta', () => {
     expect(() =>
       beta(b, { benchmark: 'bench', output: 'bench' as never }),
     ).toThrow(/collides/);
+  });
+});
+
+describe('correlation at magnitudes where a product of variances underflows', () => {
+  it('reads the exact value at 1e-90, not a laundered −1 (second-pass review of #707)', () => {
+    // Kernel moments are exactly right here; `sqrt(vx · vy)` underflows to
+    // 0 and `cov / 0` is −Infinity, which a bare ±1 pin then turned into a
+    // plausible −1. The study falls back to the separate roots exactly
+    // there, and pins only rounding-sized overshoot. Exact corr of the
+    // first window is −0.327.
+    const closes = [1e-90, 2e-90, 4e-90, 3e-90, 1e-90, 5e-90];
+    const bench = [3e-90, 1e-90, 2e-90, 4e-90, 2e-90, 1e-90];
+    const r = col(
+      correlation(pairBars(closes, bench), { benchmark: 'bench', period: 3 }),
+      'corr',
+    );
+    expect(r[2]).toBeCloseTo(-0.3273268353539886, 12);
+    for (let i = 2; i < closes.length; i += 1) {
+      expect(Number.isFinite(r[i]!), `corr[${i}] finite`).toBe(true);
+      expect(Math.abs(r[i]!)).toBeLessThanOrEqual(1);
+    }
+    // And the overflow side: |price| ≈ 1e80 read `−0` before.
+    const big = col(
+      correlation(
+        pairBars(
+          closes.map((v) => v * 1e170),
+          bench.map((v) => v * 1e170),
+        ),
+        { benchmark: 'bench', period: 3 },
+      ),
+      'corr',
+    );
+    expect(big[2]).toBeCloseTo(-0.3273268353539886, 12);
   });
 });
 

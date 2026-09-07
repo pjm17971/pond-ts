@@ -1,3 +1,4 @@
+import { assertPeriod } from './rolling.js';
 /** The three row-aligned moment arrays {@link rollingBivariateValues}
  *  returns, each `NaN` wherever the window has no reading. */
 export interface RollingBivariateMoments {
@@ -74,6 +75,24 @@ export interface RollingBivariateMoments {
  *   interval that is scale-free (a fixed interval is simultaneously too long
  *   for a short `period` and too dear for a long one — the Codex finding on
  *   `rollingDeviationSd`). One extra accumulation per row at any `period`.
+ * - **Rebuild on demand when a moment is ill-conditioned.** The change
+ *   counter (below) settles mathematical flatness; a window whose values
+ *   differ by ulps, or a plateau the anchor has gone stale across, is not
+ *   flat, yet its moments are then residues: `m2` driven to 0 (a *false*
+ *   missing cell), or a tiny positive `m2` beside a co-moment residue
+ *   (|corr| = 20.5, reviewed 2026-09-07). So the kernel also carries the
+ *   **gross** shifted squares that have passed through the moments since
+ *   the last rebuild — added and removed alike, the scale their residue
+ *   is measured against — and rebuilds the window fresh on its own first
+ *   pair whenever a changing column's `m2` is below `1e-3` of that, or
+ *   `cxy² > m2x · m2y` past rounding slack. O(period) per such window;
+ *   the property test checks the emitted correlation against an exact
+ *   BigInt-rational reference over plateau-stepped, ulp-jittered input.
+ *   Below |x| ≈ 1e-154 the squares underflow and the window reads flat.
+ *   **Cost, measured**: 0 rebuilds on 100k bars of random walk, trend or
+ *   low-vol intraday prices; on tick-jittered prices that plateau between
+ *   1% steps, 1.1–1.3× at `period 14 … 200` on one series and up to 3×
+ *   (11% of rows rebuilt) at `period 200` on a second reviewer's.
  *
  * Measured over 200k rows at `period 30`, worst **absolute error in the
  * resulting correlation coefficient** (the scale that means something when
@@ -119,11 +138,27 @@ export interface RollingBivariateMoments {
  * O(N) time — one add, one remove and one amortised rebuild step per row —
  * three allocations.
  */
+/** See {@link linearRegressionValues}' `RELATIVE_SPREAD_FLOOR`: a moment
+ *  below this fraction of the gross shifted-squares magnitude that has
+ *  passed through it since the last rebuild is residue, not variance. */
+const RELATIVE_MOMENT_FLOOR = 1e-3;
+/** `cxy² ≤ m2x·m2y` exactly; a rebuilt window honours it to `O(period·ε)`
+ *  (measured ~1e-13 on r), so a violation past this slack means the
+ *  co-moment has drifted. 1e-9, not 1e-6: the looser value let a materially
+ *  wrong `r = 1.0000005` through (Codex review of #707). */
+const CAUCHY_SCHWARZ_SLACK = 1 + 1e-9;
+
 export function rollingBivariateValues(
   x: Float64Array,
   y: Float64Array,
   period: number,
 ): RollingBivariateMoments {
+  assertPeriod(period);
+  if (period < 2) {
+    throw new TypeError(
+      'rollingBivariateValues period must be at least 2 (a one-bar window has no variance)',
+    );
+  }
   const length = x.length;
   if (y.length !== length) {
     throw new TypeError(
@@ -150,6 +185,12 @@ export function rollingBivariateValues(
   // between rebuilds — see "A flat window" above.
   let changesX = 0;
   let changesY = 0;
+  // GROSS shifted squares that have passed through the moments since the
+  // last rebuild — added and removed alike, never decreasing — the scale
+  // their residue is measured against (the current sums can themselves be
+  // residue after a plateau step).
+  let grossX = 0;
+  let grossY = 0;
   let windowStart = 0;
   let windowEnd = 0;
   // Rows in the window with a missing cell in EITHER column. The window is
@@ -169,6 +210,8 @@ export function rollingBivariateValues(
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
+        grossX += su * su;
+        grossY += sv * sv;
         count += 1;
         const dx = su - meanX;
         const dy = sv - meanY;
@@ -196,6 +239,8 @@ export function rollingBivariateValues(
       if (Number.isFinite(u) && Number.isFinite(v)) {
         const su = u - anchorX;
         const sv = v - anchorY;
+        grossX += su * su;
+        grossY += sv * sv;
         if (count <= 1) {
           count = 0;
           meanX = 0;
@@ -237,51 +282,84 @@ export function rollingBivariateValues(
     // it re-anchors the shifted frame before the series has trended away
     // from it, and it discards whatever drift the removals above have
     // accumulated, neither of which can then survive one window turnover.
-    if (i % period === 0) {
-      anchorX = 0;
-      anchorY = 0;
-      for (let k = windowStart; k < windowEnd; k += 1) {
-        const u = x[k]!;
-        const v = y[k]!;
-        if (Number.isFinite(u) && Number.isFinite(v)) {
-          // Anchor on the first complete pair IN the window, so the offsets
-          // are bounded by the window's own spread whatever the magnitude.
-          anchorX = u;
-          anchorY = v;
-          break;
+    // The aligned rebuild — `i % period`, not a counter, so the state at a
+    // given row does not depend on where the sweep began — and, on the
+    // second pass only, the on-demand rebuild for an ill-conditioned window.
+    // Written inline rather than as a closure: a closure capturing the
+    // accumulators moves every one of them out of registers and into a heap
+    // context, which measured as a 4.5× slowdown of the whole kernel.
+    let rebuildNow = i % period === 0;
+    for (;;) {
+      if (rebuildNow) {
+        // Recompute every moment from the current window
+        // [windowStart, windowEnd), re-anchoring on its first complete pair
+        // so the offsets are bounded by the window's own spread whatever
+        // the magnitude.
+        anchorX = 0;
+        anchorY = 0;
+        for (let k = windowStart; k < windowEnd; k += 1) {
+          const u = x[k]!;
+          const v = y[k]!;
+          if (Number.isFinite(u) && Number.isFinite(v)) {
+            anchorX = u;
+            anchorY = v;
+            break;
+          }
+        }
+        count = 0;
+        meanX = 0;
+        meanY = 0;
+        m2x = 0;
+        m2y = 0;
+        cxy = 0;
+        grossX = 0;
+        grossY = 0;
+        for (let k = windowStart; k < windowEnd; k += 1) {
+          const u = x[k]!;
+          const v = y[k]!;
+          if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+          const su = u - anchorX;
+          const sv = v - anchorY;
+          grossX += su * su;
+          grossY += sv * sv;
+          count += 1;
+          const dx = su - meanX;
+          const dy = sv - meanY;
+          meanX += dx / count;
+          meanY += dy / count;
+          m2x += dx * (su - meanX);
+          m2y += dy * (sv - meanY);
+          cxy += dx * (sv - meanY);
         }
       }
-      count = 0;
-      meanX = 0;
-      meanY = 0;
-      m2x = 0;
-      m2y = 0;
-      cxy = 0;
-      for (let k = windowStart; k < windowEnd; k += 1) {
-        const u = x[k]!;
-        const v = y[k]!;
-        if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
-        const su = u - anchorX;
-        const sv = v - anchorY;
-        count += 1;
-        const dx = su - meanX;
-        const dy = sv - meanY;
-        meanX += dx / count;
-        meanY += dy / count;
-        m2x += dx * (su - meanX);
-        m2y += dy * (sv - meanY);
-        cxy += dx * (sv - meanY);
-      }
-    }
 
-    if (windowEnd - windowStart < period || incomplete > 0) continue;
-    // A flat column has variance exactly 0 and covariance exactly 0 by
-    // definition; the counters say so where the accumulators only nearly do.
-    const flatX = changesX === 0;
-    const flatY = changesY === 0;
-    covariance[i] = flatX || flatY ? 0 : cxy / count;
-    varianceX[i] = flatX ? 0 : m2x / count;
-    varianceY[i] = flatY ? 0 : m2y / count;
+      if (windowEnd - windowStart < period || incomplete > 0) break;
+      // A flat column has variance exactly 0 and covariance exactly 0 by
+      // definition; the counters say so where the accumulators only nearly
+      // do.
+      const flatX = changesX === 0;
+      const flatY = changesY === 0;
+      if (
+        !rebuildNow &&
+        ((!flatX && m2x < RELATIVE_MOMENT_FLOOR * grossX) ||
+          (!flatY && m2y < RELATIVE_MOMENT_FLOOR * grossY) ||
+          cxy * cxy > m2x * m2y * CAUCHY_SCHWARZ_SLACK)
+      ) {
+        // Ill-conditioned, not flat: the moment is a residue beside the
+        // gross magnitude that has passed through it since the last rebuild
+        // (the anchor went stale across a plateau step), or the co-moment
+        // has drifted past what Cauchy–Schwarz allows. Rebuild this window
+        // fresh on its own first pair and emit from that. With `gross = 0`
+        // the squares themselves underflowed (|x| ≲ 1e-154): nothing to
+        // rebuild from, and the window reads as flat.
+        rebuildNow = true;
+        continue;
+      }
+      covariance[i] = flatX || flatY ? 0 : cxy / count;
+      varianceX[i] = flatX ? 0 : m2x / count;
+      varianceY[i] = flatY ? 0 : m2y / count;
+      break;
+    }
   }
 
   return { covariance, varianceX, varianceY };

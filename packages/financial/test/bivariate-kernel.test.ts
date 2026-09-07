@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { exactBivariate, lcg, plateaus } from './exact-rational.js';
 import { rollingBivariateValues } from '../src/kernels/bivariate.js';
 
 /*
@@ -314,5 +315,155 @@ describe('rollingBivariateValues', () => {
     expect(() => rollingBivariateValues(arr(1, 2, 3), arr(1, 2), 2)).toThrow(
       /row-aligned/,
     );
+  });
+
+  it('rejects invalid periods at the API boundary — it is a public kernel', () => {
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 0)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), -1)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 1.5)).toThrow(
+      /positive integer/,
+    );
+    expect(() => rollingBivariateValues(arr(1, 2), arr(2, 3), 1)).toThrow(
+      /at least 2/,
+    );
+  });
+
+  it('a column that CHANGES has a positive variance — near-flat is not flat (reviewed 2026-09-07)', () => {
+    // The reverse-Welford removal can drive `m2` to 0 or below on a window
+    // whose values differ by ulps; the clamp then read 0 and the studies
+    // reported a false missing cell. The kernel now rebuilds such a window
+    // on demand, so the invariant "changes > 0 ⇒ variance > 0" holds on
+    // every complete window, and the correlation it feeds is finite.
+    const nextUp = (v: number) => {
+      const b = new Float64Array([v]);
+      const u = new BigInt64Array(b.buffer);
+      u[0] = u[0]! + 1n;
+      return b[0]!;
+    };
+    const jitter = (length: number, base: number, seed: number) => {
+      const out = new Float64Array(length);
+      let s = seed;
+      for (let i = 0; i < length; i += 1) {
+        s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+        let v = base;
+        for (let j = 0; j < (s >>> 16) % 4; j += 1) v = nextUp(v);
+        out[i] = v;
+      }
+      return out;
+    };
+    let checked = 0;
+    for (const base of [3.003, 100, 1e6, 1e12]) {
+      for (const period of [2, 3, 5, 14]) {
+        const x = jitter(600, base, period + 11);
+        const y = jitter(600, base * 0.5, period + 29);
+        const m = rollingBivariateValues(x, y, period);
+        for (let i = period - 1; i < 600; i += 1) {
+          let cx = 0;
+          let cy = 0;
+          for (let k = i - period + 2; k <= i; k += 1) {
+            if (x[k] !== x[k - 1]) cx += 1;
+            if (y[k] !== y[k - 1]) cy += 1;
+          }
+          if (cx > 0) expect(m.varianceX[i], `varX[${i}]`).toBeGreaterThan(0);
+          else expect(m.varianceX[i], `varX[${i}]`).toBe(0);
+          if (cy > 0) expect(m.varianceY[i], `varY[${i}]`).toBeGreaterThan(0);
+          else expect(m.varianceY[i], `varY[${i}]`).toBe(0);
+          if (cx > 0 && cy > 0) {
+            checked += 1;
+            const corr =
+              m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!);
+            expect(Number.isFinite(corr), `corr[${i}] finite`).toBe(true);
+            expect(Math.abs(corr), `corr[${i}]`).toBeLessThanOrEqual(1 + 1e-9);
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(5000);
+  });
+
+  it('every changing window reads within 1e-12 of the exact correlation on plateau-stepped, ulp-jittered input', () => {
+    // Reviewed 2026-09-07 (Layer-2 on #707): the first fix enforced
+    // "changes ⇒ variance > 0" but not the range — a tiny positive variance
+    // beside a covariance residue read |corr| = 20.5. This pins the emitted
+    // moments to an exact BigInt-rational reference on the input that makes
+    // the anchor go stale (plateau steps) and then asks about ulp-level
+    // windows. It fails with the fix reverted.
+    const rnd = lcg(31337);
+    let windows = 0;
+    for (const magnitude of [1e-3, 1, 1e6, 1e12, 3.002998998997]) {
+      for (const step of [0, 1e-9, 1e-6, 1e-3]) {
+        for (const period of [2, 3, 5, 8, 13, 23, 30]) {
+          for (let trial = 0; trial < 1; trial += 1) {
+            const x = plateaus(period + 40, magnitude, step, rnd);
+            const y = plateaus(period + 40, magnitude * 1.7, step, rnd);
+            const m = rollingBivariateValues(x, y, period);
+            for (let i = period - 1; i < x.length; i += 1) {
+              const wx = x.subarray(i - period + 1, i + 1);
+              const wy = y.subarray(i - period + 1, i + 1);
+              let cx = 0;
+              let cy = 0;
+              for (let k = 1; k < period; k += 1) {
+                if (wx[k] !== wx[k - 1]) cx += 1;
+                if (wy[k] !== wy[k - 1]) cy += 1;
+              }
+              const tag = `@${magnitude}/${step}/${period} bar ${i}`;
+              if (cx === 0) expect(m.varianceX[i], `flat varX ${tag}`).toBe(0);
+              else expect(m.varianceX[i], `varX ${tag}`).toBeGreaterThan(0);
+              if (cy === 0) expect(m.varianceY[i], `flat varY ${tag}`).toBe(0);
+              else expect(m.varianceY[i], `varY ${tag}`).toBeGreaterThan(0);
+              if (cx === 0 || cy === 0) continue;
+              windows += 1;
+              const exact = exactBivariate(wx, wy);
+              const corr =
+                m.covariance[i]! / Math.sqrt(m.varianceX[i]! * m.varianceY[i]!);
+              expect(Math.abs(corr), `|corr| ${tag}`).toBeLessThanOrEqual(
+                1 + 1e-9,
+              );
+              expect(
+                Math.abs(corr - exact.corr),
+                `corr ${tag}`,
+              ).toBeLessThanOrEqual(1e-12);
+              // The moments themselves, relative to the exact ones.
+              expect(
+                Math.abs(m.varianceX[i]! - exact.varianceX),
+                `varX value ${tag}`,
+              ).toBeLessThanOrEqual(1e-12 * exact.varianceX);
+              expect(
+                Math.abs(m.varianceY[i]! - exact.varianceY),
+                `varY value ${tag}`,
+              ).toBeLessThanOrEqual(1e-12 * exact.varianceY);
+            }
+          }
+        }
+      }
+    }
+    expect(windows).toBeGreaterThan(4000);
+  });
+
+  it('a subnormal-magnitude pair reads flat — the stated limit, pinned as a missing cell rather than a wrong number', () => {
+    // Squared deviations of a 1e-200 window underflow to 0; the moments are
+    // genuinely unrepresentable and the window reads flat. The exact
+    // reference still knows the dimensionless answer (corr = 1), which is
+    // the limit `correlation`'s docstring states (Codex review of #707).
+    const x = arr(1e-200, 2e-200, 3e-200, 4e-200);
+    const y = arr(2e-200, 4e-200, 6e-200, 8e-200);
+    const m = rollingBivariateValues(x, y, 3);
+    expect(m.varianceX[2]).toBe(0);
+    expect(m.covariance[2]).toBe(0);
+    expect(
+      m.covariance[2]! / Math.sqrt(m.varianceX[2]! * m.varianceY[2]!),
+    ).toBeNaN();
+    const exact = exactBivariate(x.subarray(0, 3), y.subarray(0, 3));
+    expect(exact.corr).toBe(1);
+    // And the sign is the rational's, not a double's: a negated pair reads −1.
+    const neg = exactBivariate(
+      x.subarray(0, 3),
+      Float64Array.from(y.subarray(0, 3), (v) => -v),
+    );
+    expect(neg.corr).toBe(-1);
   });
 });

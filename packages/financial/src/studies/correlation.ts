@@ -115,14 +115,33 @@ export interface CorrelationOptions<
  * - **`benchmark` must differ from `column`.** Correlating a column with
  *   itself is `+1` by construction, so it is a mistake rather than a
  *   degenerate reading, and it throws.
- * - **No `±1` clamp, and the overshoot is real.** **Measured**: on
+ * - **`|r|` is pinned to 1, for last-ulp rounding only.** **Measured**: on
  *   `benchmark = −3 · column + 1000` — a perfectly anti-correlated pair —
- *   one window reads `−1.0000000000000002`, two ulps past the bound, while
- *   the `+1` side of the same test is bit-exact. A clamp would remove 2e-16
- *   that no caller's threshold can see, and it would be one more branch to
- *   keep alive; both halves are pinned by a test instead, so the behaviour
- *   is chosen rather than discovered on a chart.
+ *   the raw ratio reads `−1.0000000000000002` on one window, two ulps past
+ *   the bound, while the `+1` side is bit-exact. The first release shipped
+ *   that overshoot deliberately (a clamp can hide a wrong value); the
+ *   post-merge review of #706 found windows where the kernel's moments
+ *   were residues and the ratio read `|r| = 20.5`, and the answer to that
+ *   is in the kernel — it rebuilds any window whose moments are
+ *   ill-conditioned, verified against an exact reference — so what reaches
+ *   this line is rounding, and only rounding (within `1e-9`) is pinned;
+ *   anything further passes through unclamped, so a genuine anomaly is
+ *   still loud rather than laundered into a plausible ±1.
+ * - **Subnormal magnitudes read `undefined`, not a wrong number.** Below a
+ *   window spread of about `1e-154` the kernel's squared deviations
+ *   underflow to 0 and the window reads flat, so `corr` is a missing cell
+ *   there even though the dimensionless answer exists (a `1e-200` line
+ *   correlates perfectly). Prices do not live there; the limit is stated
+ *   and pinned rather than engineered around (Codex review of #707 —
+ *   `linearRegression`'s r², whose fallback works on one column, does
+ *   rescale and reads 1).
  */
+/** How far past ±1 a reading may sit and still be called rounding. Measured
+ *  overshoot on an exactly anti-correlated pair is 2e-16 and on rebuilt
+ *  ill-conditioned windows ~1e-13; the kernel's Cauchy–Schwarz rebuild slack
+ *  is 1e-9 on r². Anything further is an anomaly and must stay visible. */
+const PIN_SLACK = 1e-9;
+
 export function correlation<
   S extends SeriesSchema,
   const Output extends string = 'corr',
@@ -159,7 +178,26 @@ export function correlation<
     // No zero-variance guard: the kernel writes a flat column's variance
     // and covariance as exact `0` (change counter), so this is already
     // `0/0` → `NaN` → a missing cell. See the kernel's "A flat window".
-    out[i] = covariance[i]! / Math.sqrt(varianceX[i]! * varianceY[i]!);
+    // `sqrt(vx · vy)` is the bit-exact form on an affine pair (it reads
+    // exactly 1 where `sqrt(vx) · sqrt(vy)` reads 1 − 2e-16), so it is the
+    // default — but the PRODUCT of two variances underflows to 0 at |price|
+    // ≈ 1e-81 (and overflows past 1e78) where each root is still a perfectly
+    // good number, and `cov / 0` is an Infinity a pin would then launder
+    // into a plausible ±1 (second-pass review of #707). Fall back to the
+    // separate roots exactly there.
+    const vx = varianceX[i]!;
+    const vy = varianceY[i]!;
+    let denominator = Math.sqrt(vx * vy);
+    if (denominator === 0 || denominator === Infinity)
+      denominator = Math.sqrt(vx) * Math.sqrt(vy);
+    const r = covariance[i]! / denominator;
+    // |r| ≤ 1 in exact arithmetic; the kernel rebuilds any window whose
+    // moments could overshoot materially, so what is left is last-ulp
+    // rounding — and ONLY that is pinned to the bound. Anything past the
+    // slack is a real anomaly and passes through to `withColumn`, which
+    // throws on a non-finite value rather than charting it.
+    out[i] =
+      r > 1 && r <= 1 + PIN_SLACK ? 1 : r < -1 && r >= -1 - PIN_SLACK ? -1 : r;
   }
   return series.withColumn(output, out);
 }
