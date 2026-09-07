@@ -139,7 +139,6 @@ interface OracleCase {
     wmaPeriod?: number;
     mode?: PriceOscillatorMode;
     mediumPeriod?: number;
-    percent?: number;
     rocPeriod?: number;
     emaPeriod?: number;
     sumPeriod?: number;
