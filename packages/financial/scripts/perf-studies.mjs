@@ -12,6 +12,11 @@ import {
   accumulationDistribution,
   aroon,
   barsSinceExtremeValues,
+  rollingBivariateValues,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   linearRegressionValues,
   linearRegression,
   timeSeriesForecast,
@@ -71,7 +76,15 @@ function makeBars(length) {
   const low = new Float64Array(length);
   const close = new Float64Array(length);
   const volume = new Float64Array(length);
+  // The comparison ("benchmark") column the two-series family reads — the
+  // shape a consumer gets after `align` + `joinMany`. A SECOND random walk,
+  // correlated with the first through a shared drift term but with its own
+  // noise, so the rolling correlation moves rather than sitting at 1 (a
+  // benchmark that is a multiple of `close` would make every window
+  // degenerate and would not exercise the kernel's arithmetic).
+  const benchmark = new Float64Array(length);
   let px = 100;
+  let bx = 60;
   for (let i = 0; i < length; i += 1) {
     time[i] = 1_700_000_000_000 + i * 60_000;
     px += Math.sin(i * 0.001) * 0.3 + ((i * 2654435761) % 97) / 970 - 0.05;
@@ -83,6 +96,8 @@ function makeBars(length) {
     high[i] = px + 0.2 + 0.3 * Math.abs(Math.sin(i / 4));
     low[i] = px - 0.2 - 0.3 * Math.abs(Math.cos(i / 3));
     volume[i] = 1_000 + ((i * 40_503) % 5_000);
+    bx += Math.sin(i * 0.001) * 0.18 + ((i * 40_503) % 89) / 890 - 0.05;
+    benchmark[i] = bx;
   }
   const series = TimeSeries.fromColumns({
     name: 'bars',
@@ -93,10 +108,11 @@ function makeBars(length) {
       { name: 'low', kind: 'number' },
       { name: 'close', kind: 'number' },
       { name: 'volume', kind: 'number' },
+      { name: 'benchmark', kind: 'number' },
     ],
-    columns: { time, open, high, low, close, volume },
+    columns: { time, open, high, low, close, volume, benchmark },
   });
-  return { series, close };
+  return { series, close, benchmark };
 }
 
 function median(values) {
@@ -170,7 +186,9 @@ function naiveBarsSinceMax(values, period) {
 }
 
 function scaleResults(length) {
-  const { series, close } = makeBars(length);
+  // `benchmarkColumn`, not `benchmark` — the local `benchmark()` timing
+  // helper below owns that name.
+  const { series, close, benchmark: benchmarkColumn } = makeBars(length);
   return {
     length,
     results: [
@@ -367,6 +385,35 @@ function scaleResults(length) {
       ),
       benchmark('centerOfGravity({ period: 200 })', () =>
         centerOfGravity(series, { period: 200 }),
+      ),
+      // The two-series family (corpus 6.7). `correlation` is one bivariate
+      // kernel pass and a per-row division, so it should sit near
+      // `bollinger` (the other two-moment window study) and be FLAT in
+      // `period` — the kernel's rebuild costs one extra accumulation per row
+      // at any period, so the two entries below are what show that. `beta`
+      // adds two rate-of-change passes; `priceRelative` and
+      // `performanceIndex` have no window at all and should read as bare
+      // column reads.
+      benchmark('correlation({ period: 30 })', () =>
+        correlation(series, { benchmark: 'benchmark', period: 30 }),
+      ),
+      benchmark('correlation({ period: 200 })', () =>
+        correlation(series, { benchmark: 'benchmark', period: 200 }),
+      ),
+      benchmark('beta({ period: 5 })', () =>
+        beta(series, { benchmark: 'benchmark', period: 5 }),
+      ),
+      benchmark('priceRelative()', () =>
+        priceRelative(series, { benchmark: 'benchmark' }),
+      ),
+      benchmark('performanceIndex({ period: 20 })', () =>
+        performanceIndex(series, { benchmark: 'benchmark', period: PERIOD }),
+      ),
+      benchmark('rollingBivariateValues(30) [bare kernel]', () =>
+        rollingBivariateValues(close, benchmarkColumn, 30),
+      ),
+      benchmark('rollingBivariateValues(200) [bare kernel]', () =>
+        rollingBivariateValues(close, benchmarkColumn, 200),
       ),
       benchmark('rolling({ count: 20 }, avg) [core substrate]', () =>
         series.rolling(

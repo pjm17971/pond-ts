@@ -52,6 +52,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   linearRegression,
   timeSeriesForecast,
   chandeForecastOscillator,
@@ -1741,5 +1745,146 @@ describe('[PND-STUDYBOX] the regression family: WHERE the missing rows are', () 
     const cog = cells(centerOfGravity(sumsToZero, { period: 2 }), 'cog');
     expect(cog[2]).toBeUndefined();
     expect(typeof cog[3]).toBe('number');
+  });
+});
+
+describe('the two-series family: where a gap lands (corpus §6.7)', () => {
+  const pairSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'close', kind: 'number', required: false },
+    { name: 'bench', kind: 'number', required: false },
+  ] as const;
+
+  const pairBars = (
+    closes: Array<number | undefined>,
+    bench: Array<number | undefined>,
+  ) =>
+    new TimeSeries({
+      name: 'bars',
+      schema: pairSchema,
+      rows: closes.map((c, i) => [i * MINUTE, c, bench[i]]) as never,
+    });
+
+  const pc = [100, 102, 101, 104, 103, 107, 105, 108, 110, 109, 112, 111];
+  const pb = [50, 51, 50.5, 51.5, 52, 52.5, 53.5, 53, 54, 55, 54.5, 56];
+  const hole = (values: number[], at: number): Array<number | undefined> => {
+    const copy: Array<number | undefined> = [...values];
+    copy[at] = undefined;
+    return copy;
+  };
+
+  it('correlation: an interior gap in EITHER column blanks the same `period` rows', () => {
+    const clean = correlation(pairBars(pc, pb), {
+      benchmark: 'bench',
+      period: 3,
+    });
+    expect(nullCountOf(clean, 'corr')).toBe(2); // warm-up only
+
+    // The window is STRICT — it is a statement about pairs — so a hole in the
+    // benchmark costs exactly what a hole in the source costs.
+    for (const holed of [
+      pairBars(hole(pc, 5), pb),
+      pairBars(pc, hole(pb, 5)),
+    ]) {
+      const v = cells(
+        correlation(holed, { benchmark: 'bench', period: 3 }),
+        'corr',
+      );
+      expect(v[4]).toBeDefined();
+      expect(v[5]).toBeUndefined();
+      expect(v[6]).toBeUndefined();
+      expect(v[7]).toBeUndefined();
+      expect(v[8]).toBeDefined(); // recovers as soon as the hole leaves
+      expect(
+        nullCountOf(
+          correlation(holed, { benchmark: 'bench', period: 3 }),
+          'corr',
+        ),
+      ).toBe(5);
+    }
+  });
+
+  it('correlation: a LEADING gap shifts the start rather than emptying the column', () => {
+    const late = pairBars(
+      [undefined, undefined, ...pc.slice(2)],
+      [undefined, undefined, ...pb.slice(2)],
+    );
+    const v = cells(
+      correlation(late, { benchmark: 'bench', period: 3 }),
+      'corr',
+    );
+    expect(v.slice(0, 4).every((x) => x === undefined)).toBe(true);
+    expect(v[4]).toBeDefined();
+    expect(v.slice(4).every((x) => typeof x === 'number')).toBe(true);
+  });
+
+  it('beta: a gap costs TWO returns, so it blanks `period + 1` rows', () => {
+    // The one asymmetry against `correlation`: a missing PRICE takes both the
+    // return into it and the return out of it, so the hole is one bar wider.
+    // (A ZERO price, by contrast, takes only the return out — pinned in
+    // studies.test.ts.)
+    const holed = pairBars(hole(pc, 5), pb);
+    const v = cells(beta(holed, { benchmark: 'bench', period: 3 }), 'beta');
+    expect(v[4]).toBeDefined();
+    expect(v.slice(5, 9).every((x) => x === undefined)).toBe(true);
+    expect(v[9]).toBeDefined();
+  });
+
+  it('priceRelative: a gap blanks its own row and nothing else', () => {
+    const v = cells(
+      priceRelative(pairBars(pc, hole(pb, 5)), { benchmark: 'bench' }),
+      'priceRel',
+    );
+    expect(v[5]).toBeUndefined();
+    expect(v.filter((x) => x === undefined)).toHaveLength(1);
+    expect(v[0]).toBeDefined(); // no warm-up at all
+  });
+
+  it('performanceIndex: a gap blanks its own row and the row `period` later', () => {
+    const v = cells(
+      performanceIndex(pairBars(pc, hole(pb, 5)), {
+        benchmark: 'bench',
+        period: 3,
+      }),
+      'perf',
+    );
+    // 3 warm-up rows, the gap bar itself, and the bar 3 later that looks back
+    // at it — and nothing else.
+    expect(v.slice(0, 3).every((x) => x === undefined)).toBe(true);
+    expect(v[5]).toBeUndefined();
+    expect(v[8]).toBeUndefined();
+    expect(v[4]).toBeDefined();
+    expect(v[6]).toBeDefined();
+    expect(v[9]).toBeDefined();
+    expect(
+      nullCountOf(
+        performanceIndex(pairBars(pc, hole(pb, 5)), {
+          benchmark: 'bench',
+          period: 3,
+        }),
+        'perf',
+      ),
+    ).toBe(5);
+  });
+
+  it('an all-missing benchmark gives an all-missing column, never a throw', () => {
+    const empty = pc.map(() => undefined);
+    for (const [name, out] of [
+      [
+        'corr',
+        correlation(pairBars(pc, empty), { benchmark: 'bench', period: 3 }),
+      ],
+      ['beta', beta(pairBars(pc, empty), { benchmark: 'bench', period: 3 })],
+      ['priceRel', priceRelative(pairBars(pc, empty), { benchmark: 'bench' })],
+      [
+        'perf',
+        performanceIndex(pairBars(pc, empty), {
+          benchmark: 'bench',
+          period: 3,
+        }),
+      ],
+    ] as const) {
+      expect(nullCountOf(out, name), name).toBe(pc.length);
+    }
   });
 });

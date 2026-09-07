@@ -137,8 +137,48 @@ include new features and type-level changes; patch bumps are strictly additive.
   - The regression periods must be **at least 2** (`n²(n²−1)/12` is `0` at
     `n = 1`); `centerOfGravity` takes a moment rather than a fit, so it
     accepts `period 1` and reads `−1`.
-
-### Added
+- `@pond-ts/financial`: **the two-series / comparison family** (corpus §6.7,
+  kernel K8) — `correlation`, `beta`, `priceRelative` and `performanceIndex`,
+  plus the public kernel `rollingBivariateValues`. Seven oracle cases; the two
+  TA-Lib-backed studies agree with `CORREL` and `BETA` bar-for-bar.
+  - **The comparison series is a `benchmark` COLUMN on the same series, never a
+    second `TimeSeries`.** The consumer aligns and joins first
+    (`align` + `TimeSeries.joinMany`), and the study reads two columns of one
+    row — exactly as `atr` reads `high`/`low`/`close`. A study that took a
+    second series would have to invent an alignment policy (hold?
+    interpolate? inner or outer?) that core already expresses, better and once
+    for the whole pipeline. A `benchmark` or `column` that is not on the
+    series **throws** rather than reading empty.
+  - **`correlation({ period = 30, column = 'close', benchmark, output = 'corr' })`**
+    → Pearson's `r` over the two **price** columns, `= talib.CORREL`
+    bar-for-bar. TA-Lib correlates the raw inputs, not their returns; the
+    return correlation is the same study over two `percentChange` columns.
+  - **`beta({ period = 5, column = 'close', benchmark, output = 'beta' })`** →
+    `cov(returns, benchmarkReturns) / var(benchmarkReturns)` over `period`
+    one-bar returns. **Pass prices** — the returns are taken inside, as
+    `percentChangeValues(v, 1)`. Equals `talib.BETA(benchmark, close)`
+    bar-for-bar: TA-Lib regresses its **second** input on its **first**
+    (measured), so the benchmark goes first there; pond's option names remove
+    the ambiguity.
+  - **`priceRelative({ column = 'close', benchmark, output = 'priceRel' })`** →
+    the bare ratio, with **no period and no warm-up**. ChartIQ's _Price
+    Relative_ and _Relative Strength (comparative)_ are one implementation;
+    neither is Wilder's `rsi`.
+  - **`performanceIndex({ period = 20, column = 'close', benchmark, output = 'perf' })`**
+    → each side's own `period`-bar growth, divided, so `1` is parity. The
+    **ratio** form ships (some vendors publish `× 100` or `− 1`);
+    `(perf − 1) × 100` is `percentChange(priceRelative, period)` identically,
+    which a test asserts.
+  - **`rollingBivariateValues(x, y, period)`** → `{ covariance, varianceX,
+varianceY }`, population (`ddof = 0`), over a **strict** pair window: all
+    `period` rows of **both** columns, or nothing. Shifted-frame Welford with
+    the aligned rebuild ([PND-SHIFTFRAME] / [PND-PROCKERN]), never
+    `Σxy − ΣxΣy/n` — measured at 1e12-scale prices, the textbook form returns a
+    negative variance (a non-finite correlation) where this holds 2.4e-15.
+  - **Two deliberate TA-Lib deltas, both measured**: a flat window is
+    `undefined` here and `0.0` in TA-Lib (`CORREL` and `BETA` both substitute
+    zero for a zero denominator), and a zero price is a **missing** return here
+    where TA-Lib substitutes a return of `0`.
 
 - `@pond-ts/financial`: **the Wilder directional group** (corpus §6.4) — three
   studies and two new public kernels, in the uniform shape (redirectable bar

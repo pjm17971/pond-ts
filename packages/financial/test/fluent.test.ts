@@ -54,6 +54,10 @@ import {
   directionalMovement,
   aroon,
   vortex,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   linearRegression,
   timeSeriesForecast,
   chandeForecastOscillator,
@@ -830,5 +834,58 @@ describe('fluent regression family (K7)', () => {
       col(longCfo, 'cfo20')[30]!,
       6,
     );
+  });
+});
+
+describe('fluent two-series family (corpus §6.7)', () => {
+  const pairSchema = [
+    { name: 'time', kind: 'time' },
+    { name: 'close', kind: 'number' },
+    { name: 'bench', kind: 'number' },
+  ] as const;
+
+  const pairBars = () =>
+    new TimeSeries({
+      name: 'bars',
+      schema: pairSchema,
+      rows: Array.from({ length: 40 }, (_, i) => [
+        i,
+        100 + 6 * Math.sin(i / 4.1) + 0.15 * i,
+        60 + 3.5 * Math.cos(i / 5.7) + 0.08 * i,
+      ]) as Array<[number, number, number]>,
+    });
+
+  it('chains all four and equals the standalone functions bar for bar', () => {
+    const chained = pairBars()
+      .correlation({ benchmark: 'bench', period: 10 })
+      .beta({ benchmark: 'bench', period: 6 })
+      .priceRelative({ benchmark: 'bench' })
+      .performanceIndex({ benchmark: 'bench', period: 8 });
+
+    const standalone = performanceIndex(
+      priceRelative(
+        beta(correlation(pairBars(), { benchmark: 'bench', period: 10 }), {
+          benchmark: 'bench',
+          period: 6,
+        }),
+        { benchmark: 'bench' },
+      ),
+      { benchmark: 'bench', period: 8 },
+    );
+
+    for (const name of ['corr', 'beta', 'priceRel', 'perf']) {
+      expect(col(chained, name), name).toEqual(col(standalone, name));
+      expect(
+        col(chained, name).some((x) => typeof x === 'number'),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it('honours output and period through the fluent door', () => {
+    const two = pairBars()
+      .correlation({ benchmark: 'bench', period: 5 })
+      .correlation({ benchmark: 'bench', period: 20, output: 'corrSlow' });
+    expect(col(two, 'corr')[25]).not.toBeCloseTo(col(two, 'corrSlow')[25]!, 6);
   });
 });

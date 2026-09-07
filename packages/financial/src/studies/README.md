@@ -30,6 +30,11 @@ and a doc note, not a second study that differs invisibly.
   study takes a `prefix` and appends `${prefix}Middle` / `Upper` / `Lower`).
   Never hard-code `'close'` — a study must run over any numeric column,
   including another study's output.
+- **A study that compares two instruments takes a `benchmark` COLUMN**, not a
+  second `TimeSeries`. The consumer aligns and joins first (`align` +
+  `TimeSeries.joinMany`) and the study reads two columns of one row, as `atr`
+  reads `high`/`low`/`close`. Guard a required column name with
+  `assertColumn` — it throws, where a defaulted column reads all-missing.
 - **Periods are bar counts**, not durations. Validate with `assertPeriod`.
 - **Warm-up is length-preserving**: emit `undefined` for the first `period − 1`
   rows, keep the row count (so the study lines up on the source's time axis).
@@ -64,6 +69,13 @@ and a doc note, not a second study that differs invisibly.
   - `rollingMeanValues(values, period)` (`kernels/rolling-mean.ts`) — SMA of
     a **derived** array that waits for `period` finite _values_ (not rows —
     the scratch-column route warms up one bar early over a NaN head).
+  - `rollingBivariateValues(x, y, period)` (`kernels/bivariate.ts`) — the
+    rolling population **covariance** of two row-aligned arrays with each
+    one's variance beside it, over a **strict** pair window (all `period`
+    rows finite in BOTH), from which correlation and beta are closed forms
+    (`correlation`, `beta`). Shifted-frame Welford with an aligned rebuild —
+    never `Σxy − ΣxΣy/n`, which returns a negative variance at 1e12-scale
+    prices.
   - `clvValues(high, low, close)` and
     `accumulationDistributionValues(high, low, close, volume)`
     (`kernels/close-location.ts`) — where the close sits in the bar's own

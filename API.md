@@ -501,6 +501,18 @@ on the series.
 | `timeSeriesForecast`        | `tsf`                                                                      | `{ period?, column?, output? }` (the same fit one bar **past** the window, default 14; = TA-Lib `TSF`; deliberately not a `MaType`)                                                                                                 | `packages/financial/src/studies/time-series-forecast.ts`       |
 | `chandeForecastOscillator`  | `cfo`                                                                      | `{ period?, column?, output? }` (`100·(price − TSF)/price`, default 14; scale-invariant, **not** shift-invariant)                                                                                                                   | `packages/financial/src/studies/chande-forecast-oscillator.ts` |
 | `centerOfGravity`           | `cog`                                                                      | `{ period?, column?, output? }` (Ehlers' position-weighted balance point, default 10; **negative**, in `[−period, −1]` on positive prices, flat reads `−(period+1)/2` — TradingView's uncentred convention)                         | `packages/financial/src/studies/center-of-gravity.ts`          |
+| `correlation`               | `corr`                                                                     | `{ period?, column?, benchmark, output? }` (Pearson r of two columns over 30 bars, = TA-Lib `CORREL`; `benchmark` is a **column on the same joined series**, required)                                                              | `packages/financial/src/studies/correlation.ts`                |
+| `beta`                      | `beta`                                                                     | `{ period?, column?, benchmark, output? }` (slope of `column`'s 1-bar returns on `benchmark`'s over 5 bars, = TA-Lib `BETA(benchmark, column)`; pass **prices**, returns taken inside)                                              | `packages/financial/src/studies/beta.ts`                       |
+| `priceRelative`             | `priceRel`                                                                 | `{ column?, benchmark, output? }` (`column / benchmark`, no period — ChartIQ's Price Relative / Relative Strength **comparative**; not `rsi`)                                                                                       | `packages/financial/src/studies/price-relative.ts`             |
+| `performanceIndex`          | `perf`                                                                     | `{ period?, column?, benchmark, output? }` (each side's own `period`-bar growth, divided; 1 = parity, default 20; `(x−1)·100` == `percentChange(priceRelative)`)                                                                    | `packages/financial/src/studies/performance-index.ts`          |
+
+**The two-series family takes a benchmark COLUMN, never a second
+`TimeSeries`.** `correlation`, `beta`, `priceRelative` and `performanceIndex`
+each name their comparison series with a required `benchmark` column on the
+series they are given — the consumer aligns and joins first
+(`series.align(seq)` + `TimeSeries.joinMany([...], { type: 'inner' })`), which
+is where the alignment policy belongs. A `benchmark` (or `column`) that is not
+on the series **throws**. `RollingBivariateMoments` is the kernel's return type.
 
 Every study also exports its options type (`SmaOptions`-style, named for the
 study). `PriceOscillatorMode` (`'percent' | 'absolute'`) is exported alongside
@@ -547,6 +559,7 @@ by studies) — `packages/financial/src/kernels/rolling.ts`.
 | `barsSinceExtremeValues(v, period, mode)` | **Bars since** the max/min of a `period + 1`-bar window (ties to the newest bar), via a monotonic deque — O(N), flat in `period`; the corpus's G3 argmax gap (`aroon`)                                                       | `packages/financial/src/kernels/highest-lowest.ts`       |
 | `linearRegressionValues(v, period)`       | Kernel **K7**: the rolling OLS fit against the bar index — `{ slope, intercept, r2 }` in one O(N) pass, flat in `period`, shifted-frame; `period ≥ 2` (`linearRegression`, `timeSeriesForecast`, `chandeForecastOscillator`) | `packages/financial/src/kernels/linear-regression.ts`    |
 | `linearRegressionAt(fit, x)`              | Project a `RollingRegression` to bar offset `x` from the window's first bar — `intercept + slope·x` per row; `period − 1` is the window's last bar (`LINEARREG`), `period` one bar past it (`TSF`)                           | `packages/financial/src/kernels/linear-regression.ts`    |
+| `rollingBivariateValues(x, y, period)`    | Rolling population covariance + each column's variance over a **strict** pair window (shifted-frame Welford, rebuilt every `period` rows) — the K8 primitive `correlation` and `beta` divide                                 | `packages/financial/src/kernels/bivariate.ts`            |
 
 `MovingAverageTypeOptions` (the `movingAverage` study's options: the shared
 `MovingAverageOptions` plus `type`) —

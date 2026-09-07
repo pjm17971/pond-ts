@@ -159,6 +159,30 @@ assert sum(v > 5000 for v in volumes) >= 5, (
 
 vol = pd.Series(volumes, dtype="float64")
 
+# Benchmark ("index") closes for the two-series family: correlation, beta,
+# price relative and performance index (assessment 6.7, kernel K8).
+#
+# Modelled INDEPENDENTLY of `closes` -- a different drift, different sine
+# periods and different phases -- for two reasons the studies depend on.
+# It must be correlated with the primary series over some windows and
+# anti-correlated over others, so the fixture exercises the whole [-1, 1]
+# range rather than one corner. And it must NOT be an affine transform of
+# `closes`: an affine benchmark pins correlation at exactly 1 on every
+# window and makes beta a near-constant, and a fixture like that cannot
+# tell a correct implementation from one that dropped a term. The asserts
+# in `correlation` and `beta` below hold both properties if it ever changes.
+benchmarks = [
+    round(
+        120 + 0.06 * i + 7 * math.sin(i / 13 + 0.5) + 2.5 * math.sin(i / 3.7 + 1.9),
+        4,
+    )
+    for i in range(N)
+]
+assert all(b > 0 for b in benchmarks), "oracle benchmark must be strictly positive"
+assert len(set(benchmarks)) > N // 2, "oracle benchmark must vary, not repeat"
+
+bench_s = pd.Series(benchmarks, dtype="float64")
+
 
 def col(series: pd.Series) -> list:
     """A pandas Series -> JSON list; NaN / non-finite (missing) -> null."""
@@ -2923,6 +2947,179 @@ def center_of_gravity(n: int) -> dict:
 
 
 
+# --------------------------------------------------------------------------
+# The two-series / comparison family (assessment 6.7, kernel K8, gap G7):
+# correlation, beta, price relative and performance index.
+#
+# The comparison series is a COLUMN on the same (already joined) series, so
+# every case here reads `closes` against `benchmarks`. TA-Lib has CORREL and
+# BETA and both are asserted bar-for-bar; Price Relative and Performance
+# Index have no TA-Lib function, so they are pandas replications with the
+# analytic first valid bar and a measured separation from the wrong turn.
+# --------------------------------------------------------------------------
+
+
+def correlation(n: int) -> dict:
+    """Pearson's r between the two PRICE columns over n bars -- TA-Lib CORREL.
+
+    TA-Lib correlates the raw inputs (not their returns), which is what pond's
+    `correlation` matches; the return correlation is the same study over two
+    percent-change columns.
+    """
+    v = s.rolling(n).corr(bench_s)
+    label = f"correlation({n})"
+
+    assert v.first_valid_index() == n - 1, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n - 1}"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert -1.0 <= lo_v and hi_v <= 1.0, f"{label} left [-1, 1] ({lo_v}..{hi_v})"
+    assert lo_v < -0.3 and hi_v > 0.3, (
+        f"{label} spans only {lo_v}..{hi_v} - the fixture must exercise both "
+        "signs or a dropped sign passes"
+    )
+    assert hi_v < 0.999, (
+        f"{label} reaches {hi_v} - the benchmark is (near) an affine transform "
+        "of the closes, which pins r at 1 and makes the case vacuous"
+    )
+    if talib is not None:
+        ref = talib.CORREL(np.asarray(closes), np.asarray(benchmarks), timeperiod=n)
+        mask_ours = np.asarray([x is None for x in col(v)])
+        mask_talib = np.isnan(ref)
+        assert np.array_equal(mask_ours, mask_talib), (
+            f"{label} warm-up mask differs from talib.CORREL"
+        )
+        delta = float(np.nanmax(np.abs(np.asarray(v, dtype=float) - ref)))
+        assert delta < 1e-9, f"{label} differs from talib.CORREL by {delta}"
+        print(
+            f"  {label}: == talib.CORREL to {delta:.2e}; range "
+            f"{lo_v:.4f}..{hi_v:.4f}, first valid at {n - 1}"
+        )
+    return {"corr": col(v)}
+
+
+def beta_study(n: int) -> dict:
+    """Slope of the closes' one-bar returns on the benchmark's, over n returns
+    -- TA-Lib BETA with the BENCHMARK FIRST.
+
+    Measured: `talib.BETA(a, b, n)` returns cov(rA, rB)/var(rA), i.e. it
+    regresses its SECOND input on its FIRST, so the call matching pond's
+    `beta({ column: 'close', benchmark: 'bench' })` is BETA(benchmarks,
+    closes). Passing them the other way round is a different number, not a
+    different sign.
+    """
+    rx = s.pct_change()
+    ry = bench_s.pct_change()
+    v = rx.rolling(n).cov(ry, ddof=0) / ry.rolling(n).var(ddof=0)
+    label = f"beta({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n} "
+        "(n returns need n+1 prices)"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert lo_v < 0 < hi_v, (
+        f"{label} spans only {lo_v}..{hi_v} - the fixture must cross zero"
+    )
+    assert max(abs(lo_v - 1), abs(hi_v - 1)) > 0.5, (
+        f"{label} sits near 1 throughout - a benchmark that is a scalar "
+        "multiple of the closes would give exactly 1 and pin nothing"
+    )
+    # The INVERSE regression (closes as the denominator) is the wrong turn,
+    # and it is the mistake TA-Lib's argument order invites.
+    wrong = ry.rolling(n).cov(rx, ddof=0) / rx.rolling(n).var(ddof=0)
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 1, (
+        f"{label} sits within {sep} of the inverse regression - the fixture "
+        "cannot tell which variance is the denominator"
+    )
+    if talib is not None:
+        ref = talib.BETA(np.asarray(benchmarks), np.asarray(closes), timeperiod=n)
+        mask_ours = np.asarray([x is None for x in col(v)])
+        mask_talib = np.isnan(ref)
+        assert np.array_equal(mask_ours, mask_talib), (
+            f"{label} warm-up mask differs from talib.BETA"
+        )
+        delta = float(np.nanmax(np.abs(np.asarray(v, dtype=float) - ref)))
+        assert delta < 1e-9, f"{label} differs from talib.BETA by {delta}"
+        print(
+            f"  {label}: == talib.BETA(benchmark, close) to {delta:.2e}; range "
+            f"{lo_v:.4f}..{hi_v:.4f}, {sep:.2f} from the inverse regression, "
+            f"first valid at {n}"
+        )
+    return {"beta": col(v)}
+
+
+def price_relative() -> dict:
+    """close / benchmark, bar by bar -- ChartIQ's "Price Relative", also
+    published as "Relative Strength (comparative)". No period, no warm-up,
+    and emphatically not Wilder's RSI."""
+    v = s / bench_s
+    label = "priceRelative()"
+
+    assert v.first_valid_index() == 0, (
+        f"{label} first valid at {v.first_valid_index()}, expected 0 (no window)"
+    )
+    # The INVERTED ratio is the wrong turn: same shape upside down, every
+    # value different, and nothing in the output says which way round it is.
+    sep = float(np.nanmax(np.abs(v - bench_s / s)))
+    assert sep > 0.1, (
+        f"{label} sits within {sep} of the inverted ratio - the fixture "
+        "cannot tell which column is the denominator"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Price Relative); range "
+        f"{float(np.nanmin(v)):.4f}..{float(np.nanmax(v)):.4f}, {sep:.3f} from "
+        "the inverted ratio"
+    )
+    return {"priceRel": col(v)}
+
+
+def performance_index(n: int) -> dict:
+    """(close[i]/close[i-n]) / (bench[i]/bench[i-n]) -- each side's own n-bar
+    growth, divided. Oscillates around 1.
+
+    The RATIO form ships (1 = parity), matching `priceRelative` beside it;
+    the percent forms are one subtraction away. Asserted equal to
+    percentChange(priceRelative, n) up to that subtraction, which is what
+    makes this a normalisation of the ratio rather than new math.
+    """
+    v = (s / s.shift(n)) / (bench_s / bench_s.shift(n))
+    label = f"performanceIndex({n})"
+
+    assert v.first_valid_index() == n, (
+        f"{label} first valid at {v.first_valid_index()}, expected {n}"
+    )
+    lo_v, hi_v = float(np.nanmin(v)), float(np.nanmax(v))
+    assert lo_v < 1 < hi_v, (
+        f"{label} spans only {lo_v}..{hi_v} - it must cross parity, or a "
+        "study that always out- or under-performed would pin nothing"
+    )
+    # The identity that makes this the price relative's rate of change.
+    rel = s / bench_s
+    roc = (rel / rel.shift(n) - 1) * 100
+    identity = float(np.nanmax(np.abs((v - 1) * 100 - roc)))
+    assert identity < 1e-9, (
+        f"{label}: (perf - 1)*100 differs from percentChange(priceRelative, "
+        f"{n}) by {identity} - they are the same number"
+    )
+    # The DIFFERENCE of the two growths is the wrong turn: same shape, same
+    # warm-up, a different statistic that is not a ratio at all.
+    wrong = (s / s.shift(n)) - (bench_s / bench_s.shift(n))
+    sep = float(np.nanmax(np.abs(v - wrong)))
+    assert sep > 0.1, (
+        f"{label} sits within {sep} of the difference form - the fixture "
+        "cannot tell a ratio of growths from their difference"
+    )
+    print(
+        f"  {label}: pandas replication (TA-Lib has no Performance Index); "
+        f"range {lo_v:.4f}..{hi_v:.4f}, first valid at {n}, identity with "
+        f"percentChange(priceRelative) to {identity:.1e}, {sep:.3f} from the "
+        "difference form"
+    )
+    return {"perf": col(v)}
+
+
 cases = [
     {"study": "sma", "params": {"period": 20}, "expected": sma(20)},
     {"study": "sma", "params": {"period": 5}, "expected": sma(5)},
@@ -3325,6 +3522,41 @@ cases = [
     {"study": "aroon", "params": {"period": 25}, "expected": aroon(25)},
     {"study": "aroon", "params": {"period": 5}, "expected": aroon(5)},
     {"study": "vortex", "params": {"period": 14}, "expected": vortex(14)},
+    {
+        "study": "correlation",
+        "params": {"period": 30, "benchmark": "bench"},
+        "expected": correlation(30),
+    },
+    {
+        "study": "correlation",
+        "params": {"period": 5, "benchmark": "bench"},
+        "expected": correlation(5),
+    },
+    {
+        "study": "beta",
+        "params": {"period": 5, "benchmark": "bench"},
+        "expected": beta_study(5),
+    },
+    {
+        "study": "beta",
+        "params": {"period": 20, "benchmark": "bench"},
+        "expected": beta_study(20),
+    },
+    {
+        "study": "priceRelative",
+        "params": {"benchmark": "bench"},
+        "expected": price_relative(),
+    },
+    {
+        "study": "performanceIndex",
+        "params": {"period": 20, "benchmark": "bench"},
+        "expected": performance_index(20),
+    },
+    {
+        "study": "performanceIndex",
+        "params": {"period": 5, "benchmark": "bench"},
+        "expected": performance_index(5),
+    },
     {"study": "vortex", "params": {"period": 6}, "expected": vortex(6)},
     {
         "study": "linearRegression",
@@ -3720,6 +3952,47 @@ out = {
                 "pandas replication - no TA-Lib CG - first valid at n-1, "
                 "bounded [-n, -1], separated from the ascending-weight reading"
             ),
+            "correlation": (
+                "Pearson's r between `column` and `benchmark` over period "
+                "bars, default 30; == talib.CORREL bar-for-bar on the RAW "
+                "prices (TA-Lib correlates the inputs, not their returns). "
+                "The comparison series is a COLUMN on the same joined series, "
+                "never a second TimeSeries. First valid at period-1; the "
+                "window is STRICT (all period rows of BOTH columns). A flat "
+                "window is 0/0 -> undefined here and 0.0 in TA-Lib (measured) "
+                "- the one deliberate delta"
+            ),
+            "beta": (
+                "cov(r_column, r_benchmark)/var(r_benchmark) over period "
+                "one-bar returns, default 5; == talib.BETA(benchmark, close) "
+                "bar-for-bar -- TA-Lib regresses its SECOND input on its "
+                "FIRST (measured), so the benchmark goes first. Returns are "
+                "taken INSIDE the study (pass prices), as percentChange(v, 1). "
+                "First valid at period (n returns need n+1 prices). A flat "
+                "benchmark window is 0/0 -> undefined here and 0.0 in TA-Lib; "
+                "a zero price is a MISSING return here and a 0 return in "
+                "TA-Lib"
+            ),
+            "priceRelative": (
+                "close / benchmark, bar by bar - ChartIQ's Price Relative, "
+                "also published as Relative Strength (comparative); NOT "
+                "Wilder's RSI. No period and no warm-up; a zero benchmark is "
+                "undefined (a LIVE guard - the division is the output). "
+                "pandas replication - no TA-Lib function - separated from the "
+                "inverted ratio"
+            ),
+            "performanceIndex": (
+                "(close[i]/close[i-n]) / (bench[i]/bench[i-n]), default 20 - "
+                "each side's own n-bar growth, divided; the RATIO form, so 1 "
+                "is parity (some vendors publish x100 or -1). Asserted "
+                "identical to percentChange(priceRelative, n) after (x-1)*100. "
+                "First valid at n; three LIVE zero guards. pandas replication "
+                "- no TA-Lib function - separated from the DIFFERENCE of the "
+                "two growths. Trading Technologies publishes a different "
+                "formula under this name (a moving-average baseline rather "
+                "than a lagged one); that variant is a composition of shipped "
+                "primitives and is not this study"
+            ),
             "relativeVolatilityIndex": (
                 "100*U/(U+D) where U = Wilder(sigma on up bars, period), "
                 "D = Wilder(sigma on the rest, period) and sigma = "
@@ -3740,6 +4013,7 @@ out = {
         "highs": highs,
         "lows": lows,
         "volumes": volumes,
+        "benchmarks": benchmarks,
     },
     "cases": cases,
 }

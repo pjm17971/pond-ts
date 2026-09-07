@@ -140,6 +140,14 @@ import type { ChoppinessIndexOptions } from './studies/choppiness-index.js';
 import { choppinessIndex as choppinessIndexStudy } from './studies/choppiness-index.js';
 import type { UlcerIndexOptions } from './studies/ulcer-index.js';
 import { ulcerIndex as ulcerIndexStudy } from './studies/ulcer-index.js';
+import type { CorrelationOptions } from './studies/correlation.js';
+import { correlation as correlationStudy } from './studies/correlation.js';
+import type { BetaOptions } from './studies/beta.js';
+import { beta as betaStudy } from './studies/beta.js';
+import type { PriceRelativeOptions } from './studies/price-relative.js';
+import { priceRelative as priceRelativeStudy } from './studies/price-relative.js';
+import type { PerformanceIndexOptions } from './studies/performance-index.js';
+import { performanceIndex as performanceIndexStudy } from './studies/performance-index.js';
 import type { VerticalHorizontalFilterOptions } from './studies/vertical-horizontal-filter.js';
 import { verticalHorizontalFilter as verticalHorizontalFilterStudy } from './studies/vertical-horizontal-filter.js';
 import type { GopalakrishnanRangeIndexOptions } from './studies/gopalakrishnan-range-index.js';
@@ -421,6 +429,22 @@ declare module 'pond-ts' {
     /** Fluent Ulcer Index (RMS percentage drawdown from the rolling peak). */
     ulcerIndex<const Output extends string = 'ulcer'>(
       options?: UlcerIndexOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent rolling correlation against a joined `benchmark` column. */
+    correlation<const Output extends string = 'corr'>(
+      options: CorrelationOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent beta of `column`'s returns against a joined `benchmark`'s. */
+    beta<const Output extends string = 'beta'>(
+      options: BetaOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Price Relative (`column / benchmark`, no period). */
+    priceRelative<const Output extends string = 'priceRel'>(
+      options: PriceRelativeOptions<S, Output>,
+    ): TimeSeries<AppendOpt<S, Output>>;
+    /** Fluent Performance Index (period-bar growth over the benchmark's). */
+    performanceIndex<const Output extends string = 'perf'>(
+      options: PerformanceIndexOptions<S, Output>,
     ): TimeSeries<AppendOpt<S, Output>>;
     /** Fluent Vertical Horizontal Filter (net range over path length). */
     verticalHorizontalFilter<const Output extends string = 'vhf'>(
@@ -820,4 +844,28 @@ proto.centerOfGravity = function (
   options?: CenterOfGravityOptions<SeriesSchema, string>,
 ) {
   return centerOfGravityStudy(this, options);
+};
+proto.correlation = function (
+  this: TimeSeries<SeriesSchema>,
+  options: CorrelationOptions<SeriesSchema, string>,
+) {
+  return correlationStudy(this, options);
+};
+proto.beta = function (
+  this: TimeSeries<SeriesSchema>,
+  options: BetaOptions<SeriesSchema, string>,
+) {
+  return betaStudy(this, options);
+};
+proto.priceRelative = function (
+  this: TimeSeries<SeriesSchema>,
+  options: PriceRelativeOptions<SeriesSchema, string>,
+) {
+  return priceRelativeStudy(this, options);
+};
+proto.performanceIndex = function (
+  this: TimeSeries<SeriesSchema>,
+  options: PerformanceIndexOptions<SeriesSchema, string>,
+) {
+  return performanceIndexStudy(this, options);
 };

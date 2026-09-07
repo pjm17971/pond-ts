@@ -91,6 +91,10 @@ import {
   verticalHorizontalFilter,
   gopalakrishnanRangeIndex,
   relativeVolatilityIndex,
+  correlation,
+  beta,
+  priceRelative,
+  performanceIndex,
   directionalMovement,
   aroon,
   vortex,
@@ -2930,5 +2934,318 @@ describe('[talib] all-missing input yields all-missing regression studies', () =
       col(chandeForecastOscillator(allMissing as never, { period: 5 }), 'cfo'),
     );
     empty(col(centerOfGravity(allMissing as never, { period: 5 }), 'cog'));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The two-series family (corpus §6.7). Four studies, four DIFFERENT property  */
+/* matrices — which is why they are written out one at a time rather than      */
+/* looped over one claim. A loop would have asserted the wrong half for two of */
+/* the four: `priceRelative` is scale-EQUIVARIANT (not invariant), and `beta`  */
+/* is scale-invariant but NOT shift-invariant, where `correlation` is both.    */
+/* -------------------------------------------------------------------------- */
+
+const twoSeriesSchema = [
+  { name: 'time', kind: 'time' },
+  { name: 'close', kind: 'number' },
+  { name: 'bench', kind: 'number' },
+] as const;
+
+/** A never-flat, never-monotonic pair whose two sides lead each other, with
+ *  each side independently scalable and shiftable. */
+const twoSeriesBars = (
+  n = 60,
+  kClose = 1,
+  shiftClose = 0,
+  kBench = 1,
+  shiftBench = 0,
+) =>
+  new TimeSeries({
+    name: 'bars',
+    schema: twoSeriesSchema,
+    rows: Array.from({ length: n }, (_, i) => [
+      i,
+      kClose * (100 + 6 * Math.sin(i / 4.1) + 0.15 * i) + shiftClose,
+      kBench * (60 + 3.5 * Math.cos(i / 5.7) + 0.08 * i) + shiftBench,
+    ]) as Array<[number, number, number]>,
+  });
+
+/** Assert two runs DISAGREE somewhere they both have values — the half of a
+ *  property matrix that a "different numbers" test usually forgets. */
+const expectMoved = (
+  base: Array<number | undefined>,
+  other: Array<number | undefined>,
+) => {
+  const moved = base.some(
+    (b, i) =>
+      b !== undefined &&
+      other[i] !== undefined &&
+      Math.abs(other[i]! - b) > 1e-6,
+  );
+  expect(moved).toBe(true);
+};
+
+describe('[talib] the two-series family: scale and shift behaviour', () => {
+  const base = twoSeriesBars();
+
+  it('correlation is invariant to an independent SCALE of either column', () => {
+    const v = col(
+      correlation(base, { benchmark: 'bench', period: 10 }),
+      'corr',
+    );
+    expectSame(
+      v,
+      col(
+        correlation(twoSeriesBars(60, 7.5), { benchmark: 'bench', period: 10 }),
+        'corr',
+      ),
+    );
+    expectSame(
+      v,
+      col(
+        correlation(twoSeriesBars(60, 1, 0, 0.02), {
+          benchmark: 'bench',
+          period: 10,
+        }),
+        'corr',
+      ),
+    );
+  });
+
+  it('correlation is invariant to an independent SHIFT of either column too', () => {
+    // This is the half that separates Pearson's r from a covariance: a
+    // covariance is shift-invariant as well, but a study that had normalised
+    // by the wrong thing (dividing by the MEANS rather than the standard
+    // deviations, say) would fail here and pass the scale test.
+    const v = col(
+      correlation(base, { benchmark: 'bench', period: 10 }),
+      'corr',
+    );
+    expectSame(
+      v,
+      col(
+        correlation(twoSeriesBars(60, 1, 500), {
+          benchmark: 'bench',
+          period: 10,
+        }),
+        'corr',
+      ),
+    );
+    expectSame(
+      v,
+      col(
+        correlation(twoSeriesBars(60, 1, 0, 1, -40), {
+          benchmark: 'bench',
+          period: 10,
+        }),
+        'corr',
+      ),
+    );
+  });
+
+  it('beta is invariant to SCALING either column and MOVES when either is shifted', () => {
+    const v = col(beta(base, { benchmark: 'bench', period: 10 }), 'beta');
+    // Scaling a price series scales its returns by exactly one, so beta is
+    // unchanged on either side.
+    expectSame(
+      v,
+      col(
+        beta(twoSeriesBars(60, 12), { benchmark: 'bench', period: 10 }),
+        'beta',
+      ),
+    );
+    expectSame(
+      v,
+      col(
+        beta(twoSeriesBars(60, 1, 0, 0.3), { benchmark: 'bench', period: 10 }),
+        'beta',
+      ),
+    );
+    // Shifting does NOT cancel — it changes the base of every return — and
+    // asserting that it moves is the point: a study that had (wrongly)
+    // differenced instead of taking returns would pass the scale test above
+    // and fail here in the other direction.
+    expectMoved(
+      v,
+      col(
+        beta(twoSeriesBars(60, 1, 400), { benchmark: 'bench', period: 10 }),
+        'beta',
+      ),
+    );
+    expectMoved(
+      v,
+      col(
+        beta(twoSeriesBars(60, 1, 0, 1, 300), {
+          benchmark: 'bench',
+          period: 10,
+        }),
+        'beta',
+      ),
+    );
+  });
+
+  it('priceRelative is scale-EQUIVARIANT in column and inverse in benchmark', () => {
+    const v = col(priceRelative(base, { benchmark: 'bench' }), 'priceRel');
+    expectLinear(
+      v,
+      col(
+        priceRelative(twoSeriesBars(60, 4), { benchmark: 'bench' }),
+        'priceRel',
+      ),
+      4,
+    );
+    expectLinear(
+      v,
+      col(
+        priceRelative(twoSeriesBars(60, 1, 0, 4), { benchmark: 'bench' }),
+        'priceRel',
+      ),
+      1 / 4,
+    );
+  });
+
+  it('performanceIndex is invariant to SCALING both columns and moves on a shift', () => {
+    const v = col(
+      performanceIndex(base, { benchmark: 'bench', period: 12 }),
+      'perf',
+    );
+    expectSame(
+      v,
+      col(
+        performanceIndex(twoSeriesBars(60, 9, 0, 0.05), {
+          benchmark: 'bench',
+          period: 12,
+        }),
+        'perf',
+      ),
+    );
+    expectMoved(
+      v,
+      col(
+        performanceIndex(twoSeriesBars(60, 1, 250), {
+          benchmark: 'bench',
+          period: 12,
+        }),
+        'perf',
+      ),
+    );
+    expectMoved(
+      v,
+      col(
+        performanceIndex(twoSeriesBars(60, 1, 0, 1, 250), {
+          benchmark: 'bench',
+          period: 12,
+        }),
+        'perf',
+      ),
+    );
+  });
+});
+
+describe('[talib] the two-series family composes over another study', () => {
+  it('each runs over an sma of the close against an sma of the benchmark', () => {
+    // The composition case: the comparison column can itself be a study
+    // output, warm-up and all. Length preserved, warm-ups COMPOSED (the
+    // strict pair window waits for both), and the column is not empty —
+    // the `rsi(sma(...))` failure mode this file exists for.
+    const withSma = sma(twoSeriesBars(60), { period: 5, output: 'smaClose' });
+    const both = sma(withSma, {
+      period: 5,
+      column: 'bench',
+      output: 'smaBench',
+    });
+
+    const corr = col(
+      correlation(both, {
+        column: 'smaClose',
+        benchmark: 'smaBench',
+        period: 10,
+      }),
+      'corr',
+    );
+    expect(corr).toHaveLength(60);
+    // Both inputs warm up at bar 4, so the first strict 10-bar pair window
+    // ends at bar 13 — the inner warm-up plus the outer one, composed.
+    expect(firstValid(corr)).toBe(13);
+    expect(corr.slice(13).every((x) => typeof x === 'number')).toBe(true);
+
+    const b = col(
+      beta(both, { column: 'smaClose', benchmark: 'smaBench', period: 10 }),
+      'beta',
+    );
+    expect(firstValid(b)).toBe(14); // one more: 10 returns need 11 values
+    expect(b.slice(14).every((x) => typeof x === 'number')).toBe(true);
+
+    const rel = col(
+      priceRelative(both, { column: 'smaClose', benchmark: 'smaBench' }),
+      'priceRel',
+    );
+    expect(firstValid(rel)).toBe(4);
+
+    const perf = col(
+      performanceIndex(both, {
+        column: 'smaClose',
+        benchmark: 'smaBench',
+        period: 10,
+      }),
+      'perf',
+    );
+    expect(firstValid(perf)).toBe(14);
+  });
+});
+
+describe('[talib] all-missing input yields all-missing two-series studies', () => {
+  const allMissingPair = new TimeSeries({
+    name: 'bars',
+    schema: [
+      { name: 'time', kind: 'time' },
+      { name: 'close', kind: 'number', required: false },
+      { name: 'bench', kind: 'number', required: false },
+    ] as const,
+    rows: Array.from({ length: 20 }, (_, i) => [
+      i,
+      undefined,
+      undefined,
+    ]) as Array<[number, number | undefined, number | undefined]>,
+  });
+
+  it('neither throws nor invents a value', () => {
+    const emptyPair = (v: Array<number | undefined>) => {
+      expect(v).toHaveLength(20);
+      expect(v.every((x) => x === undefined)).toBe(true);
+    };
+    emptyPair(
+      col(
+        correlation(allMissingPair as never, {
+          benchmark: 'bench' as never,
+          period: 5,
+        }),
+        'corr',
+      ),
+    );
+    emptyPair(
+      col(
+        beta(allMissingPair as never, {
+          benchmark: 'bench' as never,
+          period: 5,
+        }),
+        'beta',
+      ),
+    );
+    emptyPair(
+      col(
+        priceRelative(allMissingPair as never, { benchmark: 'bench' as never }),
+        'priceRel',
+      ),
+    );
+    emptyPair(
+      col(
+        performanceIndex(allMissingPair as never, {
+          benchmark: 'bench' as never,
+          period: 5,
+        }),
+        'perf',
+      ),
+    );
   });
 });

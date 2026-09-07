@@ -44,6 +44,37 @@ export function assertNoColumn(
 }
 
 /**
+ * Throw if `column` is **not** on the series — the mirror of
+ * {@link assertNoColumn}, for the studies that read a column the caller names
+ * with no default to fall back on (`correlation`'s and `beta`'s `benchmark`).
+ *
+ * Reading a column that isn't there is otherwise silent: `columnValues` maps
+ * an unknown name to an all-`NaN` array, so a typo produces an empty study
+ * column rather than an error. That is tolerable where the name has a default
+ * (a misspelt `close` is unusual); it is not tolerable for a **required**
+ * option whose whole job is to name a second series the caller joined in.
+ *
+ * This also settles, for the two-series family, the reducer-dependent
+ * inconsistency recorded in the volatility tail's write-up: `rollingValues`
+ * throws on a misnamed column under `min`/`max` (core's sweep rejects it) and
+ * answers all-missing under `avg`/`stdev` (the range-exact path reads it as
+ * `NaN`). These studies read neither door — they read `columnValues` directly
+ * — so the behaviour is chosen here rather than inherited, and the choice is
+ * to **throw** for both `column` and `benchmark`.
+ */
+export function assertColumn(
+  series: TimeSeries<SeriesSchema>,
+  column: string,
+  role: string,
+): void {
+  if (!series.schema.slice(1).some((c) => c.name === column)) {
+    throw new TypeError(
+      `${role} column '${column}' is not on the series; join the comparison series in first (align + joinMany) or pass a different '${role}'`,
+    );
+  }
+}
+
+/**
  * Row-aligned columns from a **single** trailing count-window pass: each named
  * spec (`{ from, using }`) becomes an array of one value per input row,
  * `undefined` for the first `period - 1` warm-up rows (length-preserving). One
