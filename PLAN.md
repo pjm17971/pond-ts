@@ -1297,24 +1297,42 @@ pandas-oracle-verified) have shipped. Plan:
   +1/0/−1 verdict), `movingAverageCross` (the cross EVENT as a signal
   column) and `anchoredVwap` (the user-anchored form; the session-reset
   form still waits on [PND-TCAL]).
-  **One hundred and one studies shipped.** What remains of the corpus is the
-  repainting Phase-3 tail (ZigZag, Darvas, Fractals — **G6**, which is a
-  live-layer question as much as a study one) and the session-anchored
-  studies gated on the trading calendar ([PND-TCAL]). Left open here: the **anchored /
-  session VWAP**, which needs a reset and belongs with the session-anchored
-  studies. Package-wide questions surfaced by the wave, none blocking:
-  `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine proves every
-  EMA-family formula on TA-Lib's seed and bounds the transient, so the
-  convention is settled by precedent unless a consumer asks); the
-  Wilder-vs-`ema` interior-gap asymmetry (**decided 2026-09-06: kept**,
-  documented per study, decision record in the financial plan); a
-  monotonic-deque fast path for core's rolling min/max, for which `aroon`
-  (107 ms vs `donchian`'s 246 ms at 1M bars) is the measured evidence; and
-  `rollingValues`' reducer-dependent answer to a misnamed column
-  (`stdev`/`avg` read all-missing, `max`/`min` throw — pinned both ways in
-  #703; the two-series studies added a third answer, `assertColumn`
-  throwing on a required `benchmark`; unifying it moves shipped studies so
-  it waits for a consumer).
+  **One hundred and one studies shipped** — every corpus row that needed only
+  a kernel is in. What remains of the 124 is gated on core capabilities, not
+  on `@pond-ts/financial`:
+  - **G5 — forward displacement past the series end** (3): Ichimoku Cloud
+    (Senkou spans plotted 26 bars ahead), Alligator, Gator Oscillator. A
+    study can emit the value on the bar it is _computed_ from today; the
+    displaced rendering needs a per-layer bar offset in charts (C2) or a
+    series door that extends the time axis. Decide the door, then these are
+    a small batch.
+  - **G6 — repainting studies** (5): ZigZag, Darvas Box, Fractal Chaos Bands
+    and Oscillator, Williams Fractals. Each is a `foldRows` machine that
+    _rewrites earlier bars_ when a pivot confirms, which the batch layer
+    can express (a final pass) but the live layer cannot without a repaint
+    contract ([PND-LIVE] question). Ship batch-only with a documented
+    "confirmed at bar N" column, or wait for the contract — a decision.
+  - **G4 — calendar-gated** (4): session-reset VWAP, Pivot Points
+    (standard / Fibonacci), Projected Aggregate Volume, Projected Volume at
+    Time. All need [PND-TCAL]'s session anchors (midnight ET / 5pm forex /
+    6pm metals); `anchoredVwap` already carries the arithmetic.
+  - **Skipped by decision** (6): GoNoGo Trend (F-LEGAL), Depth of Market and
+    Option Sentiment (F-DATA), Volume Chart / Underlay and Valuation Lines
+    (F-CHART), Volume Profile (a `byColumn` recipe, not a study).
+    Left open here as before: the session-anchored studies above.
+    Package-wide questions surfaced by the wave, none blocking:
+    `ema()`'s first-sample seed vs TA-Lib's SMA seed (the engine proves every
+    EMA-family formula on TA-Lib's seed and bounds the transient, so the
+    convention is settled by precedent unless a consumer asks); the
+    Wilder-vs-`ema` interior-gap asymmetry (**decided 2026-09-06: kept**,
+    documented per study, decision record in the financial plan); a
+    monotonic-deque fast path for core's rolling min/max, for which `aroon`
+    (107 ms vs `donchian`'s 246 ms at 1M bars) is the measured evidence; and
+    `rollingValues`' reducer-dependent answer to a misnamed column
+    (`stdev`/`avg` read all-missing, `max`/`min` throw — pinned both ways in
+    #703; the two-series studies added a third answer, `assertColumn`
+    throwing on a required `benchmark`; unifying it moves shipped studies so
+    it waits for a consumer).
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
   discontinuous axis, exchange-tz tick grain, cursor timezone control,
   overnight sessions in `fromRules`.
