@@ -1040,13 +1040,21 @@ columns that have no vendor at all (`linregR2`, `cfo`, `cog`). Decisions:
 _Post-merge review (Peter, 2026-09-07)._ Adversarial pass on the merged
 kernel: a window that **changes by ulps** (not flat, so the change counter
 does not fire) can leave the rolling `n·Σz² − (Σz)²` at `−1e-24`, and the
-closed-form ratio wrote a **negative r²** into a `0 … 1` column. Fixed in the
-kernel: when `spread ≤ 0` on a changing window it is recomputed two-pass and
-centred, and every emitted `r²` is pinned to 1. The lesson, recorded for every
-future rolling-moment kernel: **the change counter fixes mathematical
-degeneracy, not numerical degeneracy** — a statistic with a range needs its
-range enforced at the boundary, and the enforcement is an exact recompute of
-the offending window, not a tolerance tied to price magnitude.
+closed-form ratio wrote a **negative r²** into a `0 … 1` column. The first fix
+(#707, draft) triggered on the _sign_ of the spread, and the Layer-2 pass on it
+showed that was not the tell: a **positive** residue read `r² = 5.8e-11` where
+the exact answer was `0.75`, and `3.0` (pinned to `1.0`) where it was `0.43`.
+The shipped fix judges the spread against the **gross** magnitude that has
+passed through the rolling sums since the last rebuild (added and removed
+alike — a rolling sum's error is `ε` times that, not `ε` times its current
+value, which after a plateau step is itself residue): below `1e-3` of it the
+window is recomputed two-pass on a fresh local anchor, slope and intercept
+included. Verified against an exact BigInt-rational reference over
+plateau-stepped, ulp-jittered input at five magnitudes; the test fails with
+the fix reverted. The lesson, recorded for every future rolling-moment kernel:
+**the change counter fixes mathematical degeneracy, not numerical degeneracy**,
+the sign of a cancelled difference says nothing, and the honest scale for
+"is this residue?" is the gross magnitude the accumulator has seen.
 
 (1) **One kernel, one pass, and every reading is a projection of it.**
 `linearRegressionValues(values, period)` returns `{ slope, intercept, r2 }`;
@@ -1240,10 +1248,14 @@ it now asserts an integer `≥ 2`. (2) The K8 analogue of the regression
 finding: a window that changes by ulps could have its `m2` driven to `≤ 0` by
 the reverse-Welford removal, the clamp then read a variance of exactly 0, and
 `correlation` / `beta` reported a **false missing cell** on a window that was
-not flat. Fixed by enforcing the invariant "changes > 0 ⇒ variance > 0"
-directly: when a changing column's `m2` reads `≤ 0` the window is rebuilt on
-demand (Welford's `m2` is a sum of non-negative terms), O(period) per such
-window, no magnitude-tied tolerance. Also noted, not changed: rejecting
+not flat. The first draft rebuilt only when `m2 ≤ 0`, which the Layer-2 pass
+showed was too narrow (a tiny positive `m2` beside a covariance residue read
+`|corr| = 20.5`). Shipped: the kernel carries the gross shifted squares that
+have passed through its moments since the last rebuild and rebuilds the window
+on demand when a changing column's `m2` is below `1e-3` of that, or when
+`cxy² > m2x·m2y` past rounding slack; `correlation` pins `|r|` to 1 for the
+last-ulp case only. Verified against an exact BigInt-rational reference the
+same way as K7. Also noted, not changed: rejecting
 `benchmark === column` is opinionated (`corr(x, x) = 1` is a valid identity);
 kept because a consumer who wants the identity has it in one line and the
 check catches the far more common copy-paste.

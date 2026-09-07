@@ -82,9 +82,12 @@ include new features and type-level changes; patch bumps are strictly additive.
     `period 200`). `x` is deterministic, so `Σx` and `Σx²` are closed forms and
     only `Σy`, `Σxy` and `Σy²` roll. Exported alongside its `RollingRegression`
     result type.
-    Near-flat windows (changing by ulps) are recomputed two-pass and centred
-    when the rolling spread cancels to `≤ 0`, and `r2` is pinned to 1, so the
-    `0 … 1` contract holds on every finite cell (review, 2026-09-07).
+    Near-flat windows (changing by ulps, or a plateau the anchor has gone
+    stale across) are recomputed two-pass on a fresh local anchor when the
+    rolling spread falls below `1e-3` of the gross magnitude that has passed
+    through its sums since the last rebuild — the sign is not the tell — and
+    `r2` is pinned to 1; every changing window is tested against an exact
+    BigInt-rational reference (review, 2026-09-07).
   - **`linearRegression({ period = 14, column = 'close', prefix = 'linreg' })`**
     → `linregValue`, `linregSlope`, `linregIntercept`, `linregAngle`,
     `linregR2` — five readings of **one** fit, all warming up together at
@@ -180,8 +183,11 @@ varianceY }`, population (`ddof = 0`), over a **strict** pair window: all
     negative variance (a non-finite correlation) where this holds 2.4e-15.
     Validates `period` (integer `≥ 2`) at the boundary like every public
     kernel, and rebuilds a window on demand when a changing column's `m2`
-    reads `≤ 0`, so "changes ⇒ positive variance" holds and no near-flat
-    window reports a false missing cell (review, 2026-09-07).
+    falls below `1e-3` of the gross shifted magnitude that has passed through
+    it since the last rebuild, or `cxy² > m2x·m2y` past rounding slack — so
+    no near-flat window reports a false missing cell or an out-of-range
+    correlation; tested against an exact BigInt-rational reference (review,
+    2026-09-07).
   - **Two deliberate TA-Lib deltas, both measured**: a flat window is
     `undefined` here and `0.0` in TA-Lib (`CORREL` and `BETA` both substitute
     zero for a zero denominator), and a zero price is a **missing** return here
