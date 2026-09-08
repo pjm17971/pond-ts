@@ -2819,6 +2819,88 @@ the whole grid (re-measured at integration, 0 of 133 — fixture luck, not a
 guarantee). The note is scoped and the generator asserts the equality only at
 multiplier 1, the regime the argument covers.
 
+### [PND-STUDYCAT] — Runtime study catalog
+
+**Origin.** Tidal's F-charts-25 (2026-09-07, relayed by the owner): adopting
+the 105-study corpus into a `@pond-ts/process` registry means declaring each
+study's name, input roles, numeric params with bounds and defaults, and
+output suffixes with units — all of which the package carries only in
+types TypeScript erases. Parsed out of the 0.66.0 type surface: twelve
+distinct input shapes, six output arities, zero to four params — ~400
+facts, each a silent wrong answer if mistyped, re-checked per release.
+Tidal stopped before transcribing and asked for a runtime descriptor.
+
+**Shape.** `StudyDescriptor` mirrors process's `OpDef` so a consumer maps
+rather than interprets: `name`, `family`, `summary`, `inputs`
+(`{ role, default? }` — absent default ⇒ required), `params` (a record keyed
+by option: `NumberParam`-shaped with `kind: 'integer' | 'number'`,
+`default` **or** `example`, `min`/`max`, `suggest`; or `kind: 'enum'` with
+`of`), `naming` (`output` | `prefix` + default), `outputs`
+(`{ id, unit }`), `anchor?: 'session'`, `run`. Three things Tidal's sketch
+did not cover, found in the actual option surface: menu params (`maType`
+on 17 studies, pivot `method`, price-oscillator `mode`); required options
+with no default (`benchmark` on four studies, `minTick`, `limit`, …) — the
+descriptor carries an `example` instead of a default; and the
+session-anchored pair, whose `TradingCalendar` union is not a param — the
+descriptor flags `anchor: 'session'` and the consumer supplies the calendar.
+
+**`unit` is a closed vocabulary, not a free string.** Tidal's use is axis
+membership, so the vocabulary answers that question: only `'inherit'` (a
+level in the source's units) may share the source's axis; `'delta'` is the
+source's units but zero-centred (MACD, momentum); `'percent'`, `'ratio'`,
+`'signal'`, `'volume'`, `'index'`, `'bars'` are the rest. Process's
+`UnitSpec` is `'inherit' | string`; the catalog is narrower on purpose.
+
+**Guarded two ways, because a catalog that drifts is worse than none.**
+(1) `defineStudy<Options>()` instantiates the study's options interface on
+the wide schema, where every column option's type is `never`
+(`NumericColumnNameForSchema<SeriesSchema>` is `never`), numbers are
+`number`, menus are string-literal unions and `output`/`prefix` are
+`string` — enough to classify every key mechanically. `inputs` and `params`
+are mapped types over those key sets, so a missed or misspelt key, a
+`default` on a required option, an `example` on an optional one, a menu
+value outside the union or an object-typed option (`UNCOVERED_OPTIONS`) is a
+compile error. (2) `test/catalog.test.ts` runs every descriptor against its
+study on a 120-bar OHLCV fixture: the columns appended are exactly the ones
+declared; running with every default stated explicitly is bit-identical to
+running with none (the defaults are the study's); every menu value runs; a
+value below a declared `min` throws (so `min` is declared only where the
+study validates it); and the catalog's names equal the set of `proto.X =`
+mounts in `fluent.ts`, so a study added without a descriptor fails the
+suite. The compile-time guard cannot check that an enum's `of` lists every
+member of the union, or that `outputs` matches the return type — the
+runtime test covers the first by running each value and the second by
+diffing the schema.
+
+**Decisions.** Per-family files (`catalog/<family>.ts`) rather than a
+descriptor co-located in each study file: the fan-out is file-disjoint, a
+family reads as a table, and the parity test catches a missing study either
+way. A separate `./catalog` subpath rather than the main entry: a registry
+wants every study; a one-study consumer must not pay for them. `outputs`
+describe the **default** params — `pivotPoints`' `'camarilla'` adds an
+`R4`/`S4` pair, noted in a comment rather than modelled. `lookback` (process's
+warm-up declaration) deliberately not included in this pass: it is a claim
+per study that the studies do not yet make uniformly; a second pass once a
+consumer asks. Nine families are the assessment's §6 groups with `'price'`
+and `'session'` split out.
+
+### [PND-BBFLAT] — `bollinger` on a flat window
+
+Tidal's F-charts-24: `bollinger` emits `undefined` for both bands when
+`σ = 0`, on the recorded grounds that a zero-width statistical band is a
+degenerate statistic and that downstream "outside the band" tests should
+not fire on every bar of a flat stretch. The consequence a chart sees is a
+band that breaks into segments around an unbroken middle line over any
+stale or illiquid stretch. The bands **are** defined there — `middle ± k·0`
+— and `keltner` already returns the degenerate channel at zero range, so the
+package is inconsistent with itself. Decision: change `bollinger` to
+`upper = lower = middle` on a flat window, leaving `undefined` to mean
+warm-up only. `bollingerPercentB` stays `undefined` there (a genuine 0/0 —
+the price sits nowhere in a band of no width) and `bollingerBandwidth`
+stays `0` (its numerator is forced to zero, the #699 rule); their docstrings
+cite `bollinger`'s old behaviour and are updated in the same change. Queued
+behind [PND-STUDYCAT] at the owner's direction.
+
 ### [PND-TCAL] — Trading-time deferred items
 
 Documented, none blocking:

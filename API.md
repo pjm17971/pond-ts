@@ -30,7 +30,7 @@ next door is the point.
 | `packages/core`      | `pond-ts`            | `.` and `./types` (zero-runtime schema contract)       | `website/docs/pond-ts/`   |
 | `packages/react`     | `@pond-ts/react`     | `.`                                                    | `website/docs/react/`     |
 | `packages/charts`    | `@pond-ts/charts`    | `.`                                                    | `website/docs/charts/`    |
-| `packages/financial` | `@pond-ts/financial` | `.` and `./fluent` (prototype augmentation)            | `website/docs/financial/` |
+| `packages/financial` | `@pond-ts/financial` | `.`, `./fluent` (prototype augmentation), `./catalog`  | `website/docs/financial/` |
 | `packages/fit`       | `@pond-ts/fit`       | `.`                                                    | `website/docs/fit/`       |
 | `packages/process`   | `@pond-ts/process`   | `.` and `./pool` (Node worker pool) — **experimental** | `website/docs/process/`   |
 
@@ -600,6 +600,20 @@ names it separately, but the formula is identical (and TA-Lib-verified through
 
 Adding a study? Follow `packages/financial/src/studies/README.md` (uniform
 shape + pandas oracle case + fluent method are all REQUIRED).
+
+### Study catalog (`@pond-ts/financial/catalog`)
+
+Every study, described at runtime — the facts a `@pond-ts/process` registry
+or a picker needs that the options interfaces and return types carry only in
+erased types. A separate subpath: importing it pulls in every study.
+
+| Export                                                                                                                                        | Purpose                                                                                                                                                                                                                                                                                                                                                                             | Source                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `STUDIES`                                                                                                                                     | `readonly StudyDescriptor[]` — one per fluent method, in family order then menu order (the catalog test pins the set equal to the fluent methods)                                                                                                                                                                                                                                   | `packages/financial/src/catalog/index.ts`  |
+| `studyDescriptor(name)`                                                                                                                       | Look one up by its exported name                                                                                                                                                                                                                                                                                                                                                    | `packages/financial/src/catalog/index.ts`  |
+| `STUDY_FAMILIES` / `StudyFamily`                                                                                                              | The nine picker groups (`moving-average`, `bands`, `momentum`, `trend`, `volatility`, `volume`, `statistical`, `price`, `session`)                                                                                                                                                                                                                                                  | `packages/financial/src/catalog/types.ts`  |
+| `StudyDescriptor`, `StudyInput`, `StudyParam` (`StudyNumberParam` \| `StudyEnumParam`), `StudyOutput`, `StudyNaming`, `StudyUnit`, `StudyRun` | The descriptor: `name`, `family`, `summary`, `inputs` (`role` + `default`, absent ⇒ required), `params` keyed by option (`kind`, `default` or `example`, `min`/`max` where validated, `suggest`), `naming` (`output` or `prefix` + its default), `outputs` (`id` suffix + `unit` — the axis-membership vocabulary), `anchor: 'session'` for the two session-anchored studies, `run` | `packages/financial/src/catalog/types.ts`  |
+| `defineStudy` / `StudySpec`                                                                                                                   | Author a descriptor against the study's options interface; the compiler classifies every key and rejects a missed one, a default on a required option or an undescribed option shape                                                                                                                                                                                                | `packages/financial/src/catalog/define.ts` |
 
 ### Trading calendars & sessions
 

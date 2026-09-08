@@ -1355,6 +1355,24 @@ pandas-oracle-verified) have shipped. Plan:
     #703; the two-series studies added a third answer, `assertColumn`
     throwing on a required `benchmark`; unifying it moves shipped studies so
     it waits for a consumer).
+- **[PND-STUDYCAT]** — **Runtime study catalog** (Tidal F-charts-25). A
+  consumer registering the corpus into a `@pond-ts/process` registry was
+  hand-transcribing ~400 facts (inputs, params with defaults and bounds,
+  output suffixes and units) from `.d.ts` files, re-checked per release.
+  `@pond-ts/financial/catalog` exports one `StudyDescriptor` per fluent
+  method, shaped like process's `OpDef`; `defineStudy` checks each against
+  its options interface at compile time and `test/catalog.test.ts` runs each
+  against its study. Seam landed; the six family files are being filled by a
+  builder wave and land as one PR. Breakout:
+  `docs/plans/PND_FINANCIAL_PLAN.md`.
+- **[PND-BBFLAT]** — **`bollinger` on a flat window** (Tidal F-charts-24).
+  `bollinger` blanks both bands when `σ = 0` ("so outside-the-band tests
+  don't fire"), so a band over a stale stretch breaks into segments around
+  an unbroken middle. The bands are defined there — `middle ± 0` — and
+  `keltner` already returns the degenerate channel at zero range. Change to
+  `upper = lower = middle`; `bollingerPercentB` stays `undefined` (a real
+  0/0) and `bollingerBandwidth` stays `0`. One line, one test flip, a
+  docstring paragraph; queued behind [PND-STUDYCAT].
 - **[PND-TCAL]** — Trading-time deferred items: point-key slot widths on the
   discontinuous axis, exchange-tz tick grain, cursor timezone control,
   overnight sessions in `fromRules`.
