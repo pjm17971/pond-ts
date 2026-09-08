@@ -77,7 +77,10 @@ export interface StudyNumberParam {
   /** For a **required** option only: a value that makes the study runnable —
    *  a UI placeholder, and what the catalog's own test runs with. */
   readonly example?: number;
-  /** The legal range. Outside it the study throws. */
+  /** The legal range — declared only where the study **validates** it (the
+   *  catalog test runs `min − 1` and expects a throw). For a real-valued
+   *  option `min` is the infimum: a `stdDev` declares `min: 0` and the study
+   *  still rejects exactly `0`. */
   readonly min?: number;
   readonly max?: number;
   /** The **useful** range, within `[min, max]` — what a control is drawn on.
