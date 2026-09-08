@@ -77,17 +77,15 @@ function meanAndSd(
  * `100·(bbUpper − bbLower)/bbMiddle` — pinned by a test against the shipped
  * study rather than asserted here.
  *
- * **The exception is a flat window**, and it is worth reading. `bollinger`
- * emits `undefined` bands when `σ = 0`, on the grounds that a zero-width
- * *statistical band* is a degenerate statistic rather than a measurement.
- * BandWidth answers `0` there instead, because the flat-window test comes
- * out the other way: the numerator is `2·stdDev·σ`, which is **forced** to
- * zero, and the denominator is the flat window's own price level, which is
- * not zero — so the value is `0`, a real reading ("the bands have no width",
- * which is what a squeeze is). That is the #699 rule applied rather than
- * copied. The consequence is that on a flat stretch `bbWidth` is **not**
- * recoverable from the `bollinger` columns (they are missing there and this
- * is `0`); everywhere else it is, bit-for-bit.
+ * **A flat window** is worth reading. `bollinger` collapses its bands onto
+ * the middle when `σ = 0` (`upper = lower = middle`, [PND-BBFLAT]), and
+ * BandWidth answers `0` there by the same arithmetic: the numerator is
+ * `2·stdDev·σ`, which is **forced** to zero, and the denominator is the
+ * flat window's own price level, which is not zero — so the value is `0`, a
+ * real reading ("the bands have no width", which is what a squeeze is). That
+ * is the #699 rule applied rather than copied, and it means `bbWidth` is
+ * recoverable from the `bollinger` columns on **every** bar the bands are
+ * set, the flat stretch included.
  *
  * A zero **centre** reads `undefined`, and the guard is at the output and
  * therefore live. Two windows get there: one flat **at zero** (every value
@@ -203,8 +201,10 @@ export function bollingerBandwidth<
  * package applies: ask whether the numerator is *forced* to zero
  * independently of the denominator. BandWidth's is (it is `2·stdDev·σ`
  * itself); %B's is only zero *because* the window is flat, which is the same
- * fact as the denominator being zero. It also agrees with {@link bollinger},
- * whose bands are `undefined` there.
+ * fact as the denominator being zero. {@link bollinger} itself draws the
+ * degenerate band there (`upper = lower = middle`, [PND-BBFLAT]) — a band of
+ * no width is a real thing to draw, but the price's *position* in it is not
+ * a real thing to report.
  *
  * ## Edges
  *
@@ -224,10 +224,10 @@ export function bollingerBandwidth<
  *   nothing), but the numerator reads the bar's **own** price, so the gap
  *   bar has no position and the next one does. Measured and pinned in
  *   `study-missing-cells.test.ts`.
- * - **On every bar where `bollinger` emits bands**, `percentB` equals
- *   `(price − bbLower)/(bbUpper − bbLower)`; pinned by a test against the
- *   shipped study. Unlike BandWidth there is no flat-window exception,
- *   because both studies answer `undefined` there.
+ * - **On every bar where `bollinger` emits bands with width**, `percentB`
+ *   equals `(price − bbLower)/(bbUpper − bbLower)`; pinned by a test against
+ *   the shipped study. The flat window is the one exception: the bands are
+ *   drawn there (degenerate) and %B is `undefined`.
  */
 export function bollingerPercentB<
   S extends SeriesSchema,

@@ -108,9 +108,8 @@ export interface KeltnerOptions<S extends SeriesSchema, Prefix extends string> {
  *   across interior gaps fills before smoothing.
  * - **No division anywhere**, so there is no zero-denominator case: a flat
  *   stretch gives `ATR = 0` and a zero-width channel, which is the honest
- *   reading (contrast {@link bollinger}, where `σ = 0` emits `undefined`
- *   because a zero-width *statistical* band is a degenerate statistic
- *   rather than a real measurement).
+ *   reading — and since [PND-BBFLAT] the same one {@link bollinger} gives
+ *   at `σ = 0`.
  */
 export function keltner<
   S extends SeriesSchema,
