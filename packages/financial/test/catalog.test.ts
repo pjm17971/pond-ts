@@ -83,9 +83,14 @@ function minimalOptions(d: StudyDescriptor): Record<string, unknown> {
     if (input.default === undefined) o[input.role] = 'open';
   }
   for (const [name, p] of Object.entries(d.params)) {
-    if (p.default === undefined) o[name] = p.example;
+    // An `optional` param is left out: absent is the behaviour described.
+    if (p.default === undefined && p.optional === undefined) {
+      o[name] = p.example;
+    }
   }
   if (d.anchor === 'session') o['session'] = 'sess';
+  // The fixture's tenth bar, so the anchored line has bars on both sides.
+  if (d.anchor === 'time') o['anchor'] = 10 * 60_000;
   return o;
 }
 
@@ -96,6 +101,9 @@ function explicitOptions(d: StudyDescriptor): Record<string, unknown> {
     if (input.default !== undefined) o[input.role] = input.default;
   }
   for (const [name, p] of Object.entries(d.params)) {
+    // A param that `requires` an option left out of the minimal set is
+    // left out too: its default is only meaningful alongside that option.
+    if (p.requires !== undefined && !(p.requires in o)) continue;
     if (p.default !== undefined) o[name] = p.default;
   }
   o[d.naming.kind] = d.naming.default;
@@ -147,10 +155,15 @@ describe('study catalog', () => {
         expect(ids.filter((id) => id === '').length).toBeLessThanOrEqual(1);
       }
       for (const p of Object.values(d.params)) {
-        // Optional ⇒ default; required ⇒ example. Never both, never neither.
+        // Optional ⇒ default; required (or `optional`) ⇒ example. Never
+        // both, never neither.
         expect((p.default === undefined) !== (p.example === undefined)).toBe(
           true,
         );
+        if (p.optional) expect(p.default).toBeUndefined();
+        if (p.requires !== undefined) {
+          expect(Object.keys(d.params)).toContain(p.requires);
+        }
         if (p.kind === 'enum') {
           expect(p.of.length).toBeGreaterThan(0);
           if (p.default !== undefined) expect(p.of).toContain(p.default);
@@ -180,18 +193,36 @@ describe('study catalog', () => {
       }
     });
 
-    it('runs on every menu value, and rejects a value below a declared min', () => {
+    it('runs on every menu value and every optional example, and rejects a value below a declared min', () => {
+      // The options a param is exercised on: the minimal set, plus the
+      // example of the param it `requires` (a menu that is only legal
+      // alongside a switched-on option).
+      const base = (p: { requires?: string }): Record<string, unknown> => {
+        const o = minimalOptions(d);
+        if (p.requires !== undefined) {
+          const dep = d.params[p.requires]!;
+          o[p.requires] = dep.default ?? dep.example;
+        }
+        return o;
+      };
       for (const [name, p] of Object.entries(d.params)) {
         if (p.kind === 'enum') {
           for (const value of p.of) {
             expect(() =>
-              d.run(bars, { ...minimalOptions(d), [name]: value }),
+              d.run(bars, { ...base(p), [name]: value }),
             ).not.toThrow();
           }
-        } else if (p.min !== undefined) {
-          expect(() =>
-            d.run(bars, { ...minimalOptions(d), [name]: p.min! - 1 }),
-          ).toThrow();
+        } else {
+          if (p.optional) {
+            expect(() =>
+              d.run(bars, { ...base(p), [name]: p.example }),
+            ).not.toThrow();
+          }
+          if (p.min !== undefined) {
+            expect(() =>
+              d.run(bars, { ...base(p), [name]: p.min! - 1 }),
+            ).toThrow();
+          }
         }
       }
     });

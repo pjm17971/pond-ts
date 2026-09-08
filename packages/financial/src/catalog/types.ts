@@ -72,11 +72,23 @@ export interface StudyInput {
  */
 export interface StudyNumberParam {
   readonly kind: 'number' | 'integer';
-  /** The value used when the option is omitted. **Absent means required.** */
+  /** The value used when the option is omitted. **Absent means required**,
+   *  unless `optional` is set. */
   readonly default?: number;
-  /** For a **required** option only: a value that makes the study runnable —
-   *  a UI placeholder, and what the catalog's own test runs with. */
+  /** For an option with no `default`: a value that makes the study runnable
+   *  (required) or that a control starts from when the option is switched
+   *  on (`optional`) — a UI placeholder, and what the catalog's own test
+   *  runs with. */
   readonly example?: number;
+  /** The option may be **omitted, and omitting it is not a default value**
+   *  — it switches a behaviour off (`balanceOfPower`'s `period`: absent is
+   *  the raw per-bar ratio, present smooths it). Carries an `example`, not
+   *  a `default`. */
+  readonly optional?: true;
+  /** This option is only meaningful — and only legal — alongside the named
+   *  one (`balanceOfPower`'s `maType` needs its `period`). A control shows
+   *  it only when that one is set; the catalog test runs it with it. */
+  readonly requires?: string;
   /** The legal range — declared only where the study **validates** it (the
    *  catalog test runs `min − 1` and expects a throw). For a real-valued
    *  option `min` is the infimum: a `stdDev` declares `min: 0` and the study
@@ -95,6 +107,9 @@ export interface StudyEnumParam {
   readonly default?: string;
   readonly example?: string;
   readonly of: readonly string[];
+  /** As on {@link StudyNumberParam}. */
+  readonly optional?: true;
+  readonly requires?: string;
   readonly label?: string;
 }
 
@@ -155,12 +170,16 @@ export interface StudyDescriptor {
    *  where it does. */
   readonly outputs: readonly StudyOutput[];
   /**
-   * `'session'` for the two session-anchored studies (`sessionVwap`,
-   * `pivotPoints`): besides the inputs and params here, the call needs
-   * exactly one of `sessions` (a `TradingCalendar` or `Session[]`, with an
-   * optional `stamped`) or `session` (a session-id column). A registry
-   * supplies that from its own calendar; it is not a param.
+   * An input that is neither a column nor a number, which a registry
+   * supplies from its own context rather than from a control:
+   *
+   * - `'session'` — the two session-anchored studies (`sessionVwap`,
+   *   `pivotPoints`). Besides the inputs and params here, the call needs
+   *   exactly one of `sessions` (a `TradingCalendar` or `Session[]`, with an
+   *   optional `stamped`) or `session` (a session-id column).
+   * - `'time'` — `anchoredVwap`. The call needs `anchor`, an instant
+   *   (`Date` or epoch milliseconds) to start the line from.
    */
-  readonly anchor?: 'session';
+  readonly anchor?: 'session' | 'time';
   readonly run: StudyRun;
 }

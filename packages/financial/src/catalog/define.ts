@@ -21,8 +21,12 @@ import type {
  *
  * - `inputs` is a record over exactly the column keys;
  * - `params` is a record over exactly the numeric and menu keys;
- * - an optional key must state its `default`; a required key must state an
- *   `example` instead (and may not claim a default);
+ * - an optional key must state its `default` (or `optional: true` with an
+ *   `example`, when absence is a switch rather than a value); a required
+ *   key must state an `example` instead (and may not claim a default);
+ * - the session anchor (`sessions` / `session` / `stamped`) and the time
+ *   anchor (`anchor`) are neither: the spec declares `anchor: 'session'` or
+ *   `anchor: 'time'` and the consumer supplies the value;
  * - a key that is none of those (an object option) is reported as
  *   `UNCOVERED_OPTIONS`, so a new option shape cannot slip past
  *   undescribed.
@@ -60,7 +64,7 @@ type EnumKeys<O> = {
 }[Keys<O>];
 
 type NamingKeys = 'output' | 'prefix';
-type AnchorKeys = 'sessions' | 'session' | 'stamped';
+type AnchorKeys = 'sessions' | 'session' | 'stamped' | 'anchor';
 type Excluded = NamingKeys | AnchorKeys;
 
 type Uncovered<O> = Exclude<
@@ -74,23 +78,45 @@ type InputSpec<O, K extends keyof O> = {
   ? { readonly default: string }
   : { readonly default?: never });
 
+/**
+ * An optional key states its `default` — or, when omitting it is not a
+ * value but a switch (`balanceOfPower`'s `period`), `optional: true` with
+ * an `example`. A required key states an `example` and nothing else.
+ */
+type Presence<V, O, K extends keyof O> =
+  Optional<O, K> extends true
+    ?
+        | {
+            readonly default: V;
+            readonly example?: never;
+            readonly optional?: never;
+          }
+        | {
+            readonly default?: never;
+            readonly example: V;
+            readonly optional: true;
+          }
+    : {
+        readonly default?: never;
+        readonly example: V;
+        readonly optional?: never;
+      };
+
 type NumberSpec<O, K extends keyof O> = {
   readonly kind: 'number' | 'integer';
   readonly min?: number;
   readonly max?: number;
   readonly suggest?: readonly [number, number];
+  readonly requires?: Exclude<Keys<O>, K>;
   readonly label?: string;
-} & (Optional<O, K> extends true
-  ? { readonly default: number; readonly example?: never }
-  : { readonly default?: never; readonly example: number });
+} & Presence<number, O, K>;
 
 type EnumSpec<O, K extends keyof O> = {
   readonly kind: 'enum';
   readonly of: readonly Bare<O, K>[];
+  readonly requires?: Exclude<Keys<O>, K>;
   readonly label?: string;
-} & (Optional<O, K> extends true
-  ? { readonly default: Bare<O, K>; readonly example?: never }
-  : { readonly default?: never; readonly example: Bare<O, K> });
+} & Presence<Bare<O, K>, O, K>;
 
 /**
  * What {@link defineStudy} takes for options interface `O` — see the file
@@ -120,7 +146,9 @@ export type StudySpec<O extends object> = {
   ) => TimeSeries<SeriesSchema>;
 } & ('sessions' extends Keys<O>
   ? { readonly anchor: 'session' }
-  : { readonly anchor?: never }) &
+  : 'anchor' extends Keys<O>
+    ? { readonly anchor: 'time' }
+    : { readonly anchor?: never }) &
   (IsNever<Uncovered<O>> extends true
     ? { readonly UNCOVERED_OPTIONS?: never }
     : { readonly UNCOVERED_OPTIONS: Uncovered<O> });
@@ -183,8 +211,8 @@ export function defineStudy<O extends object>(
         ? { kind: 'output', default: naming.output }
         : { kind: 'prefix', default: naming.prefix! },
     outputs: spec.outputs,
-    ...((spec as { anchor?: 'session' }).anchor === 'session' && {
-      anchor: 'session' as const,
+    ...((spec as { anchor?: 'session' | 'time' }).anchor !== undefined && {
+      anchor: (spec as { anchor: 'session' | 'time' }).anchor,
     }),
     run: spec.run as unknown as StudyRun,
   };
