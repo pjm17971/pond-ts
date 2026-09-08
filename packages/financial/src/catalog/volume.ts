@@ -42,7 +42,7 @@ import { anchoredVwap } from '../studies/anchored-vwap.js';
 import type { AnchoredVwapOptions } from '../studies/anchored-vwap.js';
 /** The `'volume'` family — see `types.ts` for the family list. */
 export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<ObvOptions<SeriesSchema, string>>({
+  defineStudy<ObvOptions<SeriesSchema, string>>()({
     name: 'obv',
     family: 'volume',
     summary: "Granville's running total of signed volume",
@@ -52,7 +52,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'volume' }],
     run: obv,
   }),
-  defineStudy<AccumulationDistributionOptions<SeriesSchema, string>>({
+  defineStudy<AccumulationDistributionOptions<SeriesSchema, string>>()({
     name: 'accumulationDistribution',
     family: 'volume',
     summary:
@@ -68,7 +68,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'volume' }],
     run: accumulationDistribution,
   }),
-  defineStudy<PriceVolumeTrendOptions<SeriesSchema, string>>({
+  defineStudy<PriceVolumeTrendOptions<SeriesSchema, string>>()({
     name: 'priceVolumeTrend',
     family: 'volume',
     summary: 'Running total of volume scaled by fractional price change',
@@ -78,7 +78,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'volume' }],
     run: priceVolumeTrend,
   }),
-  defineStudy<ChaikinMoneyFlowOptions<SeriesSchema, string>>({
+  defineStudy<ChaikinMoneyFlowOptions<SeriesSchema, string>>()({
     name: 'chaikinMoneyFlow',
     family: 'volume',
     summary: "Chaikin's A/D term as a volume-weighted mean over a window",
@@ -96,7 +96,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: chaikinMoneyFlow,
   }),
-  defineStudy<ChaikinOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<ChaikinOscillatorOptions<SeriesSchema, string>>()({
     name: 'chaikinOscillator',
     family: 'volume',
     summary: 'MACD of the Accumulation/Distribution line',
@@ -107,14 +107,14 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
       volume: { default: 'volume' },
     },
     params: {
-      fastPeriod: { kind: 'integer', default: 3, min: 1, suggest: [2, 10] },
-      slowPeriod: { kind: 'integer', default: 10, min: 1, suggest: [5, 30] },
+      fastPeriod: { kind: 'integer', default: 3, min: 1, suggest: [2, 8] },
+      slowPeriod: { kind: 'integer', default: 10, suggest: [5, 30] },
     },
     naming: { output: 'chaikinOsc' },
     outputs: [{ id: '', unit: 'volume' }],
     run: chaikinOscillator,
   }),
-  defineStudy<MoneyFlowIndexOptions<SeriesSchema, string>>({
+  defineStudy<MoneyFlowIndexOptions<SeriesSchema, string>>()({
     name: 'moneyFlowIndex',
     family: 'volume',
     summary: 'RSI computed on money flow instead of price',
@@ -131,7 +131,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: moneyFlowIndex,
   }),
-  defineStudy<TwiggsMoneyFlowOptions<SeriesSchema, string>>({
+  defineStudy<TwiggsMoneyFlowOptions<SeriesSchema, string>>()({
     name: 'twiggsMoneyFlow',
     family: 'volume',
     summary: "Twiggs' money flow — true range, Wilder-smoothed",
@@ -148,7 +148,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: twiggsMoneyFlow,
   }),
-  defineStudy<ForceIndexOptions<SeriesSchema, string>>({
+  defineStudy<ForceIndexOptions<SeriesSchema, string>>()({
     name: 'forceIndex',
     family: 'volume',
     summary: "Elder's force index — price change times volume, EMA-smoothed",
@@ -161,7 +161,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'volume' }],
     run: forceIndex,
   }),
-  defineStudy<EaseOfMovementOptions<SeriesSchema, string>>({
+  defineStudy<EaseOfMovementOptions<SeriesSchema, string>>()({
     name: 'easeOfMovement',
     family: 'volume',
     summary: "Arms' ease of movement — midpoint travel per unit of volume",
@@ -177,7 +177,6 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
       scale: {
         kind: 'number',
         default: 100_000_000,
-        min: 0,
         suggest: [1_000_000, 1_000_000_000],
       },
     },
@@ -185,7 +184,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: easeOfMovement,
   }),
-  defineStudy<KlingerOptions<SeriesSchema, string>>({
+  defineStudy<KlingerOptions<SeriesSchema, string>>()({
     name: 'klinger',
     family: 'volume',
     summary: "Klinger's volume oscillator with its signal line",
@@ -196,8 +195,8 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
       volume: { default: 'volume' },
     },
     params: {
-      fastPeriod: { kind: 'integer', default: 34, min: 1, suggest: [10, 60] },
-      slowPeriod: { kind: 'integer', default: 55, min: 1, suggest: [20, 100] },
+      fastPeriod: { kind: 'integer', default: 34, min: 1, suggest: [20, 50] },
+      slowPeriod: { kind: 'integer', default: 55, suggest: [40, 100] },
       signalPeriod: { kind: 'integer', default: 13, min: 1, suggest: [5, 30] },
     },
     naming: { prefix: 'kvo' },
@@ -210,14 +209,14 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: klinger,
   }),
-  defineStudy<VolumeOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<VolumeOscillatorOptions<SeriesSchema, string>>()({
     name: 'volumeOscillator',
     family: 'volume',
     summary: 'Fast minus slow moving average of volume, as a percent',
     inputs: { volume: { default: 'volume' } },
     params: {
-      fastPeriod: { kind: 'integer', default: 5, min: 1, suggest: [2, 20] },
-      slowPeriod: { kind: 'integer', default: 10, min: 1, suggest: [5, 50] },
+      fastPeriod: { kind: 'integer', default: 5, min: 1, suggest: [2, 8] },
+      slowPeriod: { kind: 'integer', default: 10, suggest: [10, 50] },
       maType: { kind: 'enum', default: 'sma', of: MA_TYPES },
     },
     naming: { output: 'volOsc' },
@@ -225,17 +224,17 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: volumeOscillator,
   }),
-  defineStudy<TradeVolumeIndexOptions<SeriesSchema, string>>({
+  defineStudy<TradeVolumeIndexOptions<SeriesSchema, string>>()({
     name: 'tradeVolumeIndex',
     family: 'volume',
     summary: 'Tick-direction volume accumulation (needs the instrument tick)',
     inputs: { column: { default: 'close' }, volume: { default: 'volume' } },
-    params: { minTick: { kind: 'number', example: 0.01, min: 0 } },
+    params: { minTick: { kind: 'number', example: 0.01 } },
     naming: { output: 'tvi' },
     outputs: [{ id: '', unit: 'volume' }],
     run: tradeVolumeIndex,
   }),
-  defineStudy<VolumeIndexOptions<SeriesSchema, string>>({
+  defineStudy<VolumeIndexOptions<SeriesSchema, string>>()({
     name: 'negativeVolumeIndex',
     family: 'volume',
     summary: "Fosback's index compounding returns on lower-volume bars",
@@ -245,7 +244,6 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
       start: {
         kind: 'number',
         default: 1000,
-        min: 0,
         suggest: [100, 10_000],
       },
     },
@@ -253,7 +251,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'index' }],
     run: negativeVolumeIndex,
   }),
-  defineStudy<VolumeIndexOptions<SeriesSchema, string>>({
+  defineStudy<VolumeIndexOptions<SeriesSchema, string>>()({
     name: 'positiveVolumeIndex',
     family: 'volume',
     summary: "Fosback's index compounding returns on higher-volume bars",
@@ -262,7 +260,6 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
       start: {
         kind: 'number',
         default: 1000,
-        min: 0,
         suggest: [100, 10_000],
       },
     },
@@ -270,7 +267,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'index' }],
     run: positiveVolumeIndex,
   }),
-  defineStudy<MarketFacilitationIndexOptions<SeriesSchema, string>>({
+  defineStudy<MarketFacilitationIndexOptions<SeriesSchema, string>>()({
     name: 'marketFacilitationIndex',
     family: 'volume',
     summary: "Bill Williams' price movement per unit of volume",
@@ -285,7 +282,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: marketFacilitationIndex,
   }),
-  defineStudy<ShinoharaIntensityRatioOptions<SeriesSchema, string>>({
+  defineStudy<ShinoharaIntensityRatioOptions<SeriesSchema, string>>()({
     name: 'shinoharaIntensityRatio',
     family: 'volume',
     summary: "Shinohara's strong and weak intensity ratios",
@@ -305,7 +302,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: shinoharaIntensityRatio,
   }),
-  defineStudy<VwapOptions<SeriesSchema, string>>({
+  defineStudy<VwapOptions<SeriesSchema, string>>()({
     name: 'vwap',
     family: 'volume',
     summary: 'Volume-weighted average price over a trailing window',
@@ -323,7 +320,7 @@ export const VOLUME_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: vwap,
   }),
-  defineStudy<AnchoredVwapOptions<SeriesSchema, string>>({
+  defineStudy<AnchoredVwapOptions<SeriesSchema, string>>()({
     name: 'anchoredVwap',
     family: 'volume',
     summary: 'VWAP accumulated from a user-chosen bar onward',

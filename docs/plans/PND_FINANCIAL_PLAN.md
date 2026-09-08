@@ -2830,8 +2830,11 @@ distinct input shapes, six output arities, zero to four params — ~400
 facts, each a silent wrong answer if mistyped, re-checked per release.
 Tidal stopped before transcribing and asked for a runtime descriptor.
 
-**Shape.** `StudyDescriptor` mirrors process's `OpDef` so a consumer maps
-rather than interprets: `name`, `family`, `summary`, `inputs`
+**Shape.** `StudyDescriptor` is modelled on process's `OpDef` (its words:
+`role`, `id`, `unit`, `suggest`) so a consumer maps rather than interprets
+— not a mirror: an input carries its `default`, a required option carries
+an `example` where process requires a `default`, and `anchor` has no
+counterpart. The descriptor: `name`, `family`, `summary`, `inputs`
 (`{ role, default? }` — absent default ⇒ required), `params` (a record keyed
 by option: `NumberParam`-shaped with `kind: 'integer' | 'number'`,
 `default` **or** `example`, `min`/`max`, `suggest`; or `kind: 'enum'` with
@@ -2894,8 +2897,15 @@ compile error. (2) `test/catalog.test.ts` runs every descriptor against its
 study on a 120-bar OHLCV fixture: the columns appended are exactly the ones
 declared; running with every default stated explicitly is bit-identical to
 running with none (the defaults are the study's); every menu value runs; a
-value below a declared `min` throws (so `min` is declared only where the
-study validates it); and the catalog's names equal the set of `proto.X =`
+declared `min`/`max` is accepted and one past it throws (so a bound is
+inclusive, and declared only where the study validates a _constant_ — a
+`slowPeriod` that must exceed the `fastPeriod`, or a strictly-positive real,
+declares none; the Layer-2 review of #718 found 29 such `min`s that the
+study rejected at the bound itself, which is why the test runs the bound
+both ways); both `suggest` endpoints run at the other options' defaults
+and the default sits inside the range; every output has a value on the
+120-bar fixture (with `specialK`, whose warm-up is longer, named as the
+one exception); and the catalog's names equal the set of `proto.X =`
 mounts in `fluent.ts`, so a study added without a descriptor fails the
 suite. The compile-time guard cannot check that an enum's `of` lists every
 member of the union, or that `outputs` matches the return type — the

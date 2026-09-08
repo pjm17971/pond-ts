@@ -41,7 +41,7 @@ import { MA_TYPES } from '../kernels/moving-average.js';
 
 /** The `'moving-average'` family — see `types.ts` for the family list. */
 export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<MovingAverageOptions<SeriesSchema, string>>({
+  defineStudy<MovingAverageOptions<SeriesSchema, string>>()({
     name: 'sma',
     family: 'moving-average',
     summary: 'Simple moving average of a column',
@@ -53,7 +53,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: sma,
   }),
-  defineStudy<MovingAverageOptions<SeriesSchema, string>>({
+  defineStudy<MovingAverageOptions<SeriesSchema, string>>()({
     name: 'ema',
     family: 'moving-average',
     summary: 'Exponential moving average, span convention (α = 2/(period+1))',
@@ -65,7 +65,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: ema,
   }),
-  defineStudy<MovingAverageTypeOptions<SeriesSchema, string>>({
+  defineStudy<MovingAverageTypeOptions<SeriesSchema, string>>()({
     name: 'movingAverage',
     family: 'moving-average',
     summary: 'Moving average of a selectable type (the shared MaType menu)',
@@ -78,14 +78,14 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: movingAverage,
   }),
-  defineStudy<MacdOptions<SeriesSchema, string>>({
+  defineStudy<MacdOptions<SeriesSchema, string>>()({
     name: 'macd',
     family: 'moving-average',
     summary: "Appel's MACD — a fast/slow EMA spread with its signal line",
     inputs: { column: { default: 'close' } },
     params: {
       fastPeriod: { kind: 'integer', default: 12, min: 1, suggest: [5, 20] },
-      slowPeriod: { kind: 'integer', default: 26, min: 1, suggest: [10, 60] },
+      slowPeriod: { kind: 'integer', default: 26, suggest: [20, 60] },
       signalPeriod: { kind: 'integer', default: 9, min: 1, suggest: [3, 20] },
     },
     naming: { prefix: 'macd' },
@@ -99,14 +99,14 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: macd,
   }),
-  defineStudy<MovingAverageCrossOptions<SeriesSchema, string>>({
+  defineStudy<MovingAverageCrossOptions<SeriesSchema, string>>()({
     name: 'movingAverageCross',
     family: 'moving-average',
     summary: 'Fast/slow moving-average crossings as a +1/−1 event column',
     inputs: { column: { default: 'close' } },
     params: {
-      fastPeriod: { kind: 'integer', default: 10, min: 1, suggest: [3, 50] },
-      slowPeriod: { kind: 'integer', default: 30, min: 1, suggest: [10, 200] },
+      fastPeriod: { kind: 'integer', default: 10, min: 1, suggest: [5, 25] },
+      slowPeriod: { kind: 'integer', default: 30, suggest: [15, 200] },
       maType: { kind: 'enum', default: 'sma', of: MA_TYPES },
     },
     naming: { output: 'maCross' },
@@ -115,7 +115,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'signal' }],
     run: movingAverageCross,
   }),
-  defineStudy<MovingAverageDeviationOptions<SeriesSchema, string>>({
+  defineStudy<MovingAverageDeviationOptions<SeriesSchema, string>>()({
     name: 'movingAverageDeviation',
     family: 'moving-average',
     summary: 'How far price sits from its moving average, in price units',
@@ -131,7 +131,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: movingAverageDeviation,
   }),
-  defineStudy<GuppyOptions<SeriesSchema, string>>({
+  defineStudy<GuppyOptions<SeriesSchema, string>>()({
     name: 'guppy',
     family: 'moving-average',
     summary: "Guppy's GMMA — the fixed twelve-average trader/investor ribbon",
@@ -157,7 +157,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: guppy,
   }),
-  defineStudy<RainbowOptions<SeriesSchema, string>>({
+  defineStudy<RainbowOptions<SeriesSchema, string>>()({
     name: 'rainbow',
     family: 'moving-average',
     summary: "Widner's Rainbow — ten recursively smoothed moving averages",
@@ -183,7 +183,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: rainbow,
   }),
-  defineStudy<RainbowOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<RainbowOscillatorOptions<SeriesSchema, string>>()({
     name: 'rainbowOscillator',
     family: 'moving-average',
     summary: "ChartIQ's rainbow oscillator, banded by the stack's own width",
@@ -205,7 +205,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: rainbowOscillator,
   }),
-  defineStudy<TrixOptions<SeriesSchema, string>>({
+  defineStudy<TrixOptions<SeriesSchema, string>>()({
     name: 'trix',
     family: 'moving-average',
     summary: "Hutson's TRIX — percent rate of change of a triple EMA",
@@ -223,21 +223,21 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: trix,
   }),
-  defineStudy<SchaffTrendCycleOptions<SeriesSchema, string>>({
+  defineStudy<SchaffTrendCycleOptions<SeriesSchema, string>>()({
     name: 'schaffTrendCycle',
     family: 'moving-average',
     summary: "Schaff's double stochastic of a MACD, bounded 0…100",
     inputs: { column: { default: 'close' } },
     params: {
       fastPeriod: { kind: 'integer', default: 23, min: 1, suggest: [10, 40] },
-      slowPeriod: { kind: 'integer', default: 50, min: 1, suggest: [20, 100] },
+      slowPeriod: { kind: 'integer', default: 50, suggest: [30, 100] },
       cyclePeriod: { kind: 'integer', default: 10, min: 1, suggest: [5, 30] },
     },
     naming: { output: 'stc' },
     outputs: [{ id: '', unit: 'percent' }],
     run: schaffTrendCycle,
   }),
-  defineStudy<DetrendedPriceOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<DetrendedPriceOscillatorOptions<SeriesSchema, string>>()({
     name: 'detrendedPriceOscillator',
     family: 'moving-average',
     summary: 'Price less a moving average displaced ⌊period/2⌋+1 bars back',
@@ -251,7 +251,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: detrendedPriceOscillator,
   }),
-  defineStudy<DisparityIndexOptions<SeriesSchema, string>>({
+  defineStudy<DisparityIndexOptions<SeriesSchema, string>>()({
     name: 'disparityIndex',
     family: 'moving-average',
     summary: "Nison's disparity — price against its moving average, in percent",
@@ -264,7 +264,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: disparityIndex,
   }),
-  defineStudy<CoppockOptions<SeriesSchema, string>>({
+  defineStudy<CoppockOptions<SeriesSchema, string>>()({
     name: 'coppock',
     family: 'moving-average',
     summary: 'Coppock Curve — a WMA of two percent rates of change, summed',
@@ -278,7 +278,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: coppock,
   }),
-  defineStudy<KstOptions<SeriesSchema, string>>({
+  defineStudy<KstOptions<SeriesSchema, string>>()({
     name: 'kst',
     family: 'moving-average',
     summary: "Pring's Know Sure Thing — four weighted smoothed percent ROCs",
@@ -295,7 +295,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: kst,
   }),
-  defineStudy<SpecialKOptions<SeriesSchema, string>>({
+  defineStudy<SpecialKOptions<SeriesSchema, string>>()({
     name: 'specialK',
     family: 'moving-average',
     summary: "Pring's Special K — the KST extended to twelve terms",
@@ -307,14 +307,14 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: specialK,
   }),
-  defineStudy<PriceOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<PriceOscillatorOptions<SeriesSchema, string>>()({
     name: 'priceOscillator',
     family: 'moving-average',
     summary: 'Fast/slow MA spread, as a percent (PPO) or in points (APO)',
     inputs: { column: { default: 'close' } },
     params: {
       fastPeriod: { kind: 'integer', default: 12, min: 1, suggest: [5, 20] },
-      slowPeriod: { kind: 'integer', default: 26, min: 1, suggest: [10, 60] },
+      slowPeriod: { kind: 'integer', default: 26, suggest: [20, 60] },
       maType: { kind: 'enum', default: 'ema', of: MA_TYPES },
       // `PriceOscillatorMode` has no runtime constant, so the union is
       // listed literally.
@@ -327,7 +327,7 @@ export const MOVING_AVERAGE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: priceOscillator,
   }),
-  defineStudy<PriceMomentumOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<PriceMomentumOscillatorOptions<SeriesSchema, string>>()({
     name: 'priceMomentumOscillator',
     family: 'moving-average',
     summary: "DecisionPoint's PMO — a double-smoothed 1-bar percent ROC",

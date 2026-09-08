@@ -10,7 +10,7 @@ import type { PivotMethod } from '../kernels/pivot.js';
 
 /** The `'session'` family — see `types.ts` for the family list. */
 export const SESSION_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<SessionVwapOptions<SeriesSchema, string>>({
+  defineStudy<SessionVwapOptions<SeriesSchema, string>>()({
     name: 'sessionVwap',
     family: 'session',
     summary: "Volume-weighted average price, reset at each session's open",
@@ -27,7 +27,7 @@ export const SESSION_STUDIES: readonly StudyDescriptor[] = [
     run: sessionVwap,
   }),
 
-  defineStudy<PivotPointsOptions<SeriesSchema, string, PivotMethod>>({
+  defineStudy<PivotPointsOptions<SeriesSchema, string, PivotMethod>>()({
     name: 'pivotPoints',
     family: 'session',
     summary: "The prior session's pivot with its support and resistance levels",

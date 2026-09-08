@@ -47,7 +47,7 @@ import type { TrueStrengthIndexOptions } from '../studies/true-strength-index.js
 
 /** The `'momentum'` family — see `types.ts` for the family list. */
 export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<RsiOptions<SeriesSchema, string>>({
+  defineStudy<RsiOptions<SeriesSchema, string>>()({
     name: 'rsi',
     family: 'momentum',
     summary: "Wilder's relative strength index, bounded 0..100",
@@ -59,7 +59,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: rsi,
   }),
-  defineStudy<StochasticOptions<SeriesSchema, string>>({
+  defineStudy<StochasticOptions<SeriesSchema, string>>()({
     name: 'stochastic',
     family: 'momentum',
     summary: "Lane's stochastic — where the close sits in its recent range",
@@ -82,7 +82,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: stochastic,
   }),
-  defineStudy<StochasticMomentumIndexOptions<SeriesSchema, string>>({
+  defineStudy<StochasticMomentumIndexOptions<SeriesSchema, string>>()({
     name: 'stochasticMomentumIndex',
     family: 'momentum',
     summary: "Blau's SMI — the close against the range midpoint, smoothed",
@@ -106,7 +106,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: stochasticMomentumIndex,
   }),
-  defineStudy<StochasticRsiOptions<SeriesSchema, string>>({
+  defineStudy<StochasticRsiOptions<SeriesSchema, string>>()({
     name: 'stochasticRsi',
     family: 'momentum',
     summary: "Chande & Kroll's stochastic of the RSI's own range",
@@ -125,7 +125,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: stochasticRsi,
   }),
-  defineStudy<WilliamsROptions<SeriesSchema, string>>({
+  defineStudy<WilliamsROptions<SeriesSchema, string>>()({
     name: 'williamsR',
     family: 'momentum',
     summary: 'Williams %R — the close below the recent high, −100..0',
@@ -141,7 +141,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: williamsR,
   }),
-  defineStudy<ChandeMomentumOptions<SeriesSchema, string>>({
+  defineStudy<ChandeMomentumOptions<SeriesSchema, string>>()({
     name: 'chandeMomentum',
     family: 'momentum',
     summary: "Chande's momentum oscillator — unsmoothed up/down sums",
@@ -153,7 +153,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: chandeMomentum,
   }),
-  defineStudy<MomentumOptions<SeriesSchema, string>>({
+  defineStudy<MomentumOptions<SeriesSchema, string>>()({
     name: 'momentum',
     family: 'momentum',
     summary: 'The change from n bars ago, in the price’s own units',
@@ -165,7 +165,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: momentum,
   }),
-  defineStudy<PercentChangeOptions<SeriesSchema, string>>({
+  defineStudy<PercentChangeOptions<SeriesSchema, string>>()({
     name: 'percentChange',
     family: 'momentum',
     summary: 'Percent change from n bars ago — the rate of change',
@@ -177,7 +177,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: percentChange,
   }),
-  defineStudy<IntradayMomentumIndexOptions<SeriesSchema, string>>({
+  defineStudy<IntradayMomentumIndexOptions<SeriesSchema, string>>()({
     name: 'intradayMomentumIndex',
     family: 'momentum',
     summary: "Chande's IMI — RSI's question asked of the candle body",
@@ -189,20 +189,20 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: intradayMomentumIndex,
   }),
-  defineStudy<AwesomeOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<AwesomeOscillatorOptions<SeriesSchema, string>>()({
     name: 'awesomeOscillator',
     family: 'momentum',
     summary: "Bill Williams' AO — fast minus slow SMA of the median price",
     inputs: { high: { default: 'high' }, low: { default: 'low' } },
     params: {
       fastPeriod: { kind: 'integer', default: 5, min: 1, suggest: [2, 20] },
-      slowPeriod: { kind: 'integer', default: 34, min: 1, suggest: [10, 60] },
+      slowPeriod: { kind: 'integer', default: 34, suggest: [10, 60] },
     },
     naming: { output: 'ao' },
     outputs: [{ id: '', unit: 'delta' }],
     run: awesomeOscillator,
   }),
-  defineStudy<UltimateOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<UltimateOscillatorOptions<SeriesSchema, string>>()({
     name: 'ultimateOscillator',
     family: 'momentum',
     summary: "Williams' three-horizon buying pressure, weighted 4/2/1",
@@ -212,15 +212,15 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
       close: { default: 'close' },
     },
     params: {
-      shortPeriod: { kind: 'integer', default: 7, min: 1, suggest: [3, 15] },
-      mediumPeriod: { kind: 'integer', default: 14, min: 1, suggest: [5, 30] },
-      longPeriod: { kind: 'integer', default: 28, min: 1, suggest: [10, 60] },
+      shortPeriod: { kind: 'integer', default: 7, min: 1, suggest: [3, 12] },
+      mediumPeriod: { kind: 'integer', default: 14, suggest: [10, 25] },
+      longPeriod: { kind: 'integer', default: 28, suggest: [20, 60] },
     },
     naming: { output: 'uo' },
     outputs: [{ id: '', unit: 'percent' }],
     run: ultimateOscillator,
   }),
-  defineStudy<CommodityChannelIndexOptions<SeriesSchema, string>>({
+  defineStudy<CommodityChannelIndexOptions<SeriesSchema, string>>()({
     name: 'commodityChannelIndex',
     family: 'momentum',
     summary: "Lambert's CCI — typical price in mean absolute deviations",
@@ -237,7 +237,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: commodityChannelIndex,
   }),
-  defineStudy<FisherTransformOptions<SeriesSchema, string>>({
+  defineStudy<FisherTransformOptions<SeriesSchema, string>>()({
     name: 'fisherTransform',
     family: 'momentum',
     summary: "Ehlers' Fisher transform of the normalised median price",
@@ -253,7 +253,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: fisherTransform,
   }),
-  defineStudy<PsychologicalLineOptions<SeriesSchema, string>>({
+  defineStudy<PsychologicalLineOptions<SeriesSchema, string>>()({
     name: 'psychologicalLine',
     family: 'momentum',
     summary: 'The percentage of the last n bars that closed up',
@@ -265,7 +265,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: psychologicalLine,
   }),
-  defineStudy<PrettyGoodOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<PrettyGoodOscillatorOptions<SeriesSchema, string>>()({
     name: 'prettyGoodOscillator',
     family: 'momentum',
     summary: "Johnson's PGO — distance from the SMA in average true ranges",
@@ -285,7 +285,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: prettyGoodOscillator,
   }),
-  defineStudy<PrimeNumberOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<PrimeNumberOscillatorOptions<SeriesSchema, string>>()({
     name: 'primeNumberOscillator',
     family: 'momentum',
     summary: 'The distance from the price to the prime nearest it',
@@ -295,7 +295,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: primeNumberOscillator,
   }),
-  defineStudy<QstickOptions<SeriesSchema, string>>({
+  defineStudy<QstickOptions<SeriesSchema, string>>()({
     name: 'qstick',
     family: 'momentum',
     summary: "Chande's QStick — a moving average of the candle body",
@@ -308,7 +308,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: qstick,
   }),
-  defineStudy<RelativeVigorIndexOptions<SeriesSchema, string>>({
+  defineStudy<RelativeVigorIndexOptions<SeriesSchema, string>>()({
     name: 'relativeVigorIndex',
     family: 'momentum',
     summary: "Ehlers' RVI — the body as a fraction of the range, plus signal",
@@ -329,7 +329,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: relativeVigorIndex,
   }),
-  defineStudy<CenterOfGravityOptions<SeriesSchema, string>>({
+  defineStudy<CenterOfGravityOptions<SeriesSchema, string>>()({
     name: 'centerOfGravity',
     family: 'momentum',
     summary: "Ehlers' CG — where the window's price mass balances, in bars",
@@ -343,7 +343,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'bars' }],
     run: centerOfGravity,
   }),
-  defineStudy<ChandeForecastOscillatorOptions<SeriesSchema, string>>({
+  defineStudy<ChandeForecastOscillatorOptions<SeriesSchema, string>>()({
     name: 'chandeForecastOscillator',
     family: 'momentum',
     summary: "Chande's CFO — the price against its own forecast, in percent",
@@ -356,7 +356,7 @@ export const MOMENTUM_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: chandeForecastOscillator,
   }),
-  defineStudy<TrueStrengthIndexOptions<SeriesSchema, string>>({
+  defineStudy<TrueStrengthIndexOptions<SeriesSchema, string>>()({
     name: 'trueStrengthIndex',
     family: 'momentum',
     summary: "Blau's TSI — double-smoothed net change over total change",

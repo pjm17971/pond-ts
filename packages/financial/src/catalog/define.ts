@@ -21,6 +21,7 @@ import type {
  *
  * - `inputs` is a record over exactly the column keys;
  * - `params` is a record over exactly the numeric and menu keys;
+ * - a menu's `of` must list every member of its union (`INCOMPLETE_MENUS`);
  * - an optional key must state its `default` (or `optional: true` with an
  *   `example`, when absence is a switch rather than a value); a required
  *   key must state an `example` instead (and may not claim a default);
@@ -72,11 +73,10 @@ type Uncovered<O> = Exclude<
   InputKeys<O> | NumberKeys<O> | EnumKeys<O> | Excluded
 >;
 
-type InputSpec<O, K extends keyof O> = {
-  readonly label?: string;
-} & (Optional<O, K> extends true
-  ? { readonly default: string }
-  : { readonly default?: never });
+type InputSpec<O, K extends keyof O> =
+  Optional<O, K> extends true
+    ? { readonly default: string }
+    : { readonly default?: never };
 
 /**
  * An optional key states its `default` — or, when omitting it is not a
@@ -108,14 +108,12 @@ type NumberSpec<O, K extends keyof O> = {
   readonly max?: number;
   readonly suggest?: readonly [number, number];
   readonly requires?: Exclude<Keys<O>, K>;
-  readonly label?: string;
 } & Presence<number, O, K>;
 
 type EnumSpec<O, K extends keyof O> = {
   readonly kind: 'enum';
   readonly of: readonly Bare<O, K>[];
   readonly requires?: Exclude<Keys<O>, K>;
-  readonly label?: string;
 } & Presence<Bare<O, K>, O, K>;
 
 /**
@@ -154,10 +152,35 @@ export type StudySpec<O extends object> = {
     : { readonly UNCOVERED_OPTIONS: Uncovered<O> });
 
 /**
+ * Every menu's `of` lists every member of its union. The spec's inferred
+ * type carries the tuple (a `const` type parameter), so a member missing
+ * from `of` is reported as `INCOMPLETE_MENUS: 'maType'`. This is why
+ * {@link defineStudy} is curried: the options interface is given
+ * explicitly and the spec is inferred, which TypeScript only allows across
+ * two calls.
+ */
+type IncompleteMenus<O, D> = D extends { readonly params: infer P }
+  ? {
+      [K in Exclude<EnumKeys<O>, Excluded>]: K extends keyof P
+        ? P[K] extends { readonly of: readonly (infer M)[] }
+          ? [Bare<O, K & keyof O>] extends [M]
+            ? never
+            : K
+          : K
+        : K;
+    }[Exclude<EnumKeys<O>, Excluded>]
+  : never;
+
+type MenusComplete<O, D> =
+  IsNever<IncompleteMenus<O, D>> extends true
+    ? { readonly INCOMPLETE_MENUS?: never }
+    : { readonly INCOMPLETE_MENUS: IncompleteMenus<O, D> };
+
+/**
  * Describe a study for the catalog, checked against its options interface.
  *
  * ```ts
- * export const atrDescriptor = defineStudy<AtrOptions<SeriesSchema, string>>({
+ * export const atrDescriptor = defineStudy<AtrOptions<SeriesSchema, string>>()({
  *   name: 'atr',
  *   family: 'volatility',
  *   summary: "Wilder's average true range",
@@ -180,17 +203,20 @@ export type StudySpec<O extends object> = {
  * an error. The descriptor hands them on as the consumer-facing shapes
  * (`inputs` an array in options order, `params` keyed by name).
  */
-export function defineStudy<O extends object>(
-  spec: StudySpec<O>,
-): StudyDescriptor {
+export function defineStudy<O extends object>(): <const D extends StudySpec<O>>(
+  spec: D & MenusComplete<O, D>,
+) => StudyDescriptor {
+  return (spec) => build(spec as StudySpec<O>);
+}
+
+function build<O extends object>(spec: StudySpec<O>): StudyDescriptor {
   const inputs: StudyInput[] = [];
   for (const [role, def] of Object.entries(
-    spec.inputs as Record<string, { default?: string; label?: string }>,
+    spec.inputs as Record<string, { default?: string }>,
   )) {
     inputs.push({
       role,
       ...(def.default !== undefined && { default: def.default }),
-      ...(def.label !== undefined && { label: def.label }),
     });
   }
   const params: Record<string, StudyParam> = {};

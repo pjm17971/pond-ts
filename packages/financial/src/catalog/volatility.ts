@@ -20,7 +20,7 @@ import type { RelativeVolatilityIndexOptions } from '../studies/relative-volatil
 
 /** The `'volatility'` family — see `types.ts` for the family list. */
 export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<AtrOptions<SeriesSchema, string>>({
+  defineStudy<AtrOptions<SeriesSchema, string>>()({
     name: 'atr',
     family: 'volatility',
     summary: "Wilder's average true range",
@@ -36,7 +36,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: atr,
   }),
-  defineStudy<HistoricalVolatilityOptions<SeriesSchema, string>>({
+  defineStudy<HistoricalVolatilityOptions<SeriesSchema, string>>()({
     name: 'historicalVolatility',
     family: 'volatility',
     summary: 'Annualised σ of log returns, as a decimal',
@@ -48,13 +48,13 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
       // range spans the calendar conventions (`1` = raw per-bar σ, `252`
       // trading days, `365` a 7-day market); intraday bar counts run far
       // above it.
-      annualize: { kind: 'number', default: 252, min: 0, suggest: [1, 365] },
+      annualize: { kind: 'number', default: 252, suggest: [1, 365] },
     },
     naming: { output: 'hv' },
     outputs: [{ id: '', unit: 'ratio' }],
     run: historicalVolatility,
   }),
-  defineStudy<ChaikinVolatilityOptions<SeriesSchema, string>>({
+  defineStudy<ChaikinVolatilityOptions<SeriesSchema, string>>()({
     name: 'chaikinVolatility',
     family: 'volatility',
     summary: "Chaikin's percent rate of change of a smoothed bar range",
@@ -67,7 +67,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: chaikinVolatility,
   }),
-  defineStudy<MassIndexOptions<SeriesSchema, string>>({
+  defineStudy<MassIndexOptions<SeriesSchema, string>>()({
     name: 'massIndex',
     family: 'volatility',
     summary: "Dorsey's range-expansion sum — the reversal bulge",
@@ -82,7 +82,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: massIndex,
   }),
-  defineStudy<ChoppinessIndexOptions<SeriesSchema, string>>({
+  defineStudy<ChoppinessIndexOptions<SeriesSchema, string>>()({
     name: 'choppinessIndex',
     family: 'volatility',
     summary: "Dreiss' Choppiness Index — trending against ranging, 0..100",
@@ -99,7 +99,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: choppinessIndex,
   }),
-  defineStudy<GopalakrishnanRangeIndexOptions<SeriesSchema, string>>({
+  defineStudy<GopalakrishnanRangeIndexOptions<SeriesSchema, string>>()({
     name: 'gopalakrishnanRangeIndex',
     family: 'volatility',
     summary: "GAPO — the window's high-low range, logged in base period",
@@ -114,7 +114,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: gopalakrishnanRangeIndex,
   }),
-  defineStudy<UlcerIndexOptions<SeriesSchema, string>>({
+  defineStudy<UlcerIndexOptions<SeriesSchema, string>>()({
     name: 'ulcerIndex',
     family: 'volatility',
     summary: "Martin's RMS percent drawdown from the rolling peak",
@@ -126,7 +126,7 @@ export const VOLATILITY_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: ulcerIndex,
   }),
-  defineStudy<RelativeVolatilityIndexOptions<SeriesSchema, string>>({
+  defineStudy<RelativeVolatilityIndexOptions<SeriesSchema, string>>()({
     name: 'relativeVolatilityIndex',
     family: 'volatility',
     summary: "Dorsey's RSI form applied to σ instead of price",

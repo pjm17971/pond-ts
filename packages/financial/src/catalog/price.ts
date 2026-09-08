@@ -17,7 +17,7 @@ import type {
 
 /** The `'price'` family — see `types.ts` for the family list. */
 export const PRICE_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<PriceTransformOptions<SeriesSchema, string>>({
+  defineStudy<PriceTransformOptions<SeriesSchema, string>>()({
     name: 'typicalPrice',
     family: 'price',
     summary: 'Typical price — (high + low + close) / 3',
@@ -32,7 +32,7 @@ export const PRICE_STUDIES: readonly StudyDescriptor[] = [
     run: typicalPrice,
   }),
 
-  defineStudy<PriceTransformOptions<SeriesSchema, string>>({
+  defineStudy<PriceTransformOptions<SeriesSchema, string>>()({
     name: 'medianPrice',
     family: 'price',
     summary: 'Median price — (high + low) / 2',
@@ -49,7 +49,7 @@ export const PRICE_STUDIES: readonly StudyDescriptor[] = [
     run: medianPrice,
   }),
 
-  defineStudy<PriceTransformOptions<SeriesSchema, string>>({
+  defineStudy<PriceTransformOptions<SeriesSchema, string>>()({
     name: 'weightedClose',
     family: 'price',
     summary: 'Weighted close — (high + low + 2·close) / 4',
@@ -64,7 +64,7 @@ export const PRICE_STUDIES: readonly StudyDescriptor[] = [
     run: weightedClose,
   }),
 
-  defineStudy<AveragePriceOptions<SeriesSchema, string>>({
+  defineStudy<AveragePriceOptions<SeriesSchema, string>>()({
     name: 'averagePrice',
     family: 'price',
     summary: 'Average price — (open + high + low + close) / 4',
@@ -81,7 +81,7 @@ export const PRICE_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: averagePrice,
   }),
-  defineStudy<BalanceOfPowerOptions<SeriesSchema, string>>({
+  defineStudy<BalanceOfPowerOptions<SeriesSchema, string>>()({
     name: 'balanceOfPower',
     family: 'price',
     summary:

@@ -28,7 +28,7 @@ import type {
 
 /** The `'statistical'` family — see `types.ts` for the family list. */
 export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<LinearRegressionOptions<SeriesSchema, string>>({
+  defineStudy<LinearRegressionOptions<SeriesSchema, string>>()({
     name: 'linearRegression',
     family: 'statistical',
     summary: 'Rolling OLS fit against the bar index, with slope, angle and R²',
@@ -51,7 +51,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: linearRegression,
   }),
-  defineStudy<TimeSeriesForecastOptions<SeriesSchema, string>>({
+  defineStudy<TimeSeriesForecastOptions<SeriesSchema, string>>()({
     name: 'timeSeriesForecast',
     family: 'statistical',
     summary: 'The rolling OLS fit projected one bar past the window',
@@ -64,7 +64,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: timeSeriesForecast,
   }),
-  defineStudy<BetaOptions<SeriesSchema, string>>({
+  defineStudy<BetaOptions<SeriesSchema, string>>()({
     name: 'beta',
     family: 'statistical',
     summary: "Slope of a column's one-bar returns on a benchmark's",
@@ -77,7 +77,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: beta,
   }),
-  defineStudy<CorrelationOptions<SeriesSchema, string>>({
+  defineStudy<CorrelationOptions<SeriesSchema, string>>()({
     name: 'correlation',
     family: 'statistical',
     summary: 'Rolling Pearson correlation against a benchmark column',
@@ -89,7 +89,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: correlation,
   }),
-  defineStudy<PriceRelativeOptions<SeriesSchema, string>>({
+  defineStudy<PriceRelativeOptions<SeriesSchema, string>>()({
     name: 'priceRelative',
     family: 'statistical',
     summary: 'Ratio of a column to a benchmark column, with no look-back',
@@ -99,7 +99,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: priceRelative,
   }),
-  defineStudy<PerformanceIndexOptions<SeriesSchema, string>>({
+  defineStudy<PerformanceIndexOptions<SeriesSchema, string>>()({
     name: 'performanceIndex',
     family: 'statistical',
     summary: "Each side's own period-bar growth, divided — 1 is parity",
@@ -112,7 +112,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: performanceIndex,
   }),
-  defineStudy<ZScoreOptions<SeriesSchema, string>>({
+  defineStudy<ZScoreOptions<SeriesSchema, string>>()({
     name: 'zScore',
     family: 'statistical',
     summary: 'Deviation from the rolling mean, in standard deviations',
@@ -124,7 +124,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: zScore,
   }),
-  defineStudy<RollingStatOptions<SeriesSchema, string>>({
+  defineStudy<RollingStatOptions<SeriesSchema, string>>()({
     name: 'rollingStdev',
     family: 'statistical',
     summary: 'Rolling population standard deviation (ddof = 0)',
@@ -137,7 +137,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: rollingStdev,
   }),
-  defineStudy<RollingStatOptions<SeriesSchema, string>>({
+  defineStudy<RollingStatOptions<SeriesSchema, string>>()({
     name: 'rollingMin',
     family: 'statistical',
     summary: 'Rolling minimum over the last period bars',
@@ -149,7 +149,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: rollingMin,
   }),
-  defineStudy<RollingStatOptions<SeriesSchema, string>>({
+  defineStudy<RollingStatOptions<SeriesSchema, string>>()({
     name: 'rollingMax',
     family: 'statistical',
     summary: 'Rolling maximum over the last period bars',
@@ -161,7 +161,7 @@ export const STATISTICAL_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'inherit' }],
     run: rollingMax,
   }),
-  defineStudy<RollingPercentileOptions<SeriesSchema, string>>({
+  defineStudy<RollingPercentileOptions<SeriesSchema, string>>()({
     name: 'rollingPercentile',
     family: 'statistical',
     summary: 'Rolling q-th percentile, linearly interpolated',

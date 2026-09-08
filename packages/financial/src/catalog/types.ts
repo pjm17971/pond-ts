@@ -63,7 +63,6 @@ export interface StudyInput {
   /** The column read when the option is omitted. **Absent means required**
    *  (a `benchmark` has no sensible default). */
   readonly default?: string;
-  readonly label?: string;
 }
 
 /**
@@ -89,16 +88,19 @@ export interface StudyNumberParam {
    *  one (`balanceOfPower`'s `maType` needs its `period`). A control shows
    *  it only when that one is set; the catalog test runs it with it. */
   readonly requires?: string;
-  /** The legal range — declared only where the study **validates** it (the
-   *  catalog test runs `min − 1` and expects a throw). For a real-valued
-   *  option `min` is the infimum: a `stdDev` declares `min: 0` and the study
-   *  still rejects exactly `0`. */
+  /** The legal range, **inclusive**, declared only where the study validates
+   *  a constant bound: the catalog test runs the study at `min` (and `max`)
+   *  and expects it to be accepted, and one below (above) and expects a
+   *  throw. A bound that is not a constant — a `slowPeriod` that must exceed
+   *  the `fastPeriod`, a strictly-positive real with no smallest legal
+   *  value — is not declared; `suggest` then carries the range a control
+   *  is drawn on, chosen to be legal throughout at the other options'
+   *  defaults. */
   readonly min?: number;
   readonly max?: number;
   /** The **useful** range, within `[min, max]` — what a control is drawn on.
    *  Advisory: nothing rejects a value outside it. */
   readonly suggest?: readonly [number, number];
-  readonly label?: string;
 }
 
 /** A closed-menu option (`maType`, a pivot `method`). */
@@ -110,7 +112,6 @@ export interface StudyEnumParam {
   /** As on {@link StudyNumberParam}. */
   readonly optional?: true;
   readonly requires?: string;
-  readonly label?: string;
 }
 
 export type StudyParam = StudyNumberParam | StudyEnumParam;
@@ -127,7 +128,6 @@ export interface StudyOutput {
    */
   readonly id: string;
   readonly unit: StudyUnit;
-  readonly label?: string;
 }
 
 /**

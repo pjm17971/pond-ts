@@ -172,6 +172,10 @@ describe('study catalog', () => {
           expect(lo).toBeLessThanOrEqual(hi);
           if (p.min !== undefined) expect(lo).toBeGreaterThanOrEqual(p.min);
           if (p.max !== undefined) expect(hi).toBeLessThanOrEqual(p.max);
+          // The default (or example) sits inside the useful range.
+          const at = p.default ?? p.example!;
+          expect(at).toBeGreaterThanOrEqual(lo);
+          expect(at).toBeLessThanOrEqual(hi);
         }
       }
     });
@@ -193,7 +197,19 @@ describe('study catalog', () => {
       }
     });
 
-    it('runs on every menu value and every optional example, and rejects a value below a declared min', () => {
+    it('has a finite value in every output on the fixture (nothing passes vacuously)', () => {
+      // A study whose warm-up exceeds the 120-bar fixture would let the
+      // column and default checks pass on all-`undefined` columns; the ones
+      // that do are named here so a new one cannot slip in.
+      const allUndefinedAt120 = ['specialK'];
+      const out = d.run(bars, minimalOptions(d));
+      for (const name of expectedColumns(d)) {
+        const finite = columnValues(out, name).some((v) => v !== undefined);
+        expect(finite, name).toBe(!allUndefinedAt120.includes(d.name));
+      }
+    });
+
+    it('runs on every menu value and every optional example; accepts a declared min/max and rejects one past it', () => {
       // The options a param is exercised on: the minimal set, plus the
       // example of the param it `requires` (a menu that is only legal
       // alongside a switched-on option).
@@ -218,9 +234,35 @@ describe('study catalog', () => {
               d.run(bars, { ...base(p), [name]: p.example }),
             ).not.toThrow();
           }
+          // The useful range is legal throughout at the other options'
+          // defaults — a control drawn on it never lands on a throw.
+          if (p.suggest !== undefined) {
+            for (const v of p.suggest) {
+              expect(
+                () => d.run(bars, { ...base(p), [name]: v }),
+                `${name} at suggest ${v}`,
+              ).not.toThrow();
+            }
+          }
+          // A bound is inclusive and constant: the study accepts it and
+          // rejects one past it. (A floor that depends on another option,
+          // or a strictly-positive real, declares none — see the type doc.)
           if (p.min !== undefined) {
+            expect(
+              () => d.run(bars, { ...base(p), [name]: p.min }),
+              `${name} at min`,
+            ).not.toThrow();
             expect(() =>
               d.run(bars, { ...base(p), [name]: p.min! - 1 }),
+            ).toThrow();
+          }
+          if (p.max !== undefined) {
+            expect(
+              () => d.run(bars, { ...base(p), [name]: p.max }),
+              `${name} at max`,
+            ).not.toThrow();
+            expect(() =>
+              d.run(bars, { ...base(p), [name]: p.max! + 1 }),
             ).toThrow();
           }
         }

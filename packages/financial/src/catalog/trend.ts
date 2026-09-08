@@ -34,7 +34,7 @@ import type { SwingIndexOptions } from '../studies/swing-index.js';
 
 /** The `'trend'` family — see `types.ts` for the family list. */
 export const TREND_STUDIES: readonly StudyDescriptor[] = [
-  defineStudy<DirectionalMovementOptions<SeriesSchema, string>>({
+  defineStudy<DirectionalMovementOptions<SeriesSchema, string>>()({
     name: 'directionalMovement',
     family: 'trend',
     summary: "Wilder's directional movement system — +DI/−DI, DX, ADX, ADXR",
@@ -58,7 +58,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: directionalMovement,
   }),
-  defineStudy<AroonOptions<SeriesSchema, string>>({
+  defineStudy<AroonOptions<SeriesSchema, string>>()({
     name: 'aroon',
     family: 'trend',
     summary: "Chande's Aroon — how recently the window's extremes printed",
@@ -76,7 +76,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: aroon,
   }),
-  defineStudy<VortexOptions<SeriesSchema, string>>({
+  defineStudy<VortexOptions<SeriesSchema, string>>()({
     name: 'vortex',
     family: 'trend',
     summary: "Vortex Indicator — Botes & Siepman's crossed movement pair",
@@ -97,7 +97,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: vortex,
   }),
-  defineStudy<VerticalHorizontalFilterOptions<SeriesSchema, string>>({
+  defineStudy<VerticalHorizontalFilterOptions<SeriesSchema, string>>()({
     name: 'verticalHorizontalFilter',
     family: 'trend',
     summary: "Adam White's VHF — net movement over total movement",
@@ -111,7 +111,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'ratio' }],
     run: verticalHorizontalFilter,
   }),
-  defineStudy<RandomWalkIndexOptions<SeriesSchema, string>>({
+  defineStudy<RandomWalkIndexOptions<SeriesSchema, string>>()({
     name: 'randomWalkIndex',
     family: 'trend',
     summary: "Poulos' RWI — the move in units of a random walk's reach",
@@ -133,7 +133,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: randomWalkIndex,
   }),
-  defineStudy<SuperTrendOptions<SeriesSchema, string>>({
+  defineStudy<SuperTrendOptions<SeriesSchema, string>>()({
     name: 'superTrend',
     family: 'trend',
     summary: 'SuperTrend — a ratcheting ATR band that flips with the close',
@@ -146,7 +146,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
       period: { kind: 'integer', default: 10, min: 1, suggest: [5, 30] },
       // A width in ATRs, validated as a positive finite number, so the
       // infimum is 0 and 0 itself is still rejected.
-      multiplier: { kind: 'number', default: 3, min: 0, suggest: [1, 5] },
+      multiplier: { kind: 'number', default: 3, suggest: [1, 5] },
     },
     naming: { prefix: 'st' },
     // The line column is the BARE prefix (`st`), hence the empty id; the
@@ -157,7 +157,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: superTrend,
   }),
-  defineStudy<ParabolicSarOptions<SeriesSchema, string>>({
+  defineStudy<ParabolicSarOptions<SeriesSchema, string>>()({
     name: 'parabolicSar',
     family: 'trend',
     summary: "Wilder's parabolic stop-and-reverse",
@@ -165,8 +165,8 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     params: {
       // Both are acceleration factors, validated as positive finite numbers
       // (and `maxStep >= step`), not bar counts.
-      step: { kind: 'number', default: 0.02, min: 0, suggest: [0.01, 0.05] },
-      maxStep: { kind: 'number', default: 0.2, min: 0, suggest: [0.1, 0.5] },
+      step: { kind: 'number', default: 0.02, suggest: [0.01, 0.05] },
+      maxStep: { kind: 'number', default: 0.2, suggest: [0.1, 0.5] },
     },
     naming: { prefix: 'psar' },
     // The stop column is the BARE prefix (`psar`), hence the empty id.
@@ -176,7 +176,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: parabolicSar,
   }),
-  defineStudy<AtrTrailingStopOptions<SeriesSchema, string>>({
+  defineStudy<AtrTrailingStopOptions<SeriesSchema, string>>()({
     name: 'atrTrailingStop',
     family: 'trend',
     summary: "Vervoort's close-anchored ratcheting ATR stop",
@@ -187,7 +187,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     },
     params: {
       period: { kind: 'integer', default: 14, min: 1, suggest: [5, 50] },
-      multiplier: { kind: 'number', default: 3, min: 0, suggest: [1, 5] },
+      multiplier: { kind: 'number', default: 3, suggest: [1, 5] },
     },
     naming: { prefix: 'ats' },
     // The stop column is the BARE prefix (`ats`), hence the empty id.
@@ -197,7 +197,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: atrTrailingStop,
   }),
-  defineStudy<ZigZagOptions<SeriesSchema, string>>({
+  defineStudy<ZigZagOptions<SeriesSchema, string>>()({
     name: 'zigZag',
     family: 'trend',
     summary: 'ZigZag — percent-reversal pivots and the line joining them',
@@ -205,7 +205,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     params: {
       // A percent of the leg's extreme, validated as a positive finite
       // number rather than by `assertPeriod`.
-      deviation: { kind: 'number', default: 5, min: 0, suggest: [1, 20] },
+      deviation: { kind: 'number', default: 5, suggest: [1, 20] },
     },
     naming: { prefix: 'zz' },
     // `Pivot` sits on the extreme's own bar and `Line` interpolates between
@@ -217,7 +217,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: zigZag,
   }),
-  defineStudy<IchimokuOptions<SeriesSchema, string>>({
+  defineStudy<IchimokuOptions<SeriesSchema, string>>()({
     name: 'ichimoku',
     family: 'trend',
     summary: "Ichimoku Kinko Hyo — Hosoda's five lines",
@@ -253,7 +253,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: ichimoku,
   }),
-  defineStudy<ElderImpulseOptions<SeriesSchema, string>>({
+  defineStudy<ElderImpulseOptions<SeriesSchema, string>>()({
     name: 'elderImpulse',
     family: 'trend',
     summary: "Elder's impulse system — EMA and MACD histogram agreeing",
@@ -261,14 +261,14 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     params: {
       emaPeriod: { kind: 'integer', default: 13, min: 1, suggest: [5, 30] },
       fastPeriod: { kind: 'integer', default: 12, min: 1, suggest: [5, 20] },
-      slowPeriod: { kind: 'integer', default: 26, min: 1, suggest: [15, 50] },
+      slowPeriod: { kind: 'integer', default: 26, suggest: [15, 50] },
       signalPeriod: { kind: 'integer', default: 9, min: 1, suggest: [5, 20] },
     },
     naming: { output: 'impulse' },
     outputs: [{ id: '', unit: 'signal' }],
     run: elderImpulse,
   }),
-  defineStudy<ElderRayOptions<SeriesSchema, string>>({
+  defineStudy<ElderRayOptions<SeriesSchema, string>>()({
     name: 'elderRay',
     family: 'trend',
     summary: "Elder Ray — the bar's high and low against an EMA",
@@ -289,7 +289,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     ],
     run: elderRay,
   }),
-  defineStudy<TrendIntensityIndexOptions<SeriesSchema, string>>({
+  defineStudy<TrendIntensityIndexOptions<SeriesSchema, string>>()({
     name: 'trendIntensityIndex',
     family: 'trend',
     summary: "M. H. Pee's trend intensity index — deviations above an SMA",
@@ -302,7 +302,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: trendIntensityIndex,
   }),
-  defineStudy<RaviOptions<SeriesSchema, string>>({
+  defineStudy<RaviOptions<SeriesSchema, string>>()({
     name: 'ravi',
     family: 'trend',
     summary: "Chande's RAVI — the two SMAs' gap as a percent of the slow one",
@@ -315,7 +315,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'percent' }],
     run: ravi,
   }),
-  defineStudy<SwingIndexOptions<SeriesSchema, string>>({
+  defineStudy<SwingIndexOptions<SeriesSchema, string>>()({
     name: 'swingIndex',
     family: 'trend',
     summary: "Wilder's swing index — one bar's move against the limit move",
@@ -330,7 +330,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
       // about the contract, so there is no default and no useful suggested
       // range (the `tradeVolumeIndex` `minTick` shape). The example is sized
       // for ordinary ~100-priced bars.
-      limit: { kind: 'number', example: 5, min: 0 },
+      limit: { kind: 'number', example: 5 },
     },
     naming: { output: 'si' },
     // Bounded −100…100 and zero-centred, but it scales with price unless
@@ -339,7 +339,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
     outputs: [{ id: '', unit: 'delta' }],
     run: swingIndex,
   }),
-  defineStudy<SwingIndexOptions<SeriesSchema, string>>({
+  defineStudy<SwingIndexOptions<SeriesSchema, string>>()({
     name: 'accumulativeSwingIndex',
     family: 'trend',
     summary: "Wilder's accumulative swing index — the running swing total",
@@ -350,7 +350,7 @@ export const TREND_STUDIES: readonly StudyDescriptor[] = [
       close: { default: 'close' },
     },
     params: {
-      limit: { kind: 'number', example: 5, min: 0 },
+      limit: { kind: 'number', example: 5 },
     },
     naming: { output: 'asi' },
     // A cumulative level starting at the first swing's value — an arbitrary

@@ -76,8 +76,9 @@ include new features and type-level changes; patch bumps are strictly additive.
   fluent methods): the columns it reads (`inputs`, with defaults — absent
   means required, as a `benchmark` is), its numeric and menu options
   (`params`: `kind`, `default` or an `example` for a required one,
-  `min`/`max` where the study validates them, a `suggest` range a control is
-  drawn on), how it names what it appends (`naming`: `output` or `prefix`
+  `min`/`max` — inclusive, and only where the study validates a constant
+  bound — and a `suggest` range a control is drawn on, legal throughout at
+  the other options' defaults), how it names what it appends (`naming`: `output` or `prefix`
   and the default), the columns it appends (`outputs`, each with a `unit`
   from a closed vocabulary — `inherit` / `delta` / `percent` / `ratio` /
   `signal` / `volume` / `index` / `bars` — that answers whether the column
@@ -86,18 +87,22 @@ include new features and type-level changes; patch bumps are strictly additive.
   and `anchoredVwap` (an input the consumer supplies from context, not a
   control), `optional: true` for an option whose absence is a switch rather
   than a value (`balanceOfPower`'s `period`) with `requires` for a menu
-  that is only legal alongside it, and `run`. The shape mirrors `@pond-ts/process`'s `OpDef` so a registry maps
-  it rather than interprets it. Asked for by a consumer that was otherwise
+  that is only legal alongside it, and `run`. The shape is modelled on `@pond-ts/process`'s `OpDef` (`role`, `id`,
+  `unit`, `suggest` are its words) so a registry maps it rather than
+  interprets it — with two deliberate differences: an input carries its
+  `default`, and a required option carries an `example` where process
+  requires a `default`. Asked for by a consumer that was otherwise
   hand-transcribing ~400 facts from `.d.ts` files and re-checking them per
   release. Guarded two ways so it cannot drift from the studies:
   `defineStudy<Options>()` classifies every key of the options interface at
   compile time and rejects a missed or misspelt key, a default claimed on a
-  required option, a menu value outside the union or an option shape it does
-  not know; and `test/catalog.test.ts` runs every descriptor against its
-  study — the appended columns are exactly those declared, stating every
-  default explicitly changes nothing, every menu value runs, a value below a
-  declared `min` throws, and the catalog is exactly the set of fluent
-  methods. A separate subpath, so the main entry's tree-shaking is untouched.
+  required option, a menu value outside the union, a menu `of` that omits a
+  member, or an option shape it does not know; and `test/catalog.test.ts` runs every descriptor against its
+  study — the appended columns are exactly those declared and every one
+  has a value on the fixture, stating every default explicitly changes
+  nothing, every menu value and both `suggest` endpoints run, a declared
+  `min`/`max` is accepted and one past it throws, and the catalog is exactly
+  the set of fluent methods. A separate subpath, so the main entry's tree-shaking is untouched.
   The `API map` workflow now guards `catalog/index.ts` too.
 - `@pond-ts/financial`: **the session-anchored studies** (corpus §6.6 / §6.9 —
   the **G4** pair the trading calendar was gating). Both take the session as a
