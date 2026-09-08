@@ -141,9 +141,10 @@ describe('study catalog', () => {
       if (d.naming.kind === 'output') {
         expect(d.outputs.map((o) => o.id)).toEqual(['']);
       } else {
+        // Suffixes are unique; at most one output is the bare prefix ('').
         const ids = d.outputs.map((o) => o.id);
-        expect(ids.every((id) => id.length > 0)).toBe(true);
         expect(new Set(ids).size).toBe(ids.length);
+        expect(ids.filter((id) => id === '').length).toBeLessThanOrEqual(1);
       }
       for (const p of Object.values(d.params)) {
         // Optional ⇒ default; required ⇒ example. Never both, never neither.

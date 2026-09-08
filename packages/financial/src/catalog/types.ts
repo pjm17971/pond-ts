@@ -105,7 +105,10 @@ export interface StudyOutput {
   /**
    * The column's name suffix under `prefix` naming (`'Upper'` in
    * `bbUpper`), or `''` under `output` naming, where the single column *is*
-   * the `output` option's value.
+   * the `output` option's value. Under `prefix` naming `''` names the
+   * **bare prefix** — the primary line of a study whose companions carry
+   * suffixes (`superTrend`'s `st` beside `stTrend`, `klinger`'s `kvo` beside
+   * `kvoSignal`); at most one output may claim it.
    */
   readonly id: string;
   readonly unit: StudyUnit;
