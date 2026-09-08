@@ -123,6 +123,17 @@ Add the method to the `declare module 'pond-ts'` interface **and** mount it on
 The declared return type must match the standalone function's (`AppendOpt<S,
 Output>` for a single column, the triple-nested form for a `prefix` family).
 
+### 3b. Describe it in the catalog — `catalog/<family>.ts`
+
+Add a `defineStudy<XOptions<SeriesSchema, string>>({ … })` entry to the
+family file under `src/catalog/` (`STUDY_FAMILIES` in `catalog/types.ts` is
+the list; the file's array is the menu order). The compiler checks the
+description covers every options key; `test/catalog.test.ts` runs it against
+the study and **fails if any fluent method has no descriptor** — so this step
+is not optional either. Field rules are on the types in `catalog/types.ts`;
+the one that needs judgement is each output's `unit` (may it share the
+source's axis?), which the `StudyUnit` doc comment settles.
+
 ### 4. Add a pandas oracle case — **required, not optional**
 
 **A study does not merge without an oracle case.** This is the gate that lets us

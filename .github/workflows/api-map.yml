@@ -1,7 +1,8 @@
 # Guard: a PR that changes a public export surface must update API.md in the
 # same PR (see CLAUDE.md → "API map"). The guarded entry points are each
 # package's `src/index.ts` plus the two subpath entries (`pond-ts/types` →
-# core `schema/public.ts`, `@pond-ts/financial/fluent` → `fluent.ts`).
+# core `schema/public.ts`, `@pond-ts/financial/fluent` → `fluent.ts`,
+# `@pond-ts/financial/catalog` → `catalog/index.ts`).
 #
 # Escape hatch: if the entry-point change doesn't alter the export surface
 # (comments, formatting, re-export shuffles), apply the `api-map-exempt`
@@ -28,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
-          entry_re='^packages/[^/]+/src/index\.ts$|^packages/core/src/schema/public\.ts$|^packages/financial/src/fluent\.ts$'
+          entry_re='^packages/[^/]+/src/index\.ts$|^packages/core/src/schema/public\.ts$|^packages/financial/src/fluent\.ts$|^packages/financial/src/catalog/index\.ts$'
           touched=$(echo "$changed" | grep -E "$entry_re" || true)
           if [ -z "$touched" ]; then
             echo "No public export entry points changed — guard passes."
