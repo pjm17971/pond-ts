@@ -2941,6 +2941,14 @@ stays `0` (its numerator is forced to zero, the #699 rule); their docstrings
 cite `bollinger`'s old behaviour and are updated in the same change. Queued
 behind [PND-STUDYCAT] at the owner's direction.
 
+**Landed** (2026-09-08). One line in `bollinger.ts` (the `d === 0 ? NaN`
+guard removed; a missing σ still propagates as NaN), the docstring names
+the change and the old rationale, `bollinger-derived.ts` and `keltner.ts`
+updated where they cited the old behaviour, two tests flipped and the
+degenerate band pinned (`upper = lower = middle`, warm-up still the only
+`undefined`), a CHANGELOG `Changed` entry. Behaviour shift on a shipped
+study, so recorded here rather than folded in silently.
+
 ### [PND-TCAL] — Trading-time deferred items
 
 Documented, none blocking:

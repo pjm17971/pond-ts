@@ -36,10 +36,9 @@ export { rollingMeanSdInto as rollingMeanSd } from '../kernels/ranged.js';
  * Turns a `[start, end)` slice of rolling mean/sd into Bollinger's three
  * bands, in place.
  *
- * σ = 0 (a flat window) has no meaningful band and emits missing,
- * matching the sequential study. `d === 0` is false for NaN, so a
- * warm-up row falls through to the arithmetic and stays NaN — which is
- * the wanted answer.
+ * A flat window (σ = 0) is the degenerate band `upper = lower = middle`,
+ * matching the sequential study ([PND-BBFLAT]); a warm-up row's NaN mean
+ * or σ propagates through the arithmetic on its own.
  */
 export function bollingerBands(
   mean: Float64Array,
@@ -55,8 +54,8 @@ export function bollingerBands(
     const m = mean[i]!;
     const d = sd[i]!;
     middle[i] = m;
-    upper[i] = d === 0 ? NaN : m + stdDev * d;
-    lower[i] = d === 0 ? NaN : m - stdDev * d;
+    upper[i] = m + stdDev * d;
+    lower[i] = m - stdDev * d;
   }
 }
 

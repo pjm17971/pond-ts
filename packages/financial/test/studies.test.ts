@@ -238,11 +238,12 @@ describe('bollinger', () => {
     expect(lo[2]).toBeCloseTo(20 - 2 * sd, 10);
   });
 
-  it('emits undefined bands on a flat (σ = 0) window, and honours prefix', () => {
+  it('draws the degenerate band on a flat (σ = 0) window, and honours prefix', () => {
+    // upper = lower = middle ([PND-BBFLAT]): a band of no width, not a hole.
     const r = bollinger(bars([5, 5, 5, 5]), { period: 3, prefix: 'band' });
     expect(col(r, 'bandMiddle')[2]).toBe(5);
-    expect(col(r, 'bandUpper')[2]).toBeUndefined(); // σ = 0 → no band
-    expect(col(r, 'bandLower')[2]).toBeUndefined();
+    expect(col(r, 'bandUpper')[2]).toBe(5);
+    expect(col(r, 'bandLower')[2]).toBe(5);
   });
 
   it('throws on a non-positive stdDev', () => {
@@ -10122,9 +10123,17 @@ describe('bollingerBandwidth / bollingerPercentB', () => {
     expect(
       col(bollingerPercentB(flat, { period: 3 }), 'percentB').slice(2, 4),
     ).toEqual([undefined, undefined]);
-    // …and `bollinger` itself is undefined there, which is why bandwidth is
-    // NOT recoverable from its columns on a flat stretch.
-    expect(col(bollinger(flat, { period: 3 }), 'bbUpper')[2]).toBeUndefined();
+    // …and `bollinger` itself draws the DEGENERATE band there — upper and
+    // lower collapse onto the middle rather than going missing
+    // ([PND-BBFLAT]), so a band over a flat stretch stays one ribbon and
+    // bandwidth IS recoverable from its columns.
+    const bb = bollinger(flat, { period: 3 });
+    expect(col(bb, 'bbMiddle').slice(2, 4)).toEqual([5, 5]);
+    expect(col(bb, 'bbUpper').slice(2, 4)).toEqual([5, 5]);
+    expect(col(bb, 'bbLower').slice(2, 4)).toEqual([5, 5]);
+    // Warm-up is still the only `undefined`.
+    expect(col(bb, 'bbUpper').slice(0, 2)).toEqual([undefined, undefined]);
+    expect(col(bb, 'bbUpper')[4]).toBeGreaterThan(col(bb, 'bbLower')[4]!);
   });
 
   it('a window flat AT ZERO is a 0/0 for bandwidth too', () => {

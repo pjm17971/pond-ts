@@ -59,9 +59,11 @@ Two properties of that output shape matter more than the arithmetic:
   window emit `undefined`, they are not dropped. Row counts stay aligned with
   the bars, and the chart's gap handling draws the warm-up as a hole rather
   than a fabricated value.
-- **A flat window emits nothing.** Where σ is exactly 0 the bands are
-  `undefined` rather than collapsed onto the middle, so an "outside the band"
-  test doesn't fire on every bar of a flat stretch.
+- **A flat window collapses the band onto the middle.** Where σ is exactly 0
+  the upper and lower bands equal the middle — a band of no width, drawn as
+  one ribbon rather than broken into segments — so `undefined` means warm-up
+  only. An "outside the band" test on a flat stretch is the caller's to
+  write (`bbUpper > bbLower`).
 
 One honest note on this data: **18 of the 101 non-warm-up closes in this window
 (18%) sit outside the 2σ band** — 40 of 232 (17%) over the full year. On a

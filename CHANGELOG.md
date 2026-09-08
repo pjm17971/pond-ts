@@ -199,6 +199,16 @@ displacement = 26, high, low, close, prefix = 'ichi' })`** — Hosoda's five
 
 ### Changed
 
+- `@pond-ts/financial`: **`bollinger` draws the degenerate band on a flat
+  window** — `upper = lower = middle` where `σ = 0`, instead of blanking
+  both bands around an unbroken middle line. `undefined` now means warm-up
+  only, as it does for `keltner`'s zero-range channel. A consumer's
+  "outside the band" test is `bbUpper > bbLower`, not a hole in the data.
+  `bollingerBandwidth` is still `0` there (its numerator is forced to zero)
+  and `bollingerPercentB` still `undefined` (a genuine 0/0), and `bbWidth`
+  is now recoverable from the `bollinger` columns on every bar the bands
+  are set. Asked for by a consumer whose band over a stale stretch broke
+  into segments ([PND-BBFLAT]).
 - `@pond-ts/financial`: **`TradingCalendar.tagSessions` is ~4.7× faster** and
   its output is unchanged on every row. It was materializing `series.toArray()`
   and reading `event.begin()` — one `Event` plus one data object per row, the

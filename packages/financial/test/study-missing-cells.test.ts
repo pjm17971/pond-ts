@@ -265,14 +265,19 @@ describe('[PND-STUDYBOX] the study-specific guards still produce missing', () =>
     expect(v.every((x) => !Number.isNaN(x as number))).toBe(true);
   });
 
-  it('bollinger emits missing bands where σ = 0', () => {
+  it('bollinger draws the degenerate band where σ = 0 — warm-up is its only missing', () => {
     const out = bollinger(bars(flat), { period: 5 });
     const upper = cells(out, 'bbUpper');
+    const lower = cells(out, 'bbLower');
     const middle = cells(out, 'bbMiddle');
-    // The centre line is defined on a flat window; the bands are not.
+    // A flat window's band collapses onto its centre ([PND-BBFLAT]); it is
+    // not a study-specific guard any more, so the bands' missing count is
+    // the warm-up's and nothing else.
     expect(middle[9]).toBeCloseTo(42, 10);
-    expect(upper[9]).toBeUndefined();
-    expect(nullCountOf(out, 'bbUpper')).toBe(10);
+    expect(upper[9]).toBeCloseTo(42, 10);
+    expect(lower[9]).toBeCloseTo(42, 10);
+    expect(nullCountOf(out, 'bbUpper')).toBe(4);
+    expect(nullCountOf(out, 'bbLower')).toBe(4);
   });
 
   it('zScore emits missing where σ = 0', () => {
