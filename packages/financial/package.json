@@ -22,6 +22,10 @@
       "types": "./dist/fluent.d.ts",
       "import": "./dist/fluent.js"
     },
+    "./catalog": {
+      "types": "./dist/catalog/index.d.ts",
+      "import": "./dist/catalog/index.js"
+    },
     "./parallel": {
       "types": "./dist/parallel/index.d.ts",
       "import": "./dist/parallel/index.js"
