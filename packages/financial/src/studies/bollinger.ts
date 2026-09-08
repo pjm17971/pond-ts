@@ -42,7 +42,10 @@ export interface BollingerOptions<
  * bar of a flat stretch; that is the consumer's test to write —
  * `bbUpper > bbLower` — not a hole in the data.) The two derived studies
  * keep their own flat-window answers: {@link bollingerBandwidth} is `0`
- * there and {@link bollingerPercentB} is `undefined` (a genuine 0/0).
+ * there and {@link bollingerPercentB} is `undefined` (a genuine 0/0). Core's
+ * `TimeSeries.baseline` still blanks its `upper`/`lower` at `sd === 0` — a
+ * deliberate split: that primitive is an anomaly filter, where a zero-width
+ * band would flag every non-equal point; this study is a chart line.
  */
 export function bollinger<
   S extends SeriesSchema,

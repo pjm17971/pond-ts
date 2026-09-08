@@ -276,7 +276,8 @@ describe('[PND-STUDYBOX] the study-specific guards still produce missing', () =>
     expect(middle[9]).toBeCloseTo(42, 10);
     expect(upper[9]).toBeCloseTo(42, 10);
     expect(lower[9]).toBeCloseTo(42, 10);
-    expect(nullCountOf(out, 'bbUpper')).toBe(nullCountOf(out, 'bbMiddle'));
+    expect(nullCountOf(out, 'bbUpper')).toBe(4);
+    expect(nullCountOf(out, 'bbLower')).toBe(4);
   });
 
   it('zScore emits missing where σ = 0', () => {
