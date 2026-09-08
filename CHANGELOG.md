@@ -82,8 +82,11 @@ include new features and type-level changes; patch bumps are strictly additive.
   from a closed vocabulary — `inherit` / `delta` / `percent` / `ratio` /
   `signal` / `volume` / `index` / `bars` — that answers whether the column
   may share the source's axis), a `family` and one-line `summary` for a
-  picker, `anchor: 'session'` for the two session-anchored studies, and
-  `run`. The shape mirrors `@pond-ts/process`'s `OpDef` so a registry maps
+  picker, `anchor: 'session' | 'time'` for the two session-anchored studies
+  and `anchoredVwap` (an input the consumer supplies from context, not a
+  control), `optional: true` for an option whose absence is a switch rather
+  than a value (`balanceOfPower`'s `period`) with `requires` for a menu
+  that is only legal alongside it, and `run`. The shape mirrors `@pond-ts/process`'s `OpDef` so a registry maps
   it rather than interprets it. Asked for by a consumer that was otherwise
   hand-transcribing ~400 facts from `.d.ts` files and re-checking them per
   release. Guarded two ways so it cannot drift from the studies:

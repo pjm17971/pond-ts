@@ -2844,6 +2844,36 @@ descriptor carries an `example` instead of a default; and the
 session-anchored pair, whose `TradingCalendar` union is not a param — the
 descriptor flags `anchor: 'session'` and the consumer supplies the calendar.
 
+**What the builders found the seed seam could not say** (three shapes,
+all added in the same wave): a bare-prefix primary line — eleven studies
+name their line `${prefix}` and only the companions with a suffix
+(`superTrend`'s `st`/`stTrend`, `trix`, `kst`, `klinger`, `smi`, `tsi`, …),
+so `id: ''` is legal under `prefix` naming, at most one per study; an
+option whose **absence is a switch, not a value** — `balanceOfPower`'s
+`period` (absent is TA-Lib's raw per-bar ratio, present smooths it), which
+no `default` can state honestly, so `optional: true` with an `example`,
+and its `maType`, legal only alongside it, carries `requires: 'period'` (a
+control shows it only when the period is on; the test runs it with it);
+and `anchoredVwap`'s `anchor: Date | number`, an instant the consumer
+supplies, modelled as `anchor: 'time'` beside the session anchor. The
+builders also reported **no disagreement anywhere** between a docstring's
+stated default, API.md's row and the source's `??` — 109 for 109 — which
+is the first time that has been checked mechanically.
+
+**Unit calls that took judgement** (all recorded in comments where they
+sit): `centerOfGravity` is `'bars'` (a position measured in bars back, and
+scale-invariant), not the `'delta'` the brief guessed; `stochasticRsi` is
+`'percent'` (the source scales by 100); `linearRegression`'s `Angle` is
+`'ratio'` for want of an angle bucket; `priceOscillator` and
+`volumeOscillator` describe the **default** `mode` (`'percent'`) and say so;
+`swingIndex` is `'delta'` (bounded ±100 but scale-equivariant with
+`limit`), `accumulativeSwingIndex` `'index'`; `easeOfMovement` and
+`marketFacilitationIndex` are `'ratio'` (no natural unit); `primeNumberBands`
+and `atrBands` are `'inherit'` (levels you draw on the price axis, whatever
+their half-width is). `rollingPercentile`'s default output name is computed
+(`p${q}`), so its `naming.default` is `'p90'` only because its `example` is
+`90` — the one coupled pair in the catalog, noted in a comment.
+
 **`unit` is a closed vocabulary, not a free string.** Tidal's use is axis
 membership, so the vocabulary answers that question: only `'inherit'` (a
 level in the source's units) may share the source's axis; `'delta'` is the
